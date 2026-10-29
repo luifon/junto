@@ -232,7 +232,7 @@ async fn states(
         })
         .collect();
     let query = state_query();
-    let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+    let rows: Vec<(Uuid, i64, i64, i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(&ids)
         .bind(access.account_id)
         .fetch_all(&mut *connection)
@@ -251,7 +251,9 @@ async fn states(
             .await?;
     let mut values: std::collections::HashMap<_, _> = rows
         .into_iter()
-        .map(|(id, last, latest, unread, mentions)| (id, (last, latest, unread, mentions)))
+        .map(|(id, last, latest, unread, mentions, revision)| {
+            (id, (last, latest, unread, mentions, revision))
+        })
         .collect();
     Ok(places
         .iter()
@@ -259,7 +261,8 @@ async fn states(
         .filter_map(|(place, id)| {
             values
                 .remove(&id)
-                .map(|(last, latest, unread, mentions)| MessageState {
+                .map(|(last, latest, unread, mentions, revision)| MessageState {
+                    read_revision: revision as u64,
                     place: *place,
                     last_read: last as u64,
                     latest: latest as u64,
@@ -666,14 +669,14 @@ fn mention_rows(policy: bool) -> String {
 pub fn state_query() -> String {
     let selected = mention_rows(false);
     format!("select p.id,greatest(coalesce(r.position,0),coalesce(floor.read_floor,0)),coalesce(latest.position,0),
-        unread.count,mentioned.count from unnest($1::uuid[]) p(id)
+        unread.count,mentioned.count,coalesce(r.read_revision,0) from unnest($1::uuid[]) p(id)
         left join message_reads r on r.place_id=p.id and r.account_id=$2
         left join message_places floor on floor.id=p.id
         left join lateral (select position from messages m where m.place_id=p.id and m.thread_root is null
             and m.readers is null order by position desc limit 1) latest on true
         cross join lateral (select count(*) from ((select 1 from messages m where m.place_id=p.id
             and m.thread_root is null and m.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0))
-            and m.author_id is not null and m.author_id<>$2 and not m.deleted
+            and m.author_id is not null and (m.author_id<>$2 or coalesce(r.manual_unread,false)) and not m.deleted
             order by m.position limit 100)
             union all (select 1 from messages m where m.place_id=p.id
             and m.thread_root is null and m.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0))

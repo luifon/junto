@@ -1583,6 +1583,7 @@ mod tests {
             Quoted::Read(Arc::new(reply.clone())),
         );
         scene.model.threads = vec![junto_client_core::protocol::message::ThreadState {
+            read_revision: 0,
             root_id: root.id,
             last_read: 1,
             latest: 2,
@@ -2154,6 +2155,7 @@ mod tests {
             waiting(2, "failed", SendState::Failed(SendFailure::NotSent)),
         ];
         scene.model.message_states = vec![MessageState {
+            read_revision: 0,
             place: scene.place,
             last_read: 1,
             latest: 2,

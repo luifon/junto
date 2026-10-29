@@ -35,6 +35,7 @@ fn reply(room: &Room, root: &Message, position: u64, text: &str) -> Message {
 
 fn unread(root: &Message, last_read: u64, latest: u64, unread: u64) -> ThreadState {
     ThreadState {
+        read_revision: 0,
         root_id: root.id,
         last_read,
         latest,
@@ -185,6 +186,7 @@ async fn a_thread_opens_at_its_read_position_and_leaves_the_list_when_it_is_read
     let place = PlaceId::Channel(rig.scene.general);
     let root = message(rig.scene.text_place(), 1, other, "root");
     let state = ThreadState {
+        read_revision: 0,
         root_id: root.id,
         last_read: 40,
         latest: 300,
@@ -832,6 +834,7 @@ async fn the_answer_to_a_read_position_of_a_thread_does_not_remove_what_came_aft
     let other = AccountId::generate();
     let root = message(rig.scene.text_place(), 1, other, "root");
     let state = |latest: u64, last_read: u64, unread: u64| ThreadState {
+        read_revision: 0,
         root_id: root.id,
         last_read,
         latest,
@@ -1007,6 +1010,7 @@ async fn the_end_of_a_mute_is_asked_for_until_the_server_says_so() {
             },
         }];
         snapshot.messages = vec![junto_protocol::message::MessageState {
+            read_revision: 0,
             place,
             last_read: 0,
             latest: 1,
@@ -1134,6 +1138,7 @@ async fn a_late_answer_to_a_read_position_of_a_thread_does_not_move_the_position
     let other = AccountId::generate();
     let root = message(rig.scene.text_place(), 1, other, "root");
     let state = |last_read: u64, unread: u64| ThreadState {
+        read_revision: 0,
         root_id: root.id,
         last_read,
         latest: 5,
@@ -1293,6 +1298,7 @@ async fn a_mute_with_a_later_end_is_not_asked_for_before_that_end() {
             },
         }];
         snapshot.messages = vec![junto_protocol::message::MessageState {
+            read_revision: 0,
             place,
             last_read: 0,
             latest: 1,

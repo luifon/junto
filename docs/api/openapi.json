@@ -7763,6 +7763,51 @@
         ]
       }
     },
+    "/api/v1/messages/{message_id}/unread": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "mark_unread",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/notification-settings/{scope_id}": {
       "get": {
         "tags": [
@@ -17125,6 +17170,14 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "read_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -17396,6 +17449,11 @@
           },
           "place": {
             "$ref": "#/components/schemas/MessagePlace"
+          },
+          "read_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "unread": {
             "type": "integer",
@@ -20469,6 +20527,11 @@
             "minimum": 0
           },
           "mentions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "read_revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0

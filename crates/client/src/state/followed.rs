@@ -1200,6 +1200,7 @@ mod tests {
 
     fn state(root_id: MessageId, unread: u64) -> ThreadState {
         ThreadState {
+            read_revision: 0,
             root_id,
             last_read: 4,
             latest: 4 + unread,

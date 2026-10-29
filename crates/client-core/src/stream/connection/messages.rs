@@ -197,6 +197,8 @@ struct Wanted {
 /// The read position of one place that the person reached and the server may not have.
 #[derive(Debug, Default)]
 struct Mark {
+    revision: u64,
+    paused: bool,
     wanted: u64,
     /// The position that the server has confirmed, or refused for good.
     settled: u64,
@@ -238,6 +240,7 @@ pub(super) enum Outcome {
         result: Result<Searched, ApiError>,
     },
     Marked {
+        revision: u64,
         place: PlaceId,
         position: u64,
         result: Result<Marked, ApiError>,
@@ -442,7 +445,43 @@ impl Work {
         event: &junto_protocol::events::Event,
         model: &ServerModel,
     ) {
+        if let Event::MessageMarkedUnread {
+            place,
+            thread_root,
+            position,
+            read_revision,
+        } = event
+        {
+            let place = match (place, thread_root) {
+                (
+                    junto_protocol::message::MessagePlace::Channel { channel_id, .. },
+                    Some(root_id),
+                ) => PlaceId::Thread {
+                    channel_id: *channel_id,
+                    root_id: *root_id,
+                },
+                _ => PlaceId::of(place),
+            };
+            let mark = self.marks.entry(place).or_default();
+            if let Some(request) = mark.flying.take() {
+                request.abort();
+            }
+            mark.revision = *read_revision;
+            mark.paused = self.wanted.contains_key(&place);
+            mark.settled = *position;
+            mark.wanted = *position;
+        }
         for (place, mark) in &mut self.marks {
+            let resumed = match event {
+                Event::MessageRead { place: of, .. } => PlaceId::of(of) == *place,
+                Event::ThreadRead { root_id, .. } => {
+                    matches!(place, PlaceId::Thread { root_id: of, .. } if of == root_id)
+                }
+                _ => false,
+            };
+            if resumed {
+                mark.paused = false;
+            }
             if mark.flying.is_some() && Part::MessageState(*place).concerns(event, model) {
                 mark.overtaken = true;
             }
@@ -1000,6 +1039,30 @@ impl Client {
         if let Some(before) = before {
             model.carry_messages(before, &wanted);
             model.carry_named(before);
+            for place in &wanted {
+                let cursor = |model: &ServerModel| match place {
+                    PlaceId::Thread { root_id, .. } => model
+                        .thread_state(*root_id)
+                        .map(|state| (state.read_revision, state.last_read)),
+                    _ => model
+                        .message_state(*place)
+                        .map(|state| (state.read_revision, state.last_read)),
+                };
+                if let Some((revision, position)) = cursor(model) {
+                    let mark = self.messages.marks.entry(*place).or_default();
+                    let prior = cursor(before)
+                        .map_or(mark.revision, |(revision, _)| revision.max(mark.revision));
+                    if revision > prior {
+                        if let Some(request) = mark.flying.take() {
+                            request.abort();
+                        }
+                        mark.revision = revision;
+                        mark.paused = true;
+                        mark.settled = position;
+                        mark.wanted = position;
+                    }
+                }
+            }
         }
         let mut unseen = Vec::new();
         for place in &wanted {
@@ -1117,7 +1180,11 @@ impl Client {
                 }
                 self.anchor_timeline(place);
             }
-            Command::MarkRead { place, position } => {
+            Command::MarkRead {
+                place,
+                position,
+                explicit,
+            } => {
                 let read = self.model.as_ref().map_or(0, |model| match place {
                     PlaceId::Thread { root_id, .. } => model
                         .thread_state(root_id)
@@ -1126,7 +1193,29 @@ impl Client {
                         .message_state(place)
                         .map_or(0, |state| state.last_read),
                 });
+                let revision = self.model.as_ref().map_or(0, |model| match place {
+                    PlaceId::Thread { root_id, .. } => model
+                        .thread_state(root_id)
+                        .map_or(0, |state| state.read_revision),
+                    _ => model
+                        .message_state(place)
+                        .map_or(0, |state| state.read_revision),
+                });
                 let mark = self.messages.marks.entry(place).or_default();
+                if revision > mark.revision {
+                    if let Some(request) = mark.flying.take() {
+                        request.abort();
+                    }
+                    mark.revision = revision;
+                    mark.settled = read;
+                    mark.wanted = read;
+                }
+                if explicit {
+                    mark.paused = false;
+                }
+                if mark.paused {
+                    return;
+                }
                 mark.settled = mark.settled.max(read);
                 mark.wanted = mark.wanted.max(position);
             }
@@ -1298,6 +1387,9 @@ impl Client {
             return;
         }
         self.messages.wanted.remove(&place);
+        if let Some(mark) = self.messages.marks.get_mut(&place) {
+            mark.paused = false;
+        }
         self.messages.opening.remove(&place);
         // A read of one message stays: an open thread of the channel, or its pin list,
         // can want the message still. The read is dropped at its start when nothing does.
@@ -1385,20 +1477,45 @@ impl Client {
             if !due {
                 continue;
             }
+            let revision = match place {
+                PlaceId::Thread { root_id, .. } => self
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.thread_state(*root_id))
+                    .map_or(mark.revision, |state| {
+                        state.read_revision.max(mark.revision)
+                    }),
+                _ => self
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.message_state(*place))
+                    .map_or(mark.revision, |state| {
+                        state.read_revision.max(mark.revision)
+                    }),
+            };
+            mark.revision = revision;
             let (place, position, api, done) =
                 (*place, mark.wanted, api.clone(), self.done.clone());
             let token = token.clone();
+            let guarded = self.server_events.is_some_and(|revision| revision >= 4);
             let request = tokio::spawn(async move {
                 let result = match place {
-                    PlaceId::Thread { root_id, .. } => api
-                        .mark_thread_read(root_id, position)
-                        .await
-                        .map(Marked::Thread),
-                    PlaceId::Channel(_) | PlaceId::Direct(_) => {
-                        api.mark_read(place, position).await.map(Marked::Place)
+                    PlaceId::Thread { root_id, .. } => if guarded {
+                        api.mark_thread_read_at_revision(root_id, position, revision)
+                            .await
+                    } else {
+                        api.mark_thread_read(root_id, position).await
                     }
+                    .map(Marked::Thread),
+                    PlaceId::Channel(_) | PlaceId::Direct(_) => if guarded {
+                        api.mark_read_at_revision(place, position, revision).await
+                    } else {
+                        api.mark_read(place, position).await
+                    }
+                    .map(Marked::Place),
                 };
                 let outcome = Outcome::Marked {
+                    revision,
                     place,
                     position,
                     result,
@@ -1416,10 +1533,11 @@ impl Client {
         let current = self.token().is_some_and(|token| token == done.token);
         match done.outcome {
             Outcome::Marked {
+                revision,
                 place,
                 position,
                 result,
-            } => self.marked(place, position, result, current),
+            } => self.marked(place, position, revision, result, current),
             Outcome::Sent { id, result } => self.sent(id, result, current),
             Outcome::Searched { id, result } => self.searched(id, result, current),
         }
@@ -1429,17 +1547,28 @@ impl Client {
         &mut self,
         place: PlaceId,
         position: u64,
+        revision: u64,
         result: Result<Marked, ApiError>,
         current: bool,
     ) {
         let Some(mark) = self.messages.marks.get_mut(&place) else {
             return;
         };
+        if mark.revision != revision {
+            return;
+        }
         mark.flying = None;
         let overtaken = std::mem::take(&mut mark.overtaken);
         match result {
             Ok(Marked::Place(state)) => {
-                mark.settled = mark.settled.max(position);
+                if state.read_revision != revision {
+                    mark.paused = true;
+                    mark.revision = state.read_revision;
+                    mark.settled = state.last_read;
+                    mark.wanted = state.last_read;
+                } else {
+                    mark.settled = mark.settled.max(position);
+                }
                 if overtaken {
                     self.read(Part::MessageState(place));
                 } else if let Some(model) = &mut self.model
@@ -1450,7 +1579,14 @@ impl Client {
                 }
             }
             Ok(Marked::Thread(state)) => {
-                mark.settled = mark.settled.max(position);
+                if state.read_revision != revision {
+                    mark.paused = true;
+                    mark.revision = state.read_revision;
+                    mark.settled = state.last_read;
+                    mark.wanted = state.last_read;
+                } else {
+                    mark.settled = mark.settled.max(position);
+                }
                 // The list can hold a reply or a read position of another device that
                 // arrived after the server made this answer. Then the answer is not
                 // applied, and the list is read.

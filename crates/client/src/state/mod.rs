@@ -581,6 +581,7 @@ pub struct AppState {
     navigations: u64,
     message_link_asks: u64,
     message_link_failed: Option<u64>,
+    unread_pauses: HashSet<(ServerId, PlaceId)>,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), u64>,
@@ -1017,6 +1018,7 @@ impl AppState {
             navigations: 0,
             message_link_asks: 0,
             message_link_failed: None,
+            unread_pauses: HashSet::new(),
             asked_quotes: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
@@ -2017,6 +2019,38 @@ impl AppState {
                 | Event::AccountDepartureChanged { .. }
         ) {
             self.forget_quotes(server_id, None, cx);
+        }
+        if let Event::MessageMarkedUnread {
+            place, thread_root, ..
+        } = event.as_ref()
+        {
+            let place = match (place, thread_root) {
+                (
+                    junto_client_core::protocol::message::MessagePlace::Channel {
+                        channel_id, ..
+                    },
+                    Some(root_id),
+                ) => PlaceId::Thread {
+                    channel_id: *channel_id,
+                    root_id: *root_id,
+                },
+                _ => PlaceId::of(place),
+            };
+            if self.open_places.contains_key(&(server_id, place)) {
+                self.unread_pauses.insert((server_id, place));
+            }
+        }
+        match event.as_ref() {
+            Event::MessageRead { place, .. } => {
+                self.unread_pauses.remove(&(server_id, PlaceId::of(place)));
+            }
+            Event::ThreadRead { root_id, .. } => {
+                self.unread_pauses.retain(|(server, place)| {
+                    *server != server_id
+                        || !matches!(place, PlaceId::Thread { root_id: of, .. } if of == root_id)
+                });
+            }
+            _ => {}
         }
         self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {

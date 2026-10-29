@@ -77,7 +77,32 @@ impl ServerApi {
         position: u64,
     ) -> Result<ThreadState, ApiError> {
         let path = format!("{}/read", thread_of(root_id));
-        self.send(Method::Put, path, &MarkRead { position }).await
+        self.send(
+            Method::Put,
+            path,
+            &MarkRead {
+                position,
+                read_revision: None,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn mark_thread_read_at_revision(
+        &self,
+        root_id: MessageId,
+        position: u64,
+        revision: u64,
+    ) -> Result<ThreadState, ApiError> {
+        self.send(
+            Method::Put,
+            format!("{}/read", thread_of(root_id)),
+            &MarkRead {
+                position,
+                read_revision: Some(revision),
+            },
+        )
+        .await
     }
 
     /// One page of the threads that hold something unread for the caller, the newest

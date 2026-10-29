@@ -30,6 +30,7 @@ fn reply(scene: &Scene, root: &Message, position: u64, text: &str) -> Message {
 
 fn unread(root_id: MessageId, last_read: u64, latest: u64, unread: u64) -> ThreadState {
     ThreadState {
+        read_revision: 0,
         root_id,
         last_read,
         latest,
@@ -955,6 +956,7 @@ fn the_stated_notices_and_threads_keep_the_lists_without_a_read() {
 
     let root = MessageId::generate();
     let state = |last_read, latest, mentions, following| ThreadState {
+        read_revision: 0,
         root_id: root,
         last_read,
         latest,

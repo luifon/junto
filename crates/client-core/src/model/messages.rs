@@ -464,6 +464,7 @@ impl PendingMessage {
 
 fn empty_state(place: MessagePlace) -> MessageState {
     MessageState {
+        read_revision: 0,
         place,
         last_read: 0,
         latest: 0,

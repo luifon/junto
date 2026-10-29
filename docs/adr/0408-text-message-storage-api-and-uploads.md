@@ -78,10 +78,13 @@ Forwarded messages:
 
 Read positions and events:
 
-- The last-read position is per account and place, moves forward only and cannot pass the
-  latest position visible to that account. The snapshot supplies place, latest visible
+- The last-read position is per account and place, advances within one read revision and
+  cannot pass the latest position visible to that account. An explicit per-message unread
+  request moves it immediately before that message and increases its revision (ADR 0404).
+  Automatic progress with an older revision changes nothing. The snapshot supplies place, latest visible
   position, last-read position, unread count and mention count. An author's own messages
-  and all system lines do not count unread, except the line of a direct-message call that
+  and all system lines do not count unread, except that a manual unread boundary counts
+  own messages until progress resumes, and the line of a direct-message call that
   the account did not answer (ADR 0518). Sending a message, including a reply or direct
   message, advances the author's read position to that message in the send transaction;
   earlier messages therefore become read. Failed sends advance nothing. Counts are exact through 99 and capped at 100,

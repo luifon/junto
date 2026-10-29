@@ -607,7 +607,7 @@ async fn advance_read(
 ) -> ApiResult<()> {
     let changed = sqlx::query(
         "insert into message_reads(place_id,account_id,position) values($1,$2,$3)
-         on conflict(place_id,account_id) do update set position=excluded.position
+         on conflict(place_id,account_id) do update set position=excluded.position,manual_unread=false
          where message_reads.position<excluded.position",
     )
     .bind(place.id)
@@ -653,7 +653,15 @@ async fn mark(
         if position > head {
             return Err(ApiError::invalid("read position is beyond the history"));
         }
-        advance_read(connection, app.now(), &access, &place, position).await?;
+        let revision: i64 = sqlx::query_scalar("insert into message_reads(place_id,account_id,position) values($1,$2,0)
+            on conflict(place_id,account_id) do update set position=message_reads.position returning read_revision")
+            .bind(place.id).bind(access.account_id).fetch_one(&mut *connection).await?;
+        if body
+            .read_revision
+            .is_none_or(|expected| expected == revision as u64)
+        {
+            advance_read(connection, app.now(), &access, &place, position).await?;
+        }
         messages::state(connection, &access, &place, app.now()).await
     })
 }
@@ -758,4 +766,58 @@ pub async fn conversation_message_state(
         messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)
+}
+
+#[utoipa::path(put,path="/api/v1/messages/{message_id}/unread",tag="messages",params(("message_id"=MessageId,Path)),security(("session"=[])),responses((status=204),ApiError))]
+pub async fn mark_unread(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+) -> ApiResult<StatusCode> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        let (place, message) = messages::get(connection, &access, id, Purpose::Read).await?;
+        if message.deleted || message.position == 0 {
+            return Err(ApiError::not_found());
+        }
+        rate(&app, &access, &mut counted)?;
+        let position = message.position.saturating_sub(1) as i64;
+        let revision: i64 = if let Some(root) = message.thread_root {
+            let revision = sqlx::query_scalar("insert into thread_reads(root_id,account_id,position,read_revision,following,follow_setting,manual_unread)
+                values($1,$2,$3,1,true,true,true) on conflict(root_id,account_id) do update
+                set position=excluded.position,read_revision=thread_reads.read_revision+1,following=true,follow_setting=true,manual_unread=true
+                returning read_revision")
+                .bind(root).bind(access.account_id).bind(position).fetch_one(&mut *connection).await?;
+            sqlx::query("update message_mention_accounts set unread=true where account_id=$1 and thread_root=$2 and position>$3")
+                .bind(access.account_id).bind(root).bind(position).execute(&mut *connection).await?;
+            sqlx::query("update notifications n set read_at=null from messages m where n.message_id=m.id and n.account_id=$1
+                and m.thread_root=$2 and m.position>$3")
+                .bind(access.account_id).bind(root).bind(position).execute(&mut *connection).await?;
+            revision
+        } else {
+            let revision = sqlx::query_scalar("insert into message_reads(place_id,account_id,position,read_revision,manual_unread)
+                values($1,$2,$3,1,true) on conflict(place_id,account_id) do update
+                set position=excluded.position,read_revision=message_reads.read_revision+1,manual_unread=true returning read_revision")
+                .bind(place.id).bind(access.account_id).bind(position).fetch_one(&mut *connection).await?;
+            sqlx::query("update notifications n set read_at=null from messages m where n.message_id=m.id and n.account_id=$1
+                and m.place_id=$2 and m.thread_root is null and m.position>$3")
+                .bind(access.account_id).bind(place.id).bind(position).execute(&mut *connection).await?;
+            revision
+        };
+        events::tell_account(
+            connection,
+            app.now(),
+            access.account_id,
+            &Event::MessageMarkedUnread {
+                place: message.place,
+                thread_root: message.thread_root,
+                position: position as u64,
+                read_revision: revision as u64,
+            },
+        )
+        .await?;
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }

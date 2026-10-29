@@ -145,6 +145,7 @@ pub(crate) enum Command {
     MarkRead {
         place: PlaceId,
         position: u64,
+        explicit: bool,
     },
     Enqueue(Box<PendingMessage>),
     /// The uploads of a waiting message are complete: the upload of this client and the
@@ -378,7 +379,20 @@ impl LiveServer {
     /// Moves the read position of the account in a place forward. The client sends one
     /// request for a place at a time, at most one in a second, with the newest position.
     pub fn mark_read(&self, place: PlaceId, position: u64) {
-        self.shared.send(Command::MarkRead { place, position });
+        self.shared.send(Command::MarkRead {
+            place,
+            position,
+            explicit: true,
+        });
+    }
+
+    /// Advances a visible list unless an explicit unread boundary paused it.
+    pub fn mark_seen(&self, place: PlaceId, position: u64) {
+        self.shared.send(Command::MarkRead {
+            place,
+            position,
+            explicit: false,
+        });
     }
 
     /// Puts a message into the state as one that waits to be sent, and sends it when all

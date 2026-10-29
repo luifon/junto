@@ -48,3 +48,18 @@ Direct messages, call invites and threads:
 - Servers that are not selected deliver direct messages, mentions and call invites to the client, so their signs and notifications work without the full event stream (ADR 0107).
 - A dock or tray badge is in the later list of `docs/scope.md`.
 - Notification sounds and join sounds are not fixed by this record.
+
+An explicit "Mark unread" on a message sets its account's read boundary immediately
+before that message, in its channel, conversation or thread. The server checks current
+history access and rejects missing or deleted messages. The backward boundary and a
+new read revision are committed together and sent to every device of that account.
+Automatic read progress carries its observed revision; a request from an older
+revision leaves the backward boundary intact. Ordinary read progress remains monotonic
+within a revision. A thread marked unread is followed explicitly. Existing notices and
+thread mention rows after the boundary become unread without sending new notifications.
+An open view pauses automatic reading after this event. Leaving and returning to that
+place, or using "Mark as read", resumes normal reading.
+A manual unread boundary also counts the author's own messages after it, so marking an
+own message unread remains a useful reminder. Ordinary read progress ends that manual
+counting rule. Clients send the read revision only to servers advertising revision 4
+or later, preserving automatic reading with older servers.

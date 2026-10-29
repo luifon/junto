@@ -1349,6 +1349,46 @@
       ],
       "type": "object"
     },
+    "message_marked_unread": {
+      "properties": {
+        "place": {
+          "$ref": "#/components/schemas/MessagePlace"
+        },
+        "position": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read_revision": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "thread_root": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "message_marked_unread"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "place",
+        "position",
+        "read_revision",
+        "type"
+      ],
+      "type": "object"
+    },
     "message_mentioned": {
       "properties": {
         "channel_id": {
@@ -4747,6 +4787,46 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "read_revision": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "thread_root": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "message_marked_unread"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "place",
+              "position",
+              "read_revision",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "place": {
+                "$ref": "#/components/schemas/MessagePlace"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "type": {
                 "enum": [
                   "message_read"
@@ -6317,6 +6397,11 @@
             "type": "integer"
           },
           "mentions": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "read_revision": {
             "format": "int64",
             "minimum": 0,
             "type": "integer"

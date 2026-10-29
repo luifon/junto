@@ -53,14 +53,38 @@ impl Shell {
             .icon(Icon::Chat)
             .note(format!("# {}", thread.channel_name))
             .trailing(
-                Button::new("close-thread")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_THREAD)
-                    .selector("close-thread")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.close_thread(cx));
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(4.0))
+                    .when_some(
+                        thread.feed.as_ref().filter(|feed| feed.unread > 0),
+                        |line, feed| {
+                            let (server_id, place) = (feed.server_id, feed.place);
+                            line.child(
+                                Button::new("thread-mark-as-read")
+                                    .kind(ButtonKind::Ghost)
+                                    .icon(Icon::CheckDouble)
+                                    .tooltip(text::MARK_AS_READ)
+                                    .selector("thread-mark-as-read")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, _| {
+                                            state.mark_place_as_read(server_id, place)
+                                        });
+                                    })),
+                            )
+                        },
+                    )
+                    .child(
+                        Button::new("close-thread")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::X)
+                            .tooltip(text::CLOSE_THREAD)
+                            .selector("close-thread")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.close_thread(cx));
+                            })),
+                    ),
             );
         let gone = thread.feed.as_ref().is_some_and(|feed| {
             feed.failed == Some(junto_client_core::model::ReadFailure::NotFound)

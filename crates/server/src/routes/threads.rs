@@ -399,8 +399,12 @@ pub async fn mark_read(
         if body.position > state.latest {
             return Err(ApiError::invalid("read position is beyond the thread"));
         }
-        messages::threads::advance(connection, app.now(), &access, id, body.position as i64)
-            .await?;
+        let revision: i64 = sqlx::query_scalar("insert into thread_reads(root_id,account_id,position) values($1,$2,0)
+            on conflict(root_id,account_id) do update set position=thread_reads.position returning read_revision")
+            .bind(id).bind(access.account_id).fetch_one(&mut *connection).await?;
+        if body.read_revision.is_none_or(|expected| expected == revision as u64) {
+            messages::threads::advance(connection, app.now(), &access, id, body.position as i64).await?;
+        }
         messages::threads::state(connection, access.account_id, id).await
     })
     .map(Json)

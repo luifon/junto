@@ -301,6 +301,7 @@ fn daily_chat() -> Made {
 
 pub(crate) fn state(channel: u32, unread: u64, mentions: u64) -> MessageState {
     MessageState {
+        read_revision: 0,
         place: place(channel),
         last_read: 0,
         latest: 9,
@@ -579,6 +580,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             vec![
                 acme_with(|model| {
                     model.message_states.push(MessageState {
+                        read_revision: 0,
                         place: place(GENERAL),
                         last_read: 4,
                         latest: 8,

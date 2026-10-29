@@ -121,3 +121,8 @@ The scoped text-layout observer is the only gpui change for selection (ADR 0757)
 - A finished recording is a card in the chat of its voice channel (ADR 0744).
 - Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already. The `image` crate of the client has its `gif` feature for the GIF pictures of messages; gpui builds the same decoder, so no crate was added.
+
+Message context menus include Mark unread. It uses the server's explicit backward read
+boundary, including for thread replies. Both windows pause automatic reading of an
+open place after its unread event; the header's Mark as read control or reopening the
+place resumes reading. Thread headers provide the same explicit read control.

@@ -17,10 +17,10 @@ use uuid::Uuid;
 pub const STATES_QUERY: &str = "select m.id,coalesce(r.position,0),coalesce(last.position,0),
          case when coalesce(r.following,false) then (select count(*) from (
              select 1 from messages reply where reply.thread_root=m.id and reply.position>r.position
-             and not reply.deleted and reply.author_id<>$1 order by reply.position limit 100) unread) else 0 end,
+             and not reply.deleted and (reply.author_id<>$1 or coalesce(r.manual_unread,false)) order by reply.position limit 100) unread) else 0 end,
          (select count(*) from (select 1 from message_mention_accounts ma where ma.thread_root=m.id
              and ma.account_id=$1 and ma.unread order by ma.position limit 100) mentions),
-         coalesce(r.following,false),r.follow_setting
+         coalesce(r.following,false),r.follow_setting,coalesce(r.read_revision,0)
          from unnest($2::uuid[]) with ordinality requested(id,ordinal) join messages m on m.id=requested.id
          left join thread_reads r on r.root_id=m.id and r.account_id=$1
          left join messages last on last.id=m.last_reply
@@ -41,7 +41,7 @@ pub async fn state(
 
 /// A row of [`STATES_QUERY`]: the root, the read position, the newest position, the unread
 /// replies, the unread mentions, whether the account follows, and its choice.
-type StateRow = (MessageId, i64, i64, i64, i64, bool, Option<bool>);
+type StateRow = (MessageId, i64, i64, i64, i64, bool, Option<bool>, i64);
 
 pub(crate) async fn states(
     connection: &mut PgConnection,
@@ -56,8 +56,18 @@ pub(crate) async fn states(
     Ok(rows
         .into_iter()
         .map(
-            |(root_id, last_read, latest, unread, mentions, following, follow_setting)| {
+            |(
+                root_id,
+                last_read,
+                latest,
+                unread,
+                mentions,
+                following,
+                follow_setting,
+                revision,
+            )| {
                 ThreadState {
+                    read_revision: revision as u64,
                     root_id,
                     last_read: last_read as u64,
                     latest: latest as u64,
@@ -301,7 +311,7 @@ pub async fn advance(
 ) -> ApiResult<()> {
     let changed = sqlx::query(
         "insert into thread_reads(root_id,account_id,position) values($1,$2,$3)
-        on conflict(root_id,account_id) do update set position=excluded.position
+        on conflict(root_id,account_id) do update set position=excluded.position,manual_unread=false
         where thread_reads.position<excluded.position",
     )
     .bind(root)

@@ -919,7 +919,7 @@ impl Shell {
         if let Some(position) = feed.end_position.filter(|_| feed.unread > 0) {
             let (server_id, place) = (feed.server_id, feed.place);
             self.state
-                .update(cx, |state, _| state.mark_read(server_id, place, position));
+                .update(cx, |state, _| state.mark_seen(server_id, place, position));
         }
     }
 
@@ -3447,6 +3447,33 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);
                         this.open_forward(server_id, message_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if !row.message.deleted && row.message.position > 0 {
+            let place = PlaceId::of_message(&row.message);
+            items.push(
+                MenuItem::new("message-mark-unread", text::MARK_UNREAD)
+                    .selector("message-mark-unread")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.mark_message_unread(server_id, message_id, place, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if feed.unread > 0 {
+            let place = PlaceId::of_message(&row.message);
+            items.push(
+                MenuItem::new("message-mark-read", text::MARK_AS_READ)
+                    .selector("message-mark-read")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state
+                            .update(cx, |state, _| state.mark_place_as_read(server_id, place));
                     }))
                     .into_any_element(),
             );

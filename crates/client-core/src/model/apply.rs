@@ -161,9 +161,9 @@ impl Part {
                 }
             }
             Self::MessageState(place) => match event {
-                Event::MessageChanged { place: of, .. } | Event::MessageRead { place: of, .. } => {
-                    PlaceId::of(of) == *place
-                }
+                Event::MessageChanged { place: of, .. }
+                | Event::MessageRead { place: of, .. }
+                | Event::MessageMarkedUnread { place: of, .. } => PlaceId::of(of) == *place,
                 Event::MessageMentioned { channel_id, .. } => {
                     PlaceId::Channel(*channel_id) == *place
                 }
@@ -185,7 +185,8 @@ impl Part {
                 Event::MessageChanged {
                     place: MessagePlace::Channel { .. },
                     ..
-                } | Event::ThreadRead { .. }
+                } | Event::MessageMarkedUnread { .. }
+                    | Event::ThreadRead { .. }
                     | Event::NotificationChanged { .. }
                     | Event::MessageMentioned { .. }
                     | Event::ThreadFollowChanged { .. }
@@ -207,6 +208,7 @@ impl Part {
             Self::Notices => matches!(
                 event,
                 Event::NotificationChanged { .. }
+                    | Event::MessageMarkedUnread { .. }
                     | Event::MessageRead { .. }
                     | Event::ThreadRead { .. }
                     | Event::NotificationsRead { .. }
@@ -970,6 +972,45 @@ impl ServerModel {
                     )
                     .collect();
                 return Follow::loads(load);
+            }
+            Event::MessageMarkedUnread {
+                place,
+                thread_root,
+                position,
+                read_revision,
+            } => {
+                if !self.holds_place(place) {
+                    return Follow::default();
+                }
+                if let Some(root) = thread_root {
+                    if let Some(held) = self.threads.iter_mut().find(|held| held.root_id == *root) {
+                        held.last_read = *position;
+                        held.read_revision = *read_revision;
+                    }
+                } else if let Some(held) = self
+                    .message_states
+                    .iter_mut()
+                    .find(|held| held.place == *place)
+                {
+                    held.last_read = *position;
+                    held.read_revision = *read_revision;
+                }
+                let marked = match (place, thread_root) {
+                    (MessagePlace::Channel { channel_id, .. }, Some(root_id)) => PlaceId::Thread {
+                        channel_id: *channel_id,
+                        root_id: *root_id,
+                    },
+                    _ => PlaceId::of(place),
+                };
+                if let Some(timeline) = self.timelines.iter_mut().find(|held| held.place == marked)
+                {
+                    std::sync::Arc::make_mut(timeline).unread_after = Some(*position);
+                }
+                return Follow::loads(vec![
+                    Part::MessageState(PlaceId::of(place)),
+                    Part::UnreadThreads,
+                    Part::Notices,
+                ]);
             }
             Event::ThreadRead { root_id, position } => {
                 // The event names no channel, and an unread mention of a thread counts

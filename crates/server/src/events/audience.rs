@@ -77,6 +77,7 @@ impl Class {
             | Event::DirectMuteSet { .. }
             | Event::DirectMuteRemoved { .. }
             | Event::ThreadRead { .. }
+            | Event::MessageMarkedUnread { .. }
             | Event::MessageRead { .. }
             | Event::NotificationSettingsChanged { .. }
             | Event::ServerLogoChanged { .. }
@@ -482,7 +483,9 @@ impl Audience {
     /// may be at the places that the event names.
     pub fn addressed(account_id: AccountId, event: &Event) -> Self {
         let named: Vec<CallPlace> = match event {
-            Event::MessageRead { place, .. } => vec![message_call_place(*place)],
+            Event::MessageRead { place, .. } | Event::MessageMarkedUnread { place, .. } => {
+                vec![message_call_place(*place)]
+            }
             Event::CallInvited { invitation } => vec![invitation.place],
             Event::CallMoveRequested { call_move } => vec![call_move.from, call_move.to],
             Event::OwnCallChanged {
@@ -696,6 +699,7 @@ impl Audience {
             // The server makes it for one connection when it delivers; it is never stored.
             Event::ChannelHistoryWithdrawn { .. }
             | Event::ThreadRead { .. }
+            | Event::MessageMarkedUnread { .. }
             | Event::MessageRead { .. }
             | Event::NotificationChanged { .. }
             | Event::NotificationSettingsChanged { .. }
@@ -909,6 +913,7 @@ impl Audience {
             ) => channels.len() == 1 && accounts.is_empty(),
             (
                 Event::ThreadRead { .. }
+                | Event::MessageMarkedUnread { .. }
                 | Event::MessageRead { .. }
                 | Event::CallInvited { .. }
                 | Event::CallMoveRequested { .. }

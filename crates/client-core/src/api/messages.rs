@@ -208,7 +208,37 @@ impl ServerApi {
     /// [`ServerApi::mark_thread_read`].
     pub async fn mark_read(&self, place: PlaceId, position: u64) -> Result<MessageState, ApiError> {
         let path = format!("{}/read", messages_of(place));
-        self.send(Method::Put, path, &MarkRead { position }).await
+        self.send(
+            Method::Put,
+            path,
+            &MarkRead {
+                position,
+                read_revision: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn mark_unread(&self, id: MessageId) -> Result<(), ApiError> {
+        self.act(Method::Put, format!("/messages/{id}/unread"))
+            .await
+    }
+
+    pub(crate) async fn mark_read_at_revision(
+        &self,
+        place: PlaceId,
+        position: u64,
+        revision: u64,
+    ) -> Result<MessageState, ApiError> {
+        self.send(
+            Method::Put,
+            format!("{}/read", messages_of(place)),
+            &MarkRead {
+                position,
+                read_revision: Some(revision),
+            },
+        )
+        .await
     }
 
     // Direct conversations.

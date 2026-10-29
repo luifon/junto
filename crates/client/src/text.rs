@@ -3787,3 +3787,5 @@ pub const FORWARD_NONE: &str = "No writable destinations match.";
 pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 
 pub const VIEW_ORIGINAL: &str = "View original";
+
+pub const MARK_UNREAD: &str = "Mark unread";

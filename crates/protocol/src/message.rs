@@ -192,6 +192,8 @@ pub struct MessagePage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MessageState {
+    #[serde(default)]
+    pub read_revision: u64,
     pub place: MessagePlace,
     pub last_read: u64,
     pub latest: u64,
@@ -211,6 +213,8 @@ pub struct MessageState {
 #[serde(deny_unknown_fields)]
 pub struct MarkRead {
     pub position: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_revision: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -306,6 +310,8 @@ pub struct ThreadPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ThreadState {
+    #[serde(default)]
+    pub read_revision: u64,
     pub root_id: MessageId,
     pub last_read: u64,
     pub latest: u64,

@@ -257,7 +257,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 3;
+pub const EVENT_REVISION: u32 = 4;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -644,6 +644,12 @@ pub enum Event {
         root_id: crate::ids::MessageId,
         position: u64,
     },
+    MessageMarkedUnread {
+        place: crate::message::MessagePlace,
+        thread_root: Option<crate::ids::MessageId>,
+        position: u64,
+        read_revision: u64,
+    },
     MessageRead {
         place: crate::message::MessagePlace,
         position: u64,
@@ -819,6 +825,7 @@ impl Event {
         "message_changed",
         "channel_history_withdrawn",
         "thread_read",
+        "message_marked_unread",
         "message_read",
         "message_mentioned",
         "conversation_opened",
@@ -920,6 +927,7 @@ impl Event {
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::MessageChanged { .. } => "message_changed",
             Self::ChannelHistoryWithdrawn { .. } => "channel_history_withdrawn",
+            Self::MessageMarkedUnread { .. } => "message_marked_unread",
             Self::MessageRead { .. } => "message_read",
             Self::ThreadRead { .. } => "thread_read",
             Self::NotificationChanged { .. } => "notification_changed",
@@ -1483,6 +1491,15 @@ mod tests {
             Event::ThreadRead {
                 root_id: crate::ids::MessageId::generate(),
                 position: 1,
+            },
+            Event::MessageMarkedUnread {
+                place: crate::message::MessagePlace::Channel {
+                    workspace_id,
+                    channel_id,
+                },
+                thread_root: None,
+                position: 0,
+                read_revision: 1,
             },
             Event::MessageRead {
                 place: crate::message::MessagePlace::Channel {

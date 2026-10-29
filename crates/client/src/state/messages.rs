@@ -133,6 +133,7 @@ impl AppState {
         for key in gone {
             self.open_places.remove(&key);
             self.anchors.remove(&key);
+            self.unread_pauses.remove(&key);
             if let Some(server) = self.client.server(key.0) {
                 server.live().release_messages(key.1);
             }
@@ -411,6 +412,7 @@ impl AppState {
             }
             self.open_places.retain(|key, _| key.0 != server_id);
             self.anchors.retain(|key, _| key.0 != server_id);
+            self.unread_pauses.retain(|key| key.0 != server_id);
             if self
                 .open_pins
                 .as_ref()
@@ -726,10 +728,52 @@ impl AppState {
     /// client of the server sends a position once for the account that it has, and
     /// leaves out one that the account has read already (ADR 0721), so the window keeps
     /// no record of its own.
+    pub fn mark_seen(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
+        if !self.unread_pauses.contains(&(server_id, place))
+            && let Some(server) = self.client.server(server_id)
+        {
+            server.live().mark_seen(place, position);
+        }
+    }
+
     pub fn mark_read(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
+        self.unread_pauses.remove(&(server_id, place));
         if let Some(server) = self.client.server(server_id) {
             server.live().mark_read(place, position);
         }
+    }
+
+    pub fn mark_message_unread(
+        &mut self,
+        server_id: ServerId,
+        id: MessageId,
+        place: PlaceId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let Some(owner) = server.owner() else {
+            return;
+        };
+        if self.open_places.contains_key(&(server_id, place)) {
+            self.unread_pauses.insert((server_id, place));
+        }
+        let api = server.api_for(owner.account_id);
+        cx.spawn(async move |this, cx| {
+            let result = api.mark_unread(id).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.owner(server_id) != Some(owner) {
+                    return;
+                }
+                if result.is_err() {
+                    this.unread_pauses.remove(&(server_id, place));
+                    this.message_link_failed = Some(this.navigations);
+                }
+                this.changed(cx);
+            });
+        })
+        .detach();
     }
 
     /// Moves the read position of a place to its latest message.
@@ -738,7 +782,12 @@ impl AppState {
             .client
             .server(server_id)
             .and_then(|server| server.live().view().model)
-            .and_then(|model| model.message_state(place).map(|state| state.latest));
+            .and_then(|model| match place {
+                PlaceId::Thread { root_id, .. } => {
+                    model.thread_state(root_id).map(|state| state.latest)
+                }
+                _ => model.message_state(place).map(|state| state.latest),
+            });
         if let Some(latest) = latest {
             self.mark_read(server_id, place, latest);
         }

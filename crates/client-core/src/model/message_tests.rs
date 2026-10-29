@@ -104,6 +104,7 @@ fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
 
 pub(crate) fn state(place: MessagePlace, last_read: u64, latest: u64, unread: u64) -> MessageState {
     MessageState {
+        read_revision: 0,
         place,
         last_read,
         latest,
@@ -1083,6 +1084,7 @@ fn a_pin_list_and_the_named_messages_hold_a_bounded_weight() {
         threads: roots
             .iter()
             .map(|root| ThreadState {
+                read_revision: 0,
                 root_id: root.id,
                 last_read: 0,
                 latest: 1,
@@ -1104,4 +1106,25 @@ fn a_pin_list_and_the_named_messages_hold_a_bounded_weight() {
         .count();
     assert_eq!(read, roots.len() - 3);
     assert_eq!(model.named(roots.last().unwrap().id), Some(&Named::Failed));
+}
+
+#[test]
+fn manual_unread_moves_the_boundary_back_and_marks_the_open_timeline() {
+    let scene = scene();
+    let place = scene.text_place();
+    let mut model = scene.model();
+    model.set_message_state(state(place, 3, 3, 0));
+    model.open_timeline(PlaceId::of(&place));
+    model.apply(&Event::MessageMarkedUnread {
+        place,
+        thread_root: None,
+        position: 1,
+        read_revision: 1,
+    });
+    let held = model.message_state(PlaceId::of(&place)).unwrap();
+    assert_eq!((held.last_read, held.read_revision), (1, 1));
+    assert_eq!(
+        model.timeline(PlaceId::of(&place)).unwrap().unread_after,
+        Some(1)
+    );
 }
