@@ -75,6 +75,8 @@ Channel and conversation target links open under the current account of the save
 
 A file link resolves the attached file through its readable parent message, refreshes the place and opens that message, including a thread reply. The main window shows the selected file in a dialog with its name, type, size, download, Copy link and a context action to copy its name. A supported picture can open the existing picture viewer. The file-action popup is keyed by attachment identity, so replacing the target closes the previous file menu instead of redirecting its actions. The dialog closes when its account or readable place is lost, or a loaded parent no longer contains the file. It uses the same request, navigation and owner boundaries as the other target links. Tests: `target_links::a_file_link_opens_its_message_and_shows_the_file_with_copy_and_download_actions` and `a_linked_picture_opens_the_viewer_and_a_file_dialog_closes_when_access_is_removed`.
 
+A recording link reads the recording through its existing endpoint, including history and call-privacy checks, resolves its voice channel and opens that recording's transcript panel. Archived voice channels use the same temporary-reader handoff as channel links. Recording links share the refusal, unknown-origin and request/account/navigation boundaries of other target links. A pending target also ends when another transcript is chosen. `recording_link` formats its canonical target URL. Window test: `transcripts::recording_links_open_the_recording_under_history_permissions_and_support_archives`.
+
 ## Consequences
 
 - A hostile server gets no signature for another server, operation or key, and no session token of another server.

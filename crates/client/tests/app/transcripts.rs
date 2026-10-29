@@ -1221,3 +1221,94 @@ fn a_long_transcript_line_wraps_inside_the_panel(cx: &mut TestAppContext) {
         );
     }
 }
+
+#[gpui::test]
+fn recording_links_open_the_recording_under_history_permissions_and_support_archives(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        workspace_id,
+        _directory,
+        ..
+    } = scene(cx);
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
+    window.click_channel("general");
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_recording_link(&origin, id, cx)
+    }));
+    window.until(
+        "the linked recording is in its transcript panel",
+        |window| {
+            window.selected_channel() == voice
+                && window
+                    .panel()
+                    .is_some_and(|(_, open, _, _)| open.id == id && open.lines.lines.len() == 1)
+        },
+    );
+    window.click_channel("general");
+    let general = window.selected_channel();
+    let everyone = crate::channel_use::everyone(&world, &admin, workspace_id);
+    world
+        .run(admin.handle.api().set_channel_rule(
+            voice,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ReadMessageHistory],
+            },
+        ))
+        .unwrap();
+    for target in [id, RecordingId::generate()] {
+        assert!(window.state.update(&mut window.cx, |state, cx| {
+            state.open_recording_link(&origin, target, cx)
+        }));
+        window.until("the recording is refused", |window| {
+            window.shows("message-link-refusal")
+        });
+        assert_eq!(window.selected_channel(), general);
+        assert_eq!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.message_link_refusal()),
+            Some(text::MESSAGE_LINK_UNAVAILABLE)
+        );
+        window.click("dismiss-message-link-refusal");
+    }
+    world
+        .run(admin.handle.api().set_channel_rule(
+            voice,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: vec![WorkspacePermission::ReadMessageHistory],
+                deny: Vec::new(),
+            },
+        ))
+        .unwrap();
+    world
+        .run(admin.handle.api().archive_channel(voice))
+        .unwrap();
+    window.until("the voice channel is archived", |window| {
+        !window.channels().iter().any(|row| row.id == voice)
+    });
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_recording_link(&origin, id, cx)
+    }));
+    window.until("the linked archived recording is open", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.archived.is_some())
+            && window.panel().is_some_and(|(_, open, _, _)| open.id == id)
+    });
+}

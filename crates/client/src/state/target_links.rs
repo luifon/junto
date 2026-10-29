@@ -4,8 +4,11 @@ use junto_client_core::ServerHandle;
 use junto_client_core::address::ServerAddress;
 use junto_client_core::links::{self, AppLink};
 use junto_client_core::model::{AdminPart, PlaceId};
-use junto_client_core::protocol::ids::{AccountId, AttachmentId, ChannelId, ConversationId};
+use junto_client_core::protocol::ids::{
+    AccountId, AttachmentId, ChannelId, ConversationId, RecordingId,
+};
 use junto_client_core::protocol::message::Message;
+use junto_client_core::protocol::recording::Recording;
 use junto_client_core::protocol::structure::Channel;
 
 use super::AppState;
@@ -21,12 +24,14 @@ impl gpui::EventEmitter<OpenFileLink> for AppState {}
 
 #[derive(Clone, Copy)]
 enum Target {
+    Recording(RecordingId),
     File(AttachmentId),
     Channel(ChannelId),
     Conversation(ConversationId),
 }
 
 enum Destination {
+    Recording(Recording),
     File(Message, AttachmentId),
     Channel(Channel),
     Conversation(ConversationId),
@@ -93,6 +98,23 @@ impl Readers {
 
     async fn resolve(&mut self, account: AccountId, target: Target) -> Option<Destination> {
         match target {
+            Target::Recording(id) => {
+                let recording = self
+                    .server
+                    .api_for(account)
+                    .recording(id)
+                    .await
+                    .ok()?
+                    .recording;
+                if recording.id != id {
+                    return None;
+                }
+                let channel = self.channel(account, recording.channel_id).await?;
+                if channel.workspace_id != recording.workspace_id {
+                    return None;
+                }
+                Some(Destination::Recording(recording))
+            }
             Target::Channel(id) => self.channel(account, id).await.map(Destination::Channel),
             Target::Conversation(id) => self
                 .conversation(account, id)
@@ -124,6 +146,28 @@ impl Readers {
 }
 
 impl AppState {
+    pub fn recording_link(
+        &self,
+        server_id: junto_client_core::protocol::ids::ServerId,
+        id: RecordingId,
+    ) -> Option<String> {
+        let server = self.client.server(server_id)?;
+        Some(links::format(&AppLink::Recording {
+            server: server.entry().address,
+            id,
+        }))
+    }
+
+    /// False asks the URL router to open the add-server form with this origin.
+    pub fn open_recording_link(
+        &mut self,
+        address: &ServerAddress,
+        id: RecordingId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_target_link(address, Target::Recording(id), cx)
+    }
+
     pub fn file_link(
         &self,
         server_id: junto_client_core::protocol::ids::ServerId,
@@ -191,6 +235,7 @@ impl AppState {
         };
         let server_id = server.id();
         let navigation = self.navigations;
+        let transcript = self.selection.transcript;
         cx.spawn(async move |this, cx| {
             let mut readers = Readers {
                 server,
@@ -200,6 +245,7 @@ impl AppState {
             let _ = this.update(cx, |this, cx| {
                 if this.message_link_asks != number
                     || this.navigations != navigation
+                    || this.selection.transcript != transcript
                     || this
                         .client
                         .server(server_id)
@@ -209,6 +255,14 @@ impl AppState {
                     return;
                 }
                 match destination {
+                    Some(Destination::Recording(recording)) => this.open_transcript(
+                        server_id,
+                        recording.workspace_id,
+                        recording.channel_id,
+                        recording.id,
+                        None,
+                        cx,
+                    ),
                     Some(Destination::File(message, attachment_id)) => {
                         this.go_to(super::notices::Jump::to(server_id, &message), cx);
                         cx.emit(OpenFileLink {
