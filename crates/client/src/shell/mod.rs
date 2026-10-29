@@ -98,6 +98,7 @@ pub(crate) enum Layer {
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
     AccountMenu(Box<account_menus::OpenAccountMenu>),
+    CallMoveMenu(Box<account_menus::OpenAccountMenu>),
     ThreadMenu(thread_menu::ThreadMenuOpen),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
@@ -1957,8 +1958,11 @@ impl Shell {
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
-            Layer::AccountMenu(open) => {
+            Layer::AccountMenu(open) | Layer::CallMoveMenu(open) => {
                 !open.source_is_present(view, self.state.read(cx))
+                    || (matches!(&self.layer, Layer::CallMoveMenu(_))
+                        && Self::call_participant_menu(open, view)
+                            .is_none_or(|menu| menu.destinations.is_empty()))
                     || self
                         .state
                         .read(cx)
@@ -2024,6 +2028,7 @@ impl Shell {
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
             Layer::AccountMenu(_) => self.render_account_menu(window, cx),
+            Layer::CallMoveMenu(_) => self.render_call_move_menu(view, window, cx),
         }
     }
 }

@@ -991,6 +991,26 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let menu = self.person_menu_contents(menu, moving, window, cx);
+        div()
+            .absolute()
+            .left(u(68.0))
+            .top(u(24.0))
+            .child(deferred(anchored().snap_to_window().child(menu)))
+            .into_any_element()
+    }
+
+    pub(super) fn person_menu_contents(
+        &mut self,
+        menu: &PersonMenu,
+        moving: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Menu {
+        let call_context = match &self.layer {
+            Layer::CallMoveMenu(open) => Some(open.clone()),
+            _ => None,
+        };
         let theme = theme(cx);
         let colors = theme.colors;
         let name: SharedString = menu
@@ -1039,18 +1059,28 @@ impl Shell {
                 MenuItem::new("menu-back", text::BACK)
                     .icon(Icon::ChevronLeft)
                     .selector("menu-back")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Layer::PersonMenu(open) = &mut this.layer {
-                            open.moving = false;
-                        }
-                        cx.notify();
-                    }))
+                    .on_click({
+                        let call_context = call_context.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            if let Some(open) = &call_context {
+                                if this.call_move_menu_current(open, cx) {
+                                    this.open_account_menu(open.as_ref().clone(), window, cx);
+                                }
+                            } else {
+                                if let Layer::PersonMenu(open) = &mut this.layer {
+                                    open.moving = false;
+                                }
+                                cx.notify();
+                            }
+                        })
+                    })
                     .into_any_element(),
             );
             items.push(menu_separator(cx).into_any_element());
             items.push(menu_label(text::MOVE_TO, false, cx).into_any_element());
             for (index, (to, channel)) in menu.destinations.iter().enumerate() {
                 let to = *to;
+                let call_context = call_context.clone();
                 items.push(
                     div()
                         .flex_none()
@@ -1059,10 +1089,16 @@ impl Shell {
                             MenuItem::new(("move-to", index), channel.clone())
                                 .icon(Icon::Speaker)
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    if call_context
+                                        .as_ref()
+                                        .is_some_and(|open| !this.call_move_menu_current(open, cx))
+                                    {
+                                        return;
+                                    }
+                                    this.close_layer(window, cx);
                                     this.state.update(cx, |state, cx| {
                                         state.move_person(room, account_id, to, cx);
                                     });
-                                    this.close_layer(window, cx);
                                 })),
                         )
                         .into_any_element(),
@@ -1288,24 +1324,15 @@ impl Shell {
             .line_height(u(17.0))
             .ink(colors.ink_2)
             .child(text::PERSON_MENU_KEYS);
-        div()
-            .absolute()
-            .left(u(68.0))
-            .top(u(24.0))
-            .child(deferred(
-                anchored().snap_to_window().child(
-                    Menu::new("person-menu", name, self.layer_focus())
-                        .width(292.0)
-                        .selector("person-menu")
-                        .on_close(Self::handler(cx, |this, window, cx| {
-                            this.close_layer(window, cx);
-                        }))
-                        .child(header)
-                        .children(items)
-                        .child(footer),
-                ),
-            ))
-            .into_any_element()
+        Menu::new("person-menu", name, self.layer_focus())
+            .width(292.0)
+            .selector("person-menu")
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx)
+            }))
+            .child(header)
+            .children(items)
+            .child(footer)
     }
 
     /// The notices about the rules of a call: a person who asks to enter the call of this

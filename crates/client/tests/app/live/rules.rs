@@ -2965,3 +2965,58 @@ fn a_call_tile_menu_uses_live_moderation_permissions_and_existing_actions(cx: &m
         .until("the own call ended", |window| window.view().call.is_none());
     scene.world.run(scene.caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_move_menu_returns_to_its_account_menu_and_moves_the_target_only(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let other = second_room(&scene.world, &scene.admin, &mut scene.window, "side room");
+    let destination = other.place.channel_id().unwrap();
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    scene.allow_everyone(&[WorkspacePermission::MoveMembers]);
+    scene
+        .window
+        .until("the move permission is shown", |window| {
+            window
+                .view()
+                .workspace()
+                .is_some_and(|workspace| workspace.allowed.move_members)
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-move"));
+    scene.window.click("call-menu-move");
+    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-back"));
+    assert!(!scene.window.shows("account-menu"));
+    scene.window.click("menu-back");
+    assert!(scene.window.shows("account-menu") && scene.window.shows("call-menu-volume"));
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-move");
+    scene.window.click_named(format!("move-to:{destination}"));
+    scene.window.until("the target was moved", |_| {
+        scene.caller.calls.view().call.is_some_and(|call| {
+            call.phase == Phase::Connected && call.target.place.channel_id() == Some(destination)
+        })
+    });
+    assert!(matches!(
+        scene.caller.calls.view().outcome,
+        Some(Outcome::Moved { .. })
+    ));
+    assert_eq!(scene.window.selected_channel(), scene.voice);
+    assert!(scene.window.state.read_with(&scene.window.cx, |state, _| {
+        state
+            .calls()
+            .view()
+            .call
+            .is_some_and(|call| call.target == scene.target)
+    }));
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the own call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}

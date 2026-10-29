@@ -16,12 +16,27 @@ use crate::{
 };
 
 impl Shell {
+    fn call_source_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
+        matches!(&open.source, Some(AccountSource::CallOccupant { .. }))
+            && self
+                .view
+                .as_ref()
+                .is_some_and(|view| open.source_is_present(view, self.state.read(cx)))
+            && self
+                .state
+                .read(cx)
+                .server(open.owner.entry.server_id)
+                .is_some_and(|server| server.owner() == Some(open.owner))
+    }
+
     pub(super) fn call_menu_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
         matches!(&self.layer, Layer::AccountMenu(current) if current.as_ref() == open)
-            && open
-                .people
-                .first()
-                .is_some_and(|person| self.account_menu_current(open.owner, person, cx))
+            && self.call_source_current(open, cx)
+    }
+
+    pub(super) fn call_move_menu_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
+        matches!(&self.layer, Layer::CallMoveMenu(current) if current.as_ref() == open)
+            && self.call_source_current(open, cx)
     }
 
     fn call_volume_value(&self, open: &OpenAccountMenu) -> Option<u16> {
@@ -134,6 +149,7 @@ enum ParticipantAction {
     Sound(bool),
     LowerHand,
     Disconnect,
+    Move,
 }
 
 struct CallControl {
@@ -257,9 +273,23 @@ impl Shell {
                 crate::ui::MenuItem::new(control.id, control.label)
                     .selector(control.id)
                     .disabled(control.disabled)
+                    .when(
+                        matches!(
+                            &control.action,
+                            CallMenuAction::Participant(ParticipantAction::Move)
+                        ),
+                        |item| item.end_icon(crate::assets::Icon::ChevronRight),
+                    )
                     .when_some(control.detail, |item, detail| item.detail(detail))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if !this.call_menu_current(&context, cx) {
+                            return;
+                        }
+                        if matches!(
+                            &control.action,
+                            CallMenuAction::Participant(ParticipantAction::Move)
+                        ) {
+                            this.open_call_move_menu(&context, window, cx);
                             return;
                         }
                         this.close_layer(window, cx);
@@ -293,6 +323,7 @@ impl Shell {
                                         ParticipantAction::LowerHand => {
                                             state.lower_hand_of(room, account, cx)
                                         }
+                                        ParticipantAction::Move => {}
                                         ParticipantAction::Disconnect => {
                                             state.disconnect(room, account, cx)
                                         }
@@ -338,6 +369,14 @@ impl Shell {
             detail: Some(detail.to_owned()),
         };
         let mut items = Vec::new();
+        if !menu.destinations.is_empty() {
+            items.push(make(
+                "call-menu-move",
+                text::MOVE_TO,
+                ParticipantAction::Move,
+                text::PERMISSION_MOVE,
+            ));
+        }
         if let Some(blocked) = menu.microphone_blocked {
             items.push(make(
                 "call-menu-block-microphone",
@@ -385,5 +424,57 @@ impl Shell {
             ));
         }
         self.call_controls(open, items, cx)
+    }
+}
+
+impl Shell {
+    pub(super) fn call_participant_menu(
+        open: &OpenAccountMenu,
+        view: &crate::state::view::ShellView,
+    ) -> Option<crate::state::view::PersonMenu> {
+        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+            return None;
+        };
+        let junto_client_core::protocol::call::CallPlace::Channel { channel_id, .. } =
+            seat.target.place
+        else {
+            return None;
+        };
+        view.person_menu(channel_id, *account_id)
+    }
+
+    fn open_call_move_menu(
+        &mut self,
+        open: &OpenAccountMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.call_menu_current(open, cx)
+            || self
+                .view
+                .as_ref()
+                .and_then(|view| Self::call_participant_menu(open, view))
+                .is_none_or(|menu| menu.destinations.is_empty())
+        {
+            return;
+        }
+        self.open_layer(Layer::CallMoveMenu(Box::new(open.clone())), window, cx);
+    }
+
+    pub(super) fn render_call_move_menu(
+        &mut self,
+        view: &crate::state::view::ShellView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Layer::CallMoveMenu(open) = &self.layer else {
+            return div().into_any_element();
+        };
+        let open = open.clone();
+        let Some(menu) = Self::call_participant_menu(&open, view) else {
+            return div().into_any_element();
+        };
+        self.person_menu_contents(&menu, true, window, cx)
+            .popup_at(open.position)
     }
 }
