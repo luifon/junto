@@ -932,3 +932,65 @@ fn an_account_menu_closes_when_its_source_message_is_deleted_or_hidden(cx: &mut 
     });
     assert!(!window.shows("account-menu"));
 }
+
+#[gpui::test]
+fn a_pending_mentions_account_menu_closes_when_the_message_is_discarded(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    use junto_client::state::feed::FeedRow;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    window.until("the channel feed is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let server_id = window.handle().id();
+    let channel = window.selected_channel();
+    let place = junto_client_core::model::PlaceId::Channel(channel);
+    let own = window.own_account();
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail(
+        &format!("/api/v1/channels/{channel}/messages"),
+        vec![Fault::Busy; attempts],
+    );
+    let document = crate::notices::mention("", own);
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.send_message(server_id, place, document, None, cx)
+    }));
+    window.until("the pending mention offers Discard", |window| {
+        window.shows("discard-message")
+    });
+    let id = window
+        .feed()
+        .unwrap()
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            FeedRow::Waiting(row) => Some(row.pending.id),
+            _ => None,
+        })
+        .unwrap();
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("waiting:{id}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(33.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    assert!(window.shows_named(format!("account-copy-id:{own}")));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.discard_message(server_id, id, cx)
+    });
+    window.until("the pending message is discarded", |window| {
+        window.feed().is_some_and(|feed| {
+            feed.rows
+                .iter()
+                .all(|row| !matches!(row, FeedRow::Waiting(_)))
+        })
+    });
+    assert!(!window.shows("account-menu"));
+}
