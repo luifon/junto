@@ -1400,3 +1400,62 @@ fn a_thread_menu_keeps_failures_visible_and_retries_reads_and_changes(cx: &mut T
     assert_eq!(window.selected_channel(), selected);
     assert!(!window.shows("thread-panel"));
 }
+
+#[gpui::test]
+fn a_reply_preview_copies_its_target_and_gives_its_author_a_separate_menu(cx: &mut TestAppContext) {
+    use junto_client_core::{model::PlaceId, protocol::message::SendMessage};
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, root) = with_root(cx, &world);
+    let answer = world
+        .run(admin.handle.api().send_message(
+            PlaceId::Channel(channel),
+            &SendMessage {
+                document: document("A reply preview"),
+                reply_to: Some(root),
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until_message("A reply preview");
+    window.until("the preview is available", |window| {
+        window.messages().iter().any(|row| {
+            row.message.id == answer.id
+                && row
+                    .reply
+                    .as_ref()
+                    .is_some_and(|quote| quote.author_id.is_some())
+        })
+    });
+    window.right_click_named(format!("reply-preview:{}", answer.id));
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Tracks or mixdown?"
+    );
+    window.right_click_named(format!("reply-author:{}", answer.id));
+    let ada = admin.handle.account().unwrap();
+    window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        ada.to_string()
+    );
+    assert!(!window.shows("message-menu"));
+    window.right_click_named(format!("reply-preview:{}", answer.id));
+    window.click("context-action:Copy link");
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(copied.contains(&root.to_string()) && !copied.contains(&answer.id.to_string()));
+    window.right_click_named(format!("reply-preview:{}", answer.id));
+    window.click("context-action:Go to message");
+    window.until("the quoted message is marked", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.target.is_some_and(|(id, _)| id == root))
+    });
+    window.right_click_named(format!("reply-author:{}", answer.id));
+    world
+        .run(admin.handle.api().delete_message(answer.id))
+        .unwrap();
+    window.until("the removed preview closes its author menu", |window| {
+        !window.shows("account-menu")
+    });
+}

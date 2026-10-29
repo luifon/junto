@@ -42,6 +42,11 @@ pub(crate) enum AccountSource {
         account_id: AccountId,
         surface: CallSurface,
     },
+    ReplyAuthor {
+        parent: Box<AccountSource>,
+        quoted: MessageId,
+        account: AccountId,
+    },
     Message(MessageId),
     Pending(u64),
     Search(crate::state::search::ResultTarget),
@@ -128,6 +133,40 @@ impl OpenAccountMenu {
                         .lists()
                         .and_then(|lists| lists.notices.as_ref())
                         .is_some_and(|panel| panel.rows.iter().any(|row| row.id == *id));
+            }
+            AccountSource::ReplyAuthor {
+                parent,
+                quoted,
+                account,
+            } => {
+                if view
+                    .selected
+                    .as_ref()
+                    .is_none_or(|server| server.id != self.owner.entry.server_id)
+                {
+                    return false;
+                }
+                let quote = |quote: &crate::state::feed::Quote| {
+                    quote.message_id == *quoted && quote.author_id == Some(*account)
+                };
+                let message = |row: &crate::state::feed::MessageRow| {
+                    matches!(&**parent, AccountSource::Message(id) if row.message.id == *id)
+                        && !row.message.deleted
+                        && row.reply.as_ref().is_some_and(quote)
+                };
+                let held = |feed: &crate::state::feed::Feed| {
+                    feed.server_id == self.owner.entry.server_id && feed.rows.iter().any(|row| match row {
+                    FeedRow::Message(row) => message(row),
+                    FeedRow::Waiting(row) => matches!(&**parent, AccountSource::Pending(id) if row.pending.id == *id) && row.reply.as_ref().is_some_and(quote),
+                    _ => false,
+                })
+                };
+                let workspace = view.workspace();
+                let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+                return view.lists().and_then(|lists| lists.feed.as_ref()).is_some_and(held)
+                    || thread.and_then(|thread| thread.feed.as_ref()).is_some_and(held)
+                    || thread.and_then(|thread| thread.root.as_ref()).is_some_and(message)
+                    || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(message)));
             }
             AccountSource::VoiceOccupant {
                 channel_id,

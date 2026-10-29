@@ -1689,18 +1689,89 @@ impl Shell {
                 };
                 self.render_message(index, row, feed, shape, window, cx)
             }
-            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, cx),
+            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, window, cx),
         }
     }
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
     fn reply_line(
+        &mut self,
         quote: &Quote,
-        faces: &ServerFaces,
-        theme: &Theme,
-        drawings: &Drawings,
+        source: (&Feed, super::account_menus::AccountSource),
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (feed, parent) = source;
+        let theme = theme(cx);
+        let drawings = Drawings::of(cx);
+        let faces = self.faces(feed.server_id);
+        let owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let suffix = match &parent {
+            super::account_menus::AccountSource::Message(id) => id.to_string(),
+            super::account_menus::AccountSource::Pending(id) => format!("pending:{id}"),
+            _ => quote.message_id.to_string(),
+        };
+        let key: SharedString = format!("reply-preview:{suffix}").into();
+        let copied = match &quote.text {
+            QuoteText::Text(value) | QuoteText::File(value) => value.clone(),
+            QuoteText::Deleted => text::QUOTE_DELETED.to_owned(),
+            QuoteText::Unknown => text::QUOTE_UNKNOWN.to_owned(),
+        };
+        let (server_id, target) = (feed.server_id, quote.message_id);
+        let (_, actions) = crate::ui::collect_actions(|| {
+            if let Some(owner) = owner {
+                crate::ui::RowAction::new(
+                    text::COPY_TEXT,
+                    cx.listener(move |this, _, _, cx| {
+                        if this
+                            .state
+                            .read(cx)
+                            .server(server_id)
+                            .is_some_and(|server| server.owner() == Some(owner))
+                        {
+                            this.copy_text(copied.clone(), cx);
+                        }
+                    }),
+                )
+                .register();
+                if !matches!(&quote.text, QuoteText::Deleted) {
+                    crate::ui::RowAction::new(
+                        text::COPY_TARGET_LINK,
+                        cx.listener(move |this, _, _, cx| {
+                            let state = this.state.read(cx);
+                            let link = state
+                                .server(server_id)
+                                .filter(|server| server.owner() == Some(owner))
+                                .and_then(|_| state.message_link(server_id, target));
+                            if let Some(link) = link {
+                                this.copy_text(link, cx);
+                            }
+                        }),
+                    )
+                    .register();
+                    crate::ui::RowAction::new(
+                        text::GO_TO_MESSAGE,
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                let address = state
+                                    .server(server_id)
+                                    .filter(|server| server.owner() == Some(owner))
+                                    .map(|server| server.entry().address);
+                                if let Some(address) = address {
+                                    state.open_message_link(&address, target, cx);
+                                }
+                            });
+                        }),
+                    )
+                    .register();
+                }
+            }
+        });
         let colors = theme.colors;
         let (sentence, known): (StyledText, bool) = match &quote.text {
             QuoteText::Text(text) => (drawings.shown(text).styled(colors.ink_3.into()), true),
@@ -1708,7 +1779,52 @@ impl Shell {
             QuoteText::Deleted => (StyledText::new(text::QUOTE_DELETED), false),
             QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
-        div()
+        let author = quote
+            .author_id
+            .map(|account_id| super::account_menus::AccountTarget {
+                account_id,
+                name: quote
+                    .author
+                    .clone()
+                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                departed: feed.names.departed.contains_key(&account_id),
+            });
+        let author_selector = format!("reply-author:{suffix}");
+        let identity = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(6.0))
+            .debug_selector(move || author_selector)
+            .when_some(quote.author_id, |line, author| {
+                line.child(super::people::avatar(&faces, author, 14.0).radius(2.0))
+            })
+            .when_some(quote.author.clone(), |line, author| {
+                line.child(
+                    div()
+                        .font_weight(FontWeight::BOLD)
+                        .ink(colors.ink)
+                        .child(author),
+                )
+            });
+        let identity = super::account_menus::account_target(
+            format!("reply-author-target:{suffix}").into(),
+            owner,
+            author,
+            quote
+                .author_id
+                .map(|account| super::account_menus::AccountSource::ReplyAuthor {
+                    parent: Box::new(parent),
+                    quoted: target,
+                    account,
+                }),
+            identity,
+            cx,
+        );
+        let selector = key.to_string();
+        let frame = div()
+            .id(key.clone())
+            .debug_selector(move || selector)
             .relative()
             .flex()
             .items_center()
@@ -1731,26 +1847,15 @@ impl Shell {
                     .rounded_tl(u(4.0))
                     .border_color(Hsla::from(colors.rule)),
             )
-            .when_some(quote.author_id, |line, author_id| {
-                line.child(super::people::avatar(faces, author_id, 14.0).radius(2.0))
-            })
-            .when_some(quote.author.clone(), |line, author| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .font_weight(FontWeight::BOLD)
-                        .ink(colors.ink)
-                        .child(author),
-                )
-            })
+            .child(identity)
             .child(
                 div()
                     .min_w_0()
                     .truncate()
                     .when(!known, |sentence| sentence.ink(colors.ink_3))
                     .child(sentence),
-            )
-            .into_any_element()
+            );
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
     }
 
     /// The blocks of a document. A check box takes a click when the person can edit its
@@ -3251,11 +3356,17 @@ impl Shell {
                     ))
             })
             .children((message.pinned && !message.deleted && !bare).then(|| Self::pin_mark(&theme)))
-            .children(
-                row.reply
-                    .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
-            )
+            .children(row.reply.as_ref().map(|quote| {
+                self.reply_line(
+                    quote,
+                    (
+                        feed,
+                        super::account_menus::AccountSource::Message(message_id),
+                    ),
+                    window,
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()
@@ -3299,6 +3410,7 @@ impl Shell {
         row: &WaitingRow,
         feed: &Feed,
         compact: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -3369,11 +3481,14 @@ impl Shell {
             .pb(u(4.0))
             .pl(u(side))
             .pr(u(18.0))
-            .children(
-                row.reply
-                    .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
-            )
+            .children(row.reply.as_ref().map(|quote| {
+                self.reply_line(
+                    quote,
+                    (feed, super::account_menus::AccountSource::Pending(id)),
+                    window,
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()

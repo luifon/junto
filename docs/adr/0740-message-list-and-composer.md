@@ -127,3 +127,5 @@ The picture viewer belongs to the entry and logged-in account that opened it. It
 - A finished recording is a card in the chat of its voice channel (ADR 0744).
 - Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already. The `image` crate of the client has its `gif` feature for the GIF pictures of messages; gpui builds the same decoder, so no crate was added.
+
+Reply previews have a separate context menu for their displayed text, the quoted message link and Go to message through the existing permission-checked link opener. A deleted quote offers only its displayed placeholder text. The preview author name and picture use the account menu, independently of the preview or enclosing message menu. That identity source captures the parent message or pending send, quoted message and author, and is removed with the displayed preview. Confirmed and pending previews use the same renderer.
