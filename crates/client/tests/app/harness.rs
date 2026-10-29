@@ -357,7 +357,8 @@ fn open_client(
     });
     let tones = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     cx.update(|cx| {
-        state.update(cx, |state, _| {
+        state.update(cx, |state, cx| {
+            state.use_system_hour_cycle(junto_client_core::clock::HourCycle::TwentyFour, cx);
             state.use_sounds_host(std::sync::Arc::new(tones.clone()));
         });
     });

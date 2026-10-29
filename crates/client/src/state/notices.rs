@@ -340,7 +340,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
                     read: notice.read_at.is_some(),
                     place,
                     day: text::day_or_today(local.date(), known.today),
-                    time: format!("{:02}:{:02}", local.hour(), local.minute()),
+                    time: known.hour_cycle.time(local.time()),
                     author_id: message.author_id,
                     author: author_of(message, &accounts, &departed),
                     text: excerpt(
@@ -364,7 +364,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
                     read: notice.read_at.is_some(),
                     place: Whereabouts::Unknown,
                     day: text::day_or_today(local.date(), known.today),
-                    time: format!("{:02}:{:02}", local.hour(), local.minute()),
+                    time: known.hour_cycle.time(local.time()),
                     author_id: None,
                     author: String::new(),
                     text: text::NOTICE_NOT_READ.to_owned(),
@@ -473,7 +473,7 @@ impl Mute {
             (true, Some(until), Some(now)) if until <= now => Self::Off,
             (true, Some(until), _) => {
                 let local = known.zone.local(until);
-                Self::Until(text::time_and_day(local, known.today))
+                Self::Until(text::time_and_day(local, known.today, known.hour_cycle))
             }
         }
     }
@@ -788,18 +788,32 @@ pub(super) fn quiet_at(model: &ServerModel, at: OffsetDateTime) -> bool {
 
 /// The minutes of a day of a time that a person typed as `22:00` or `7:30`.
 pub fn parse_clock(text: &str) -> Option<u16> {
-    let (hours, minutes) = text.trim().split_once(':')?;
+    let normalized = text.trim().to_ascii_lowercase();
+    let (clock, meridiem) = if let Some(clock) = normalized.strip_suffix("am") {
+        (clock.trim_end(), Some(false))
+    } else if let Some(clock) = normalized.strip_suffix("pm") {
+        (clock.trim_end(), Some(true))
+    } else {
+        (normalized.as_str(), None)
+    };
+    let (hours, minutes) = clock.split_once(':')?;
     let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
     if !(1..=2).contains(&hours.len()) || minutes.len() != 2 || !digits(hours) || !digits(minutes) {
         return None;
     }
-    let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    let (mut hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    if let Some(afternoon) = meridiem {
+        if !(1..=12).contains(&hours) {
+            return None;
+        }
+        hours = hours % 12 + if afternoon { 12 } else { 0 };
+    }
     (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
 /// The minutes of a day as a clock shows them.
-pub fn clock_text(minutes: u16) -> String {
-    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+pub fn clock_text(minutes: u16, cycle: junto_client_core::clock::HourCycle) -> String {
+    cycle.minute(minutes)
 }
 
 // System notifications.

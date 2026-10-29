@@ -523,7 +523,7 @@ impl Shell {
             .mb(u(4.0))
             .pl(u(34.0))
             .child(
-                Notice::new(txt::recovered(at))
+                Notice::new(txt::recovered(at, self.state.read(cx).hour_cycle()))
                     .selector("account-recovered")
                     .action(
                         Button::new("recovered-done")
@@ -1912,7 +1912,10 @@ impl Shell {
         let mut content = line(theme).child(
             line_text(
                 txt::invite_creator(row.creator.as_deref()),
-                Some(txt::invite_times(row.created, row.expires).into()),
+                Some(
+                    txt::invite_times(row.created, row.expires, self.state.read(cx).hour_cycle())
+                        .into(),
+                ),
                 theme,
             )
             .child(sentence(
@@ -2137,7 +2140,10 @@ impl Shell {
         let content = line(&theme)
             .child(line_text(
                 row.name.clone(),
-                Some(txt::request_times(row.created, row.expires).into()),
+                Some(
+                    txt::request_times(row.created, row.expires, self.state.read(cx).hour_cycle())
+                        .into(),
+                ),
                 &theme,
             ))
             .child(row_action(

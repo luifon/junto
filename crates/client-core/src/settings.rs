@@ -158,6 +158,7 @@ pub struct InterfaceSettings {
     /// The same for the separate call window.
     pub call_window_panel_closed: bool,
     pub keep_running_after_close: bool,
+    pub clock_format: crate::clock::ClockFormat,
 }
 
 impl Default for InterfaceSettings {
@@ -170,6 +171,7 @@ impl Default for InterfaceSettings {
             call_panel_closed: false,
             call_window_panel_closed: false,
             keep_running_after_close: true,
+            clock_format: Default::default(),
         }
     }
 }
@@ -193,6 +195,8 @@ struct SettingsFile {
     call_window_panel_closed: bool,
     #[serde(default = "enabled")]
     keep_running_after_close: bool,
+    #[serde(default)]
+    clock_format: crate::clock::ClockFormat,
 }
 
 fn enabled() -> bool {
@@ -249,6 +253,7 @@ impl SettingsStore {
             call_panel_closed: file.call_panel_closed,
             call_window_panel_closed: file.call_window_panel_closed,
             keep_running_after_close: file.keep_running_after_close,
+            clock_format: file.clock_format,
         };
         Ok((settings, file.keybinds.checked()))
     }
@@ -309,6 +314,7 @@ impl SettingsStore {
                 call_panel_closed: settings.call_panel_closed,
                 call_window_panel_closed: settings.call_window_panel_closed,
                 keep_running_after_close: settings.keep_running_after_close,
+                clock_format: settings.clock_format,
             },
         )?;
         Ok((settings, keybinds))
@@ -345,6 +351,7 @@ mod tests {
             call_panel_closed: true,
             call_window_panel_closed: false,
             keep_running_after_close: false,
+            clock_format: crate::clock::ClockFormat::TwelveHour,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
@@ -530,6 +537,7 @@ mod tests {
             call_panel_closed: false,
             call_window_panel_closed: false,
             keep_running_after_close: true,
+            clock_format: Default::default(),
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

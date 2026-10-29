@@ -32,6 +32,8 @@ pub mod transcripts;
 pub mod tray;
 
 pub const APP_NAME: &str = "Junto";
+pub const CLOCK_FORMAT: &str = "Time format";
+pub const CLOCK_FORMAT_OPTIONS: [&str; 3] = ["System", "12-hour", "24-hour"];
 pub const INVITE_PEOPLE: &str = "Invite people";
 pub const QUIT: &str = "Quit Junto";
 /// The buttons of a window whose title bar the application draws.
@@ -846,10 +848,13 @@ pub fn recording_flag(problem: &RecordingProblem) -> &'static str {
 
 /// What happened to a recording and what was saved: the sentence in strong type, and the
 /// rest.
-pub fn recording_details(problem: &RecordingProblem) -> (String, String) {
+pub fn recording_details(
+    problem: &RecordingProblem,
+    cycle: junto_client_core::clock::HourCycle,
+) -> (String, String) {
     let clock = |at: time::OffsetDateTime| {
         let at = crate::moment::in_utc(at);
-        format!("{:02}:{:02} UTC", at.hour(), at.minute())
+        format!("{} UTC", cycle.time(at.time()))
     };
     let at = problem
         .until
@@ -978,11 +983,15 @@ pub fn voice_channel_topic(inside: usize, hidden: bool) -> String {
 }
 
 /// What the stage tells while the media connection of the call is restored.
-pub fn connection_dropped(at: Option<time::OffsetDateTime>, channel: &str) -> String {
+pub fn connection_dropped(
+    at: Option<time::OffsetDateTime>,
+    channel: &str,
+    cycle: junto_client_core::clock::HourCycle,
+) -> String {
     let when = match at {
         Some(at) => {
             let at = crate::moment::in_utc(at);
-            format!(" at {:02}:{:02} UTC", at.hour(), at.minute())
+            format!(" at {} UTC", cycle.time(at.time()))
         }
         None => String::new(),
     };
@@ -2552,8 +2561,12 @@ pub fn day_or_today(date: time::Date, today: Option<time::Date>) -> String {
 
 /// A moment as the end of a mute is told: the time of day, and the day when it is not
 /// `today`.
-pub fn time_and_day(local: time::OffsetDateTime, today: Option<time::Date>) -> String {
-    let clock = format!("{:02}:{:02}", local.hour(), local.minute());
+pub fn time_and_day(
+    local: time::OffsetDateTime,
+    today: Option<time::Date>,
+    cycle: junto_client_core::clock::HourCycle,
+) -> String {
+    let clock = cycle.time(local.time());
     match today {
         Some(today) if today == local.date() => clock,
         Some(today) if today.next_day() == Some(local.date()) => format!("{clock} tomorrow"),
@@ -3224,7 +3237,7 @@ pub fn quiet_zone_not_system(system: &str) -> String {
     format!("The time zone of this computer is {system}.")
 }
 pub const QUIET_TIME_REFUSED: &str =
-    "Write each time as hours and minutes, such as 22:00, and use two different times.";
+    "Write each time as 22:00 or 10:00 PM, and use two different times.";
 pub const QUIET_DIFFERS: &str =
     "Your servers hold different values. A change here sets all of them.";
 pub const QUIET_NO_SERVER: &str =
@@ -3732,7 +3745,8 @@ mod tests {
             recording_time(Duration::from_secs(39 * 60 + 2)),
             "REC 00:39:02"
         );
-        let (strong, rest) = recording_details(&problem(RecordingFault::RecorderLost));
+        let (strong, rest) =
+            recording_details(&problem(RecordingFault::RecorderLost), Default::default());
         assert_eq!(strong, "The recorder lost its connection at 09:17 UTC.");
         assert!(
             rest.contains("from 08:41 UTC to 09:17 UTC (36 min)"),
@@ -3751,7 +3765,8 @@ mod tests {
             recording_flag(&problem(RecordingFault::StorageReserve)),
             RECORDING_STOPPED
         );
-        let (_, rest) = recording_details(&problem(RecordingFault::PartlySaved));
+        let (_, rest) =
+            recording_details(&problem(RecordingFault::PartlySaved), Default::default());
         assert!(rest.contains("2 of its 5 files failed"), "{rest}");
         // A recording that never started has no times.
         let never = RecordingProblem {
@@ -3761,7 +3776,7 @@ mod tests {
             segments: 0,
             failed_segments: 0,
         };
-        let (strong, rest) = recording_details(&never);
+        let (strong, rest) = recording_details(&never, Default::default());
         assert_eq!(strong, "No recorder was available.");
         assert_eq!(
             rest,
@@ -3776,10 +3791,41 @@ mod tests {
             RecordingFault::PartlySaved,
             RecordingFault::Other,
         ] {
-            let (strong, rest) = recording_details(&problem(fault));
+            let (strong, rest) = recording_details(&problem(fault), Default::default());
             assert!(strong.ends_with('.') && rest.ends_with('.'), "{fault:?}");
             assert!(rest.starts_with(' '), "{fault:?}");
         }
         assert!(recording_request_failed("No.").ends_with(" No."));
+    }
+}
+
+#[cfg(test)]
+mod clock_format_tests {
+    use super::*;
+    use junto_client_core::clock::HourCycle;
+    #[test]
+    fn account_admin_and_call_times_follow_the_cycle_and_keep_utc_labels() {
+        let at = time::OffsetDateTime::from_unix_timestamp(1_791_626_640)
+            .unwrap()
+            .replace_time(time::Time::from_hms(23, 5, 0).unwrap());
+        let cycle = HourCycle::Twelve;
+        assert!(account::utc(at, cycle).ends_with("at 11:05 PM UTC"));
+        assert!(admin::date_time(at, cycle).ends_with(", 11:05 PM"));
+        assert!(
+            admin::people::invite_times(at, at + time::Duration::minutes(3), cycle)
+                .contains("11:08 PM")
+        );
+        assert!(connection_dropped(Some(at), "Daily", cycle).contains("11:05 PM UTC"));
+        assert!(time_and_day(at, Some(at.date()), cycle).starts_with("11:05 PM"));
+        let problem = RecordingProblem {
+            fault: RecordingFault::RecorderLost,
+            since: Some(at),
+            until: Some(at + time::Duration::minutes(3)),
+            segments: 1,
+            failed_segments: 0,
+        };
+        let (strong, detail) = recording_details(&problem, cycle);
+        assert!(strong.contains("11:08 PM UTC"));
+        assert!(detail.contains("11:05 PM UTC"));
     }
 }

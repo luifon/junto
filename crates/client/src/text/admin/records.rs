@@ -158,18 +158,18 @@ pub fn token_actions(actions: &[TokenAction]) -> String {
 
 /// The second line of the row of a token: who created it, and when it was created and
 /// expires.
-pub fn token_detail(row: &TokenLine) -> String {
+pub fn token_detail(row: &TokenLine, cycle: junto_client_core::clock::HourCycle) -> String {
     let creator = match (&row.creator, row.own) {
         (_, true) => "Created by you".to_owned(),
         (Some(name), false) => format!("Created by {name}"),
         (None, false) => "Created by an account whose name is not known here".to_owned(),
     };
     let expiry = if row.expired {
-        format!("Expired on {}", date_time(row.expires))
+        format!("Expired on {}", date_time(row.expires, cycle))
     } else {
-        format!("Expires on {}", date_time(row.expires))
+        format!("Expires on {}", date_time(row.expires, cycle))
     };
-    format!("{creator} on {} · {expiry}", date_time(row.created))
+    format!("{creator} on {} · {expiry}", date_time(row.created, cycle))
 }
 
 /// The identifier of a token, which tells two tokens with one name apart. The row of an
@@ -254,8 +254,8 @@ pub const fn export_status(status: ExportStatus) -> &'static str {
 
 /// The line of the row of an export under its state: when it was asked for, the size of
 /// its file, and when the server removes it.
-pub fn export_detail(row: &ExportLine) -> String {
-    let mut parts = vec![format!("Asked for on {}", date_time(row.requested))];
+pub fn export_detail(row: &ExportLine, cycle: junto_client_core::clock::HourCycle) -> String {
+    let mut parts = vec![format!("Asked for on {}", date_time(row.requested, cycle))];
     if let Some(bytes) = row.bytes {
         parts.push(crate::text::file_size(bytes));
     }
@@ -476,7 +476,7 @@ fn about(about: &About, unknown: &'static str) -> String {
 
 /// The first line of an entry: when it happened, who did it, and the workspace and the
 /// channel that it is about.
-pub fn audit_head(line: &AuditLine) -> String {
+pub fn audit_head(line: &AuditLine, cycle: junto_client_core::clock::HourCycle) -> String {
     let actor = match &line.actor {
         Actor::Server => THE_SERVER.to_owned(),
         Actor::Account {
@@ -489,7 +489,7 @@ pub fn audit_head(line: &AuditLine) -> String {
         Some(_) => format!("{actor} with an access token"),
         None => actor,
     };
-    let mut parts = vec![date_time(line.at), actor];
+    let mut parts = vec![date_time(line.at, cycle), actor];
     if let Some(workspace) = &line.workspace {
         parts.push(about(workspace, "A workspace"));
     }
@@ -664,7 +664,7 @@ const fn kind_of(kind: ChannelKind) -> &'static str {
 }
 
 fn expiry(at: OffsetDateTime, names: &Names<'_>) -> String {
-    date_time(names.local(at))
+    date_time(names.local(at), names.hour_cycle())
 }
 
 /// What was done, as one sentence, with the names that the state holds. An identifier

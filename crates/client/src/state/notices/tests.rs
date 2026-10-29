@@ -740,7 +740,17 @@ fn a_time_of_day_is_read_as_hours_and_minutes() {
     ] {
         assert_eq!(parse_clock(refused), None, "{refused}");
     }
-    assert_eq!(clock_text(7 * 60 + 5), "07:05");
+    assert_eq!(clock_text(7 * 60 + 5, Default::default()), "07:05");
+    assert_eq!(parse_clock("12:00 AM"), Some(0));
+    assert_eq!(parse_clock("12:00 PM"), Some(720));
+    assert_eq!(parse_clock("9:45pm"), Some(21 * 60 + 45));
+    assert_eq!(parse_clock(" 8:15 am "), Some(8 * 60 + 15));
+    assert_eq!(parse_clock("0:30 AM"), None);
+    assert_eq!(parse_clock("13:30 PM"), None);
+    assert_eq!(
+        clock_text(7 * 60 + 5, junto_client_core::clock::HourCycle::Twelve),
+        "7:05 AM"
+    );
 }
 
 // The rules of a system notification.

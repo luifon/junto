@@ -15,7 +15,11 @@ use crate::ui::{Button, Chip, Notice, StyleExt};
 
 /// One recovery: when, and by whom, and whether it added this device. Each line is cut at
 /// the width of the row.
-fn recovery_row(row: &RecoveryLine, theme: &Theme) -> AnyElement {
+fn recovery_row(
+    row: &RecoveryLine,
+    theme: &Theme,
+    cycle: junto_client_core::clock::HourCycle,
+) -> AnyElement {
     let title = div()
         .flex()
         .items_center()
@@ -26,7 +30,11 @@ fn recovery_row(row: &RecoveryLine, theme: &Theme) -> AnyElement {
                 .typeface(theme.types.control_strong, theme)
                 .ink(theme.colors.ink)
                 .truncate()
-                .child(text::account::recovery_line(row.performed_at, row.by_host)),
+                .child(text::account::recovery_line(
+                    row.performed_at,
+                    row.by_host,
+                    cycle,
+                )),
         )
         .when(row.unseen, |title| {
             title.child(Chip::new(text::account::NOT_SEEN_HERE))
@@ -98,7 +106,8 @@ impl Shell {
                     );
                 }
                 for row in rows {
-                    column = column.child(recovery_row(row, &theme));
+                    column =
+                        column.child(recovery_row(row, &theme, self.state.read(cx).hour_cycle()));
                 }
                 column
                     .when(*hidden > 0, |column| {

@@ -906,6 +906,9 @@ impl AppState {
             self.call_window_active = active;
             self.changed(cx);
         }
+        if active {
+            self.read_system_zone(cx);
+        }
     }
 
     /// Reads the time zone of the system on a background thread (ADR 0730), and shows the
@@ -913,23 +916,33 @@ impl AppState {
     /// order than they started: the result of a reading is applied only when no newer
     /// reading was started.
     #[allow(clippy::disallowed_methods)]
-    fn read_system_zone(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn read_system_zone(&mut self, cx: &mut Context<Self>) {
         self.zone_readings += 1;
         let number = self.zone_readings;
         let reader = self.zone_reader.clone();
+        let clock_reader = self.clock_reader.clone();
         let reading = cx.background_executor().spawn(async move {
-            match reader {
+            let zone = match reader {
                 Some(reader) => reader(),
                 None => crate::zones::system_zone(),
-            }
+            };
+            let cycle = clock_reader
+                .map_or_else(junto_client_core::clock::system_hour_cycle, |reader| {
+                    reader()
+                });
+            (zone, cycle)
         });
         cx.spawn(async move |this, cx| {
-            let zone = reading.await;
+            let (zone, cycle) = reading.await;
             let _ = this.update(cx, |this, cx| {
-                if this.zone_readings != number || this.system_zone == zone {
+                if this.zone_readings != number
+                    || (this.system_zone == zone && this.system_hour_cycle == cycle)
+                {
                     return;
                 }
                 this.system_zone = zone;
+                this.system_hour_cycle = cycle;
+                this.known.hour_cycle = this.hour_cycle();
                 // A test that set a fixed offset keeps it.
                 if matches!(this.known.zone, super::feed::Zone::Named(_)) {
                     this.known.zone = super::feed::Zone::Named(zone);

@@ -1773,7 +1773,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     let banned_row = sel("audit-row", banned.id);
     assert!(window.shows(banned_row));
     for row in &page.rows {
-        for text in [row.sentence.clone(), audit_head(row)] {
+        for text in [row.sentence.clone(), audit_head(row, Default::default())] {
             assert!(
                 !holds_identifier(&text),
                 "an entry shows an identifier: {text}"
@@ -1908,7 +1908,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     assert_eq!(created.channel, Some(About::Named("# plans".to_owned())));
     reveal_in_page(&mut window, sel("audit-row", created.id));
     for row in &all.rows {
-        for text in [row.sentence.clone(), audit_head(row)] {
+        for text in [row.sentence.clone(), audit_head(row, Default::default())] {
             assert!(
                 !holds_identifier(&text),
                 "an entry shows an identifier: {text}"
@@ -3640,6 +3640,6 @@ fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_
         assert!(
             junto_client::text::admin::records::audit_token(&token).contains(&token_id.to_string())
         );
-        assert!(audit_head(&row).contains("Ada with an access token"));
+        assert!(audit_head(&row, Default::default()).contains("Ada with an access token"));
     }
 }

@@ -418,6 +418,8 @@ pub struct Shell {
     /// The two times of the daily quiet time, as the settings show them.
     pub(crate) quiet_from: Entity<InputState>,
     pub(crate) quiet_until: Entity<InputState>,
+    pub(crate) quiet_original: Option<(String, String)>,
+    pub(crate) quiet_hour_cycle: Option<junto_client_core::clock::HourCycle>,
     /// The two typed times are no time span.
     pub(crate) quiet_refused: bool,
     /// The time zone of the daily quiet time, as the settings show and send it
@@ -619,6 +621,7 @@ impl Shell {
             // once, however many changes came (review M8: each answer of a profile derived the
             // whole view).
             cx.observe_in(&state, window, |this, _, window, cx| {
+                this.refresh_quiet_clock(window, cx);
                 #[cfg(feature = "test-support")]
                 crate::panics::test_support::reached(
                     crate::panics::test_support::Handler::StateObserver,
@@ -830,6 +833,8 @@ impl Shell {
             filter_closed_by_press: false,
             quiet_from,
             quiet_until,
+            quiet_original: None,
+            quiet_hour_cycle: None,
             quiet_refused: false,
             quiet_zone,
             quiet_zone_search,

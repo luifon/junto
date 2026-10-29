@@ -99,3 +99,5 @@ mod updates;
 mod menus;
 
 mod zoom;
+
+mod clock_format;

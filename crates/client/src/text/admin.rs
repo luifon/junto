@@ -178,14 +178,13 @@ pub const fn kind_name(kind: ChannelKind) -> &'static str {
 }
 
 /// A moment in the time zone of the person: `12 October 2026, 14:05`.
-pub fn date_time(local: OffsetDateTime) -> String {
+pub fn date_time(local: OffsetDateTime, cycle: junto_client_core::clock::HourCycle) -> String {
     format!(
-        "{} {} {}, {:02}:{:02}",
+        "{} {} {}, {}",
         local.day(),
         local.month(),
         local.year(),
-        local.hour(),
-        local.minute()
+        cycle.time(local.time())
     )
 }
 

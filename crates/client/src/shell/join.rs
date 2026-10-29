@@ -542,7 +542,12 @@ impl Shell {
                     .child(
                         div()
                             .mt(u(12.0))
-                            .child(crate::shell::linking::link_wait_block(&wait, false, &theme)),
+                            .child(crate::shell::linking::link_wait_block(
+                                &wait,
+                                false,
+                                &theme,
+                                self.state.read(cx).hour_cycle(),
+                            )),
                     )
                     .child(dialog_footer([
                         cancel.into_any_element(),

@@ -145,6 +145,7 @@ fn files(
         channel_id: recording.channel_id,
         names: accounts,
         zone: known.zone,
+        hour_cycle: known.hour_cycle,
         today: known.today,
         may_remove: false,
         may_request: false,

@@ -66,7 +66,7 @@ impl Shell {
                     .truncate()
                     .child(txt::channel(row)),
             )
-            .child(detail(txt::when(row)))
+            .child(detail(txt::when(row, self.state.read(cx).hour_cycle())))
             .child(
                 div()
                     .typeface(theme.types.small, theme)

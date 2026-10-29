@@ -33,16 +33,11 @@ use crate::ui::{
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
-fn recovery_time(notice: &junto_client_core::protocol::account::RecoveryNotice) -> String {
-    let at = crate::moment::in_utc(notice.performed_at);
-    format!(
-        "{} {} {} at {:02}:{:02} UTC",
-        at.day(),
-        at.month(),
-        at.year(),
-        at.hour(),
-        at.minute()
-    )
+fn recovery_time(
+    notice: &junto_client_core::protocol::account::RecoveryNotice,
+    cycle: junto_client_core::clock::HourCycle,
+) -> String {
+    text::account::utc(notice.performed_at, cycle)
 }
 
 impl Shell {
@@ -758,7 +753,8 @@ impl Shell {
                 shown
             }
             RecordingShown::Failed(problem) => {
-                let (strong, rest) = text::recording_details(problem);
+                let (strong, rest) =
+                    text::recording_details(problem, self.state.read(cx).hour_cycle());
                 let open = self.recording_details_open;
                 let details = div()
                     .relative()
@@ -995,7 +991,7 @@ impl Shell {
                         .child(
                             Notice::new(text::recovery(
                                 &server.name,
-                                &recovery_time(recovery),
+                                &recovery_time(recovery, self.state.read(cx).hour_cycle()),
                                 recovery.performed_by.is_none(),
                             ))
                             .icon(Icon::Warning)

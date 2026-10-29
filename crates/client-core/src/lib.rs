@@ -10,6 +10,7 @@ pub mod app_badge;
 pub mod app_identity;
 pub mod arrangement;
 pub mod book;
+pub mod clock;
 pub mod console;
 pub mod events;
 pub mod flow;

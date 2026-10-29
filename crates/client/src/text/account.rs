@@ -1,6 +1,7 @@
 //! The text of the account layer and of device linking (ADR 0781, ADR 0782).
 
 use junto_client_core::api::{ApiError, ErrorCategory};
+use junto_client_core::clock::HourCycle;
 use junto_client_core::flow::FlowError;
 use junto_client_core::profile::{InvalidAvatar, InvalidName};
 use junto_client_core::protocol::account::DeviceOrigin;
@@ -52,15 +53,14 @@ pub const fn page_selector(page: AccountPage) -> &'static str {
 
 /// A moment as the pages of the account show it: the date and the time in UTC, as the
 /// notice of a recovery does.
-pub fn utc(at: OffsetDateTime) -> String {
+pub fn utc(at: OffsetDateTime, cycle: HourCycle) -> String {
     let at = crate::moment::in_utc(at);
     format!(
-        "{} {} {} at {:02}:{:02} UTC",
+        "{} {} {} at {} UTC",
         at.day(),
         at.month(),
         at.year(),
-        at.hour(),
-        at.minute()
+        cycle.time(at.time())
     )
 }
 
@@ -195,13 +195,13 @@ pub const fn origin(origin: DeviceOrigin) -> &'static str {
     }
 }
 
-pub fn added_on(at: OffsetDateTime) -> String {
-    format!("Added on {}", utc(at))
+pub fn added_on(at: OffsetDateTime, cycle: HourCycle) -> String {
+    format!("Added on {}", utc(at, cycle))
 }
 
-pub fn last_login(at: Option<OffsetDateTime>) -> String {
+pub fn last_login(at: Option<OffsetDateTime>, cycle: HourCycle) -> String {
     match at {
-        Some(at) => format!("Last login on {}", utc(at)),
+        Some(at) => format!("Last login on {}", utc(at, cycle)),
         None => NEVER_LOGGED_IN.to_owned(),
     }
 }
@@ -218,8 +218,12 @@ pub const BY_HOST: &str = "With the host command of the server";
 pub const ADDED_THIS_DEVICE: &str = "It added this device.";
 pub const NOT_SEEN_HERE: &str = "Not seen on this device yet";
 
-pub fn recovery_line(at: OffsetDateTime, by_host: bool) -> String {
-    format!("{} · {}", utc(at), if by_host { BY_HOST } else { BY_OWNER })
+pub fn recovery_line(at: OffsetDateTime, by_host: bool, cycle: HourCycle) -> String {
+    format!(
+        "{} · {}",
+        utc(at, cycle),
+        if by_host { BY_HOST } else { BY_OWNER }
+    )
 }
 
 pub fn more_recoveries(hidden: usize) -> String {
@@ -285,8 +289,8 @@ pub fn device_linked(name: &str) -> String {
     }
 }
 
-pub fn code_expires(at: OffsetDateTime) -> String {
-    format!("The code expires on {}.", utc(at))
+pub fn code_expires(at: OffsetDateTime, cycle: HourCycle) -> String {
+    format!("The code expires on {}.", utc(at, cycle))
 }
 
 // The link of this device on one server, on the new device.
@@ -587,16 +591,22 @@ mod tests {
     #[test]
     fn a_moment_is_written_in_utc() {
         let at = OffsetDateTime::from_unix_timestamp(1_791_626_640).unwrap();
-        assert_eq!(utc(at), "10 October 2026 at 10:04 UTC");
+        assert_eq!(utc(at, Default::default()), "10 October 2026 at 10:04 UTC");
         // The same moment in another offset is the same text.
         let east = crate::moment::in_offset(at, time::UtcOffset::from_hms(5, 30, 0).unwrap());
-        assert_eq!(utc(east), "10 October 2026 at 10:04 UTC");
-        assert_eq!(added_on(at), "Added on 10 October 2026 at 10:04 UTC");
         assert_eq!(
-            last_login(Some(at)),
+            utc(east, Default::default()),
+            "10 October 2026 at 10:04 UTC"
+        );
+        assert_eq!(
+            added_on(at, Default::default()),
+            "Added on 10 October 2026 at 10:04 UTC"
+        );
+        assert_eq!(
+            last_login(Some(at), Default::default()),
             "Last login on 10 October 2026 at 10:04 UTC"
         );
-        assert_eq!(last_login(None), NEVER_LOGGED_IN);
+        assert_eq!(last_login(None, Default::default()), NEVER_LOGGED_IN);
     }
 
     #[test]

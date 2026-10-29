@@ -551,7 +551,11 @@ impl Shell {
             )),
             Phase::Reconnecting => viewport.justify_center().child(waiting(
                 text::CALL_RECONNECTING,
-                text::connection_dropped(panel.interrupted_at, panel.place_name()),
+                text::connection_dropped(
+                    panel.interrupted_at,
+                    panel.place_name(),
+                    self.state.read(cx).hour_cycle(),
+                ),
                 "call-lost",
             )),
             Phase::Connected => {

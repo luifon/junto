@@ -499,7 +499,7 @@ pub fn search_panel(
         };
         match (hit.message_id, hit.recording_id, hit.line, channel) {
             (Some(message_id), _, _, _) => results.push(row(
-                format!("{:02}:{:02}", local.hour(), local.minute()),
+                known.hour_cycle.time(local.time()),
                 ResultTarget::Message(message_id),
             )),
             (None, Some(recording_id), Some(line), Some((workspace_id, channel_id))) => {

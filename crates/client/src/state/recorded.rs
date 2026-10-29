@@ -74,6 +74,7 @@ pub enum JobShown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct When {
     pub zone: Zone,
+    pub hour_cycle: junto_client_core::clock::HourCycle,
     pub today: Option<Date>,
 }
 
@@ -82,10 +83,9 @@ impl When {
     fn shown(self, at: OffsetDateTime) -> String {
         let local = self.zone.local(at);
         format!(
-            "{} {:02}:{:02}",
+            "{} {}",
             text::day_or_today(local.date(), self.today),
-            local.hour(),
-            local.minute()
+            self.hour_cycle.time(local.time())
         )
     }
 }
@@ -313,6 +313,7 @@ pub struct CardSource<'a> {
     pub channel_id: ChannelId,
     pub names: &'a HashMap<AccountId, String>,
     pub zone: Zone,
+    pub hour_cycle: junto_client_core::clock::HourCycle,
     pub today: Option<Date>,
     pub may_remove: bool,
     /// The roles of the person allow a new request for a transcript, and the channel is
@@ -492,10 +493,15 @@ fn voices(
 
 /// Every part of a recording, in the order in which they were asked for, with the time
 /// range that the recorder reported.
-fn parts(detail: &RecordingDetail, names: &HashMap<AccountId, String>, zone: Zone) -> Vec<PartRow> {
+fn parts(
+    detail: &RecordingDetail,
+    names: &HashMap<AccountId, String>,
+    zone: Zone,
+    cycle: junto_client_core::clock::HourCycle,
+) -> Vec<PartRow> {
     let clock = |at: OffsetDateTime| {
         let at = zone.local(at);
-        format!("{:02}:{:02}:{:02}", at.hour(), at.minute(), at.second())
+        cycle.time_with_seconds(at.time())
     };
     detail
         .segments
@@ -607,7 +613,7 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
     let local = |at: OffsetDateTime| source.zone.local(at);
     let clock = |at: OffsetDateTime| {
         let at = local(at);
-        format!("{:02}:{:02}", at.hour(), at.minute())
+        source.hour_cycle.time(at.time())
     };
     // The recording starts with its first sample when the files are processed, and with
     // the first job of the recorder before.
@@ -701,7 +707,7 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
             .iter()
             .find(|file| file.kind == FileKind::Video)
             .map(|file| file.segment_id),
-        parts: parts(detail, names, source.zone),
+        parts: parts(detail, names, source.zone, source.hour_cycle),
         files,
         transcript: transcript(
             open,
@@ -709,6 +715,7 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
                 names,
                 when: When {
                     zone: source.zone,
+                    hour_cycle: source.hour_cycle,
                     today: source.today,
                 },
                 // The card shows no control that changes the transcript: the side panel

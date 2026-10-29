@@ -138,7 +138,12 @@ fn mono_value(
 
 /// What a device that waits for its link shows: the code, the key of this device, the
 /// expiry, and what the person does with them.
-pub(crate) fn link_wait_block(wait: &LinkWait, centered: bool, theme: &Theme) -> gpui::Div {
+pub(crate) fn link_wait_block(
+    wait: &LinkWait,
+    centered: bool,
+    theme: &Theme,
+    cycle: junto_client_core::clock::HourCycle,
+) -> gpui::Div {
     let code: AnyElement = match &wait.code {
         Some(code) => mono_value(
             code.expose().to_owned(),
@@ -169,7 +174,7 @@ pub(crate) fn link_wait_block(wait: &LinkWait, centered: bool, theme: &Theme) ->
             theme,
         ))
         .child(
-            sentence(text::account::code_expires(wait.expires_at), theme)
+            sentence(text::account::code_expires(wait.expires_at, cycle), theme)
                 .mt(u(8.0))
                 .debug_selector(|| "link-wait-expiry".to_owned()),
         )
@@ -1085,7 +1090,7 @@ impl Shell {
         Some(
             StatePanel::with_detail(
                 text::WAITING_FOR_LINK_TITLE,
-                link_wait_block(&wait, true, &theme).mt(u(12.0)),
+                link_wait_block(&wait, true, &theme, self.state.read(cx).hour_cycle()).mt(u(12.0)),
             )
             .icon(Icon::Clock)
             .selector("waiting-for-link")

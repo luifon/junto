@@ -480,6 +480,7 @@ pub struct Source<'a> {
     pub writes: Writes,
     pub quoted: &'a HashMap<(ServerId, MessageId), Quoted>,
     pub zone: Zone,
+    pub hour_cycle: junto_client_core::clock::HourCycle,
     pub today: Option<Date>,
     /// The list shows a finished recording as a card. Absent: as a system line.
     pub cards: Option<&'a Cards<'a>>,
@@ -508,8 +509,8 @@ impl Writes {
     };
 }
 
-fn clock(at: OffsetDateTime) -> String {
-    format!("{:02}:{:02}", at.hour(), at.minute())
+fn clock(at: OffsetDateTime, cycle: junto_client_core::clock::HourCycle) -> String {
+    cycle.time(at.time())
 }
 
 /// The text of a document on one line, without its formatting, up to a bound.
@@ -858,7 +859,7 @@ fn thread_mark<'a>(
         held.or(read).map(|reply| LastReply {
             author_id: reply.author_id,
             author: author_name(&reply, &source.names),
-            time: clock(source.zone.local(reply.created_at)),
+            time: clock(source.zone.local(reply.created_at), source.hour_cycle),
         })
     });
     let state = source.model.thread_state(message.id);
@@ -925,7 +926,7 @@ pub fn message_row<'a>(
     };
     MessageRow {
         author: author_name(message, names),
-        time: clock(local),
+        time: clock(local, source.hour_cycle),
         grouped: false,
         own: is_own,
         mentions_own: message
@@ -1021,7 +1022,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
             if let Some((recording_id, cards)) = recording {
                 rows.push(FeedRow::Recording(RecordingRow {
                     message: message.clone(),
-                    time: clock(local),
+                    time: clock(local, source.hour_cycle),
                     card: recorded::card(&recorded::CardSource {
                         server_id: source.server_id,
                         recording_id,
@@ -1030,6 +1031,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
                         channel_id: cards.channel_id,
                         names: cards.accounts,
                         zone: source.zone,
+                        hour_cycle: source.hour_cycle,
                         today: source.today,
                         may_remove: cards.may_remove,
                         may_request: cards.may_remove,
@@ -1081,7 +1083,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
             let (kind, parts) = system_parts(system, names);
             rows.push(FeedRow::System(SystemRow {
                 message: message.clone(),
-                time: clock(local),
+                time: clock(local, source.hour_cycle),
                 kind,
                 parts,
                 people: system.actor_id.into_iter().collect(),
@@ -1129,7 +1131,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
             rows.push(FeedRow::Waiting(WaitingRow {
                 pending: pending.clone(),
                 author: source.model.account.name.clone(),
-                time: clock(local),
+                time: clock(local, source.hour_cycle),
                 grouped,
                 reply: pending.reply_to.map(|id| quote(source, &mut loaded, id)),
             }));
@@ -1372,6 +1374,15 @@ mod tests {
         }
 
         fn feed(&self, timeline: &Timeline, may_manage: bool) -> Feed {
+            self.feed_in_cycle(timeline, may_manage, Default::default())
+        }
+
+        fn feed_in_cycle(
+            &self,
+            timeline: &Timeline,
+            may_manage: bool,
+            cycle: junto_client_core::clock::HourCycle,
+        ) -> Feed {
             derive(&Source {
                 server_id: self.server_id,
                 model: &self.model,
@@ -1386,10 +1397,35 @@ mod tests {
                 writes: Writes::ALL,
                 quoted: &self.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
+                hour_cycle: cycle,
                 today: Some(morning().date()),
                 cards: None,
             })
         }
+    }
+
+    #[test]
+    fn message_clock_rows_follow_the_cycle() {
+        let scene = scene();
+        let timeline = scene.timeline(vec![scene.message(1, scene.ana, 0, "Clock")]);
+        let times = |feed: Feed| {
+            feed.rows
+                .iter()
+                .filter_map(|row| match row {
+                    FeedRow::Message(row) => Some(row.time.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(times(scene.feed(&timeline, false)), ["09:00"]);
+        assert_eq!(
+            times(scene.feed_in_cycle(
+                &timeline,
+                false,
+                junto_client_core::clock::HourCycle::Twelve
+            )),
+            ["9:00 AM"]
+        );
     }
 
     #[test]
@@ -1484,6 +1520,7 @@ mod tests {
                 writes: Writes::ALL,
                 quoted: &scene.quoted,
                 zone: Zone::Fixed(UtcOffset::from_hms(hours, 0, 0).unwrap()),
+                hour_cycle: Default::default(),
                 today: Some(morning().date()),
                 cards: None,
             });
@@ -1535,6 +1572,7 @@ mod tests {
                 writes: Writes::ALL,
                 quoted: &scene.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
+                hour_cycle: Default::default(),
                 today: None,
                 cards: None,
             });
@@ -1636,6 +1674,7 @@ mod tests {
             writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::from_hms(14, 55, 0).unwrap()),
+            hour_cycle: Default::default(),
             today: None,
             cards: None,
         });
@@ -1689,6 +1728,7 @@ mod tests {
             writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::UTC),
+            hour_cycle: Default::default(),
             today: None,
             cards: None,
         };
@@ -2046,6 +2086,7 @@ mod tests {
             writes: Writes::ALL,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::UTC),
+            hour_cycle: Default::default(),
             today: None,
             cards: Some(&cards),
         });

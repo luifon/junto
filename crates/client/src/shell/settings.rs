@@ -520,6 +520,40 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(u(10.0))
+                .child(row_label(text::CLOCK_FORMAT, theme))
+                .child(
+                    Segmented::new(
+                        "clock-format",
+                        text::CLOCK_FORMAT,
+                        text::CLOCK_FORMAT_OPTIONS.map(SharedString::from),
+                    )
+                    .selected(
+                        junto_client_core::clock::ClockFormat::ALL
+                            .iter()
+                            .position(|format| {
+                                *format == self.state.read(cx).settings().clock_format
+                            }),
+                    )
+                    .selector("clock-format")
+                    .on_select({
+                        let select = cx.listener(|this, index: &usize, _, cx| {
+                            if let Some(format) = junto_client_core::clock::ClockFormat::ALL
+                                .get(*index)
+                                .copied()
+                            {
+                                this.state
+                                    .update(cx, |state, cx| state.set_clock_format(format, cx));
+                            }
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                )
+                .into_any_element(),
+            div()
+                .mt(u(12.0))
+                .flex()
+                .items_center()
+                .gap(u(10.0))
                 .child(row_label(text::THEME, theme))
                 .child(
                     Segmented::new(

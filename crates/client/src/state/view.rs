@@ -199,6 +199,7 @@ pub struct Known {
     pub quoted: HashMap<(ServerId, MessageId), Quoted>,
     /// The time zone of the times of messages.
     pub zone: Zone,
+    pub hour_cycle: junto_client_core::clock::HourCycle,
     /// The files that the person attached to the next message of a place.
     pub drafts: HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
     /// The files of messages that the person saves, and those that were saved.
@@ -2602,6 +2603,7 @@ fn server_lists(
                 writes: feed::Writes::ALL,
                 quoted: &known.quoted,
                 zone: known.zone,
+                hour_cycle: known.hour_cycle,
                 today: known.today,
                 cards: None,
             });
@@ -2867,6 +2869,7 @@ fn workspace_view(
         },
         quoted: &known.quoted,
         zone: known.zone,
+        hour_cycle: known.hour_cycle,
         today: known.today,
         cards: cards.as_ref(),
     };
@@ -3031,6 +3034,7 @@ fn workspace_view(
                     (Loadable::Loaded(_), _) => {
                         let when = super::recorded::When {
                             zone: known.zone,
+                            hour_cycle: known.hour_cycle,
                             today: known.today,
                         };
                         let source = super::recorded::TranscriptSource {

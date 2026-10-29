@@ -203,6 +203,15 @@ impl Scene {
     }
 
     fn card(&self, open: Option<&OpenRecording>, may_remove: bool) -> RecordingCard {
+        self.card_in_cycle(open, may_remove, Default::default())
+    }
+
+    fn card_in_cycle(
+        &self,
+        open: Option<&OpenRecording>,
+        may_remove: bool,
+        cycle: junto_client_core::clock::HourCycle,
+    ) -> RecordingCard {
         card(&CardSource {
             server_id: self.server_id,
             recording_id: self.recording_id,
@@ -211,6 +220,7 @@ impl Scene {
             channel_id: self.channel_id,
             names: &self.names,
             zone: Zone::Fixed(UtcOffset::UTC),
+            hour_cycle: cycle,
             today: Some(started().date()),
             may_remove,
             may_request: may_remove,
@@ -368,6 +378,7 @@ fn a_card_tells_a_recording_that_is_read_gone_or_not_readable() {
         channel_id: scene.channel_id,
         names: &scene.names,
         zone: Zone::Fixed(UtcOffset::UTC),
+        hour_cycle: Default::default(),
         today: None,
         may_remove: true,
         may_request: true,
@@ -541,6 +552,7 @@ fn a_corrected_line_and_a_named_voice_state_who_changed_them_and_when() {
     open.lines.lines[0] = Arc::new(corrected);
     let when = When {
         zone: Zone::Fixed(UtcOffset::UTC),
+        hour_cycle: Default::default(),
         today: Some(started().date()),
     };
     let row = line_row(&open, &open.lines.lines[0], &scene.names, when);
@@ -719,4 +731,32 @@ fn a_card_offers_a_new_transcript_for_a_processed_recording_without_one() {
             "{recording:?} {transcript:?}"
         );
     }
+}
+
+#[test]
+fn recording_wall_clocks_use_the_cycle_while_durations_and_file_stems_stay_stable() {
+    let scene = scene();
+    let open = scene.open(RecordingState::Ready, TranscriptState::Ready);
+    let ordinary = scene.detail(&open);
+    let CardState::Shown(twelve) = scene
+        .card_in_cycle(
+            Some(&open),
+            false,
+            junto_client_core::clock::HourCycle::Twelve,
+        )
+        .state
+    else {
+        panic!("the recording is shown");
+    };
+    assert_eq!(twelve.span, Some(("9:41 AM".into(), "10:20 AM".into())));
+    assert_eq!(twelve.length, ordinary.length);
+    assert_eq!(twelve.text_stem, ordinary.text_stem);
+    assert!(!twelve.parts.is_empty());
+    assert!(
+        twelve
+            .parts
+            .iter()
+            .filter_map(|part| part.span.as_deref())
+            .all(|span| span.contains(" AM"))
+    );
 }

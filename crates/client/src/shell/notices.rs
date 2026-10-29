@@ -1212,14 +1212,43 @@ impl Shell {
             Some(Agreement::All(Some(daily))) => Some(daily),
             _ => None,
         };
+        let cycle = self.state.read(cx).hour_cycle();
         let (from, until) = match &daily {
-            Some(daily) => (clock_text(daily.start_minute), clock_text(daily.end_minute)),
-            None => (clock_text(22 * 60), clock_text(7 * 60)),
+            Some(daily) => (
+                clock_text(daily.start_minute, cycle),
+                clock_text(daily.end_minute, cycle),
+            ),
+            None => (clock_text(22 * 60, cycle), clock_text(7 * 60, cycle)),
         };
         let system = self.state.read(cx).system_zone_name();
         self.quiet_zone = daily.map_or_else(|| system.to_owned(), |daily| daily.time_zone);
         self.quiet_zone_open = false;
         self.type_quiet_times(&from, &until, window, cx);
+        self.quiet_original = Some((from, until));
+        self.quiet_hour_cycle = Some(cycle);
+    }
+
+    pub(crate) fn refresh_quiet_clock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cycle = self.state.read(cx).hour_cycle();
+        if self.quiet_hour_cycle == Some(cycle) {
+            return;
+        }
+        self.quiet_hour_cycle = Some(cycle);
+        let Some(original) = self.quiet_original.clone() else {
+            return;
+        };
+        let current = (
+            self.quiet_from.read(cx).value().to_string(),
+            self.quiet_until.read(cx).value().to_string(),
+        );
+        if current != original {
+            return;
+        }
+        if let (Some(from), Some(until)) = (parse_clock(&current.0), parse_clock(&current.1)) {
+            let values = (clock_text(from, cycle), clock_text(until, cycle));
+            self.type_quiet_times(&values.0, &values.1, window, cx);
+            self.quiet_original = Some(values);
+        }
     }
 
     /// Chooses the time zone of the daily quiet time, and closes the list of zones. The

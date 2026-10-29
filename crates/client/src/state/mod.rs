@@ -141,6 +141,7 @@ enum Setting {
     PanelWidth(Panel),
     CallPanel,
     KeepRunning,
+    ClockFormat,
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -514,6 +515,9 @@ pub struct AppState {
     known: Known,
     /// The time zone of the system as it was read last.
     system_zone: chrono_tz::Tz,
+    system_hour_cycle: junto_client_core::clock::HourCycle,
+    clock_reader:
+        Option<std::sync::Arc<dyn Fn() -> junto_client_core::clock::HourCycle + Send + Sync>>,
     /// How many readings of the zone of the system were started. Only the result of the
     /// newest one is applied, because they run in parallel.
     zone_readings: u64,
@@ -924,8 +928,11 @@ impl AppState {
         // Later reads run on a background thread (ADR 0730).
         #[allow(clippy::disallowed_methods)]
         let system_zone = crate::zones::system_zone();
+        #[allow(clippy::disallowed_methods)]
+        let system_hour_cycle = junto_client_core::clock::system_hour_cycle();
         let known = Known {
             zone: feed::Zone::Named(system_zone),
+            hour_cycle: settings.clock_format.resolve(system_hour_cycle),
             preset_name: client
                 .profile()
                 .load()
@@ -1002,6 +1009,8 @@ impl AppState {
             selection: Selection::default(),
             known,
             system_zone,
+            system_hour_cycle,
+            clock_reader: None,
             zone_readings: 0,
             zone_reader: None,
             pending: Pending::default(),
@@ -3149,6 +3158,43 @@ impl AppState {
         self.write_setting(Setting::Scale, cx);
     }
 
+    pub fn hour_cycle(&self) -> junto_client_core::clock::HourCycle {
+        self.settings.clock_format.resolve(self.system_hour_cycle)
+    }
+
+    pub fn set_clock_format(
+        &mut self,
+        format: junto_client_core::clock::ClockFormat,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.clock_format = format;
+        self.known.hour_cycle = self.hour_cycle();
+        self.write_setting(Setting::ClockFormat, cx);
+        if format == junto_client_core::clock::ClockFormat::System {
+            self.read_system_zone(cx);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn use_system_hour_cycle(
+        &mut self,
+        cycle: junto_client_core::clock::HourCycle,
+        cx: &mut Context<Self>,
+    ) {
+        self.clock_reader = Some(std::sync::Arc::new(move || cycle));
+        self.system_hour_cycle = cycle;
+        self.known.hour_cycle = self.hour_cycle();
+        self.changed(cx);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn set_clock_reader(
+        &mut self,
+        reader: impl Fn() -> junto_client_core::clock::HourCycle + Send + Sync + 'static,
+    ) {
+        self.clock_reader = Some(std::sync::Arc::new(reader));
+    }
+
     pub fn set_keep_running_after_close(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.settings.keep_running_after_close = enabled;
         self.write_setting(Setting::KeepRunning, cx);
@@ -3231,6 +3277,7 @@ impl AppState {
                                 stored.keep_running_after_close = wanted.keep_running_after_close;
                             }
                             Setting::Scale => stored.scale_percent = wanted.scale_percent,
+                            Setting::ClockFormat => stored.clock_format = wanted.clock_format,
                             Setting::ServerBook => {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }

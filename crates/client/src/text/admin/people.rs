@@ -63,10 +63,10 @@ pub fn recover_question(name: &str) -> String {
     format!("Recover the account “{name}” onto a new device?")
 }
 
-pub fn recovered(at: OffsetDateTime) -> String {
+pub fn recovered(at: OffsetDateTime, cycle: junto_client_core::clock::HourCycle) -> String {
     format!(
         "The account was recovered on {}. The new device logs in with its key.",
-        crate::text::account::utc(at)
+        crate::text::account::utc(at, cycle)
     )
 }
 pub const REMOVAL_HELP: &str = "A removed account loses its devices, its sessions, its memberships and its roles. The \
@@ -271,11 +271,15 @@ pub fn invite_creator(name: Option<&str>) -> String {
     }
 }
 
-pub fn invite_times(created: OffsetDateTime, expires: OffsetDateTime) -> String {
+pub fn invite_times(
+    created: OffsetDateTime,
+    expires: OffsetDateTime,
+    cycle: junto_client_core::clock::HourCycle,
+) -> String {
     format!(
         "Created on {} · Expires on {}",
-        date_time(created),
-        date_time(expires)
+        date_time(created, cycle),
+        date_time(expires, cycle)
     )
 }
 
@@ -328,11 +332,15 @@ pub const SAME_NAME: &str = "An account or another waiting request has this name
 pub const APPROVE: &str = "Approve";
 pub const DENY: &str = "Deny";
 
-pub fn request_times(created: OffsetDateTime, expires: OffsetDateTime) -> String {
+pub fn request_times(
+    created: OffsetDateTime,
+    expires: OffsetDateTime,
+    cycle: junto_client_core::clock::HourCycle,
+) -> String {
     format!(
         "Asked on {} · Expires on {}",
-        date_time(created),
-        date_time(expires)
+        date_time(created, cycle),
+        date_time(expires, cycle)
     )
 }
 

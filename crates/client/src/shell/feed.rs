@@ -3546,7 +3546,8 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
         .child(
             div()
                 .flex_none()
-                .w(u(40.0))
+                .min_w(u(40.0))
+                .debug_selector(move || format!("system-time:{message_id}"))
                 .whitespace_nowrap()
                 .text_right()
                 .text_size(u(12.5))

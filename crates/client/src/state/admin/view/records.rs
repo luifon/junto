@@ -535,6 +535,9 @@ impl<'a> Names<'a> {
     }
 
     /// A moment in the time zone of the person.
+    pub fn hour_cycle(&self) -> junto_client_core::clock::HourCycle {
+        self.known.hour_cycle
+    }
     pub fn local(&self, at: OffsetDateTime) -> OffsetDateTime {
         self.known.zone.local(at)
     }
@@ -3186,7 +3189,7 @@ mod tests {
         };
         let page = audit(scene.server_id, &model, None, &east, &admin);
         assert_eq!(
-            txt::audit_head(&page.rows[0]),
+            txt::audit_head(&page.rows[0], Default::default()),
             "31 December 9999, 23:59 · The server"
         );
     }
@@ -3243,7 +3246,7 @@ mod tests {
         );
         assert_eq!((&rows[0].workspace, &rows[0].channel), (&None, &None));
         assert_eq!(
-            txt::audit_head(&rows[0]),
+            txt::audit_head(&rows[0], Default::default()),
             "15 January 2027, 08:00 · Ana with an access token"
         );
         assert_eq!(
@@ -3262,7 +3265,7 @@ mod tests {
         assert_eq!(rows[2].workspace, Some(About::Unknown));
         assert_eq!(rows[2].channel, Some(About::Unknown));
         assert!(matches!(rows[2].actor, Actor::Account { name: None, .. }));
-        let head = txt::audit_head(&rows[2]);
+        let head = txt::audit_head(&rows[2], Default::default());
         assert_eq!(
             head,
             "15 January 2027, 08:00 · An account · A workspace · A channel"
@@ -3276,7 +3279,7 @@ mod tests {
         };
         let page = audit(scene.server_id, &model, None, &east, &admin);
         assert_eq!(
-            txt::audit_head(&page.rows[1]),
+            txt::audit_head(&page.rows[1], Default::default()),
             "16 January 2027, 01:30 · The server · Studio · # general"
         );
 
@@ -3377,7 +3380,10 @@ mod tests {
                 name: Some("deploy".to_owned()),
             })
         );
-        assert!(txt::audit_head(&page.rows[0]).ends_with("Luca with an access token"));
+        assert!(
+            txt::audit_head(&page.rows[0], Default::default())
+                .ends_with("Luca with an access token")
+        );
         let lines: Vec<String> = page
             .rows
             .iter()

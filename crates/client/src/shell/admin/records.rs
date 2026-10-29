@@ -204,7 +204,12 @@ fn lines(name: String, details: Vec<String>, theme: &Theme) -> gpui::Div {
 }
 
 /// The row of an entry, with an action of the row at its right.
-fn audit_row(row: &AuditLine, action: Option<AnyElement>, theme: &Theme) -> AnyElement {
+fn audit_row(
+    row: &AuditLine,
+    action: Option<AnyElement>,
+    theme: &Theme,
+    cycle: junto_client_core::clock::HourCycle,
+) -> AnyElement {
     let id = row.id;
     let content = line(theme).child(
         div()
@@ -214,7 +219,7 @@ fn audit_row(row: &AuditLine, action: Option<AnyElement>, theme: &Theme) -> AnyE
                 div()
                     .typeface(theme.types.small, theme)
                     .ink(theme.colors.ink_2)
-                    .child(txt::audit_head(row)),
+                    .child(txt::audit_head(row, cycle)),
             )
             .child(
                 div()
@@ -662,7 +667,7 @@ impl Shell {
             row.name.clone(),
             vec![
                 txt::token_actions(&row.actions),
-                txt::token_detail(row),
+                txt::token_detail(row, self.state.read(cx).hour_cycle()),
                 txt::token_identifier(token_id),
             ],
             theme,
@@ -905,7 +910,7 @@ impl Shell {
                 txt::export_of(&row.of),
                 vec![
                     txt::export_status(row.status).to_owned(),
-                    txt::export_detail(row),
+                    txt::export_detail(row, self.state.read(cx).hour_cycle()),
                 ],
                 theme,
             ));
@@ -1756,7 +1761,7 @@ impl Shell {
             )
             .into_any_element()
         });
-        audit_row(row, action, theme)
+        audit_row(row, action, theme, self.state.read(cx).hour_cycle())
     }
 
     fn render_audit_footer(

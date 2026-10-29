@@ -50,7 +50,11 @@ fn device_title(row: &DeviceLine, theme: &Theme) -> gpui::Div {
 
 /// The name of a device, and under it how its key came to the account and when it was
 /// used. Each line is cut at the width of the row.
-fn device_text(row: &DeviceLine, theme: &Theme) -> gpui::Div {
+fn device_text(
+    row: &DeviceLine,
+    theme: &Theme,
+    cycle: junto_client_core::clock::HourCycle,
+) -> gpui::Div {
     let small = |text: String| {
         div()
             .typeface(theme.types.small, theme)
@@ -65,9 +69,9 @@ fn device_text(row: &DeviceLine, theme: &Theme) -> gpui::Div {
         .child(small(format!(
             "{} · {}",
             text::account::origin(row.origin),
-            text::account::added_on(row.added)
+            text::account::added_on(row.added, cycle)
         )))
-        .child(small(text::account::last_login(row.last_login)))
+        .child(small(text::account::last_login(row.last_login, cycle)))
 }
 
 /// A key as a person compares it: fixed-width type, in its groups.
@@ -331,7 +335,7 @@ impl Shell {
                     .min_w_0()
                     .items_center()
                     .gap(u(8.0))
-                    .child(device_text(row, theme))
+                    .child(device_text(row, theme, self.state.read(cx).hour_cycle()))
                     .child(row_action(
                         ("device-rename", row_number(device_id)),
                         text::account::RENAME,
@@ -543,7 +547,13 @@ impl Shell {
                     .mt(u(8.0)),
                 )
                 .child(sentence(text::account::COMPARE_KEY, theme).mt(u(6.0)))
-                .child(sentence(text::account::code_expires(*expires_at), theme).mt(u(2.0)))
+                .child(
+                    sentence(
+                        text::account::code_expires(*expires_at, self.state.read(cx).hour_cycle()),
+                        theme,
+                    )
+                    .mt(u(2.0)),
+                )
                 .children(failure(error))
                 .child(
                     div()

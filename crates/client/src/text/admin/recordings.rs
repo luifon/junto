@@ -55,8 +55,8 @@ pub fn length(length: Duration) -> String {
 
 /// When the recording started, its length when it ended, and its size when the server
 /// knows it.
-pub fn when(line: &RecordingLine) -> String {
-    let at = super::date_time(line.since);
+pub fn when(line: &RecordingLine, cycle: junto_client_core::clock::HourCycle) -> String {
+    let at = super::date_time(line.since, cycle);
     let mut parts = vec![if line.started {
         format!("Started {at}")
     } else {
@@ -243,17 +243,23 @@ mod tests {
     #[test]
     fn a_row_states_the_start_the_length_and_the_size() {
         let mut row = line(RecordingState::Ready);
-        assert_eq!(when(&row), "Started 15 January 2027, 08:00");
+        assert_eq!(
+            when(&row, Default::default()),
+            "Started 15 January 2027, 08:00"
+        );
         row.length = Some(Duration::from_secs(36 * 60 + 5));
         row.bytes = Some(48_200_000);
         assert_eq!(
-            when(&row),
+            when(&row, Default::default()),
             "Started 15 January 2027, 08:00 · 36 min 5 s · 48 MB"
         );
         row.started = false;
         row.length = None;
         row.bytes = None;
-        assert_eq!(when(&row), "Asked for 15 January 2027, 08:00");
+        assert_eq!(
+            when(&row, Default::default()),
+            "Asked for 15 January 2027, 08:00"
+        );
         assert_eq!(length(Duration::from_secs(42)), "42 s");
         assert_eq!(length(Duration::ZERO), "0 s");
         assert_eq!(length(Duration::from_secs(60)), "1 min 0 s");
