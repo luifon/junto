@@ -3769,3 +3769,9 @@ mod tests {
 pub const COPY_TEXT: &str = "Copy text";
 
 pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
+
+pub const EDIT_TEXT: &str = "Edit text";
+pub const CUT: &str = "Cut";
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+pub const SELECT_ALL: &str = "Select all";

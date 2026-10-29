@@ -95,6 +95,7 @@ pub(crate) enum Layer {
     PersonMenu(room::PersonMenuOpen),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
+    ComposerMenu(feed::ComposerMenuOpen),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
@@ -1802,6 +1803,7 @@ impl Shell {
         let stale = match &self.layer {
             Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
+            Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view),
             // The list of devices belongs to the sound settings of the call.
             Layer::DeviceMenu(_) => {
@@ -1915,6 +1917,7 @@ impl Shell {
             | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
             | Layer::MessageMenu(_)
+            | Layer::ComposerMenu(_)
             | Layer::ChannelMenu(_)
             | Layer::GroupMenu(_)
             | Layer::WorkspaceMenu(..)
