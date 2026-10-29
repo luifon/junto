@@ -327,6 +327,7 @@ impl Shell {
         &mut self,
         card: &RecordingCard,
         detail: &CardDetail,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut items: Vec<AnyElement> =
@@ -359,7 +360,23 @@ impl Shell {
                 div()
                     .flex_none()
                     .debug_selector(move || format!("recorded-file-{index}"))
-                    .child(item)
+                    .child(
+                        self.recording_row_menu(
+                            card,
+                            (
+                                format!(
+                                    "recording-file-menu:{}:{}",
+                                    card.recording_id, file.segment_id
+                                )
+                                .into(),
+                                text::COPY_NAME,
+                                file_title(file),
+                            ),
+                            item,
+                            window,
+                            cx,
+                        ),
+                    )
                     .into_any_element(),
             );
         }
@@ -368,16 +385,24 @@ impl Shell {
             TranscriptState::Ready | TranscriptState::Partial
         ) {
             let (held, stem) = (card.clone(), detail.text_stem.clone());
-            items.push(
-                MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
-                    .icon(Icon::Document)
-                    .selector("recorded-text")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
-                        this.close_layer(window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            let item = MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
+                .icon(Icon::Document)
+                .selector("recorded-text")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
+                    this.close_layer(window, cx);
+                }));
+            items.push(self.recording_row_menu(
+                card,
+                (
+                    format!("recording-file-menu:{}:text", card.recording_id).into(),
+                    text::COPY_NAME,
+                    text::RECORDING_TRANSCRIPT_TEXT.to_owned(),
+                ),
+                item,
+                window,
+                cx,
+            ));
         }
         div()
             .absolute()
@@ -398,6 +423,53 @@ impl Shell {
                 ),
             ))
             .into_any_element()
+    }
+
+    fn recording_row_menu(
+        &mut self,
+        card: &RecordingCard,
+        target: (SharedString, &'static str, String),
+        content: impl IntoElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (key, label, copied) = target;
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let name = copied.clone();
+        let (content, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                label,
+                cx.listener(move |this, _, _, cx| this.copy_text(copied.clone(), cx)),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_RECORDING_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(link) = this.state.read(cx).recording_link(server_id, recording_id)
+                    {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            content.into_any_element()
+        });
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(key.clone())
+            .relative()
+            .w_full()
+            .role(Role::Group)
+            .aria_label(name)
+            .when(label == text::COPY_TEXT, |row| {
+                row.focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+            })
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
     }
 
     fn transcript_row_menu(
@@ -801,7 +873,9 @@ impl Shell {
     /// chat, so the rows of the chat do not move.
     fn render_recording_parts(
         &mut self,
+        card: &RecordingCard,
         detail: &CardDetail,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -809,55 +883,77 @@ impl Shell {
         let mut items: Vec<AnyElement> =
             vec![menu_label(text::transcripts::PARTS_HELP, false, cx).into_any_element()];
         for (index, part) in detail.parts.iter().enumerate() {
-            items.push(
-                div()
-                    .debug_selector(move || format!("recording-part:{index}"))
-                    .flex()
-                    .items_start()
-                    .gap(u(6.0))
-                    .px(u(12.0))
-                    .py(u(5.0))
-                    .text_size(u(13.0))
-                    .line_height(u(18.0))
-                    .when(part.failed, |row| {
-                        row.child(div().mt(u(2.0)).child(icon(
-                            Icon::Warning,
-                            13.0,
-                            colors.cinnabar,
-                        )))
-                    })
-                    .child(
+            let content = div()
+                .debug_selector(move || format!("recording-part:{index}"))
+                .flex()
+                .items_start()
+                .gap(u(6.0))
+                .px(u(12.0))
+                .py(u(5.0))
+                .text_size(u(13.0))
+                .line_height(u(18.0))
+                .when(part.failed, |row| {
+                    row.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .ink(colors.ink)
-                                    .child(SharedString::from(part.title.clone())),
-                            )
-                            .child(
-                                div()
-                                    .ink(if part.failed {
-                                        colors.cinnabar_ink
-                                    } else {
-                                        colors.ink_2
-                                    })
-                                    .child(SharedString::from(part.state.clone())),
-                            )
-                            .when_some(part.span.clone(), |column, span| {
-                                column.child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("recording-part-span:{index}")
-                                        })
-                                        .font_family(theme.fonts.mono.clone())
-                                        .ink(colors.ink_2)
-                                        .child(SharedString::from(span)),
-                                )
-                            }),
+                            .mt(u(2.0))
+                            .child(icon(Icon::Warning, 13.0, colors.cinnabar)),
                     )
-                    .into_any_element(),
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .ink(colors.ink)
+                                .child(SharedString::from(part.title.clone())),
+                        )
+                        .child(
+                            div()
+                                .ink(if part.failed {
+                                    colors.cinnabar_ink
+                                } else {
+                                    colors.ink_2
+                                })
+                                .child(SharedString::from(part.state.clone())),
+                        )
+                        .when_some(part.span.clone(), |column, span| {
+                            column.child(
+                                div()
+                                    .debug_selector(move || format!("recording-part-span:{index}"))
+                                    .font_family(theme.fonts.mono.clone())
+                                    .ink(colors.ink_2)
+                                    .child(SharedString::from(span)),
+                            )
+                        }),
+                )
+                .into_any_element();
+            let value = [
+                Some(part.title.clone()),
+                Some(part.state.clone()),
+                part.span.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+            items.push(
+                self.recording_row_menu(
+                    card,
+                    (
+                        format!(
+                            "recording-part-menu:{}:{index}:{}",
+                            card.recording_id, part.title
+                        )
+                        .into(),
+                        text::COPY_TEXT,
+                        value,
+                    ),
+                    content,
+                    window,
+                    cx,
+                ),
             );
         }
         div()
@@ -1098,7 +1194,7 @@ impl Shell {
         let (server_id, recording_id) = (card.server_id, card.recording_id);
         let files_open =
             matches!(&self.layer, Layer::RecordingFiles(open) if *open == recording_id);
-        let menu = files_open.then(|| self.render_recording_files(card, detail, cx));
+        let menu = files_open.then(|| self.render_recording_files(card, detail, window, cx));
         let line = |sentence: String| {
             div()
                 .text_size(u(13.5))
@@ -1162,7 +1258,7 @@ impl Shell {
         if !detail.parts.is_empty() {
             let parts_open =
                 matches!(&self.layer, Layer::RecordingParts(open) if *open == recording_id);
-            let list = parts_open.then(|| self.render_recording_parts(detail, cx));
+            let list = parts_open.then(|| self.render_recording_parts(card, detail, window, cx));
             actions.push(
                 div()
                     .relative()

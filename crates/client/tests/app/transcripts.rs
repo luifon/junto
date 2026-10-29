@@ -524,6 +524,11 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
     for index in 0..detail.parts.len() {
         assert!(window.shows_named(format!("recording-part:{index}")));
     }
+    window.right_click_named("recording-part:0".to_owned());
+    window.click("context-action:Copy text");
+    assert!(window.shows("recording-parts-list"));
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(copied.contains(&detail.parts[0].title) && copied.contains(&detail.parts[0].state));
     // Each part states the range that the recorder reported for it, in the time of day of
     // the person: the seconds between its start and its end are those of the server.
     let held = world

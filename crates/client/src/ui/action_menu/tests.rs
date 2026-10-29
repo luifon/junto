@@ -196,3 +196,75 @@ fn choice_controls_and_menu_rows_expose_their_existing_actions(cx: &mut TestAppC
     click(cx, "context-action:Policy: Allow", MouseButton::Left);
     assert_eq!(host.read_with(cx, |host, _| host.choice), 0);
 }
+
+struct NestedHost {
+    focus: FocusHandle,
+    calls: usize,
+    closed: bool,
+}
+
+impl Render for NestedHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.closed {
+            return div().into_any_element();
+        }
+        let (row, actions) = collect_actions(|| {
+            div()
+                .id("nested-choice")
+                .debug_selector(|| "nested-choice".to_owned())
+                .child(
+                    crate::ui::MenuItem::new("nested-copy", "Copy metadata").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.calls += 1;
+                            cx.notify();
+                        },
+                    )),
+                )
+        });
+        let row = bind_action_menu(row, "nested-choice-menu", actions, window, cx);
+        let close = cx.listener(|this, _: &(), _, cx| {
+            this.closed = true;
+            cx.notify();
+        });
+        crate::ui::Menu::new("outer-choices", "Files", &self.focus)
+            .width(180.0)
+            .on_close(move |window, cx| close(&(), window, cx))
+            .child(row)
+            .popup_at(gpui::point(gpui::px(20.0), gpui::px(20.0)))
+    }
+}
+
+#[gpui::test]
+fn a_context_action_of_a_menu_row_keeps_the_enclosing_list_open(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| NestedHost {
+        focus: cx.focus_handle(),
+        calls: 0,
+        closed: false,
+    });
+    settle(cx);
+    click(cx, "nested-choice", MouseButton::Right);
+    click(cx, "context-action:Copy metadata", MouseButton::Left);
+    assert_eq!(host.read_with(cx, |host, _| host.calls), 1);
+    assert!(!host.read_with(cx, |host, _| host.closed));
+    click(cx, "nested-choice", MouseButton::Right);
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(!host.read_with(cx, |host, _| host.closed));
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    cx.simulate_mouse_down(
+        gpui::point(gpui::px(2.0), gpui::px(2.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_up(
+        gpui::point(gpui::px(2.0), gpui::px(2.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    settle(cx);
+    assert!(host.read_with(cx, |host, _| host.closed));
+}

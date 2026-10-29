@@ -42,6 +42,24 @@ pub(super) fn context_menu_key(keys: &gpui::Keystroke) -> bool {
 impl<T: InteractiveElement> ContextMenuExt for T {}
 
 #[derive(Default)]
+struct PaintedMenus(Vec<(gpui::WindowId, gpui::WeakFocusHandle, gpui::Bounds<Pixels>)>);
+impl gpui::Global for PaintedMenus {}
+
+fn over_child_menu(parent: &FocusHandle, at: Point<Pixels>, window: &Window, cx: &App) -> bool {
+    cx.try_global::<PaintedMenus>().is_some_and(|menus| {
+        menus.0.iter().any(|(id, focus, bounds)| {
+            *id == window.window_handle().window_id()
+                && bounds.contains(&at)
+                && focus.upgrade().is_some_and(|focus| {
+                    focus != *parent
+                        && parent.contains(&focus, window)
+                        && focus.contains_focused(window, cx)
+                })
+        })
+    })
+}
+
+#[derive(Default)]
 pub struct MenuPlacement(std::cell::Cell<Option<(Point<Pixels>, gpui::Size<Pixels>)>>);
 
 #[derive(IntoElement)]
@@ -198,6 +216,8 @@ impl RenderOnce for Menu {
         let close = self.on_close.map(std::rc::Rc::new);
         let (escape, outside, wheel) = (close.clone(), close.clone(), close);
         let layer = self.focus.clone();
+        let outside_focus = self.focus.clone();
+        let painted_focus = self.focus.clone();
         let margin = u(8.0).to_pixels(window.rem_size());
         let available = window.viewport_size();
         let scroll = window
@@ -254,7 +274,9 @@ impl RenderOnce for Menu {
                 cx.stop_propagation();
             })
             .on_mouse_down_out(move |_, window, cx| {
-                if let Some(close) = &outside {
+                if !over_child_menu(&outside_focus, window.mouse_position(), window, cx)
+                    && let Some(close) = &outside
+                {
                     close(window, cx);
                 }
             })
@@ -280,7 +302,19 @@ impl RenderOnce for Menu {
             .child(
                 gpui::canvas(
                     |_, _, _| (),
-                    move |_, (), window, _| {
+                    move |_, (), window, cx| {
+                        let id = window.window_handle().window_id();
+                        let menus = cx.default_global::<PaintedMenus>();
+                        menus.0.retain(|(_, focus, _)| focus.upgrade().is_some());
+                        if let Some((_, _, bounds)) = menus.0.iter_mut().find(|(held, focus, _)| {
+                            *held == id && focus.upgrade().as_ref() == Some(&painted_focus)
+                        }) {
+                            *bounds = scrolling.bounds();
+                        } else {
+                            menus
+                                .0
+                                .push((id, painted_focus.downgrade(), scrolling.bounds()));
+                        }
                         if let Some(placement) = &placement
                             && placement.0.get().is_none()
                         {
@@ -289,10 +323,12 @@ impl RenderOnce for Menu {
                                 .set(Some((scrolling.bounds().origin, window.viewport_size())));
                         }
                         let (wheel, scrolling) = (wheel.clone(), scrolling.clone());
+                        let parent = painted_focus.clone();
                         window.on_mouse_event(
                             move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
                                 if phase == gpui::DispatchPhase::Capture
                                     && !scrolling.bounds().contains(&event.position)
+                                    && !over_child_menu(&parent, event.position, window, cx)
                                     && let Some(close) = &wheel
                                 {
                                     close(window, cx);
