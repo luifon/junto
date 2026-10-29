@@ -37,6 +37,7 @@ mod recorded_work;
 pub mod recording;
 pub mod search;
 mod searching;
+mod target_links;
 mod threads;
 pub mod transcript_work;
 mod tray;
