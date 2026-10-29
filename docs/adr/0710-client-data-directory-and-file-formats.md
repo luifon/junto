@@ -32,6 +32,8 @@ Files:
 | `emoji-fonts.json` | The emoji of the table that the fonts of the system do not draw whole and those that a font without colour draws, with the key of the fonts that they were measured with (ADR 0758) |
 | `keys/<server identifier>.key` | The device key of one server (ADR 0711) |
 | `lock` | An empty file that carries the lock of the directory |
+| `desktop-instance.lock` | An empty file whose exclusive lock belongs to the running desktop process |
+| `desktop-instance.json` | The running desktop process's loopback port and random activation token; replaced on each start |
 
 - A file name is fixed text or a server identifier written as a UUID. No file name contains text that a server sent.
 - Every file is created with access for the user only.
@@ -67,6 +69,7 @@ Writes:
 
 - A file is replaced in one step: the new content is written to a temporary file in the same directory, flushed to the disk, and renamed over the file. On Unix the directory is flushed too.
 - Every change of a stored file happens under an exclusive lock on `lock`. A change of the server book reads the file again under the lock, changes one entry and writes the file. Two programs that use one data directory do not lose each other's changes. A thread that holds the lock can take it again, so one step can change the book and a key file under one lock. The lock is known by the identity of the opened directory (the device and file number on Unix, the volume and file index on Windows) and not by the path, so a second path to the same directory is the same lock.
+- The desktop process also holds a separate, nonblocking exclusive file lock for its lifetime (ADR 0730). Opening this lock checks the file's kind, ownership and private access through the opened handle. Another desktop start on the same directory forwards an activation; the command-line client still uses the directory's ordinary write lock. Different spellings of the same path reach the same lock file. The process lock is released by the operating system on exit, and a new owner replaces the endpoint and its token, so an interrupted process leaves no active ownership record.
 - Removing a server deletes its entry and its key file under one hold of the lock. Forgetting an account deletes the key file and clears the membership in the same way. A key is created only while the book still has the entry that it is for, under the lock.
 - Every file is opened through the opened data directory and never through a path that could name another object since the directory was checked (ADR 0711).
 - A membership or a profile state that could not be written stays marked as unsaved in memory. The mark is cleared only by a write that succeeded, and every later action of that server tries the write again.

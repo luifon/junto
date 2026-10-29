@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::logs::LogFile;
+use junto_client_core::instance::{Activation, Instance, Start};
 use junto_client_core::paths::{DATA_DIR_VARIABLE, data_dir_of_this_user};
 use junto_client_core::{Client, ClientOptions};
 
@@ -359,13 +360,40 @@ fn main() -> ExitCode {
         }
     };
     let log_file = start_log();
+    let chosen_dir = arguments.data_dir.is_some();
+    let directory = match data_dir(arguments.data_dir) {
+        Ok(directory) => directory,
+        Err(problem) => {
+            start_failed(&problem, None);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (_instance, mut activations) =
+        match junto_client_core::paths::DataDir::open(directory.clone())
+            .map_err(|error| error.to_string())
+            .and_then(|directory| {
+                Instance::start(
+                    &directory,
+                    Activation {
+                        link: None,
+                        activation_token: std::env::var("XDG_ACTIVATION_TOKEN").ok(),
+                    },
+                )
+                .map_err(|error| error.to_string())
+            }) {
+            Ok(Start::Primary(instance, activations)) => (instance, activations),
+            Ok(Start::Forwarded) => return ExitCode::SUCCESS,
+            Err(problem) => {
+                start_failed(&problem, None);
+                return ExitCode::FAILURE;
+            }
+        };
     #[cfg(target_os = "linux")]
     junto_client::renderer::choose_before_the_first_window();
-    let chosen_dir = arguments.data_dir.is_some();
     let update_source = arguments.update_source.clone();
-    let client = data_dir(arguments.data_dir).and_then(|directory| {
+    let client = update_source_of(update_source.as_deref()).and_then(|source| {
         let mut options = ClientOptions::new(directory);
-        options.update_source = update_source_of(update_source.as_deref())?.map(|source| {
+        options.update_source = source.map(|source| {
             std::sync::Arc::new(source)
                 as std::sync::Arc<dyn junto_client_core::updates::UpdateSource>
         });
@@ -432,6 +460,17 @@ fn main() -> ExitCode {
             return;
         }
         let state = app::state(client, start, cx);
+        cx.spawn(async move |cx| {
+            while let Some(activation) = activations.recv().await {
+                cx.update(|cx| {
+                    junto_client::notify::bring_to_front(
+                        activation.activation_token.as_deref(),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
         if update_source.is_some() {
             state.update(cx, |state, _| {
                 state.use_update_source(update_source.clone())

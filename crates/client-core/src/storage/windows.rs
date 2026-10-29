@@ -113,6 +113,12 @@ impl Handle {
             .open(self.path.join(name))
     }
 
+    pub(super) fn open_checked_lock(&self, name: &str) -> Result<File, Fault> {
+        let file = self.open_lock(name)?;
+        check(&file, false, true)?;
+        Ok(file)
+    }
+
     pub(super) fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         fs::rename(self.path.join(from), self.path.join(to))
     }

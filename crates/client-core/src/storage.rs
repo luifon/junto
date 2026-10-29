@@ -417,6 +417,20 @@ impl Dir {
             _thread: PhantomData,
         })
     }
+
+    pub(crate) fn try_lock_file(&self, name: &str) -> Result<Option<File>, StorageError> {
+        self.entry(name, "lock")?;
+        let path = self.path.join(name);
+        let file = self
+            .handle
+            .open_checked_lock(name)
+            .map_err(|fault| storage_error(fault, "lock", &path))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(StorageError::io("lock", &path, error)),
+        }
+    }
 }
 
 thread_local! {

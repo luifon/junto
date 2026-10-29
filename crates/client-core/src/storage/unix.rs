@@ -125,6 +125,12 @@ impl Handle {
         )?))
     }
 
+    pub(super) fn open_checked_lock(&self, name: &str) -> Result<File, Fault> {
+        let file: OwnedFd = self.open_lock(name)?.into();
+        check(&file, FileType::RegularFile, true)?;
+        Ok(File::from(file))
+    }
+
     pub(super) fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         Ok(rustix::fs::renameat(
             &self.directory,

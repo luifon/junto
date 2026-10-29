@@ -78,6 +78,7 @@ The release tooling of the client: the macOS bundle, its disk image and their si
 - `tools/check-pins.sh`: fails when a version that two files state differs between them, or when an image, a CI action, a Debian package of an image or a package that a workflow installs is not pinned (ADR 0014, ADR 0905).
 - `tools/process_usage.py <path>`: reads the memory, the processor time and the threads of every process whose executable is under a path, by the method of the `modes` target, to compare another application with the client (ADR 0914).
 - `tools/check-condition-wait.sh` (ADR 0786), `tools/check-client-start.sh` (a native start of the client with an empty data directory), `tools/native-devices.sh` (ADR 0913).
+- `tools/check_single_instance.py <binary>`: on an isolated X11 display, checks a second start restoring the same process's minimized and closed main window, and two profiles running independently. The Linux CI job runs it through `tools/linux/display.sh x11`.
 - `tools/with_native_postgres.py <command>`: on macOS, starts the PostgreSQL build for macOS without Docker, of the version and SHA-256 in `tools/ci/pins.sh`, gives the command `JUNTO_TEST_DATABASE_URL`, and removes the database. The macOS CI job runs the window tests with it (ADR 0916). `JUNTO_TEST_POSTGRES_DOWNLOADS` names the folder of the download (default `~/.cache/junto-postgres`).
 - `tools/linux/`: the Linux build image and its runner. `tools/windows/`: the setup and the lock of the Windows CI machine, and PostgreSQL for the window tests on Windows (ADR 0912).
 
