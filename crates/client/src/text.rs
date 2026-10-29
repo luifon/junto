@@ -3796,3 +3796,5 @@ pub const OPEN_LINK: &str = "Open link";
 
 pub const COPY_NAME: &str = "Copy name";
 pub const COPY_ACCOUNT_ID: &str = "Copy account ID";
+
+pub const ACCOUNT_ACTIONS: &str = "Account actions";

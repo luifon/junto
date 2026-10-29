@@ -4,6 +4,7 @@
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
 pub mod account;
+mod account_menus;
 pub mod admin;
 mod arrange;
 mod book;
@@ -94,6 +95,7 @@ pub(crate) enum Layer {
     ShareMenu,
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
+    AccountMenu(Box<account_menus::OpenAccountMenu>),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
     ComposerMenu(feed::ComposerMenuOpen),
@@ -1773,6 +1775,11 @@ impl Shell {
             .on_action(cx.listener(|_, action: &crate::ui::OpenLink, _, cx| {
                 crate::opening::open_link(&action.link, cx);
             }))
+            .on_action(cx.listener(
+                |this, action: &account_menus::OpenAccountMenu, window, cx| {
+                    this.open_account_menu(action.clone(), window, cx);
+                },
+            ))
             // After every click: a press that closed the menu of the server is over. A press
             // ends without a release in the window when the system took it, for example a
             // press on the title bar of Windows that moves the window; the next press ends it
@@ -1928,6 +1935,11 @@ impl Shell {
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
+            Layer::AccountMenu(open) => self
+                .state
+                .read(cx)
+                .server(open.owner.entry.server_id)
+                .is_none_or(|server| server.owner() != Some(open.owner)),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1985,6 +1997,7 @@ impl Shell {
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
+            Layer::AccountMenu(_) => self.render_account_menu(window, cx),
         }
     }
 }

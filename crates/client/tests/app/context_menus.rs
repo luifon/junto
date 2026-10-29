@@ -708,3 +708,86 @@ fn a_member_row_copies_identity_and_opens_its_existing_direct_action(cx: &mut Te
         })
     });
 }
+
+#[gpui::test]
+fn message_author_names_and_avatars_have_account_actions_instead_of_message_actions(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let account = admin.handle.account().unwrap();
+    admin.send(
+        &world,
+        window.selected_channel(),
+        document("An author's plan"),
+    );
+    let message = window.until_message("An author's plan").message.id;
+    window.until("the author's name is read", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == message && row.author == "Ada")
+    });
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    assert!(!window.shows("message-menu"));
+    window.click_named(format!("account-copy-id:{account}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        account.to_string()
+    );
+    window.press_at_count(
+        gpui::point(bounds.left() + px(20.0), bounds.top() + px(22.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    window.click_named(format!("account-copy-name:{account}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Ada"
+    );
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    window.click_named(format!("account-message:{account}"));
+    window.until("the author's conversation is shown", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .conversation
+                .as_ref()
+                .is_some_and(|conversation| conversation.account_id == account)
+        })
+    });
+    window.click_channel("general");
+    window.until_message("An author's plan");
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    let server_id = window.handle().id();
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.log_out(server_id, cx));
+    window.until("the account menu closes at logout", |window| {
+        !window.shows("account-menu")
+    });
+}

@@ -2993,6 +2993,19 @@ impl Shell {
             .map_or(0, |author| author.as_uuid().as_u128());
         let faces = self.faces(feed.server_id);
         let picture = message.author_id.and_then(|author| faces.image(author));
+        let account_owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let account_target =
+            message
+                .author_id
+                .map(|account_id| super::account_menus::AccountTarget {
+                    account_id,
+                    name: row.author.clone(),
+                    departed: feed.names.departed.contains_key(&account_id),
+                });
         let body: Vec<AnyElement> = if message.deleted {
             vec![
                 div()
@@ -3043,14 +3056,18 @@ impl Shell {
                 .items_baseline()
                 .gap(u(8.0))
                 .line_height(u(19.0))
-                .child(
+                .child(super::account_menus::account_target(
+                    SharedString::from(format!("author-name:{message_id}")),
+                    account_owner,
+                    account_target.clone(),
                     div()
                         .min_w_0()
                         .truncate()
                         .font_weight(FontWeight::BOLD)
                         .text_size(u(14.5))
                         .child(SharedString::from(row.author.clone())),
-                )
+                    cx,
+                ))
                 .child(
                     div()
                         .flex_none()
@@ -3158,7 +3175,13 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(seed, 34.0).image(picture))
+                            .child(super::account_menus::account_target(
+                                SharedString::from(format!("author-picture:{message_id}")),
+                                account_owner,
+                                account_target,
+                                Avatar::new(seed, 34.0).image(picture),
+                                cx,
+                            ))
                             .into_any_element()
                     })
                     .child(
