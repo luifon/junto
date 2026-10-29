@@ -21,6 +21,7 @@ pub mod permissions;
 pub mod picture;
 #[cfg(target_os = "linux")]
 pub mod renderer;
+pub(crate) mod selectable;
 pub mod shell;
 pub mod state;
 #[cfg(windows)]

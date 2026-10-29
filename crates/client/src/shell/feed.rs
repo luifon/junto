@@ -474,6 +474,8 @@ struct Rich {
     families: Vec<(Range<usize>, SharedString)>,
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
+    copy_targets: Vec<(Range<usize>, String)>,
+    replacements: Vec<(Range<usize>, String)>,
 }
 
 impl Rich {
@@ -484,6 +486,8 @@ impl Rich {
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
+            copy_targets: Vec::new(),
+            replacements: Vec::new(),
         };
         for node in content {
             let start = rich.text.len();
@@ -510,10 +514,11 @@ impl Rich {
                 }
                 Inline::Code { text } => {
                     // A thin space at each end stands for the padding of the design.
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     let stand_ins = rich.push_shown(text, drawings);
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     let range = start..rich.text.len();
+                    rich.copy_targets.push((range.clone(), text.clone()));
                     let style = HighlightStyle {
                         color: Some(colors.terracotta_deep.into()),
                         background_color: Some(colors.code_wash.into()),
@@ -545,10 +550,11 @@ impl Rich {
                         ..HighlightStyle::default()
                     };
                     rich.style(range.clone(), style, &stand_ins, theme);
+                    rich.copy_targets.push((range.clone(), link.to_string()));
                     rich.links.push((range, link));
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     match node {
                         Inline::Account { account_id } => {
                             rich.text.push('@');
@@ -570,7 +576,7 @@ impl Rich {
                         }
                         _ => rich.text.push_str(text::MENTION_EVERYONE),
                     }
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     rich.highlights.push((
                         start..rich.text.len(),
                         HighlightStyle {
@@ -591,12 +597,24 @@ impl Rich {
     fn push_shown(&mut self, text: &str, drawings: &Drawings) -> Vec<Range<usize>> {
         let start = self.text.len();
         let shown = drawings.shown(text);
+        self.replacements.extend(
+            shown
+                .replacements()
+                .map(|(from, to)| (start + to.start..start + to.end, text[from].to_owned())),
+        );
         let stand_ins = shown
             .stand_ins()
             .map(|range| start + range.start..start + range.end)
             .collect();
         self.text.push_str(&shown.text);
         stand_ins
+    }
+
+    fn padding(&mut self) {
+        let start = self.text.len();
+        self.text.push('\u{2009}');
+        self.replacements
+            .push((start..self.text.len(), String::new()));
     }
 
     /// Gives `range` the style `style`, and each stand-in inside it the colour of secondary
@@ -633,25 +651,35 @@ impl Rich {
             .with_highlights(self.highlights)
             .with_font_family_overrides(self.families);
         if links.is_empty() {
-            return styled.into_any_element();
+            return crate::selectable::SelectableText::rich(
+                styled,
+                self.copy_targets,
+                self.replacements,
+            )
+            .into_any_element();
         }
         let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
+        let targets = self.copy_targets;
         let hover = links.clone();
-        InteractiveText::new(("rich", id), styled)
-            .on_click(ranges, move |index, _, cx| {
-                // The address is HTTP, HTTPS or mailto: the application of the system
-                // for it opens it.
-                if let Some((_, link)) = links.get(index) {
-                    crate::opening::open_link(link, cx);
-                }
-            })
-            .tooltip(move |index, window, cx| {
-                hover
-                    .iter()
-                    .find(|(range, _)| range.contains(&index))
-                    .map(|(_, link)| tooltip(link.to_string())(window, cx))
-            })
-            .into_any_element()
+        crate::selectable::SelectableText::rich(
+            InteractiveText::new(("rich", id), styled)
+                .on_click(ranges, move |index, _, cx| {
+                    // The address is HTTP, HTTPS or mailto: the application of the system
+                    // for it opens it.
+                    if let Some((_, link)) = links.get(index) {
+                        crate::opening::open_link(link, cx);
+                    }
+                })
+                .tooltip(move |index, window, cx| {
+                    hover
+                        .iter()
+                        .find(|(range, _)| range.contains(&index))
+                        .map(|(_, link)| tooltip(link.to_string())(window, cx))
+                }),
+            targets,
+            self.replacements,
+        )
+        .into_any_element()
     }
 }
 
@@ -751,6 +779,9 @@ fn code_block(
     language: Option<&str>,
     tokens: &[(Range<usize>, Token)],
     theme: &Theme,
+    message_id: Option<MessageId>,
+    block_index: usize,
+    cx: &mut Context<Shell>,
 ) -> AnyElement {
     let colors = theme.colors;
     let colour = |token: Token| match token {
@@ -772,6 +803,7 @@ fn code_block(
             )
         })
         .collect();
+    let copy = code.to_owned();
     div()
         .relative()
         .flex_none()
@@ -791,18 +823,31 @@ fn code_block(
         .text_size(u(13.0))
         .line_height(u(19.0))
         .ink(colors.code_text)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .mb(u(4.0))
+                .text_size(u(12.0))
+                .ink(colors.bone_3)
+                .child(SharedString::from(language.unwrap_or_default().to_owned()))
+                .child(
+                    div()
+                        .debug_selector(move || match message_id {
+                            Some(id) => format!("copy-code:{id}:{block_index}"),
+                            None => format!("copy-code:{block_index}"),
+                        })
+                        .child(
+                            Button::new(("copy-code", block_index))
+                                .label(text::COPY_TEXT)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_text(copy.clone(), cx)
+                                })),
+                        ),
+                ),
+        )
         .child(StyledText::new(code.to_owned()).with_highlights(highlights))
-        .when_some(language, |block, language| {
-            block.child(
-                div()
-                    .absolute()
-                    .top(u(6.0))
-                    .right(u(9.0))
-                    .text_size(u(12.0))
-                    .ink(colors.bone_3)
-                    .child(SharedString::from(language.to_owned())),
-            )
-        })
         .into_any_element()
 }
 
@@ -1680,7 +1725,15 @@ impl Shell {
                 ),
                 Block::Code { text, language } => {
                     let tokens = self.code_tokens.of(text, language.as_deref());
-                    blocks.push(code_block(text, language.as_deref(), &tokens, theme));
+                    blocks.push(code_block(
+                        text,
+                        language.as_deref(),
+                        &tokens,
+                        theme,
+                        message.map(|(_, message, _)| message.id),
+                        block_index,
+                        cx,
+                    ));
                 }
                 Block::List { ordered, items } => {
                     for (number, item) in items.iter().enumerate() {
@@ -2557,6 +2610,23 @@ impl Shell {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
+            .when_some(row.message.document.as_ref(), |bar, document| {
+                let copied = crate::state::feed::copy_text(document, &feed.names);
+                bar.child(
+                    div()
+                        .debug_selector(move || format!("copy-message:{message_id}"))
+                        .child(
+                            Button::new("copy-message")
+                                .kind(ButtonKind::Ghost)
+                                .label(text::COPY_TEXT)
+                                .h(u(22.0))
+                                .px(u(6.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_text(copied.clone(), cx)
+                                })),
+                        ),
+                )
+            })
             .when(row.can_react && row.react_refused, |bar| {
                 bar.child(refused(
                     "react",
@@ -3319,6 +3389,18 @@ impl Shell {
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
         let mut items = Vec::new();
+        if let Some(document) = &row.message.document {
+            let copied = crate::state::feed::copy_text(document, &feed.names);
+            items.push(
+                MenuItem::new("message-copy-text", text::COPY_TEXT)
+                    .selector("message-copy-text")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.copy_text(copied.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         if row.can_react && row.react_refused {
             items.push(
                 MenuItem::new("message-react", text::REACT)

@@ -117,7 +117,7 @@ impl RenderOnce for Segmented {
                 .when_some(handler, |segment, handler| {
                     segment.on_click(move |_, window, cx| handler(index, window, cx))
                 })
-                .child(option)
+                .child(crate::selectable::SelectableText::unobserved(option))
         });
         div()
             .id(self.id)

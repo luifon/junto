@@ -274,7 +274,8 @@ impl Eq for MessageRow {}
 impl MessageRow {
     /// The message offers at least one action: its bar and its menu have an entry.
     pub fn has_actions(&self) -> bool {
-        self.can_react
+        (!self.message.deleted && self.message.document.is_some())
+            || self.can_react
             || self.can_reply
             || self.can_thread
             || self.can_pin
@@ -513,6 +514,73 @@ fn clock(at: OffsetDateTime) -> String {
 }
 
 /// The text of a document on one line, without its formatting, up to a bound.
+/// Text for the clipboard, retaining line breaks, code indentation and list items.
+pub fn copy_text(document: &Document, names: &Names) -> String {
+    let inline = |nodes: &[Inline]| {
+        let mut out = String::new();
+        for node in nodes {
+            match node {
+                Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
+                    out.push_str(text)
+                }
+                Inline::Account { account_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .accounts
+                            .get(account_id)
+                            .map_or(crate::text::UNKNOWN_PERSON, String::as_str),
+                    );
+                }
+                Inline::Role { role_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .roles
+                            .get(role_id)
+                            .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
+                    );
+                }
+                Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
+            }
+        }
+        out
+    };
+    document
+        .blocks
+        .iter()
+        .map(|block| match block {
+            Block::Paragraph { content } | Block::Quote { content } => inline(content),
+            Block::Code { text, .. } => text.clone(),
+            Block::List { ordered, items } => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let prefix = if *ordered {
+                        format!("{}. ", index + 1)
+                    } else {
+                        "- ".to_owned()
+                    };
+                    prefix + &inline(item)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Block::Checklist { items } => items
+                .iter()
+                .map(|item| {
+                    format!(
+                        "- [{}] {}",
+                        if item.checked { "x" } else { " " },
+                        inline(&item.content)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
     fn inline(content: &[Inline], names: &Names, out: &mut String) {
         for node in content {

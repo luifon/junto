@@ -1391,7 +1391,7 @@ fn a_check_box_takes_a_click_only_where_its_message_can_be_edited(cx: &mut TestA
 }
 
 #[gpui::test]
-fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
+fn a_message_of_an_archived_channel_offers_only_copying(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let proxy = world.run(FaultProxy::start(&server));
@@ -1448,11 +1448,24 @@ fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
     });
     for message_id in [own, other] {
         let held = row(&mut window, message_id);
-        assert!(!held.can_react && !held.can_reply && !held.has_actions());
+        assert!(!held.can_react && !held.can_reply && held.has_actions());
     }
-    // No menu opens, and a reaction and a check box take no click.
+    // Copying remains available without changing the archived content.
     window.right_click_named(format!("message:{other}"));
-    assert!(!window.shows("message-menu"));
+    assert!(window.shows("message-menu"));
+    for action in [
+        "message-react",
+        "message-reply",
+        "message-edit",
+        "message-delete",
+    ] {
+        assert!(!window.shows(action), "{action}");
+    }
+    window.click("message-copy-text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "A message of Ada"
+    );
     window.click_named(format!("reaction:{other}:0"));
     window.click_named(format!("check:{own}:0:0"));
     window.until("no change of a message is on its way", |window| {

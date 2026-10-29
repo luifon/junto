@@ -487,7 +487,9 @@ impl RenderOnce for Button {
                 frame.child(icon(shown, icon_size, colour))
             })
             .when_some(self.label, |frame, text| {
-                frame.child(super::paint_text(text, label))
+                frame.child(crate::selectable::SelectableText::unobserved(
+                    super::paint_text(text, label),
+                ))
             })
             .when_some(self.count, |frame, count| {
                 frame.relative().child(
