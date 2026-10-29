@@ -41,6 +41,41 @@ pub(super) fn context_menu_key(keys: &gpui::Keystroke) -> bool {
 
 impl<T: InteractiveElement> ContextMenuExt for T {}
 
+#[derive(Default)]
+pub struct MenuPlacement(std::cell::Cell<Option<(Point<Pixels>, gpui::Size<Pixels>)>>);
+
+#[derive(IntoElement)]
+struct StableMenu {
+    menu: Menu,
+    offset: Point<Pixels>,
+    placement: std::rc::Rc<MenuPlacement>,
+}
+
+impl RenderOnce for StableMenu {
+    fn render(mut self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        let origin = self
+            .placement
+            .0
+            .get()
+            .filter(|(_, size)| *size == viewport)
+            .map(|(origin, _)| origin);
+        if origin.is_none() {
+            self.placement.0.set(None);
+        }
+        self.menu.placement = Some(self.placement);
+        match origin {
+            Some(origin) => {
+                let margin = u(8.0).to_pixels(window.rem_size());
+                self.menu.height_limit =
+                    Some((viewport.height - origin.y - margin).max(gpui::px(0.0)));
+                self.menu.popup_at(origin)
+            }
+            None => self.menu.popup(self.offset),
+        }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct Menu {
     id: ElementId,
@@ -51,6 +86,8 @@ pub struct Menu {
     children: Vec<AnyElement>,
     selector: Option<&'static str>,
     on_close: Option<CloseHandler>,
+    placement: Option<std::rc::Rc<MenuPlacement>>,
+    height_limit: Option<Pixels>,
 }
 
 impl Menu {
@@ -70,6 +107,8 @@ impl Menu {
             children: Vec::new(),
             selector: None,
             on_close: None,
+            placement: None,
+            height_limit: None,
         }
     }
 
@@ -98,6 +137,20 @@ impl Menu {
     /// Floats at a position in window coordinates, such as an input's caret.
     pub fn popup_at(self, position: Point<Pixels>) -> AnyElement {
         self.floating(gpui::anchored().position(position))
+    }
+
+    /// Keeps the first painted origin while contents change. Supply a fresh placement for each opening.
+    pub fn popup_stable(
+        self,
+        offset: Point<Pixels>,
+        placement: std::rc::Rc<MenuPlacement>,
+    ) -> AnyElement {
+        StableMenu {
+            menu: self,
+            offset,
+            placement,
+        }
+        .into_any_element()
     }
 
     fn floating(self, anchor: gpui::Anchored) -> AnyElement {
@@ -140,6 +193,11 @@ impl RenderOnce for Menu {
             .read(cx)
             .clone();
         let scrolling = scroll.clone();
+        let max_height = (available.height - margin * 2.0).max(gpui::px(0.0));
+        let max_height = self
+            .height_limit
+            .map_or(max_height, |limit| limit.min(max_height));
+        let placement = self.placement;
         let frame = div()
             .id(self.id)
             .role(Role::Menu)
@@ -159,7 +217,7 @@ impl RenderOnce for Menu {
                 metrics.menu_width
             })))
             .max_w((available.width - margin * 2.0).max(gpui::px(0.0)))
-            .max_h((available.height - margin * 2.0).max(gpui::px(0.0)))
+            .max_h(max_height)
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .border_1()
@@ -205,6 +263,13 @@ impl RenderOnce for Menu {
                 gpui::canvas(
                     |_, _, _| (),
                     move |_, (), window, _| {
+                        if let Some(placement) = &placement
+                            && placement.0.get().is_none()
+                        {
+                            placement
+                                .0
+                                .set(Some((scrolling.bounds().origin, window.viewport_size())));
+                        }
                         let (wheel, scrolling) = (wheel.clone(), scrolling.clone());
                         window.on_mouse_event(
                             move |event: &gpui::ScrollWheelEvent, phase, window, cx| {

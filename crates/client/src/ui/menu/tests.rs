@@ -70,7 +70,7 @@ fn a_nested_channel_menu_does_not_open_the_parent_menu(cx: &mut TestAppContext) 
 }
 
 use super::{ContextMenuExt, Menu, MenuItem};
-use gpui::{StatefulInteractiveElement, point};
+use gpui::point;
 
 struct PopupHost {
     trigger: FocusHandle,
@@ -247,4 +247,67 @@ fn a_wheel_outside_a_menu_closes_it_but_its_own_list_keeps_scrolling(cx: &mut Te
     assert!(!host.read_with(cx, |host, _| host.opened));
     let trigger = host.read_with(cx, |host, _| host.trigger.clone());
     assert!(cx.update(|window, _| trigger.is_focused(window)));
+}
+
+struct GrowingPopup {
+    focus: FocusHandle,
+    placement: std::rc::Rc<super::MenuPlacement>,
+    grown: bool,
+}
+
+impl Render for GrowingPopup {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let menu = Menu::new("growing", "Actions", &self.focus)
+            .selector("growing")
+            .children((0_usize..if self.grown { 30 } else { 3 }).map(|index| {
+                MenuItem::new(("growing-action", index), format!("Action {index}")).selector(
+                    if index == 0 {
+                        "growing-first"
+                    } else {
+                        "growing-action"
+                    },
+                )
+            }))
+            .popup_stable(point(px(10.0), px(10.0)), self.placement.clone());
+        div().relative().size_full().child(
+            div()
+                .absolute()
+                .right_0()
+                .bottom_0()
+                .size(px(20.0))
+                .child(menu),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_popup_that_grows_keeps_its_existing_actions_in_place(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| GrowingPopup {
+        focus: cx.focus_handle(),
+        placement: Default::default(),
+        grown: false,
+    });
+    settle(cx);
+    let first = cx.debug_bounds("growing-first").unwrap();
+    host.update(cx, |host, cx| {
+        host.grown = true;
+        cx.notify();
+    });
+    settle(cx);
+    assert_eq!(
+        cx.debug_bounds("growing-first").unwrap().origin,
+        first.origin
+    );
+    let bounds = cx.debug_bounds("growing").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(bounds.top() >= px(0.0) && bounds.bottom() <= viewport.height);
+    cx.simulate_resize(gpui::size(px(320.0), px(240.0)));
+    settle(cx);
+    let resized = cx.debug_bounds("growing").unwrap();
+    assert!(resized.left() >= px(0.0) && resized.right() <= px(320.0));
+    assert!(resized.top() >= px(0.0) && resized.bottom() <= px(240.0));
 }

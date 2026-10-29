@@ -1333,3 +1333,70 @@ fn a_thread_row_menu_reads_and_changes_follow_without_selecting_its_channel(
                 .is_some_and(|thread| thread.root_id == root)
     });
 }
+
+#[gpui::test]
+fn a_thread_menu_keeps_failures_visible_and_retries_reads_and_changes(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let root = admin.send(&world, target, document("Thread recovery")).id;
+    admin.reply(
+        &world,
+        root,
+        crate::notices::mention("For ", window.own_account()),
+    );
+    window.until("the thread row is shown", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    let read = format!("/api/v1/messages/{root}/thread/read");
+    proxy.fail(&read, std::iter::repeat_n(Fault::Refused, 64));
+    window.right_click_named(format!("thread-row:{root}"));
+    window.until("the menu states the failed read", |window| {
+        window.shows("thread-menu-failed")
+    });
+    assert!(window.shows("thread-menu-retry"));
+    assert_eq!(window.selected_channel(), selected);
+    proxy.clear_faults(&read);
+    window.click("thread-menu-retry");
+    let owner = window.handle().owner().unwrap();
+    window.until("the menu retry loaded its state", |window| {
+        !window.shows("thread-menu-failed")
+            && window
+                .state
+                .read_with(&window.cx, |state, _| {
+                    state.thread_menu_control(owner, root)
+                })
+                .is_some_and(|control| !control.busy)
+    });
+    let follow = format!("/api/v1/messages/{root}/thread/follow");
+    proxy.fail(&follow, [Fault::Refused]);
+    window.click("thread-follow");
+    window.until("the menu states the refused change", |window| {
+        window.shows("thread-menu-refused")
+    });
+    assert_eq!(window.selected_channel(), selected);
+    assert!(
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .following
+    );
+    window.click("thread-follow");
+    window.until(
+        "the repeated change succeeds and closes the menu",
+        |window| {
+            !window.shows("thread-menu")
+                && !world
+                    .run(window.handle().api().thread_state(root))
+                    .unwrap()
+                    .following
+        },
+    );
+    assert_eq!(window.selected_channel(), selected);
+    assert!(!window.shows("thread-panel"));
+}

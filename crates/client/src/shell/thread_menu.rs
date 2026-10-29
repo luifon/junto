@@ -101,6 +101,7 @@ impl Shell {
             .state
             .update(cx, |state, cx| state.begin_thread_menu(owner, root_id, cx))
         {
+            self.thread_menu_placement = Default::default();
             self.open_layer(Layer::ThreadMenu(open), window, cx);
         }
     }
@@ -238,7 +239,7 @@ impl Shell {
                     .when_some(refused, |menu, reason| {
                         menu.child(Notice::error(reason).selector("thread-menu-refused"))
                     })
-                    .popup(gpui::Point::default()),
+                    .popup_stable(gpui::Point::default(), self.thread_menu_placement.clone()),
             )
             .into_any_element()
     }

@@ -244,6 +244,7 @@ pub struct Shell {
     focus: FocusHandle,
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
+    thread_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     pub(crate) layer: Layer,
     /// The message under the pointer. Only its row carries the bar of actions, so the
     /// other rows build, lay out and hit-test no hidden buttons at each frame (ADR 0914).
@@ -742,6 +743,7 @@ impl Shell {
             state,
             focus: cx.focus_handle(),
             layer_focus: cx.focus_handle(),
+            thread_menu_placement: Default::default(),
             layer: Layer::None,
             return_focus: None,
             address,
