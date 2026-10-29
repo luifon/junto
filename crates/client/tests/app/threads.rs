@@ -912,7 +912,7 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
 
 impl Window {
     /// Opens the direct conversation with a member through the members panel.
-    fn open_conversation_with(
+    pub(crate) fn open_conversation_with(
         &mut self,
         account_id: junto_client_core::protocol::ids::AccountId,
         name: &str,

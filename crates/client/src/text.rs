@@ -3767,3 +3767,5 @@ mod tests {
     }
 }
 pub const COPY_TEXT: &str = "Copy text";
+
+pub const COPY_MESSAGE_LINK: &str = "Copy link to message";

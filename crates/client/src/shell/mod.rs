@@ -23,6 +23,7 @@ mod join;
 mod keybinds;
 pub mod linking;
 mod main_area;
+mod message_links;
 mod moving;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
@@ -1576,7 +1577,8 @@ impl Render for Shell {
                     .relative()
                     .size_full()
                     .child(detached)
-                    .children(self.render_copy_control(window, cx)),
+                    .children(self.render_copy_control(window, cx))
+                    .children(self.render_message_link_refusal(cx)),
                 self.text_selection.clone(),
             )
             .into_any_element();
@@ -1723,6 +1725,7 @@ impl Render for Shell {
             })
             .child(body)
             .children(self.render_panic_notice(cx))
+            .children(self.render_message_link_refusal(cx))
             .when(frame, |shell| {
                 shell.children(title_bar::resize_bands(window, cx))
             })
@@ -1736,7 +1739,8 @@ impl Render for Shell {
                 cx,
             ))
             .children(self.render_copy_control(window, cx));
-        crate::selectable::SelectableText::new(shell, self.text_selection.clone()).into_any_element()
+        crate::selectable::SelectableText::new(shell, self.text_selection.clone())
+            .into_any_element()
     }
 }
 
