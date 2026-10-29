@@ -400,6 +400,66 @@ impl Shell {
             .into_any_element()
     }
 
+    fn transcript_row_menu(
+        &mut self,
+        row: &LineRow,
+        target: (ServerId, RecordingId, &'static str),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        render: impl FnOnce(&mut Self, &mut Context<Self>) -> AnyElement,
+    ) -> AnyElement {
+        let (server_id, recording_id, surface) = target;
+        let (line, copied) = (row.line, row.text.clone());
+        let (content, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                text::COPY_TEXT,
+                cx.listener(move |this, _, _, cx| {
+                    this.copy_text(copied.clone(), cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_RECORDING_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    let link = this.state.read(cx).recording_link(server_id, recording_id);
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            if surface == "card" {
+                crate::ui::RowAction::new(
+                    text::OPEN_TRANSCRIPT,
+                    cx.listener(move |this, _, _, cx| {
+                        this.open_transcript(server_id, recording_id, Some(line), cx);
+                    }),
+                )
+                .register();
+            }
+            render(self, cx)
+        });
+        let key = SharedString::from(format!(
+            "transcript-actions:{server_id}:{recording_id}:{surface}:{line}"
+        ));
+        let selector = format!("transcript-context:{surface}:{recording_id}:{line}");
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(key.clone())
+            .debug_selector(move || selector)
+            .w_full()
+            .min_w_0()
+            .role(Role::Group)
+            .aria_label(format!("{} · {}", row.time, row.name))
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+    }
+
     /// One line of a transcript (view G of the design): its time, its speaker with the
     /// source of the sound, and its text.
     fn transcript_line(
@@ -564,6 +624,7 @@ impl Shell {
         card: &RecordingCard,
         transcript: &TranscriptShown,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -611,10 +672,15 @@ impl Shell {
         if !ready {
             return parts;
         }
-        let faces = self.faces(server_id);
         for row in transcript.lines.iter().take(SHOWN_LINES) {
-            let picture = faces.image(row.account_id);
-            parts.push(Self::transcript_line(row, picture, true, false, theme));
+            let picture = self.faces(server_id).image(row.account_id);
+            parts.push(self.transcript_row_menu(
+                row,
+                (server_id, recording_id, "card"),
+                window,
+                cx,
+                |_, _| Self::transcript_line(row, picture, true, false, theme),
+            ));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
         parts.push(
@@ -840,7 +906,7 @@ impl Shell {
                 )
                 .register();
             }
-            self.recording_card_content(index, row, cx)
+            self.recording_card_content(index, row, window, cx)
         });
         let theme = theme(cx);
         let ring =
@@ -863,6 +929,7 @@ impl Shell {
         &mut self,
         index: usize,
         row: &RecordingRow,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -936,7 +1003,7 @@ impl Shell {
                             .into_any_element(),
                     ]
                 }
-                CardState::Shown(detail) => self.card_body(index, card, detail, &theme, cx),
+                CardState::Shown(detail) => self.card_body(index, card, detail, &theme, window, cx),
             };
         div()
             .id(("recording", index))
@@ -1024,6 +1091,7 @@ impl Shell {
         card: &RecordingCard,
         detail: &CardDetail,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -1321,7 +1389,7 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        body.extend(self.card_transcript(card, &detail.transcript, theme, cx));
+        body.extend(self.card_transcript(card, &detail.transcript, theme, window, cx));
         body
     }
 
@@ -1399,20 +1467,31 @@ impl Shell {
         transcript: &TranscriptShown,
         marked: bool,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let corrected = row
-            .corrected
-            .then(|| self.corrected_mark(recording_id, row.line, theme, cx));
-        let (body, control) = self.line_body(server_id, recording_id, row, transcript, theme, cx);
-        let key = (recording_id, TranscriptChange::Line(row.line));
-        let open = self.transcript_edit.open.map(|(_, open)| open);
-        let picture = self.faces(server_id).image(row.account_id);
-        let line = Self::line_frame(row, picture, false, marked, theme, corrected, body, control);
-        self.transcript_edit
-            .space
-            .row(open, &[key], line)
-            .into_any_element()
+        self.transcript_row_menu(
+            row,
+            (server_id, recording_id, "panel"),
+            window,
+            cx,
+            |this, cx| {
+                let corrected = row
+                    .corrected
+                    .then(|| this.corrected_mark(recording_id, row.line, theme, cx));
+                let (body, control) =
+                    this.line_body(server_id, recording_id, row, transcript, theme, cx);
+                let key = (recording_id, TranscriptChange::Line(row.line));
+                let open = this.transcript_edit.open.map(|(_, open)| open);
+                let picture = this.faces(server_id).image(row.account_id);
+                let line =
+                    Self::line_frame(row, picture, false, marked, theme, corrected, body, control);
+                this.transcript_edit
+                    .space
+                    .row(open, &[key], line)
+                    .into_any_element()
+            },
+        )
     }
 
     /// The head of the transcript list: the count of the lines, the language, and the
@@ -1508,7 +1587,7 @@ impl Shell {
         let (open, names, marked) = (open.clone(), names.clone(), panel.line);
         let shown = Arc::new(transcript.clone());
         let render =
-            cx.processor(move |this: &mut Self, index: usize, _, cx| {
+            cx.processor(move |this: &mut Self, index: usize, window, cx| {
                 let theme = theme(cx);
                 if index == 0 {
                     return this.transcript_head(server_id, recording_id, &shown, &theme, cx);
@@ -1522,6 +1601,7 @@ impl Shell {
                         &shown,
                         marked == Some(row.line),
                         &theme,
+                        window,
                         cx,
                     );
                 }

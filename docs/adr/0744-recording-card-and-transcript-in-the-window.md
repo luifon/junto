@@ -44,6 +44,8 @@ Removal:
 
 Each recording card is a keyboard context-menu target. It uses the shared action collection for the card's current buttons and their disabled reasons, plus Copy link when its metadata is readable and the existing Show all transcript action when available. Menus call the same card operations; they do not repeat permission decisions or bypass removal confirmation. The recording URL follows ADR0714 and copying uses the shared confirmation. Window test: `transcripts::a_recording_context_menu_copies_its_link_and_opens_its_transcript`.
 
+Transcript preview rows and full-panel rows have their own context-action scopes, keyed by server, recording, surface and line. Both offer Copy text and Copy recording link; a preview can open the full transcript at that line. Full-panel rows collect their existing correction/form controls, including disabled reasons. Nested row scopes keep line operations out of the whole-recording menu and consume the trigger before it reaches that menu. The wrapper adds no row padding or reserved form height. Window tests: `transcripts::transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line` and the correction/position flow `a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them`, now begun through the row menu.
+
 ## Consequences
 
 - The prediction of "Remove" reads the roles of the workspace and not the overrides of the channel: a person who holds "manage recordings" only through an override of the voice channel sees the control disabled.

@@ -256,7 +256,11 @@ fn a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them(cx: &mut Te
 
     // The person corrects the second line. A text that the server would refuse is not
     // sent.
-    window.click_named("correct-line:1".to_owned());
+    window.right_click_named("transcript-line:1".to_owned());
+    window.click_named(format!(
+        "context-action:{}",
+        text::transcripts::CORRECT_LINE
+    ));
     assert!(window.shows("transcript-form-field"));
     window.type_transcript("   ");
     window.click("transcript-form-send");
@@ -1353,4 +1357,55 @@ fn a_recording_context_menu_copies_its_link_and_opens_its_transcript(cx: &mut Te
             .panel()
             .is_some_and(|(_, open, _, _)| open.id == id && open.lines.lines.len() == 1)
     });
+}
+
+#[gpui::test]
+fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::links::{self, AppLink};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = "Café planning 世界";
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, said)]));
+    window.click_channel("Daily");
+    window.until("the transcript preview is ready", |window| {
+        window
+            .card_detail(id)
+            .is_some_and(|detail| detail.transcript.held == 1)
+    });
+    window.right_click_named("transcript-line:0".to_owned());
+    window.click_named("context-action:Copy text".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        said
+    );
+    assert!(window.shows("copied-confirmation"));
+    window.right_click_named("transcript-line:0".to_owned());
+    window.click_named("context-action:Open transcript".to_owned());
+    window.until("the transcript opens at its selected line", |window| {
+        window.shows_named("marked-line:0".to_owned())
+    });
+    window.right_click_named(format!("transcript-context:panel:{id}:0"));
+    window.click_named("context-action:Copy recording link".to_owned());
+    assert_eq!(
+        links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
+        Some(AppLink::Recording {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id
+        })
+    );
+    assert!(window.shows("copied-confirmation"));
+    assert!(window.panel().is_some_and(|(_, open, _, _)| open.id == id));
 }

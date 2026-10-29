@@ -3783,3 +3783,5 @@ pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
 
 pub const LINKED_FILE: &str = "File";
 pub const COPY_FILE_NAME: &str = "Copy file name";
+
+pub const COPY_RECORDING_LINK: &str = "Copy recording link";
