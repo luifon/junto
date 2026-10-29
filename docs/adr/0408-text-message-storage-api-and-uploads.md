@@ -52,7 +52,7 @@ Documents:
   workspace-role or everyone mentions. Checkbox changes are author edits.
 - Documents contain at most 16 KiB of compact JSON, 100 blocks, 1,000 inline nodes and 100
   distinct mentions. Text refuses control characters except tab and newline. Unknown node
-  kinds, unknown fields and repeated marks are refused. Links use HTTP, HTTPS or mailto,
+  kinds, unknown fields and repeated marks are refused. Links use HTTP, HTTPS, mailto or junto,
   have no credentials or controls, and contain at most 2,048 bytes.
 - An empty document needs an attachment. Account mentions in a channel name active
   workspace members; role mentions name roles of that workspace. Everyone mentions need

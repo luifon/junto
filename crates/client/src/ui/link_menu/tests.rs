@@ -1,8 +1,8 @@
 use super::{CopyToClipboard, LinkMenu, OpenLink};
 use gpui::{
     Context, Entity, FocusHandle, InteractiveElement, InteractiveText, IntoElement, Modifiers,
-    MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, StyledText,
-    TestAppContext, TextLayout, VisualTestContext, Window, div, point, px,
+    MouseButton, ParentElement, Render, Styled, StyledText, TestAppContext, TextLayout,
+    VisualTestContext, Window, div, point, px,
 };
 use junto_client_core::link::Link;
 

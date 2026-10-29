@@ -383,7 +383,7 @@ async fn history_defaults_to_fifty_and_reports_the_end_and_empty_conversations()
 }
 
 #[tokio::test]
-async fn documents_refuse_unknown_fields_and_accept_http_and_mailto_links() {
+async fn documents_refuse_unknown_fields_and_accept_safe_web_mail_and_application_links() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
@@ -394,7 +394,11 @@ async fn documents_refuse_unknown_fields_and_accept_http_and_mailto_links() {
         .post(&owner, &route, &unknown)
         .await
         .error(ErrorCode::InvalidRequest);
-    for url in ["http://example.test/path", "mailto:person@example.test"] {
+    for url in [
+        "http://example.test/path",
+        "mailto:person@example.test",
+        "junto://channel?server=https%3A%2F%2Fexample.test&id=00000000-0000-0000-0000-000000000001",
+    ] {
         server
             .post(
                 &owner,
@@ -403,6 +407,16 @@ async fn documents_refuse_unknown_fields_and_accept_http_and_mailto_links() {
             )
             .await
             .ok::<Message>(StatusCode::CREATED);
+    }
+    for url in ["junto://user:secret@channel", "junto://channel\u{7}"] {
+        server
+            .post(
+                &owner,
+                &route,
+                &mentions(vec![json!({"kind":"link","text":"link","url":url})]),
+            )
+            .await
+            .error(ErrorCode::InvalidRequest);
     }
     server.post(&owner,&route,&mentions(vec![json!({"kind":"link","text":"link","url":format!("http://example.test/{}","x".repeat(2048))})])).await.error(ErrorCode::InvalidRequest);
 }

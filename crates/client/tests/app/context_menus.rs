@@ -641,3 +641,41 @@ fn a_rendered_link_has_its_own_menu_and_shared_copy_confirmation(cx: &mut TestAp
     );
     assert!(window.shows("copied-confirmation"));
 }
+
+#[gpui::test]
+fn an_application_link_can_be_sent_and_copied_from_its_rendered_menu(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let address = junto_client_core::links::format(&junto_client_core::links::AppLink::Channel {
+        server: junto_client_core::address::ServerAddress::parse(&server.address()).unwrap(),
+        id: window.selected_channel(),
+    });
+    window.write(&format!("[the guide]({address})"));
+    let message = window.until_message("the guide");
+    assert!(matches!(
+        &message.message.document.as_ref().unwrap().blocks[0],
+        junto_client_core::protocol::message::Block::Paragraph { content }
+            if matches!(&content[0], junto_client_core::protocol::message::Inline::Link { url, .. } if url == &address)
+    ));
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "message:{}",
+            message.message.id
+        )))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("link-menu"));
+    window.click_named("link-copy:0".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        address
+    );
+    assert!(window.shows("copied-confirmation"));
+}
