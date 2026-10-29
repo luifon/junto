@@ -668,10 +668,8 @@ impl Shell {
                         state.select_conversation(server_id, conversation_id, cx);
                     });
                 }));
-            let menu = (direct_menu == Some(conversation_id)).then(|| {
-                let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
-                self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
-            });
+            let menu = (direct_menu == Some(conversation_id))
+                .then(|| self.render_direct_menu(server_id, direct, cx));
             conversations.push(
                 div()
                     .relative()

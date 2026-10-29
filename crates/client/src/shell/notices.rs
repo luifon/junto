@@ -15,9 +15,7 @@ use gpui::{
 use gpui_base::input::InputState;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
-use junto_client_core::protocol::ids::{
-    AccountId, ChannelId, ConversationId, ServerId, WorkspaceId,
-};
+use junto_client_core::protocol::ids::{ChannelId, ConversationId, ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::settings::Panel;
 
@@ -832,20 +830,39 @@ impl Shell {
         )
     }
 
-    /// The menu of a direct conversation, drawn at its row: its mute (ADR 0515).
+    /// The read and mute actions of a direct conversation, at its row (ADR 0515).
     pub(crate) fn render_direct_menu(
         &mut self,
         server_id: ServerId,
-        account_id: AccountId,
-        name: &str,
-        mute: &Mute,
+        direct: &crate::state::view::DirectRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let items = self.mute_items(mute, "direct", cx, move |this, length, cx| {
-            this.state.update(cx, |state, cx| {
-                state.set_direct_mute(server_id, account_id, length, cx);
-            });
-        });
+        let conversation_id = direct.id;
+        let account_id = direct.account_id;
+        let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+        let mut items = vec![
+            MenuItem::new("direct-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("direct-mark-read")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, _| {
+                        state.mark_place_as_read(
+                            server_id,
+                            junto_client_core::model::PlaceId::Direct(conversation_id),
+                        );
+                    });
+                }))
+                .into_any_element(),
+            menu_separator(cx).into_any_element(),
+        ];
+        items.extend(
+            self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.set_direct_mute(server_id, account_id, length, cx);
+                });
+            }),
+        );
         self.row_menu(
             "direct-menu",
             format!("{}: {name}", text::CONVERSATION_MENU),
