@@ -231,6 +231,7 @@ impl AppState {
             search.going = None;
         }
         self.selection.server = Some(server_id);
+        self.selection.thread = None;
         match jump.place {
             PlaceId::Channel(channel_id) => {
                 if let Some(workspace_id) = jump.workspace_id {

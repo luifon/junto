@@ -19,6 +19,7 @@ pub mod fixtures;
 mod followed;
 pub mod linking;
 pub mod logo;
+mod message_links;
 mod messages;
 pub mod moderation;
 pub mod notices;
@@ -579,6 +580,8 @@ pub struct AppState {
     /// conversation or the call. An answer that arrives after such a selection does not
     /// move the person to another place.
     navigations: u64,
+    message_link_asks: u64,
+    message_link_failed: Option<u64>,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), u64>,
@@ -1014,6 +1017,8 @@ impl AppState {
             fork_asks: 0,
             conversation_asks: 0,
             navigations: 0,
+            message_link_asks: 0,
+            message_link_failed: None,
             asked_quotes: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
