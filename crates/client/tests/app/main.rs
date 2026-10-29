@@ -44,6 +44,7 @@ mod departures;
 mod event_alerts;
 mod files;
 mod flows;
+mod forwarding;
 mod glossary;
 mod gpui_panics;
 mod keybinds;

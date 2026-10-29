@@ -3091,7 +3091,7 @@ fn workspace_view(
 
 /// The names that the messages of a place can mention: the members of the shown workspace,
 /// the accounts whose names were read, the account itself, and the roles of the workspace.
-fn names(
+pub(super) fn names(
     server_id: ServerId,
     workspace: Option<&WorkspaceModel>,
     model: &ServerModel,

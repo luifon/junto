@@ -3775,3 +3775,15 @@ pub const CUT: &str = "Cut";
 pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";
 pub const SELECT_ALL: &str = "Select all";
+
+pub const FORWARDED_MESSAGE: &str = "Forwarded message";
+pub const FORWARD_MESSAGE: &str = "Forward message";
+pub const FORWARD_SEND: &str = "Forward";
+pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
+pub const FORWARD_LOADING: &str = "Loading original message…";
+pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
+pub const FORWARD_NONE: &str = "No writable destinations match.";
+
+pub const FORWARD_THREAD_LINK: &str = "Use thread link";
+
+pub const VIEW_ORIGINAL: &str = "View original";

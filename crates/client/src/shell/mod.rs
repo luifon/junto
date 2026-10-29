@@ -18,6 +18,7 @@ pub mod detached;
 mod direct;
 mod edges;
 mod feed;
+mod forwarding;
 mod invited;
 mod join;
 mod keybinds;
@@ -96,6 +97,7 @@ pub(crate) enum Layer {
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
     ComposerMenu(feed::ComposerMenuOpen),
+    Forward(Box<forwarding::ForwardDialog>),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
@@ -1803,6 +1805,9 @@ impl Shell {
         let stale = match &self.layer {
             Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
+            Layer::Forward(dialog) => {
+                self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
+            }
             Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view),
             // The list of devices belongs to the sound settings of the call.
@@ -1931,6 +1936,7 @@ impl Shell {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }
             Layer::Notify => self.render_notify_dialog(view, cx),
+            Layer::Forward(_) => self.render_forward_dialog(window, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),

@@ -1357,6 +1357,25 @@ impl AppState {
         }
         self.people_followed.call = call_people;
         self.people_followed.view = view.wanted_people.clone();
+        for ((server_id, _), quote) in &self.known.quoted {
+            let super::feed::Quoted::Read(message) = quote else {
+                continue;
+            };
+            let wanted = self.people_followed.view.entry(*server_id).or_default();
+            wanted.accounts.extend(message.author_id);
+            if let Some(document) = &message.document {
+                wanted
+                    .accounts
+                    .extend(
+                        crate::compose::nodes_of(document).filter_map(|node| match node {
+                            junto_client_core::protocol::message::Inline::Account {
+                                account_id,
+                            } => Some(*account_id),
+                            _ => None,
+                        }),
+                    );
+            }
+        }
         self.want_people(cx);
     }
 

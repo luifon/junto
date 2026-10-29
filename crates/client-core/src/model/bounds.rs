@@ -57,6 +57,7 @@ fn document(document: &Document) -> usize {
         .iter()
         .map(|block| {
             NODE + match block {
+                Block::Forward { server, .. } => server.as_str().len() + 16,
                 Block::Paragraph { content } | Block::Quote { content } => inline(content),
                 Block::Code { text, language } => {
                     text.len() + language.as_ref().map_or(0, String::len)
@@ -80,7 +81,7 @@ fn inline_nodes(document: &Document) -> usize {
         .iter()
         .map(|block| match block {
             Block::Paragraph { content } | Block::Quote { content } => content.len(),
-            Block::Code { .. } => 0,
+            Block::Code { .. } | Block::Forward { .. } => 0,
             Block::List { items, .. } => items.iter().map(Vec::len).sum(),
             Block::Checklist { items } => items.iter().map(|item| item.content.len()).sum(),
         })
@@ -95,7 +96,10 @@ fn list_items(document: &Document) -> usize {
         .map(|block| match block {
             Block::List { items, .. } => items.len(),
             Block::Checklist { items } => items.len(),
-            Block::Paragraph { .. } | Block::Quote { .. } | Block::Code { .. } => 0,
+            Block::Paragraph { .. }
+            | Block::Quote { .. }
+            | Block::Code { .. }
+            | Block::Forward { .. } => 0,
         })
         .sum()
 }

@@ -70,6 +70,12 @@ Documents:
   have a separate limit of 1,200 per session token per minute. Serializable retries count
   once.
 
+Forwarded messages:
+
+- A forward is a typed block with the canonical origin of the source server and the message ID. It stores no source body, author, place name or files on the destination server. The destination applies its usual send permission, document limits, rate bound and outbox handling. The server validates the origin as a client server address and makes no request to it.
+- Before sending, the client reads the source as its current account. A forward of one forwarded block follows at most eight references and refuses cycles or unavailable sources. Each reader resolves a preview through their own saved account of the source server. Unknown servers and inaccessible or deleted sources show one unavailable preview. The original message remains reachable through its application link (ADR 0714). Copying and downloads use the readable original, and source mentions do not make new notifications at the destination.
+- Previews use the bounded quote reader (ADR 0740), pinned to the saved entry/account. Source edits and deletions, reloads and permission/history/resource boundaries invalidate them. A forwarded picture viewer closes when that source preview is no longer readable. Exports retain the origin and message ID and fetch no external content.
+
 Read positions and events:
 
 - The last-read position is per account and place, moves forward only and cannot pass the

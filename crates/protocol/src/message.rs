@@ -3,6 +3,7 @@ use crate::ids::{
     AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId, WorkspaceId,
     WorkspaceRoleId,
 };
+use crate::origin::Origin;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -32,6 +33,10 @@ pub struct Document {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
+    Forward {
+        server: Origin,
+        message_id: MessageId,
+    },
     Paragraph {
         content: Vec<Inline>,
     },

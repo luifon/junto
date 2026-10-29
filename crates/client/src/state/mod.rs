@@ -17,6 +17,7 @@ pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod followed;
+pub(crate) mod forwarding;
 pub mod linking;
 pub mod logo;
 mod message_links;
@@ -2006,6 +2007,16 @@ impl AppState {
         };
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
+        } else if matches!(
+            event.as_ref(),
+            Event::PermissionsChanged { .. }
+                | Event::ChannelHistoryWithdrawn { .. }
+                | Event::ChannelDeleted { .. }
+                | Event::ChannelArchived { .. }
+                | Event::WorkspaceDeleted { .. }
+                | Event::AccountDepartureChanged { .. }
+        ) {
+            self.forget_quotes(server_id, None, cx);
         }
         self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {

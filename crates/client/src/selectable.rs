@@ -149,6 +149,16 @@ impl Selection {
 }
 
 impl TextSelection {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn painted_text(&self) -> Vec<String> {
+        self.0
+            .borrow()
+            .parts
+            .iter()
+            .map(|part| part.text.clone())
+            .collect()
+    }
+
     pub fn control(&self, bounds: Option<Bounds<Pixels>>) {
         self.0.borrow_mut().control = bounds;
     }

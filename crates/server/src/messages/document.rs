@@ -13,6 +13,23 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
     let mut nodes = Vec::new();
     for block in &document.blocks {
         match block {
+            Block::Forward { server, .. } => {
+                let url = reqwest::Url::parse(server.as_str())
+                    .map_err(|_| ApiError::invalid("invalid forward origin"))?;
+                let public_ip = !server.is_loopback()
+                    && url.host_str().is_some_and(|host| {
+                        host.trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok()
+                    });
+                if server.as_str().len() > 255
+                    || public_ip
+                    || (server.scheme() != junto_protocol::origin::Scheme::Https
+                        && !server.is_loopback())
+                {
+                    return Err(ApiError::invalid("invalid forward origin"));
+                }
+            }
             Block::Paragraph { content } | Block::Quote { content } => nodes.extend(content),
             Block::Code { text, language } => {
                 text_ok(text)?;
@@ -103,6 +120,7 @@ fn text_ok(text: &str) -> ApiResult<()> {
 }
 pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
+        Block::Forward { .. } => true,
         Block::Code { text, .. } => !text.trim().is_empty(),
         Block::Paragraph { content } | Block::Quote { content } => {
             content.iter().any(inline_content)
@@ -218,5 +236,45 @@ mod tests {
             format!("{:?}", validate(&document).unwrap_err())
                 .contains("a message has at most 100 mentions")
         );
+    }
+    #[test]
+    fn forward_references_are_content_and_keep_the_document_bounds() {
+        let value = serde_json::json!({"blocks": [{
+            "kind": "forward", "server": "https://chat.example.test",
+            "message_id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"
+        }]});
+        let parsed = serde_json::from_value::<Document>(value);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let document = parsed.unwrap();
+        assert!(validate(&document).is_ok());
+        assert!(has_content(&document));
+        let block = document.blocks[0].clone();
+        assert!(
+            validate(&Document {
+                blocks: vec![block.clone(); 100]
+            })
+            .is_ok()
+        );
+        assert!(
+            validate(&Document {
+                blocks: vec![block; 101]
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn forward_origins_do_not_accept_paths_or_insecure_remote_servers() {
+        for server in ["https://chat.example.test/path", "http://chat.example.test"] {
+            let parsed = serde_json::from_value::<Document>(serde_json::json!({"blocks": [{
+                "kind": "forward", "server": server,
+                "message_id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"
+            }]}));
+            assert!(
+                parsed
+                    .as_ref()
+                    .map_or(true, |document| validate(document).is_err())
+            );
+        }
     }
 }

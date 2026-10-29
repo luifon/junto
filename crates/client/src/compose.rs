@@ -720,11 +720,11 @@ fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
     (Document { blocks }, open)
 }
 
-fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
+pub(crate) fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
     document.blocks.iter().flat_map(|block| {
         let nodes: Box<dyn Iterator<Item = &Inline>> = match block {
             Block::Paragraph { content } | Block::Quote { content } => Box::new(content.iter()),
-            Block::Code { .. } => Box::new(std::iter::empty()),
+            Block::Code { .. } | Block::Forward { .. } => Box::new(std::iter::empty()),
             Block::List { items, .. } => Box::new(items.iter().flatten()),
             Block::Checklist { items } => Box::new(items.iter().flat_map(|item| &item.content)),
         };
@@ -737,6 +737,7 @@ fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
 pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
         Block::Code { text, .. } => !text.trim().is_empty(),
+        Block::Forward { .. } => true,
         _ => false,
     }) || nodes_of(document).any(|node| match node {
         Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
@@ -990,6 +991,9 @@ pub fn written(document: &Document, name: &dyn Fn(MentionTarget) -> String) -> W
         let start = writer.text.len();
         let mut items = Vec::new();
         match block {
+            Block::Forward { server, message_id } => writer
+                .text
+                .push_str(&format!("> Forwarded message: {server} · {message_id}")),
             Block::Paragraph { content } => writer.lines(content, "", true),
             Block::Quote { content } => writer.lines(content, "> ", false),
             Block::Code { text, language } => {

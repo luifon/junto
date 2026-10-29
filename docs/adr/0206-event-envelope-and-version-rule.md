@@ -57,3 +57,5 @@ Later events:
 - A difference between the event types of the code and the committed schema fails a test.
 - A program in another language can generate its types from `docs/api/events.json`.
 - The server sends no binary frames and accepts none.
+
+Revision 3 introduces the forwarded-message reference in the typed message document (ADR 0408). A server advertises this revision so that an older client states that an update is needed to read the new document kind, even though event delivery still names messages by ID.

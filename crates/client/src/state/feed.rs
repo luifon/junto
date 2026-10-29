@@ -550,6 +550,10 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
         .blocks
         .iter()
         .map(|block| match block {
+            Block::Forward { server, message_id } => format!(
+                "{}: {server} · {message_id}",
+                crate::text::FORWARDED_MESSAGE
+            ),
             Block::Paragraph { content } | Block::Quote { content } => inline(content),
             Block::Code { text, .. } => text.clone(),
             Block::List { ordered, items } => items
@@ -616,6 +620,7 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
             text.push(' ');
         }
         match block {
+            Block::Forward { .. } => text.push_str(crate::text::FORWARDED_MESSAGE),
             Block::Paragraph { content } | Block::Quote { content } => {
                 inline(content, names, &mut text);
             }
@@ -655,7 +660,7 @@ fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) 
     };
     document.blocks.iter().any(|block| match block {
         Block::Paragraph { content } | Block::Quote { content } => content.iter().any(named),
-        Block::Code { .. } => false,
+        Block::Code { .. } | Block::Forward { .. } => false,
         Block::List { items, .. } => items.iter().flatten().any(named),
         Block::Checklist { items } => items.iter().flat_map(|item| &item.content).any(named),
     })

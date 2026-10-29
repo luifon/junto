@@ -206,66 +206,108 @@ impl AppState {
     /// messages do not hold: the message that a reply answers, and the last reply of a
     /// thread. What the rows of those places do not name any more is put away, and at
     /// most [`QUOTE_READS`] reads are on their way.
-    pub(super) fn ask_missing_quotes(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let server = shown
-            .server
-            .and_then(|server_id| self.client.server(server_id));
-        let model = server
-            .as_ref()
-            .and_then(|server| server.live().view().model);
+    pub(super) fn ask_missing_quotes(&mut self, _shown: Shown, cx: &mut Context<Self>) {
+        let servers = self.client.servers();
+        let origins: std::collections::HashMap<_, _> = servers
+            .iter()
+            .map(|server| (server.entry().address.origin().clone(), server.id()))
+            .collect();
         let mut named = std::collections::HashSet::new();
-        let mut held = false;
-        if let Some(model) = &model {
-            for place in shown.place().into_iter().chain(shown.thread_place()) {
-                if let Some(timeline) = model.timeline(place) {
-                    held = true;
-                    named.extend(feed::named_quotes(timeline));
+        fn forwards(
+            document: &Document,
+            origins: &std::collections::HashMap<
+                junto_client_core::protocol::origin::Origin,
+                ServerId,
+            >,
+            named: &mut std::collections::HashSet<(ServerId, MessageId)>,
+        ) {
+            for block in &document.blocks {
+                if let Block::Forward { server, message_id } = block
+                    && let Some(server_id) = origins.get(server)
+                {
+                    named.insert((*server_id, *message_id));
                 }
             }
         }
-        let (Some(server_id), Some(server), true) = (shown.server, server, held) else {
-            self.known.quoted.clear();
-            self.asked_quotes.clear();
-            return;
-        };
-        let wanted = |(of, message_id): &(ServerId, MessageId)| {
-            *of == server_id && named.contains(message_id)
-        };
-        self.known.quoted.retain(|key, _| wanted(key));
-        self.asked_quotes.retain(|key, _| wanted(key));
-        let on_their_way = self
+        for server in &servers {
+            let Some(model) = server.live().view().model else {
+                continue;
+            };
+            for timeline in &model.timelines {
+                if !self
+                    .open_places
+                    .contains_key(&(server.id(), timeline.place))
+                {
+                    continue;
+                }
+                named.extend(
+                    feed::named_quotes(timeline)
+                        .into_iter()
+                        .map(|id| (server.id(), id)),
+                );
+                for message in timeline.messages.iter().chain(timeline.root.iter()) {
+                    if let Some(document) = &message.document {
+                        forwards(document, &origins, &mut named);
+                    }
+                }
+            }
+            for pending in &model.outbox {
+                if self.open_places.contains_key(&(server.id(), pending.place)) {
+                    forwards(&pending.document, &origins, &mut named);
+                }
+            }
+            for pins in &model.pins {
+                for message in pins.messages.loaded().into_iter().flatten() {
+                    if let Some(document) = &message.document {
+                        forwards(document, &origins, &mut named);
+                    }
+                }
+            }
+        }
+        self.known.quoted.retain(|key, _| named.contains(key));
+        self.asked_quotes.retain(|key, _| named.contains(key));
+        let flying = self
             .asked_quotes
             .keys()
             .filter(|key| !self.known.quoted.contains_key(key))
             .count();
-        let mut missing: Vec<MessageId> = named
+        let mut missing: Vec<_> = named
             .into_iter()
-            .filter(|message_id| !self.asked_quotes.contains_key(&(server_id, *message_id)))
+            .filter(|key| !self.asked_quotes.contains_key(key))
             .collect();
         missing.sort_unstable();
-        missing.truncate(QUOTE_READS.saturating_sub(on_their_way));
-        for message_id in missing {
+        missing.truncate(QUOTE_READS.saturating_sub(flying));
+        for (server_id, message_id) in missing {
+            let Some(server) = self.client.server(server_id) else {
+                continue;
+            };
+            let Some(owner) = server.owner() else {
+                continue;
+            };
             let key = (server_id, message_id);
             self.quote_asks += 1;
             let number = self.quote_asks;
             self.asked_quotes.insert(key, number);
-            let api = server.api();
+            let api = server.api_for(owner.account_id);
             cx.spawn(async move |this, cx| {
                 let read = api.message(message_id).await;
                 let _ = this.update(cx, |this, cx| {
-                    // The message changed, or the window shows another place: this answer
-                    // is not the one that was asked for last.
-                    if this.asked_quotes.get(&key) != Some(&number) {
+                    if this.asked_quotes.get(&key) != Some(&number)
+                        || this.owner(server_id) != Some(owner)
+                    {
                         return;
                     }
                     match read {
-                        Ok(message) => feed::hold_quote(&mut this.known.quoted, key, message),
+                        Ok(message) if message.id == message_id => {
+                            feed::hold_quote(&mut this.known.quoted, key, message)
+                        }
+                        Ok(_) => {
+                            this.known.quoted.insert(key, feed::Quoted::NotHeld);
+                        }
                         Err(error) => match feed::quote_without_answer(&error) {
                             Some(quoted) => {
                                 this.known.quoted.insert(key, quoted);
                             }
-                            // No answer: the message is asked for again with a later
-                            // change.
                             None => {
                                 this.asked_quotes.remove(&key);
                                 return;

@@ -14744,6 +14744,28 @@
           {
             "type": "object",
             "required": [
+              "server",
+              "message_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "forward"
+                ]
+              },
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "server": {
+                "$ref": "#/components/schemas/Origin"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "content",
               "kind"
             ],

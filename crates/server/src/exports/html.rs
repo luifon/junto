@@ -172,6 +172,13 @@ fn inlines(nodes: &[Inline], names: &Names, out: &mut String) {
 fn document(document: &Document, names: &Names, out: &mut String) {
     for block in &document.blocks {
         match block {
+            Block::Forward { server, message_id } => {
+                let _ = writeln!(
+                    out,
+                    "<blockquote>Forwarded message: {} · {message_id}</blockquote>",
+                    escape(server.as_str())
+                );
+            }
             Block::Paragraph { content } => {
                 out.push_str("<p>");
                 inlines(content, names, out);
@@ -318,7 +325,7 @@ pub fn mentioned(messages: &[Message]) -> (Vec<AccountId>, Vec<WorkspaceRoleId>)
                         .flat_map(|item| &item.content)
                         .for_each(&mut take);
                 }
-                Block::Code { .. } => {}
+                Block::Code { .. } | Block::Forward { .. } => {}
             }
         }
     }

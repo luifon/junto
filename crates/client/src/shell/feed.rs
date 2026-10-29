@@ -1634,7 +1634,7 @@ impl Shell {
                 };
                 self.render_message(index, row, feed, shape, window, cx)
             }
-            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, cx),
+            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, window, cx),
         }
     }
 
@@ -1700,12 +1700,13 @@ impl Shell {
 
     /// The blocks of a document. A check box takes a click when the person can edit its
     /// message: the third part of `message`.
-    fn document(
+    pub(super) fn document(
         &mut self,
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -1718,6 +1719,9 @@ impl Shell {
         };
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
+                Block::Forward { server, message_id } => {
+                    blocks.push(self.render_forward(server, *message_id, theme, window, cx))
+                }
                 Block::Paragraph { content } => {
                     blocks.push(paragraph(content, names, theme, &drawings, next()));
                 }
@@ -2204,16 +2208,17 @@ impl Shell {
 
     /// The files of a message: a picture inline, every other file as a row with its size
     /// and the state of its download.
-    fn attachments(
+    pub(super) fn attachments(
         &mut self,
-        feed: &Feed,
+        server_id: ServerId,
+        place_id: PlaceId,
         message: &Message,
+        forwarded: bool,
         window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
-        let server_id = feed.server_id;
         let message_id = message.id;
         self.message_pictures.fit = list_fit(window);
         // The pictures of the message, which the viewer shows one after the other.
@@ -2243,7 +2248,7 @@ impl Shell {
                     let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
                     let attachment_id = attachment.id;
-                    let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
+                    let slot: SharedString = format!("{place_id:?}:{attachment_id}").into();
                     let picture: AnyElement = match held {
                         Some(Picture::Ready(image)) => {
                             moving::picture(image.clone(), slot, &self.message_pictures.playback)
@@ -2275,6 +2280,9 @@ impl Shell {
                                 window,
                                 cx,
                             );
+                            if forwarded && let Layer::Picture(viewer) = &mut this.layer {
+                                viewer.forwarded = true;
+                            }
                         }
                     };
                     let by_key = open.clone();
@@ -2619,7 +2627,7 @@ impl Shell {
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
             .when_some(row.message.document.as_ref(), |bar, document| {
-                let copied = crate::state::feed::copy_text(document, &feed.names);
+                let copied = self.copied_document(document, &feed.names, cx);
                 bar.child(
                     div()
                         .debug_selector(move || format!("copy-message:{message_id}"))
@@ -2963,11 +2971,20 @@ impl Shell {
                     Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
+                    window,
                     cx,
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed, message, window, &theme, cx));
+            body.extend(self.attachments(
+                feed.server_id,
+                feed.place,
+                message,
+                false,
+                window,
+                &theme,
+                cx,
+            ));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {
@@ -3140,6 +3157,7 @@ impl Shell {
         row: &WaitingRow,
         feed: &Feed,
         compact: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -3195,7 +3213,7 @@ impl Shell {
                 )
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
-        let body = self.document(&pending.document, None, &feed.names, &theme, cx);
+        let body = self.document(&pending.document, None, &feed.names, &theme, window, cx);
         div()
             .id(("waiting", index))
             .debug_selector(move || format!("waiting:{id}"))
@@ -3364,6 +3382,11 @@ impl Shell {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn painted_readonly_text(&self) -> Vec<String> {
+        self.text_selection.painted_text()
+    }
+
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
@@ -3392,7 +3415,7 @@ impl Shell {
         let pinned = row.message.pinned;
         let mut items = Vec::new();
         if let Some(document) = &row.message.document {
-            let copied = crate::state::feed::copy_text(document, &feed.names);
+            let copied = self.copied_document(document, &feed.names, cx);
             items.push(
                 MenuItem::new("message-copy-text", text::COPY_TEXT)
                     .selector("message-copy-text")
@@ -3413,6 +3436,17 @@ impl Shell {
                         if let Some(link) = link {
                             this.copy_text(link, cx);
                         }
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if row.message.document.is_some() && !row.message.deleted {
+            items.push(
+                MenuItem::new("message-forward", text::FORWARD_MESSAGE)
+                    .selector("message-forward")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_forward(server_id, message_id, window, cx);
                     }))
                     .into_any_element(),
             );
