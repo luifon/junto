@@ -3401,6 +3401,20 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if !row.message.deleted {
+            items.push(
+                MenuItem::new("message-copy-link", text::COPY_MESSAGE_LINK)
+                    .selector("message-copy-link")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let link = this.state.read(cx).message_link(server_id, message_id);
+                        this.close_layer(window, cx);
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }))
+                    .into_any_element(),
+            );
+        }
         if row.can_react && row.react_refused {
             items.push(
                 MenuItem::new("message-react", text::REACT)

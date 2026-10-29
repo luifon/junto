@@ -47,6 +47,7 @@ mod flows;
 mod glossary;
 mod gpui_panics;
 mod keybinds;
+mod message_links;
 mod rule_changes;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.

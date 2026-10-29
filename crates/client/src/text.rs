@@ -3778,3 +3778,5 @@ pub const SELECT_ALL_TEXT: &str = "Select all";
 
 pub const ROW_ACTIONS: &str = "Row actions";
 pub const COPY_TEXT: &str = "Copy text";
+
+pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
