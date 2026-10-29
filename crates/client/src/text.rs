@@ -3775,3 +3775,5 @@ pub const CUT_SELECTION: &str = "Cut";
 pub const COPY_SELECTION: &str = "Copy";
 pub const PASTE_TEXT: &str = "Paste";
 pub const SELECT_ALL_TEXT: &str = "Select all";
+
+pub const ROW_ACTIONS: &str = "Row actions";
