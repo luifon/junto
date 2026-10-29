@@ -239,6 +239,9 @@ fn copy_target_links_from_channel_direct_and_notice_menus(cx: &mut TestAppContex
             .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
     });
     window.right_click_named(format!("channel-row:{selected}"));
+    let action = window.cx.debug_bounds("channel-copy-link").unwrap();
+    window.move_pointer(action.center());
+    assert!(!window.shows("copy-text-value"));
     window.click("channel-copy-link");
     assert_target_link(&mut window, "channel", selected, &origin);
     window.right_click_named(format!("direct-row:{}", conversation.id));
@@ -266,6 +269,7 @@ fn assert_target_link(
     id: impl std::fmt::Display,
     origin: &str,
 ) {
+    assert!(window.shows("copied-confirmation"));
     let copied = window
         .cx
         .read_from_clipboard()
@@ -375,4 +379,52 @@ fn a_role_context_menu_preserves_the_delete_confirmation(cx: &mut TestAppContext
             .iter()
             .any(|row| row.id == role.id)
     });
+}
+
+#[gpui::test]
+fn a_device_menu_renames_its_device_and_keeps_the_last_device(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    window.open_devices();
+    let device = window.devices()[0].id;
+    window.right_click_named(format!("device-row-{device}"));
+    window.click_named("context-action:Remove".to_owned());
+    assert!(!window.shows("device-remove-confirm"));
+    assert_eq!(world.run(window.handle().api().devices()).unwrap().len(), 1);
+    window.click_named("context-action:Rename".to_owned());
+    window.in_shell(|shell, window, cx| shell.type_device_name("Desk", window, cx));
+    window.click("device-form-send");
+    window.until("the context action renamed its device", |window| {
+        window
+            .devices()
+            .iter()
+            .any(|row| row.id == device && row.name == "Desk")
+            && !window.shows("device-name-field")
+    });
+    assert!(
+        world
+            .run(window.handle().api().devices())
+            .unwrap()
+            .iter()
+            .any(|row| { row.id == device && row.name == "Desk" })
+    );
+    let (_device, _second) = crate::account::second_device(&world, &server, &window.handle());
+    let other = window.until_value("the other device is listed", |window| {
+        window
+            .devices()
+            .into_iter()
+            .find(|row| row.id != device)
+            .map(|row| row.id)
+    });
+    window.right_click_named(format!("device-row-{other}"));
+    window.click_named("context-action:Remove".to_owned());
+    assert!(window.shows("device-remove-confirm"));
+    assert_eq!(world.run(window.handle().api().devices()).unwrap().len(), 2);
+    window.click("device-remove-confirm");
+    window.until("the chosen device is removed", |window| {
+        window.devices().len() == 1
+    });
+    assert_eq!(world.run(window.handle().api().devices()).unwrap().len(), 1);
 }

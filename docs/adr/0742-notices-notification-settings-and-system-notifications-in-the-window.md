@@ -91,6 +91,8 @@ Windows:
 
 Clients send `Junto-Notification-Preferences: 1` to read and replace `hide_text` and `hold_while_presenting`. Without this capability, snapshots and settings responses omit both fields, and a settings write preserves their stored values atomically. This keeps the strict decoder of earlier clients usable after another device changes these preferences. Requests use a strict settings wrapper; response settings accept added fields. The server regression reads both routes with the earlier decoder and changes the level without losing privacy preferences.
 
+Copy link in the channel, conversation and notice menus uses the shared clipboard confirmation of ADR 0740. A later copy resets its display time. `context_menus::copy_target_links_from_channel_direct_and_notice_menus` verifies the target link and confirmation for all three menus.
+
 ## Consequences
 
 - The notices and notification settings use the components of ADR 0731.

@@ -692,7 +692,7 @@ impl Shell {
                         let link = this.state.read(cx).message_link(server_id, message_id);
                         this.close_layer(window, cx);
                         if let Some(link) = link {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                            this.copy_text(link, cx);
                         }
                     }))
                     .into_any_element(),
@@ -849,7 +849,7 @@ impl Shell {
                     let link = this.state.read(cx).channel_link(server_id, channel_id);
                     this.close_layer(window, cx);
                     if let Some(link) = link {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                        this.copy_text(link, cx);
                     }
                 }))
                 .into_any_element(),
@@ -939,7 +939,7 @@ impl Shell {
                         .conversation_link(server_id, conversation_id);
                     this.close_layer(window, cx);
                     if let Some(link) = link {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                        this.copy_text(link, cx);
                     }
                 }))
                 .into_any_element(),
