@@ -32,6 +32,7 @@ pub mod transcripts;
 pub mod tray;
 
 pub const APP_NAME: &str = "Junto";
+pub const INVITE_PEOPLE: &str = "Invite people";
 pub const QUIT: &str = "Quit Junto";
 /// The buttons of a window whose title bar the application draws.
 pub const WINDOW_MINIMIZE: &str = "Minimize";

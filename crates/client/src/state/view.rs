@@ -1518,6 +1518,7 @@ pub struct SelectedServer {
     pub busy: bool,
     /// The person can log out of the account of the server on this device (ADR 0712).
     pub can_log_out: bool,
+    pub may_invite_people: bool,
     /// Why the last action of the access flow failed.
     pub error: Option<FlowError>,
     /// The recoveries that this device has not acknowledged, oldest first.
@@ -4038,6 +4039,13 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                 Content::Lists(Box::new(server_lists(server.id, model, selection, known)))
             }
         };
+        let may_invite_people = status.shows_content()
+            && shown_model(server).is_some_and(|model| {
+                super::admin::view::holds_server(
+                    model,
+                    junto_client_core::protocol::ServerPermission::CreateInvites,
+                )
+            });
         SelectedServer {
             id: server.id,
             name: server.name.clone(),
@@ -4047,6 +4055,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             busy: server.in_progress.is_some(),
             can_log_out: junto_client_core::flow::access::actions(&server.access)
                 .contains(&junto_client_core::flow::access::ActionKind::LogOutByPerson),
+            may_invite_people,
             error: server.error.clone(),
             recoveries: match &server.access {
                 AccessState::LoggedIn { recoveries, .. } => recoveries.clone(),

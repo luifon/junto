@@ -54,6 +54,7 @@ mod growth_tests;
 mod harness;
 mod header;
 mod hidden;
+mod invite_menu;
 mod layout;
 mod layout_forms;
 mod linking;

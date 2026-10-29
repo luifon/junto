@@ -20,6 +20,20 @@ use crate::ui::{
 };
 
 impl Shell {
+    fn open_invite_people(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .state
+            .read(cx)
+            .view()
+            .selected
+            .is_some_and(|server| server.may_invite_people)
+        {
+            return;
+        }
+        self.open_server_admin(crate::state::admin::AdminPage::Invites, window, cx);
+        self.set_people_open(Some(super::admin::people::Open::NewInvite), window, cx);
+    }
+
     pub(crate) fn open_server_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A click on the button of an open menu closes the menu: the press closed it, and
         // the click must not open it again.
@@ -209,6 +223,16 @@ impl Shell {
                     )
                     .children(notifications)
                     .children(self.render_move_items(view, cx))
+                    .when(server.may_invite_people, |menu| {
+                        menu.child(
+                            MenuItem::new("invite-people", text::INVITE_PEOPLE)
+                                .icon(Icon::Invite)
+                                .selector("menu-invite-people")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_invite_people(window, cx)
+                                })),
+                        )
+                    })
                     // The administration needs the state of the server.
                     .when(has_content, |menu| {
                         menu.child(
