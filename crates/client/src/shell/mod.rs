@@ -1604,6 +1604,7 @@ impl Render for Shell {
             self.take_state(window, cx);
         }
         self.derived_since_drawing = false;
+        self.drop_hidden_account_menu(window, cx);
         self.selection_context();
         self.text_selection
             .focus(if matches!(self.layer, Layer::None) {
@@ -1963,6 +1964,7 @@ impl Shell {
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
             Layer::AccountMenu(open) | Layer::CallMoveMenu(open) => {
                 !open.source_is_present(view, self.state.read(cx))
+                    || !self.account_source_visible(open, view, cx)
                     || (matches!(&self.layer, Layer::CallMoveMenu(_))
                         && Self::call_participant_menu(open, view)
                             .is_none_or(|menu| menu.destinations.is_empty()))

@@ -3055,3 +3055,111 @@ fn a_call_tile_move_menu_returns_to_its_account_menu_and_moves_the_target_only(
         .until("the own call ended", |window| window.view().call.is_none());
     scene.world.run(scene.caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn call_member_rows_offer_account_and_call_actions_and_keep_their_source_scope(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let ada = scene.ada;
+    scene.join_in_the_window();
+    scene.window.click("call-tab-members");
+    scene
+        .window
+        .until("Ada is listed outside the call", |window| {
+            window.shows_named(format!("call-member:{ada}"))
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    assert!(scene.window.shows("account-menu"));
+    assert!(!scene.window.shows("call-menu-volume"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.window.click("call-menu-invite");
+    let invitation = scene.invitation_for_ada();
+    scene
+        .window
+        .until("the row lists the pending invitation", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.call.as_ref())
+                .and_then(|panel| panel.channel())
+                .is_some_and(|channel| {
+                    channel.outside.iter().any(|person| {
+                        person.account_id == ada && person.invitation == Some(invitation.id)
+                    })
+                })
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.window.click("call-menu-withdraw-invitation");
+    scene.window.until("the invitation was withdrawn", |_| {
+        scene.admin.handle.live().view().model.is_some_and(|model| {
+            !model
+                .invitations
+                .iter()
+                .any(|current| current.id == invitation.id)
+        })
+    });
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .window
+        .until("Ada is listed inside the call", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.call.as_ref())
+                .is_some_and(|panel| panel.people.iter().any(|person| person.account_id == ada))
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_hide_without_video(true, cx)
+        });
+    scene
+        .window
+        .until("the hidden tile loses its menu", |window| {
+            !window.shows("account-menu") && !window.shows_named(format!("call-tile:{ada}"))
+        });
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_hide_without_video(false, cx)
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    scene.window.in_shell(|shell, window, cx| {
+        shell.open(
+            junto_client::shell::Open::CallTab(junto_client::shell::call::CallTab::Chat),
+            window,
+            cx,
+        )
+    });
+    assert!(!scene.window.shows("account-menu"));
+    scene.window.click("call-tab-members");
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.world.run(scene.caller.calls.leave());
+    scene
+        .window
+        .until("the former occupant menu closes", |window| {
+            !window.shows("account-menu")
+        });
+    assert!(scene.window.shows_named(format!("call-member:{ada}")));
+    scene.window.click("leave-call");
+    scene.window.until("the window left its call", |window| {
+        window.view().call.is_none()
+    });
+}

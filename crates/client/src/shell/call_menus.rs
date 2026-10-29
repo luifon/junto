@@ -18,10 +18,10 @@ use crate::{
 impl Shell {
     fn call_source_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
         matches!(&open.source, Some(AccountSource::CallOccupant { .. }))
-            && self
-                .view
-                .as_ref()
-                .is_some_and(|view| open.source_is_present(view, self.state.read(cx)))
+            && self.view.as_ref().is_some_and(|view| {
+                open.source_is_present(view, self.state.read(cx))
+                    && self.account_source_visible(open, view, cx)
+            })
             && self
                 .state
                 .read(cx)
@@ -146,6 +146,8 @@ enum CallMenuAction {
 #[derive(Clone)]
 enum ParticipantAction {
     AllowSpeak,
+    Invite,
+    Withdraw(junto_client_core::protocol::ids::CallInvitationId),
     Microphone(bool),
     Sound(bool),
     LowerHand,
@@ -172,7 +174,10 @@ impl Shell {
             view::{MicrophoneAction, MicrophoneButton},
         };
         use junto_client_core::protocol::WorkspacePermission;
-        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+        let Some(AccountSource::CallOccupant {
+            seat, account_id, ..
+        }) = &open.source
+        else {
             return Vec::new();
         };
         if *account_id != open.owner.account_id || !self.call_menu_current(open, cx) {
@@ -295,15 +300,15 @@ impl Shell {
                         }
                         this.close_layer(window, cx);
                         let participant = match &context.source {
-                            Some(AccountSource::CallOccupant { seat, account_id }) => {
-                                match seat.target.place {
-                                    junto_client_core::protocol::call::CallPlace::Channel {
-                                        channel_id,
-                                        ..
-                                    } => Some(((seat.target.server_id, channel_id), *account_id)),
-                                    _ => None,
-                                }
-                            }
+                            Some(AccountSource::CallOccupant {
+                                seat, account_id, ..
+                            }) => match seat.target.place {
+                                junto_client_core::protocol::call::CallPlace::Channel {
+                                    channel_id,
+                                    ..
+                                } => Some(((seat.target.server_id, channel_id), *account_id)),
+                                _ => None,
+                            },
                             _ => None,
                         };
                         this.state.update(cx, |state, cx| match &control.action {
@@ -315,6 +320,10 @@ impl Shell {
                             CallMenuAction::Participant(action) => {
                                 if let Some((room, account)) = participant {
                                     match action {
+                                        ParticipantAction::Invite => state.invite(account, cx),
+                                        ParticipantAction::Withdraw(id) => {
+                                            state.withdraw_invitation(*id, cx)
+                                        }
                                         ParticipantAction::AllowSpeak => {
                                             state.allow_to_speak(account, cx)
                                         }
@@ -349,7 +358,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         use junto_client_core::protocol::call::CallPlace;
-        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+        let Some(AccountSource::CallOccupant {
+            seat, account_id, ..
+        }) = &open.source
+        else {
             return Vec::new();
         };
         if *account_id == open.owner.account_id || !self.call_menu_current(open, cx) {
@@ -358,6 +370,53 @@ impl Shell {
         let CallPlace::Channel { channel_id, .. } = seat.target.place else {
             return Vec::new();
         };
+        if matches!(
+            &open.source,
+            Some(AccountSource::CallOccupant {
+                surface: super::account_menus::CallSurface::Member { inside: false },
+                ..
+            })
+        ) {
+            let Some(channel) = self
+                .view
+                .as_ref()
+                .and_then(|view| view.lists())
+                .and_then(|lists| lists.call.as_ref())
+                .and_then(|panel| panel.channel())
+            else {
+                return Vec::new();
+            };
+            let Some(member) = channel
+                .outside
+                .iter()
+                .find(|person| person.account_id == *account_id)
+            else {
+                return Vec::new();
+            };
+            let (id, label, action) = match member.invitation {
+                Some(id) => (
+                    "call-menu-withdraw-invitation",
+                    text::WITHDRAW_INVITATION,
+                    ParticipantAction::Withdraw(id),
+                ),
+                None => (
+                    "call-menu-invite",
+                    text::INVITE_TO_MY_ROOM,
+                    ParticipantAction::Invite,
+                ),
+            };
+            return self.call_controls(
+                open,
+                vec![CallControl {
+                    id,
+                    label,
+                    action: CallMenuAction::Participant(action),
+                    disabled: !channel.room.ready,
+                    detail: None,
+                }],
+                cx,
+            );
+        }
         let Some(menu) = self
             .view
             .as_ref()
@@ -443,7 +502,10 @@ impl Shell {
         open: &OpenAccountMenu,
         view: &crate::state::view::ShellView,
     ) -> Option<crate::state::view::PersonMenu> {
-        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+        let Some(AccountSource::CallOccupant {
+            seat, account_id, ..
+        }) = &open.source
+        else {
             return None;
         };
         let junto_client_core::protocol::call::CallPlace::Channel { channel_id, .. } =

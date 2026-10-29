@@ -22,11 +22,18 @@ pub(crate) struct AccountTarget {
     pub departed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CallSurface {
+    Tile,
+    Member { inside: bool },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AccountSource {
     CallOccupant {
         seat: Box<junto_media::calls::Seat>,
         account_id: AccountId,
+        surface: CallSurface,
     },
     Message(MessageId),
     Pending(u64),
@@ -58,7 +65,11 @@ impl OpenAccountMenu {
             return true;
         };
         match source {
-            AccountSource::CallOccupant { seat, account_id } => {
+            AccountSource::CallOccupant {
+                seat,
+                account_id,
+                surface,
+            } => {
                 return self.people.len() == 1
                     && self.people[0].account_id == *account_id
                     && seat.target.server_id == self.owner.entry.server_id
@@ -69,11 +80,19 @@ impl OpenAccountMenu {
                     && view
                         .lists()
                         .and_then(|lists| lists.call.as_ref())
-                        .is_some_and(|panel| {
-                            panel
+                        .is_some_and(|panel| match surface {
+                            CallSurface::Member { inside: false } => {
+                                panel.channel().is_some_and(|channel| {
+                                    channel
+                                        .outside
+                                        .iter()
+                                        .any(|person| person.account_id == *account_id)
+                                })
+                            }
+                            _ => panel
                                 .people
                                 .iter()
-                                .any(|person| person.account_id == *account_id)
+                                .any(|person| person.account_id == *account_id),
                         });
             }
             AccountSource::Search(target) => {
@@ -223,27 +242,114 @@ impl Shell {
         person: &crate::state::view::Occupant,
         cx: &App,
     ) -> Option<impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static> {
-        let state = self.state.read(cx);
-        let call = state.shown_calls().call?;
-        let owner = state.server(call.target.server_id)?.owner()?;
-        let open = OpenAccountMenu {
-            owner,
-            people: vec![AccountTarget {
-                account_id: person.account_id,
-                name: super::channels::occupant_name(person).to_string(),
-                departed: false,
-            }],
-            source: Some(AccountSource::CallOccupant {
-                seat: Box::new(call.seat()),
-                account_id: person.account_id,
-            }),
-            position: Point::default(),
-        };
+        let open = self.call_account_menu(
+            person.account_id,
+            super::channels::occupant_name(person).to_string(),
+            CallSurface::Tile,
+            cx,
+        )?;
         Some(move |position, window: &mut Window, cx: &mut App| {
             let mut open = open.clone();
             open.position = position;
             window.dispatch_action(Box::new(open), cx);
         })
+    }
+
+    fn call_account_menu(
+        &self,
+        account_id: AccountId,
+        name: String,
+        surface: CallSurface,
+        cx: &App,
+    ) -> Option<OpenAccountMenu> {
+        let state = self.state.read(cx);
+        let call = state.shown_calls().call?;
+        let owner = state.server(call.target.server_id)?.owner()?;
+        Some(OpenAccountMenu {
+            owner,
+            people: vec![AccountTarget {
+                account_id,
+                name,
+                departed: false,
+            }],
+            source: Some(AccountSource::CallOccupant {
+                seat: Box::new(call.seat()),
+                account_id,
+                surface,
+            }),
+            position: Point::default(),
+        })
+    }
+
+    pub(super) fn call_member_target(
+        &self,
+        account: AccountId,
+        name: String,
+        inside: bool,
+        child: impl IntoElement,
+        cx: &App,
+    ) -> AnyElement {
+        let Some(open) = self.call_account_menu(account, name, CallSurface::Member { inside }, cx)
+        else {
+            return child.into_any_element();
+        };
+        account_target(
+            format!("call-member-target:{account}").into(),
+            Some(open.owner),
+            open.people.into_iter().next(),
+            open.source,
+            child,
+            cx,
+        )
+    }
+
+    pub(super) fn account_source_visible(
+        &self,
+        open: &OpenAccountMenu,
+        view: &crate::state::view::ShellView,
+        cx: &App,
+    ) -> bool {
+        let Some(AccountSource::CallOccupant {
+            account_id,
+            surface,
+            ..
+        }) = &open.source
+        else {
+            return true;
+        };
+        let Some(lists) = view.lists() else {
+            return false;
+        };
+        let Some(panel) = &lists.call else {
+            return false;
+        };
+        match surface {
+            CallSurface::Tile => {
+                (self.detached || !self.state.read(cx).is_call_detached())
+                    && (!panel.hide_without_video
+                        || self
+                            .people_with_video(&panel.people, cx)
+                            .contains(account_id))
+            }
+            CallSurface::Member { .. } => {
+                self.call_tab == super::call::CallTab::Members
+                    && lists.notices.is_none()
+                    && self.call_panel_shown(self.call_panel_overlay, cx)
+            }
+        }
+    }
+
+    pub(super) fn drop_hidden_account_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hidden = match &self.layer {
+            Layer::AccountMenu(open) | Layer::CallMoveMenu(open) => self
+                .view
+                .as_ref()
+                .is_some_and(|view| !self.account_source_visible(open, view, cx)),
+            _ => false,
+        };
+        if hidden {
+            self.close_layer(window, cx);
+        }
     }
 
     pub(super) fn open_account_menu(
@@ -256,10 +362,10 @@ impl Shell {
         open.people
             .retain(|person| accounts.insert(person.account_id));
         if !open.people.is_empty()
-            && self
-                .view
-                .as_ref()
-                .is_some_and(|view| open.source_is_present(view, self.state.read(cx)))
+            && self.view.as_ref().is_some_and(|view| {
+                open.source_is_present(view, self.state.read(cx))
+                    && self.account_source_visible(&open, view, cx)
+            })
             && self
                 .state
                 .read(cx)
@@ -278,7 +384,7 @@ impl Shell {
         cx: &App,
     ) -> bool {
         matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
-            && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx))))
+            && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx)) && self.account_source_visible(open, view, cx)))
             && self
                 .state
                 .read(cx)

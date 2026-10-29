@@ -108,3 +108,5 @@ A call tile with move destinations offers Move to, opening the existing voice-pe
 The presenter sees “Allow to speak” in the participant tile and voice-row menus while that person has a microphone block, whatever its reason (ADR 0512). It uses the existing permission-checked unblock route and replaces the duplicate moderator unblock item. The action closes the menu before running and remains bound to the call that was drawn.
 
 Call account menus and their move submenu keep their first painted origin while permissions or media state change their contents. Extra items scroll within the remaining space. A new opening or a window resize computes placement again. The shared menu component supports this for both target-relative and window-coordinate anchors.
+
+The call member rows use the same account menu as tiles. A person inside has volume and the applicable call controls; a person outside has Invite or Withdraw invitation. The menu captures whether its row was inside or outside and closes when that status changes or the member pane closes. Tile menus also close when the tile is hidden by the video filter or the stage moves to another window.
