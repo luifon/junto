@@ -1460,8 +1460,7 @@ impl Shell {
                         index - 1,
                         member,
                         server_id,
-                        refused.as_ref(),
-                        asked,
+                        (refused.as_ref(), asked),
                         window,
                         cx,
                     ))
@@ -1510,11 +1509,11 @@ impl Shell {
         index: usize,
         member: &MemberRow,
         server_id: Option<ServerId>,
-        refused: Option<&ConversationRefusal>,
-        asked: Option<AccountId>,
+        conversation: (Option<&ConversationRefusal>, Option<AccountId>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (refused, asked) = conversation;
         let theme = theme(cx);
         let colors = theme.colors;
         let faces = self.shown_faces();

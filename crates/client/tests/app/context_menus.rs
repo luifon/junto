@@ -791,3 +791,81 @@ fn message_author_names_and_avatars_have_account_actions_instead_of_message_acti
         !window.shows("account-menu")
     });
 }
+
+#[gpui::test]
+fn an_account_mention_has_its_own_menu_beside_links_and_the_message(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::message::{Block, Document, Inline};
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let own = window.own_account();
+    let author = admin.handle.account().unwrap();
+    admin.send(
+        &world,
+        window.selected_channel(),
+        Document {
+            blocks: vec![Block::Paragraph {
+                content: vec![
+                    Inline::Account { account_id: own },
+                    Inline::Text {
+                        text: " needs the ".to_owned(),
+                        marks: Vec::new(),
+                    },
+                    Inline::Link {
+                        text: "guide".to_owned(),
+                        url: "https://example.test/guide".to_owned(),
+                    },
+                    Inline::Text {
+                        text: " from ".to_owned(),
+                        marks: Vec::new(),
+                    },
+                    Inline::Account { account_id: author },
+                ],
+            }],
+        },
+    );
+    let message = window
+        .until_message("@Rin needs the guide from @Ada")
+        .message
+        .id;
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    assert!(!window.shows("message-menu"));
+    assert!(!window.shows("link-menu"));
+    assert!(!window.shows_named(format!("account-message:{own}")));
+    window.click_named(format!("account-copy-id:{own}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        own.to_string()
+    );
+    window.click("composer-input");
+    let mut found = false;
+    for _ in 0..48 {
+        window.press("tab shift-f10");
+        found = window.shows("account-menu")
+            && window.shows_named(format!("account-copy-id:{own}"))
+            && window.shows_named(format!("account-copy-id:{author}"));
+        if found {
+            break;
+        }
+        window.press("escape");
+    }
+    assert!(
+        found,
+        "the mention keyboard group did not offer both accounts"
+    );
+    window.click_named(format!("account-copy-id:{author}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        author.to_string()
+    );
+}

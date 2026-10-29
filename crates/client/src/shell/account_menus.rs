@@ -87,10 +87,13 @@ pub(super) fn account_target(
 impl Shell {
     pub(super) fn open_account_menu(
         &mut self,
-        open: OpenAccountMenu,
+        mut open: OpenAccountMenu,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mut accounts = std::collections::HashSet::new();
+        open.people
+            .retain(|person| accounts.insert(person.account_id));
         if !open.people.is_empty()
             && self
                 .state

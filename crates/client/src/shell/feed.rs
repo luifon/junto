@@ -482,6 +482,7 @@ struct Rich {
     families: Vec<(Range<usize>, SharedString)>,
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
+    people: Vec<(Range<usize>, super::account_menus::AccountTarget)>,
     copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
 }
@@ -494,6 +495,7 @@ impl Rich {
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
+            people: Vec::new(),
             copy_targets: Vec::new(),
             replacements: Vec::new(),
         };
@@ -585,6 +587,20 @@ impl Rich {
                         _ => rich.text.push_str(text::MENTION_EVERYONE),
                     }
                     rich.padding();
+                    if let Inline::Account { account_id } = node {
+                        rich.people.push((
+                            start..rich.text.len(),
+                            super::account_menus::AccountTarget {
+                                account_id: *account_id,
+                                name: names
+                                    .accounts
+                                    .get(account_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                                departed: names.departed.contains_key(account_id),
+                            },
+                        ));
+                    }
                     rich.highlights.push((
                         start..rich.text.len(),
                         HighlightStyle {
@@ -653,48 +669,71 @@ impl Rich {
 
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
-    fn element(self, id: usize) -> AnyElement {
+    fn element(self, id: usize, owner: Option<junto_client_core::Owner>) -> AnyElement {
         let links = self.links;
         let styled = StyledText::new(self.text)
             .with_highlights(self.highlights)
             .with_font_family_overrides(self.families);
-        if links.is_empty() {
-            return crate::selectable::SelectableText::rich(
-                styled,
-                self.copy_targets,
-                self.replacements,
-            )
-            .into_any_element();
-        }
-        let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
-        let targets = self.copy_targets;
-        let hover = links.clone();
         let layout = styled.layout().clone();
-        let context_links = links.clone();
-        crate::ui::LinkMenu::text(
-            ("rich-links", id),
+        let (ranges, people): (Vec<_>, Vec<_>) = self.people.into_iter().unzip();
+        let content = if links.is_empty() {
+            crate::selectable::SelectableText::rich(styled, self.copy_targets, self.replacements)
+                .into_any_element()
+        } else {
+            let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
+            let targets = self.copy_targets;
+            let hover = links.clone();
+            let context_links = links.clone();
+            crate::ui::LinkMenu::text(
+                ("rich-links", id),
+                layout.clone(),
+                context_links,
+                crate::selectable::SelectableText::rich(
+                    InteractiveText::new(("rich", id), styled)
+                        .on_click(ranges, move |index, window, cx| {
+                            if let Some((_, link)) = links.get(index) {
+                                window.dispatch_action(
+                                    Box::new(crate::ui::OpenLink { link: link.clone() }),
+                                    cx,
+                                );
+                            }
+                        })
+                        .tooltip(move |index, window, cx| {
+                            hover
+                                .iter()
+                                .find(|(range, _)| range.contains(&index))
+                                .map(|(_, link)| tooltip(link.to_string())(window, cx))
+                        }),
+                    targets,
+                    self.replacements,
+                ),
+            )
+            .into_any_element()
+        };
+        let Some(owner) = owner.filter(|_| !people.is_empty()) else {
+            return content;
+        };
+        crate::ui::TextTargets::new(
+            ("mentioned-people", id),
+            text::ACCOUNT_ACTIONS,
             layout,
-            context_links,
-            crate::selectable::SelectableText::rich(
-                InteractiveText::new(("rich", id), styled)
-                    .on_click(ranges, move |index, window, cx| {
-                        if let Some((_, link)) = links.get(index) {
-                            window.dispatch_action(
-                                Box::new(crate::ui::OpenLink { link: link.clone() }),
-                                cx,
-                            );
-                        }
-                    })
-                    .tooltip(move |index, window, cx| {
-                        hover
-                            .iter()
-                            .find(|(range, _)| range.contains(&index))
-                            .map(|(_, link)| tooltip(link.to_string())(window, cx))
-                    }),
-                targets,
-                self.replacements,
-            ),
+            ranges,
+            content,
         )
+        .on_menu(move |indices, position, window, cx| {
+            let people = indices
+                .into_iter()
+                .filter_map(|index| people.get(index).cloned())
+                .collect();
+            window.dispatch_action(
+                Box::new(super::account_menus::OpenAccountMenu {
+                    owner,
+                    people,
+                    position,
+                }),
+                cx,
+            );
+        })
         .into_any_element()
     }
 }
@@ -706,10 +745,11 @@ fn paragraph(
     theme: &Theme,
     drawings: &Drawings,
     id: usize,
+    owner: Option<junto_client_core::Owner>,
 ) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme, drawings).element(id))
+        .child(Rich::of(content, names, theme, drawings).element(id, owner))
         .into_any_element()
 }
 
@@ -1710,6 +1750,7 @@ impl Shell {
     /// message: the third part of `message`.
     fn document(
         &mut self,
+        server_id: ServerId,
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
@@ -1717,6 +1758,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
         let drawings = Drawings::of(cx);
         let mut blocks = Vec::new();
         let mut texts = 0;
@@ -1727,7 +1773,7 @@ impl Shell {
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, &drawings, next()));
+                    blocks.push(paragraph(content, names, theme, &drawings, next(), owner));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1736,7 +1782,7 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, &drawings, next()))
+                        .child(paragraph(content, names, theme, &drawings, next(), owner))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1770,7 +1816,7 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, &drawings, next()))
+                                .child(paragraph(item, names, theme, &drawings, next(), owner))
                                 .into_any_element(),
                         );
                     }
@@ -1848,7 +1894,14 @@ impl Shell {
                                 .py(u(1.0))
                                 .when(checked, |row| row.ink(colors.ink_3))
                                 .child(check)
-                                .child(paragraph(&item.content, names, theme, &drawings, next()))
+                                .child(paragraph(
+                                    &item.content,
+                                    names,
+                                    theme,
+                                    &drawings,
+                                    next(),
+                                    owner,
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -3016,6 +3069,7 @@ impl Shell {
         } else {
             let mut body = match &message.document {
                 Some(document) => self.document(
+                    feed.server_id,
                     document,
                     Some((feed, message, row.can_edit)),
                     &feed.names,
@@ -3262,7 +3316,14 @@ impl Shell {
                 )
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
-        let body = self.document(&pending.document, None, &feed.names, &theme, cx);
+        let body = self.document(
+            feed.server_id,
+            &pending.document,
+            None,
+            &feed.names,
+            &theme,
+            cx,
+        );
         div()
             .id(("waiting", index))
             .debug_selector(move || format!("waiting:{id}"))
