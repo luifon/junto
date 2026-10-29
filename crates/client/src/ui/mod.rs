@@ -47,7 +47,7 @@ pub use form_space::{FormSpace, NewRow};
 pub use held::take_unsettled;
 pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
-pub use menu::{Menu, MenuItem, menu_label, menu_separator};
+pub use menu::{ContextMenuExt, Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;
 pub(crate) use paint_text::paint_text;
