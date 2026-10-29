@@ -363,6 +363,6 @@ impl Shell {
             .selector("account-menu")
             .on_close(move |window, cx| close(window, cx))
             .children(items)
-            .popup_at(open.position)
+            .popup_at_stable(open.position, self.account_menu_placement.clone())
     }
 }

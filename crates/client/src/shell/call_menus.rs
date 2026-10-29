@@ -486,6 +486,6 @@ impl Shell {
             return div().into_any_element();
         };
         self.person_menu_contents(&menu, true, window, cx)
-            .popup_at(open.position)
+            .popup_at_stable(open.position, self.account_menu_placement.clone())
     }
 }

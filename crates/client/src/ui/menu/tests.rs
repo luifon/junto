@@ -250,13 +250,14 @@ fn a_wheel_outside_a_menu_closes_it_but_its_own_list_keeps_scrolling(cx: &mut Te
 }
 
 struct GrowingPopup {
+    absolute: bool,
     focus: FocusHandle,
     placement: std::rc::Rc<super::MenuPlacement>,
     grown: bool,
 }
 
 impl Render for GrowingPopup {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let menu = Menu::new("growing", "Actions", &self.focus)
             .selector("growing")
             .children((0_usize..if self.grown { 30 } else { 3 }).map(|index| {
@@ -267,8 +268,16 @@ impl Render for GrowingPopup {
                         "growing-action"
                     },
                 )
-            }))
-            .popup_stable(point(px(10.0), px(10.0)), self.placement.clone());
+            }));
+        let menu = if self.absolute {
+            let size = window.viewport_size();
+            menu.popup_at_stable(
+                point(size.width - px(10.0), size.height - px(10.0)),
+                self.placement.clone(),
+            )
+        } else {
+            menu.popup_stable(point(px(10.0), px(10.0)), self.placement.clone())
+        };
         div().relative().size_full().child(
             div()
                 .absolute()
@@ -282,11 +291,21 @@ impl Render for GrowingPopup {
 
 #[gpui::test]
 fn a_popup_that_grows_keeps_its_existing_actions_in_place(cx: &mut TestAppContext) {
+    check_popup_growth(cx, false);
+}
+
+#[gpui::test]
+fn a_popup_at_a_pointer_keeps_its_existing_actions_in_place(cx: &mut TestAppContext) {
+    check_popup_growth(cx, true);
+}
+
+fn check_popup_growth(cx: &mut TestAppContext, absolute: bool) {
     cx.update(|cx| {
         gpui_base::init(cx);
         crate::theme::install(crate::theme::Theme::stone(), cx);
     });
     let (host, cx) = cx.add_window_view(|_, cx| GrowingPopup {
+        absolute,
         focus: cx.focus_handle(),
         placement: Default::default(),
         grown: false,

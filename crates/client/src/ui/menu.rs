@@ -47,7 +47,8 @@ pub struct MenuPlacement(std::cell::Cell<Option<(Point<Pixels>, gpui::Size<Pixel
 #[derive(IntoElement)]
 struct StableMenu {
     menu: Menu,
-    offset: Point<Pixels>,
+    anchor: Point<Pixels>,
+    absolute: bool,
     placement: std::rc::Rc<MenuPlacement>,
 }
 
@@ -71,7 +72,8 @@ impl RenderOnce for StableMenu {
                     Some((viewport.height - origin.y - margin).max(gpui::px(0.0)));
                 self.menu.popup_at(origin)
             }
-            None => self.menu.popup(self.offset),
+            None if self.absolute => self.menu.popup_at(self.anchor),
+            None => self.menu.popup(self.anchor),
         }
     }
 }
@@ -147,7 +149,23 @@ impl Menu {
     ) -> AnyElement {
         StableMenu {
             menu: self,
-            offset,
+            anchor: offset,
+            absolute: false,
+            placement,
+        }
+        .into_any_element()
+    }
+
+    /// Keeps the first painted origin of a menu opened at window coordinates.
+    pub fn popup_at_stable(
+        self,
+        position: Point<Pixels>,
+        placement: std::rc::Rc<MenuPlacement>,
+    ) -> AnyElement {
+        StableMenu {
+            menu: self,
+            anchor: position,
+            absolute: true,
             placement,
         }
         .into_any_element()

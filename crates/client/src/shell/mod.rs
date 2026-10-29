@@ -302,6 +302,7 @@ pub struct Shell {
     pub(crate) book_collapsed: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     account_volume: Option<VolumeControl>,
+    account_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
@@ -773,6 +774,7 @@ impl Shell {
             invitations_newest: None,
             volumes: HashMap::new(),
             account_volume: None,
+            account_menu_placement: Default::default(),
             device_menu_closed_by_press: false,
             share_menu_closed_by_press: false,
             detached,
@@ -1350,6 +1352,7 @@ impl Shell {
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
         self.account_volume = None;
+        self.account_menu_placement = Default::default();
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
