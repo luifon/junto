@@ -385,13 +385,14 @@ impl Shell {
     /// Closes the window as a close by the system does.
     pub(crate) fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let detached = self.detached;
-        self.state.update(cx, |state, cx| {
-            if detached {
-                state.closed_call_window(cx);
-            } else {
-                state.return_call(cx);
-            }
-        });
+        if detached {
+            self.state
+                .update(cx, |state, cx| state.closed_call_window(cx));
+        } else {
+            crate::app::main_window_closing(&self.state, cx);
+        }
+        #[cfg(windows)]
+        crate::taskbar::forget(window);
         window.remove_window();
     }
 }

@@ -138,6 +138,7 @@ enum Setting {
     Theme,
     PanelWidth(Panel),
     CallPanel,
+    KeepRunning,
 }
 
 /// A part of the processing of the microphone (ADR 0701).
@@ -3127,6 +3128,11 @@ impl AppState {
         self.write_setting(Setting::Scale, cx);
     }
 
+    pub fn set_keep_running_after_close(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settings.keep_running_after_close = enabled;
+        self.write_setting(Setting::KeepRunning, cx);
+    }
+
     /// Sets the theme, draws the windows in it and stores it.
     pub fn set_theme(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
         self.settings.theme = choice;
@@ -3200,6 +3206,9 @@ impl AppState {
                 store.update(|stored| {
                     for setting in &writing {
                         match setting {
+                            Setting::KeepRunning => {
+                                stored.keep_running_after_close = wanted.keep_running_after_close;
+                            }
                             Setting::Scale => stored.scale_percent = wanted.scale_percent,
                             Setting::ServerBook => {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;

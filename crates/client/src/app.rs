@@ -13,7 +13,42 @@ use crate::state::{AppState, Timing};
 use crate::text;
 use crate::theme::{self, Theme};
 
-actions!(junto, [Quit]);
+actions!(junto, [Quit, CloseWindow]);
+
+struct BackgroundClient(Entity<AppState>);
+impl gpui::Global for BackgroundClient {}
+struct WindowLifecycle;
+impl gpui::Global for WindowLifecycle {}
+struct MainWindow(WindowHandle<Root>);
+impl gpui::Global for MainWindow {}
+
+pub(crate) fn main_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
+    cx.try_global::<MainWindow>().map(|main| main.0.into())
+}
+
+/// Keeps the client and its connections alive when the main window closes.
+pub(crate) fn main_window_closing(state: &Entity<AppState>, cx: &mut App) {
+    state.update(cx, |state, cx| {
+        state.set_window_active(false, cx);
+        state.set_input_test(false);
+    });
+    if state.read(cx).settings().keep_running_after_close {
+        cx.set_global(BackgroundClient(state.clone()));
+    } else {
+        state.update(cx, |state, cx| state.return_call(cx));
+    }
+}
+
+pub(crate) fn restore_main_window(cx: &mut App) {
+    if !cx.has_global::<BackgroundClient>() {
+        return;
+    }
+    let state = cx.remove_global::<BackgroundClient>().0;
+    if let Err(error) = open_main_window(state.clone(), WindowStart::default(), cx) {
+        tracing::error!(%error, "the main window could not reopen");
+        cx.set_global(BackgroundClient(state));
+    }
+}
 
 /// The size of a new main window and its smallest size, in pixels at 100 %. The smallest size
 /// follows the interface scale at the start (ADR 0731).
@@ -48,6 +83,7 @@ impl Default for WindowStart {
 /// Prepares an application: the component library, the fonts and the theme. A test and the
 /// screen tool call it too.
 pub fn init(cx: &mut App) -> gpui::Result<()> {
+    cx.set_quit_mode(gpui::QuitMode::Explicit);
     gpui_base::init(cx);
     crate::assets::load_fonts(cx)?;
     theme::install(Theme::stone(), cx);
@@ -57,7 +93,10 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
         async {}
     })
     .detach();
-    cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-w", CloseWindow, Some("Shell")),
+    ]);
     cx.on_action(|_: &Quit, cx| quit(cx));
     Ok(())
 }
@@ -184,7 +223,7 @@ pub fn open_main_window(
             crate::taskbar::identify(window);
             let held = state.clone();
             window.on_window_should_close(cx, move |window, cx| {
-                held.update(cx, |state, cx| state.return_call(cx));
+                main_window_closing(&held, cx);
                 #[cfg(windows)]
                 crate::taskbar::forget(window);
                 #[cfg(not(windows))]
@@ -195,12 +234,16 @@ pub fn open_main_window(
             cx.new(|cx| Root::new(shell, window, cx))
         },
     )?;
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    })
-    .detach();
+    cx.set_global(MainWindow(window));
+    if !cx.has_global::<WindowLifecycle>() {
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() && !cx.has_global::<BackgroundClient>() {
+                cx.quit();
+            }
+        })
+        .detach();
+        cx.set_global(WindowLifecycle);
+    }
     if start.activate {
         cx.activate(true);
     }

@@ -27,6 +27,35 @@ fn tooltip(window: &mut Window) -> String {
 
 #[gpui::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn closing_and_reopening_the_main_window_keeps_the_real_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let (calls, tray) = window
+        .state
+        .read_with(cx, |state, _| (state.calls().clone(), state.kept_tray()));
+    let seat = calls.view().call.as_ref().unwrap().seat();
+    window.cx.simulate_keystrokes("secondary-w");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    assert_eq!(calls.view().call.as_ref().unwrap().seat(), seat);
+    cx.update(|cx| assert!(tray.press(text::OPEN_JUNTO, &window.state, cx)));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    assert_eq!(calls.view().call.as_ref().unwrap().seat(), seat);
+    cx.update(|cx| assert!(tray.press(text::LEAVE_THE_CALL, &window.state, cx)));
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 fn the_tray_menu_mutes_turns_the_sound_off_and_leaves_a_real_call(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server_with_media("Acme Studio");

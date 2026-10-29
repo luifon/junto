@@ -15,6 +15,53 @@ fn bounds(window: &mut Window, selector: &'static str) -> Bounds<Pixels> {
         .unwrap_or_else(|| panic!("{selector} is not drawn"))
 }
 
+#[gpui::test]
+fn closing_the_main_window_keeps_the_client_and_the_tray_opens_it_again(cx: &mut TestAppContext) {
+    let (_directory, mut window) = named(cx, "Member");
+    let tray = window.state.read_with(cx, |state, _| state.kept_tray());
+    window.cx.simulate_keystrokes("secondary-w");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    cx.update(|cx| assert!(tray.press(junto_client::text::tray::OPEN_JUNTO, &window.state, cx)));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    assert_eq!(
+        window
+            .state
+            .read_with(cx, |state, _| state.preset_name().to_owned()),
+        "Member"
+    );
+}
+
+#[gpui::test]
+fn closing_in_the_background_can_be_disabled_and_the_choice_is_kept(cx: &mut TestAppContext) {
+    let (directory, mut window) = named(cx, "Member");
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    assert!(window.shows("keep-running-after-close"));
+    window.click("keep-running-after-close");
+    window.run_tasks();
+    let stored = std::fs::read_to_string(directory.path().join("junto/settings.json")).unwrap();
+    assert!(
+        stored.contains("\"keep_running_after_close\": false"),
+        "{stored}"
+    );
+    window.close();
+    let mut window = open(cx, directory.path());
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    window.click("keep-running-after-close");
+    window.run_tasks();
+    assert!(
+        std::fs::read_to_string(directory.path().join("junto/settings.json"))
+            .unwrap()
+            .contains("\"keep_running_after_close\": true")
+    );
+    window.click("keep-running-after-close");
+    window.cx.simulate_keystrokes("secondary-w");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    cx.update(|cx| junto_client::notify::bring_to_front(None, cx));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+}
+
 fn page(section: SettingsSection) -> String {
     format!("settings-page-{}", section.selector())
 }

@@ -70,6 +70,48 @@ fn shown(window: &mut Window) -> TrayState {
 }
 
 #[gpui::test]
+fn a_mention_after_the_main_window_closes_reaches_the_notification_and_tray(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let channel = window
+        .channels()
+        .into_iter()
+        .find(|row| row.name == "general")
+        .unwrap()
+        .id;
+    let account = window.own_account();
+    window
+        .state
+        .update(cx, |state, cx| state.set_window_active(true, cx));
+    window.cx.simulate_keystrokes("secondary-w");
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    admin.mention(&world, channel, "A new message, ", account);
+    let deadline = std::time::Instant::now() + crate::harness::PATIENCE;
+    loop {
+        cx.run_until_parked();
+        let received = window.state.read_with(cx, |state, _| {
+            !state.kept_notifications().shown.is_empty() && state.kept_tray().shown().mentions == 1
+        });
+        if received {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the closed window did not notify the mention"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    cx.update(|cx| junto_client::notify::bring_to_front(None, cx));
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+}
+
+#[gpui::test]
 fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");

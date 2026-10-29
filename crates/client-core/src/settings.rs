@@ -157,6 +157,7 @@ pub struct InterfaceSettings {
     pub call_panel_closed: bool,
     /// The same for the separate call window.
     pub call_window_panel_closed: bool,
+    pub keep_running_after_close: bool,
 }
 
 impl Default for InterfaceSettings {
@@ -168,6 +169,7 @@ impl Default for InterfaceSettings {
             panel_widths: PanelWidths::default(),
             call_panel_closed: false,
             call_window_panel_closed: false,
+            keep_running_after_close: true,
         }
     }
 }
@@ -189,6 +191,12 @@ struct SettingsFile {
     call_panel_closed: bool,
     #[serde(default)]
     call_window_panel_closed: bool,
+    #[serde(default = "enabled")]
+    keep_running_after_close: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 /// The widths of the panels that this client knows; a panel of a later client is skipped.
@@ -240,6 +248,7 @@ impl SettingsStore {
             panel_widths: PanelWidths::of(&file.panel_widths),
             call_panel_closed: file.call_panel_closed,
             call_window_panel_closed: file.call_window_panel_closed,
+            keep_running_after_close: file.keep_running_after_close,
         };
         Ok((settings, file.keybinds.checked()))
     }
@@ -299,6 +308,7 @@ impl SettingsStore {
                 panel_widths: settings.panel_widths.stored(),
                 call_panel_closed: settings.call_panel_closed,
                 call_window_panel_closed: settings.call_window_panel_closed,
+                keep_running_after_close: settings.keep_running_after_close,
             },
         )?;
         Ok((settings, keybinds))
@@ -334,6 +344,7 @@ mod tests {
             panel_widths,
             call_panel_closed: true,
             call_window_panel_closed: false,
+            keep_running_after_close: false,
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
@@ -380,6 +391,7 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.scale_percent, SCALE_MIN_PERCENT);
         assert!(!loaded.server_book_collapsed);
+        assert!(loaded.keep_running_after_close);
         // A file of a client without themes has the light theme.
         assert_eq!(loaded.theme, ThemeChoice::Light);
     }
@@ -517,6 +529,7 @@ mod tests {
             panel_widths: PanelWidths::default(),
             call_panel_closed: false,
             call_window_panel_closed: false,
+            keep_running_after_close: true,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

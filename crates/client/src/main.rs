@@ -420,58 +420,59 @@ fn main() -> ExitCode {
     }
     let started = std::rc::Rc::new(std::cell::Cell::new(false));
     let reached = started.clone();
-    gpui_platform::application()
+    let application = gpui_platform::application()
         .with_assets(Assets)
-        .with_restart_arguments(restart_arguments)
-        .run(move |cx| {
-            if let Err(error) = app::init(cx) {
-                start_failed(&format!("{error:#}"), log_path.as_deref());
-                log_file.written();
-                cx.quit();
-                return;
-            }
-            let state = app::state(client, start, cx);
-            if update_source.is_some() {
-                state.update(cx, |state, _| {
-                    state.use_update_source(update_source.clone())
-                });
-            }
-            if check_update {
-                check_update_through_the_window(&state, reached.clone(), cx);
-            }
-            match app::open_main_window(state, start, cx) {
-                Ok(window) if check_startup => {
-                    let _ = window.update(cx, |_, window, _| {
-                        // Frame callbacks run before drawing. The second callback proves
-                        // that the preceding frame completed layout and presentation.
-                        window.on_next_frame(move |window, _| {
-                            window.on_next_frame(move |_, cx| {
-                                reached.set(true);
-                                println!("Junto first frame rendered");
-                                if junto_client_core::releases::TEST_CONFIGURATION {
-                                    println!(
-                                        "Junto first frame version: {} pid {}",
-                                        junto_client_core::updates::Version::THIS_BUILD,
-                                        std::process::id()
-                                    );
-                                }
-                                cx.quit();
-                            });
+        .with_restart_arguments(restart_arguments);
+    application.on_reopen(|cx| junto_client::notify::bring_to_front(None, cx));
+    application.run(move |cx| {
+        if let Err(error) = app::init(cx) {
+            start_failed(&format!("{error:#}"), log_path.as_deref());
+            log_file.written();
+            cx.quit();
+            return;
+        }
+        let state = app::state(client, start, cx);
+        if update_source.is_some() {
+            state.update(cx, |state, _| {
+                state.use_update_source(update_source.clone())
+            });
+        }
+        if check_update {
+            check_update_through_the_window(&state, reached.clone(), cx);
+        }
+        match app::open_main_window(state, start, cx) {
+            Ok(window) if check_startup => {
+                let _ = window.update(cx, |_, window, _| {
+                    // Frame callbacks run before drawing. The second callback proves
+                    // that the preceding frame completed layout and presentation.
+                    window.on_next_frame(move |window, _| {
+                        window.on_next_frame(move |_, cx| {
+                            reached.set(true);
+                            println!("Junto first frame rendered");
+                            if junto_client_core::releases::TEST_CONFIGURATION {
+                                println!(
+                                    "Junto first frame version: {} pid {}",
+                                    junto_client_core::updates::Version::THIS_BUILD,
+                                    std::process::id()
+                                );
+                            }
+                            cx.quit();
                         });
                     });
-                }
-                Ok(_) if check_update => {}
-                Ok(_) => reached.set(true),
-                Err(error) => {
-                    start_failed(
-                        &format!("its window cannot open: {error:#}"),
-                        log_path.as_deref(),
-                    );
-                    log_file.written();
-                    cx.quit();
-                }
+                });
             }
-        });
+            Ok(_) if check_update => {}
+            Ok(_) => reached.set(true),
+            Err(error) => {
+                start_failed(
+                    &format!("its window cannot open: {error:#}"),
+                    log_path.as_deref(),
+                );
+                log_file.written();
+                cx.quit();
+            }
+        }
+    });
     if started.get() {
         ExitCode::SUCCESS
     } else {

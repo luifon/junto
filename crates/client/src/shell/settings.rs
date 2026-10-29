@@ -427,6 +427,23 @@ impl Shell {
         let selected = theme::SCALES.iter().position(|option| *option == scale);
         vec![
             group_label(text::INTERFACE, theme).into_any_element(),
+            Toggle::new(
+                "keep-running-after-close",
+                text::KEEP_RUNNING_AFTER_CLOSE,
+                self.state.read(cx).settings().keep_running_after_close,
+                (text::ON, text::OFF),
+            )
+            .selector("keep-running-after-close")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.set_keep_running_after_close(
+                        !state.settings().keep_running_after_close,
+                        cx,
+                    );
+                });
+            }))
+            .into_any_element(),
+            help(text::KEEP_RUNNING_AFTER_CLOSE_HELP, theme).into_any_element(),
             div()
                 .flex()
                 .items_center()

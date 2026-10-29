@@ -77,20 +77,16 @@ impl SystemNotifier for PlatformNotifier {
 /// Brings the application to the front after a press on one of its notifications or on the
 /// tray. `token`: the activation token that the system gave for the press.
 pub fn bring_to_front(token: Option<&str>, cx: &mut App) {
+    crate::app::restore_main_window(cx);
     cx.activate(true);
-    // gpui activates no application on Linux and on Windows. The main window, which is the
-    // first one, is asked instead: it is restored when it is minimized, and X11 and Windows
-    // give it the focus. A Wayland compositor gives the focus only for a token that it
-    // issued, such as the token of the press (ADR 0742).
-    #[cfg(any(target_os = "linux", windows))]
-    if let Some(window) = cx.windows().first() {
+    // A Wayland compositor gives focus only for an activation token of the system
+    // (ADR 0742). The main window may have opened after the call window.
+    if let Some(window) = crate::app::main_window(cx).or_else(|| cx.windows().first().copied()) {
         let _ = window.update(cx, |_, window, _| match token {
             Some(token) => window.activate_with_token(token),
             None => window.activate_window(),
         });
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
-    let _ = token;
 }
 
 /// Installs the system backend and its activation route only for the real application.

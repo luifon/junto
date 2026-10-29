@@ -38,6 +38,8 @@ pub const WINDOW_MINIMIZE: &str = "Minimize";
 pub const WINDOW_MAXIMIZE: &str = "Maximize";
 pub const WINDOW_RESTORE: &str = "Restore";
 pub const WINDOW_CLOSE: &str = "Close";
+pub const KEEP_RUNNING_AFTER_CLOSE: &str = "Keep Junto running after closing the window";
+pub const KEEP_RUNNING_AFTER_CLOSE_HELP: &str = "Messages, notifications and calls continue. Open Junto from its app icon or tray. Use Quit to exit.";
 
 // The server book.
 pub const SERVER_BOOK: &str = "Server book";
