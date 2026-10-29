@@ -2839,6 +2839,8 @@ pub const SEARCH_FAILED_TITLE: &str = "The search got no answer";
 pub const SEARCH_REFUSED_TITLE: &str = "The server did not take the search";
 pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search text.";
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
+pub const MESSAGE_LINK_UNAVAILABLE: &str =
+    "This message is unavailable or you do not have access to it.";
 pub const RESULT_GONE: &str = "The message is gone, or you can no longer read it.";
 pub const SEARCH_AGAIN: &str = "Search again";
 /// The archived list of a workspace could not be read (ADR 0762).

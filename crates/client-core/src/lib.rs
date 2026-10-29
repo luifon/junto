@@ -17,6 +17,7 @@ pub mod global_keys;
 pub mod keybinds;
 pub mod keys;
 pub mod link;
+pub mod links;
 pub mod live;
 pub mod manager;
 #[cfg(target_os = "macos")]
