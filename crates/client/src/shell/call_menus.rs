@@ -1,5 +1,6 @@
 use gpui::{
     AnyElement, App, AppContext as _, Context, IntoElement, ParentElement, Styled, Window, div,
+    prelude::FluentBuilder,
 };
 use gpui_base::slider::SliderEvent;
 
@@ -114,5 +115,146 @@ impl Shell {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+#[derive(Clone)]
+enum OwnCallAction {
+    Microphone(crate::state::view::MicrophoneAction),
+    Sound(bool),
+    Camera(crate::state::CameraAction),
+    Hand(bool),
+    Leave,
+}
+
+struct OwnControl {
+    id: &'static str,
+    label: &'static str,
+    action: OwnCallAction,
+    disabled: bool,
+    detail: Option<String>,
+}
+
+impl Shell {
+    pub(super) fn own_call_controls(
+        &self,
+        open: &OpenAccountMenu,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        use crate::state::{
+            CameraAction,
+            view::{MicrophoneAction, MicrophoneButton},
+        };
+        use junto_client_core::protocol::WorkspacePermission;
+        let Some(AccountSource::CallOccupant { seat, account_id }) = &open.source else {
+            return Vec::new();
+        };
+        if *account_id != open.owner.account_id || !self.call_menu_current(open, cx) {
+            return Vec::new();
+        }
+        let Some(view) = &self.view else {
+            return Vec::new();
+        };
+        let controls = view.controls.clone();
+        if controls.seat.as_ref() != Some(seat.as_ref()) {
+            return Vec::new();
+        }
+        let hand = view.call.as_ref().and_then(|call| call.hand_raised);
+        let Some(call) = self.state.read(cx).shown_calls().call else {
+            return Vec::new();
+        };
+        let camera = CameraAction::drawn_for(&call);
+        let camera_on = matches!(&camera, CameraAction::Stop);
+        let make = |id, label, action| OwnControl {
+            id,
+            label,
+            action,
+            disabled: false,
+            detail: None,
+        };
+        let mut microphone = make(
+            "call-menu-microphone",
+            if matches!(&controls.microphone_action, MicrophoneAction::Close) {
+                text::CLOSE_MICROPHONE
+            } else {
+                text::OPEN_MICROPHONE
+            },
+            OwnCallAction::Microphone(controls.microphone_action),
+        );
+        microphone.disabled = controls.microphone == MicrophoneButton::NotPermitted;
+        microphone.detail = match controls.microphone {
+            MicrophoneButton::Held => Some(text::MICROPHONE_HELD.to_owned()),
+            MicrophoneButton::NotPermitted => {
+                Some(text::not_permitted(WorkspacePermission::Speak).to_owned())
+            }
+            _ => None,
+        };
+        let mut camera = make(
+            "call-menu-camera",
+            if camera_on {
+                text::TURN_OFF_CAMERA
+            } else {
+                text::TURN_ON_CAMERA
+            },
+            OwnCallAction::Camera(camera),
+        );
+        camera.disabled = call.withheld.camera;
+        camera.detail = call
+            .withheld
+            .camera
+            .then(|| text::not_permitted(WorkspacePermission::Video).to_owned());
+        let mut items = vec![
+            microphone,
+            make(
+                "call-menu-sound",
+                if controls.sound_off {
+                    text::SOUND_OUTPUT_OFF
+                } else {
+                    text::SOUND_OUTPUT_ON
+                },
+                OwnCallAction::Sound(!controls.sound_off),
+            ),
+            camera,
+        ];
+        if let Some(raised) = hand {
+            items.push(make(
+                "call-menu-hand",
+                if raised {
+                    text::LOWER_HAND
+                } else {
+                    text::RAISE_HAND
+                },
+                OwnCallAction::Hand(!raised),
+            ));
+        }
+        items.push(make(
+            "call-menu-leave",
+            text::LEAVE_CALL,
+            OwnCallAction::Leave,
+        ));
+        items
+            .into_iter()
+            .map(|control| {
+                let context = open.clone();
+                crate::ui::MenuItem::new(control.id, control.label)
+                    .selector(control.id)
+                    .disabled(control.disabled)
+                    .when_some(control.detail, |item, detail| item.detail(detail))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !this.call_menu_current(&context, cx) {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| match &control.action {
+                            OwnCallAction::Microphone(action) => state.use_microphone(action),
+                            OwnCallAction::Sound(off) => state.set_sound_off(*off),
+                            OwnCallAction::Camera(action) => state.use_camera(action, cx),
+                            OwnCallAction::Hand(raised) => state.set_hand(*raised, cx),
+                            OwnCallAction::Leave => state.leave_call(cx),
+                        });
+                    }))
+                    .into_any_element()
+            })
+            .collect()
     }
 }

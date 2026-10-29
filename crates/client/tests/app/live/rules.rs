@@ -2722,3 +2722,102 @@ fn a_call_tile_volume_menu_changes_and_keeps_its_value_but_rejects_the_previous_
         .until("the new call ended", |window| window.view().call.is_none());
     scene.world.run(scene.caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_own_tile_menu_controls_media_and_hand_and_respects_camera_permissions(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    let own_id = scene.luca;
+    let show = |window: &mut Window| window.right_click_named(format!("call-tile:{own_id}"));
+    show(&mut scene.window);
+    assert!(scene.window.shows("call-menu-microphone"));
+    assert!(!scene.window.shows("call-menu-volume"));
+    scene.window.click("call-menu-microphone");
+    scene
+        .window
+        .until("the menu muted the microphone", |window| {
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().muted)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-microphone");
+    scene
+        .window
+        .until("the menu unmuted the microphone", |window| {
+            !window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().muted)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-sound");
+    scene.window.until("the menu turned sound off", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().deafened)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-sound");
+    scene.window.until("the menu turned sound on", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().deafened)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-hand");
+    scene
+        .window
+        .until("the menu raised the own hand", |window| {
+            own(window).is_some_and(|person| person.hand_raised)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-hand");
+    scene
+        .window
+        .until("the menu lowered the own hand", |window| {
+            own(window).is_some_and(|person| !person.hand_raised)
+        });
+    scene
+        .world
+        .run(scene.admin.handle.api().set_channel_rule(
+            scene.voice,
+            RuleSubject::Person { account_id: own_id },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::Video],
+            },
+        ))
+        .unwrap();
+    scene.window.until("camera publishing is denied", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .calls()
+                .view()
+                .call
+                .is_some_and(|call| call.withheld.camera)
+        })
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-camera");
+    assert!(scene.window.shows("account-menu"));
+    assert_eq!(
+        scene
+            .window
+            .state
+            .read_with(&scene.window.cx, |state, _| state
+                .calls()
+                .view()
+                .call
+                .unwrap()
+                .camera),
+        junto_media::camera::CameraState::Off
+    );
+    scene.window.click("call-menu-leave");
+    scene.window.until("the own menu left the call", |window| {
+        window.view().call.is_none()
+    });
+}
