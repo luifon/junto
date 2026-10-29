@@ -40,6 +40,21 @@ pub fn scaled_size((width, height): (f32, f32), scale_percent: u32) -> gpui::Siz
     gpui::size(px(width * scale), px(height * scale))
 }
 
+pub fn stepped_scale(scale_percent: u32, increase: bool) -> u32 {
+    if increase {
+        SCALES
+            .into_iter()
+            .find(|scale| *scale > scale_percent)
+            .unwrap_or(SCALE_MAX)
+    } else {
+        SCALES
+            .into_iter()
+            .rev()
+            .find(|scale| *scale < scale_percent)
+            .unwrap_or(SCALE_MIN)
+    }
+}
+
 pub fn clamp_scale(scale_percent: u32) -> u32 {
     scale_percent.clamp(SCALE_MIN, SCALE_MAX)
 }

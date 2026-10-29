@@ -1201,6 +1201,9 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         OpenSettings => "Settings",
         OpenAdministration => "Administration",
         OpenKeybinds => "Keybinds",
+        ZoomIn => "Zoom in",
+        ZoomOut => "Zoom out",
+        ResetZoom => "Reset zoom",
     }
 }
 

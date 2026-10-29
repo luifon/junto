@@ -338,6 +338,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Result<(), KeybindError> {
         change.apply(&mut self.keybinds)?;
+        crate::menus::sync_shortcuts(&self.keybinds, cx);
         let store = self.client.settings();
         Self::queue_write(
             cx,

@@ -97,3 +97,5 @@ mod window_placement;
 mod updates;
 
 mod menus;
+
+mod zoom;

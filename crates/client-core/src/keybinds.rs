@@ -51,6 +51,9 @@ pub enum KeyAction {
     OpenSettings,
     OpenAdministration,
     OpenKeybinds,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
 }
 
 /// The groups of the actions, in the order of the settings.
@@ -63,7 +66,7 @@ pub enum ActionGroup {
 }
 
 impl KeyAction {
-    pub const ALL: [KeyAction; 37] = [
+    pub const ALL: [KeyAction; 40] = [
         KeyAction::ToggleMute,
         KeyAction::ToggleSoundOff,
         KeyAction::PushToTalk,
@@ -101,6 +104,9 @@ impl KeyAction {
         KeyAction::OpenSettings,
         KeyAction::OpenAdministration,
         KeyAction::OpenKeybinds,
+        KeyAction::ZoomIn,
+        KeyAction::ZoomOut,
+        KeyAction::ResetZoom,
     ];
 
     pub fn group(self) -> ActionGroup {
@@ -128,7 +134,9 @@ impl KeyAction {
             | PinnedMessages => ActionGroup::Navigation,
             MarkChannelRead | MarkServerRead | ReplyToNewest | EditLastMessage | UploadFile
             | OpenDirectMessages | NewDirectMessage => ActionGroup::Messages,
-            OpenSettings | OpenAdministration | OpenKeybinds => ActionGroup::App,
+            OpenSettings | OpenAdministration | OpenKeybinds | ZoomIn | ZoomOut | ResetZoom => {
+                ActionGroup::App
+            }
         }
     }
 
@@ -181,7 +189,10 @@ impl KeyAction {
             | Back
             | Forward
             | OpenDirectMessages
-            | NewDirectMessage => "An action of the window of Junto",
+            | NewDirectMessage
+            | ZoomIn
+            | ZoomOut
+            | ResetZoom => "An action of the window of Junto",
         }
     }
 
@@ -267,17 +278,19 @@ impl KeyAction {
             OpenSettings => &[main, Comma],
             OpenAdministration => &[main, Shift, Comma],
             OpenKeybinds => &[main, Slash],
+            ZoomIn => &[main, Equal],
+            ZoomOut => &[main, Minus],
+            ResetZoom => &[main, Digit(0)],
         };
         KeyCombo::new(keys.iter().copied()).ok()
     }
 }
 
 impl KeyAction {
-    /// The keys that later actions of the list take, which no default of another action
-    /// takes: the quick switcher (Command or Control with K) and the zoom (with =, - and 0).
+    /// The keys reserved for the quick switcher (Command or Control with K).
     pub fn reserved(macos: bool) -> Vec<KeyCombo> {
         let main = if macos { Key::Meta } else { Key::Control };
-        [Key::Letter('K'), Key::Equal, Key::Minus, Key::Digit(0)]
+        [Key::Letter('K')]
             .into_iter()
             .filter_map(|key| KeyCombo::new([main, key]).ok())
             .collect()

@@ -28,13 +28,12 @@ fn every_action_has_a_name_and_the_defaults_have_no_conflict() {
     assert_eq!(KeyAction::PushToTalk.default_keys(false), None);
 }
 
-/// No default takes the keys that later actions of the list take (the quick switcher and the
-/// zoom).
+/// No default takes the keys reserved for the quick switcher.
 #[test]
 fn no_default_takes_a_reserved_combination() {
     for macos in [false, true] {
         let reserved = KeyAction::reserved(macos);
-        assert_eq!(reserved.len(), 4);
+        assert_eq!(reserved.len(), 1);
         for action in KeyAction::ALL {
             if let Some(keys) = action.default_keys(macos) {
                 assert!(!reserved.contains(&keys), "{action:?} takes {keys}");
@@ -42,7 +41,7 @@ fn no_default_takes_a_reserved_combination() {
         }
     }
     assert!(KeyAction::reserved(false).contains(&combo("control+k")));
-    assert!(KeyAction::reserved(true).contains(&combo("meta+equal")));
+    assert!(KeyAction::reserved(true).contains(&combo("meta+k")));
 }
 
 #[test]
@@ -141,4 +140,21 @@ fn the_bindings_are_written_by_name_and_a_file_is_checked_when_it_is_read() {
             inherited: false,
         }
     );
+}
+
+#[test]
+fn zoom_defaults_use_the_main_modifier_and_are_window_actions() {
+    for (macos, modifier) in [(false, "control"), (true, "meta")] {
+        for (action, key) in [
+            (KeyAction::ZoomIn, "equal"),
+            (KeyAction::ZoomOut, "minus"),
+            (KeyAction::ResetZoom, "0"),
+        ] {
+            assert_eq!(
+                action.default_keys(macos),
+                Some(combo(&format!("{modifier}+{key}")))
+            );
+            assert!(!action.may_work_outside());
+        }
+    }
 }

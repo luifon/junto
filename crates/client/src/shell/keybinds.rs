@@ -209,6 +209,19 @@ impl Shell {
             }
             KeyAction::UploadFile => self.choose_files(super::Pane::Main, cx),
             KeyAction::OpenSettings => self.open(Open::Settings, window, cx),
+            KeyAction::ZoomIn | KeyAction::ZoomOut | KeyAction::ResetZoom => {
+                self.state.update(cx, |state, cx| {
+                    let current = state.settings().scale_percent;
+                    let next = if action == KeyAction::ResetZoom {
+                        crate::theme::SCALE_DEFAULT
+                    } else {
+                        crate::theme::stepped_scale(current, action == KeyAction::ZoomIn)
+                    };
+                    if next != current || action == KeyAction::ResetZoom {
+                        state.set_scale(next, cx);
+                    }
+                });
+            }
             KeyAction::OpenAdministration => {
                 self.open_server_admin(crate::state::admin::AdminPage::Workspaces, window, cx);
             }

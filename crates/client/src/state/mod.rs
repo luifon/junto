@@ -785,6 +785,7 @@ impl AppState {
             tracing::warn!(%error, "the key bindings were not read");
             junto_client_core::keybinds::Keybinds::default()
         });
+        crate::menus::sync_shortcuts(&keybinds, cx);
         let (voice, voice_failed) = match client.voice().load() {
             Ok(voice) => (voice, None),
             Err(error) => {

@@ -1726,6 +1726,25 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> E {
         element
+            .on_action(cx.listener(|this, _: &crate::menus::ZoomIn, window, cx| {
+                this.perform_key_action(junto_client_core::keybinds::KeyAction::ZoomIn, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::menus::ZoomOut, window, cx| {
+                this.perform_key_action(
+                    junto_client_core::keybinds::KeyAction::ZoomOut,
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::menus::ResetZoom, window, cx| {
+                    this.perform_key_action(
+                        junto_client_core::keybinds::KeyAction::ResetZoom,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .on_action(
                 cx.listener(|_, _: &crate::menus::Minimize, window, _| window.minimize_window()),
             )

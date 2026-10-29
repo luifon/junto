@@ -3,7 +3,6 @@ use crate::{
     shell::{Open, SettingsSection, Shell},
     text,
 };
-#[cfg(target_os = "macos")]
 use gpui::KeyBinding;
 use gpui::{App, Menu, MenuItem, OsAction, Window, actions};
 use gpui_base::input;
@@ -20,7 +19,10 @@ actions!(
         Minimize,
         ZoomWindow,
         FullScreen,
-        BringAllToFront
+        BringAllToFront,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom
     ]
 );
 
@@ -54,12 +56,12 @@ pub(crate) fn init(cx: &mut App) {
     });
     #[cfg(target_os = "macos")]
     cx.bind_keys([
-        KeyBinding::new("cmd-,", Settings, None),
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("cmd-alt-h", HideOthers, None),
         KeyBinding::new("cmd-m", Minimize, Some("Shell")),
         KeyBinding::new("ctrl-cmd-f", FullScreen, Some("Shell")),
     ]);
+    sync_shortcuts(&Default::default(), cx);
 }
 
 fn open_settings(section: Option<SettingsSection>, cx: &mut App) {
@@ -138,14 +140,20 @@ fn configuration(fullscreen: bool) -> Vec<Menu> {
         ),
         menu(
             "View",
-            vec![MenuItem::action(
-                if fullscreen {
-                    "Exit Full Screen"
-                } else {
-                    "Enter Full Screen"
-                },
-                FullScreen,
-            )],
+            vec![
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::action("Actual Size", ResetZoom),
+                MenuItem::separator(),
+                MenuItem::action(
+                    if fullscreen {
+                        "Exit Full Screen"
+                    } else {
+                        "Enter Full Screen"
+                    },
+                    FullScreen,
+                ),
+            ],
         ),
         menu(
             "Window",
@@ -167,4 +175,63 @@ fn install(fullscreen: bool, cx: &App) {
     cx.set_menus(configuration(fullscreen));
     #[cfg(target_os = "macos")]
     junto_client_core::menu_bar::register_application_menus(text::APP_NAME, "Services", "Help");
+}
+
+pub(crate) fn sync_shortcuts(bindings: &junto_client_core::keybinds::Keybinds, cx: &mut App) {
+    use junto_client_core::keybinds::KeyAction;
+    if !cx.has_global::<MenuState>() {
+        return;
+    }
+    let mut kept: Vec<_> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|binding| {
+            let action = binding.action().as_any();
+            !action.is::<Settings>()
+                && !action.is::<ZoomIn>()
+                && !action.is::<ZoomOut>()
+                && !action.is::<ResetZoom>()
+        })
+        .cloned()
+        .collect();
+    for action in [
+        KeyAction::OpenSettings,
+        KeyAction::ZoomIn,
+        KeyAction::ZoomOut,
+        KeyAction::ResetZoom,
+    ] {
+        let Some(keys) = bindings.get(action).keys else {
+            continue;
+        };
+        if bindings.action_for(&keys) != Some(action) {
+            continue;
+        }
+        let stroke = keys
+            .to_string()
+            .split('+')
+            .map(|key| match key {
+                "control" => "ctrl",
+                "meta" => "cmd",
+                "comma" => ",",
+                "slash" => "/",
+                "equal" => "=",
+                "minus" => "-",
+                "bracketleft" => "[",
+                "bracketright" => "]",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        kept.push(match action {
+            KeyAction::OpenSettings => KeyBinding::new(&stroke, Settings, None),
+            KeyAction::ZoomIn => KeyBinding::new(&stroke, ZoomIn, Some("Shell")),
+            KeyAction::ZoomOut => KeyBinding::new(&stroke, ZoomOut, Some("Shell")),
+            KeyAction::ResetZoom => KeyBinding::new(&stroke, ResetZoom, Some("Shell")),
+            _ => continue,
+        });
+    }
+    cx.clear_key_bindings();
+    cx.bind_keys(kept);
+    install(cx.global::<MenuState>().fullscreen, cx);
 }
