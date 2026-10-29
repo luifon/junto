@@ -9,6 +9,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 mod call_keys;
+mod drafts;
 mod emoji;
 mod history;
 pub use call_keys::KeybindChange;
@@ -503,6 +504,7 @@ pub struct AppState {
     media_fixture: Option<MediaSnapshot>,
     timing: Timing,
     settings: InterfaceSettings,
+    drafts: drafts::Drafts,
     recent_emoji: Vec<String>,
     recent_emoji_error: Option<String>,
     recent_emoji_writes: u64,
@@ -791,6 +793,7 @@ impl AppState {
                 Some(text::flow_error(&FlowError::Storage(error.to_string()))),
             ),
         };
+        let drafts = drafts::Drafts::load(&client);
         theme::apply(settings.theme, cx);
         let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
             tracing::warn!(%error, "the key bindings were not read");
@@ -996,6 +999,7 @@ impl AppState {
             media_fixture: None,
             timing,
             settings,
+            drafts,
             recent_emoji,
             recent_emoji_error,
             recent_emoji_writes: 0,
@@ -2462,6 +2466,7 @@ impl AppState {
             .find_map(|setting| self.settings_failed.get(setting))
             .map(String::as_str)
             .or(self.recent_emoji_error.as_deref())
+            .or(self.drafts.error.as_deref())
     }
 
     /// Runs `work` on a background thread after every write that was asked for before,
@@ -2810,7 +2815,9 @@ impl AppState {
         self.set_tray_mentions(for_person, cx);
         self.follow_tray();
         self.ask_missing_quotes(shown, cx);
+        self.reconcile_draft_entries(cx);
         self.end_uploads_of_other_accounts();
+        self.restore_draft_files(cx);
         self.drop_sent_uploads();
         cx.notify();
     }
@@ -3007,6 +3014,9 @@ impl AppState {
         match result {
             // The key has an account: the server stays, and its state shows the account.
             Ok(()) | Err(junto_client_core::manager::RemoveError::HasAccount) => {
+                if self.client.server(server_id).is_none() {
+                    self.forget_server_drafts(server_id, cx);
+                }
                 self.pending.remove_failed.remove(&server_id);
             }
             Err(error) => {

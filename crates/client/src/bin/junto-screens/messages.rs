@@ -518,6 +518,13 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
             },
         )?;
     }
+    studio.draw_answered(
+        Screen::new("messages-draft", with_timeline(general().timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+        |shell, window, cx| {
+            shell.type_message(Pane::Main, "A draft kept for this channel", window, cx)
+        },
+    )?;
     let mut forwarded = Made::new(GENERAL);
     let copy = forwarded.message("Ana", 2, "## Delivery plan\nA copied **work item** remains readable when its origin is unavailable.\n```rust\nfn ship() {\n    ready();\n}\n```");
     if let Some(document) = &mut copy.document {

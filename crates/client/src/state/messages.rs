@@ -351,7 +351,7 @@ impl AppState {
     }
 
     /// The account that this device has on a server.
-    fn account_of(&self, server_id: ServerId) -> Option<AccountId> {
+    pub(crate) fn account_of(&self, server_id: ServerId) -> Option<AccountId> {
         match self.client.server(server_id)?.access().state {
             AccessState::LoggedIn { account_id, .. } => Some(account_id),
             _ => None,
@@ -579,6 +579,7 @@ impl AppState {
                     self.sent_uploads.insert((server_id, id), uploads);
                 }
                 self.pending.message_refused = None;
+                self.removed_draft_files(server_id, place, cx);
                 self.show_uploads();
                 cx.notify();
                 true
@@ -847,14 +848,48 @@ impl AppState {
                 refused.push(AttachRefusal::Unreadable { name });
                 continue;
             };
+            let kept = source.clone();
             let upload = transfers.upload(place, source);
+            self.remember_attachment_source((server_id, owner, place), upload.id, kept);
             self.watch_upload(&upload, cx);
             self.upload_owners.insert(server_id, owner);
             self.uploads.entry(key).or_default().push(upload);
         }
         self.show_uploads();
+        self.schedule_drafts(cx);
         cx.notify();
         refused
+    }
+
+    pub(super) fn recover_attachments(
+        &mut self,
+        desk: crate::drafts::Desk,
+        sources: Vec<(UploadSource, super::drafts::DraftSource)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account_of(desk.0) != Some(desk.1) {
+            return;
+        }
+        let Some(server) = self.client.server(desk.0) else {
+            return;
+        };
+        let Some(owner) = server.owner().filter(|owner| owner.account_id == desk.1) else {
+            return;
+        };
+        let transfers = server.transfers().for_owner(owner);
+        for (source, saved) in sources {
+            let upload = transfers.upload(desk.2, source);
+            self.remember_recovered_source(desk, upload.id, saved);
+            self.watch_upload(&upload, cx);
+            self.uploads
+                .entry((desk.0, desk.2))
+                .or_default()
+                .push(upload);
+        }
+        self.upload_owners.insert(desk.0, desk.1);
+        self.show_uploads();
+        self.schedule_drafts(cx);
+        cx.notify();
     }
 
     /// Takes a file out of the next message of a place and ends its upload.
@@ -873,6 +908,7 @@ impl AppState {
                 held.id != upload
             });
         }
+        self.forget_attachment_source(server_id, place, upload, cx);
         self.show_uploads();
         cx.notify();
     }

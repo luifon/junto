@@ -16,6 +16,7 @@ mod copying;
 mod decode;
 pub mod detached;
 mod direct;
+pub(crate) mod draft_storage;
 mod edges;
 mod feed;
 mod forwarding;
@@ -528,6 +529,7 @@ impl Shell {
         let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
         let (transcript_edit, transcript_subscription) =
             transcript_edit::TranscriptEdit::new(window, cx);
+        draft_storage::register(cx.entity().downgrade(), cx);
         let own_entity = cx.entity_id();
         let (account, account_subscriptions) = account::AccountUi::new(window, cx);
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
@@ -535,6 +537,7 @@ impl Shell {
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
+                this.save_composers(cx);
                 this.state.update(cx, |state, _| {
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
@@ -784,7 +787,7 @@ impl Shell {
             main_taken: None,
             #[cfg(feature = "test-support")]
             draws: 0,
-            view_stale: false,
+            view_stale: true,
             derived_since_drawing: false,
             #[cfg(feature = "test-support")]
             derivations: 0,

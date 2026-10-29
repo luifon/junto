@@ -53,13 +53,19 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     theme::install(Theme::stone(), cx);
     // A write of a file that a window started is done before the application ends.
     cx.on_app_quit(|cx| {
-        crate::state::finish_writes(cx);
+        save_drafts_at_quit(cx);
         async {}
     })
     .detach();
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
     cx.on_action(|_: &Quit, cx| quit(cx));
     Ok(())
+}
+
+/// Captures the open composers and completes accepted profile writes before exit.
+pub fn save_drafts_at_quit(cx: &mut App) {
+    crate::shell::draft_storage::flush(cx);
+    crate::state::finish_writes(cx);
 }
 
 /// Ends the application, as the `Quit` action and the entry of the tray menu do. The call is

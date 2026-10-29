@@ -16,7 +16,9 @@ use crate::api::{ApiError, ErrorCategory};
 
 /// A place that holds messages: a channel, a direct conversation, or the thread under one
 /// message of a channel (ADR 0403).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum PlaceId {
     Channel(ChannelId),
     Direct(ConversationId),

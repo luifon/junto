@@ -3824,3 +3824,5 @@ pub const PREVIEW_FIX: &str = "Fix the message to preview it.";
 
 pub const EMOJI_COMPLETION: &str = "Emoji completion";
 pub const RECENT_EMOJI: &str = "Recent emoji";
+
+pub const DRAFT: &str = "Draft";

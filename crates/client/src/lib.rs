@@ -9,6 +9,7 @@ pub mod app_badge;
 pub mod assets;
 pub mod compose;
 pub mod dialog_parent;
+pub(crate) mod drafts;
 pub mod emoji;
 pub mod highlight;
 pub mod images;

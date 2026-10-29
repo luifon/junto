@@ -11,6 +11,7 @@ pub mod app_identity;
 pub mod arrangement;
 pub mod book;
 pub mod console;
+pub mod drafts;
 pub mod emoji_history;
 pub mod events;
 pub mod flow;

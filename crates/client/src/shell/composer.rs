@@ -16,7 +16,7 @@ use gpui_base::input::{
 };
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId};
+use junto_client_core::protocol::ids::{MessageId, ServerId};
 use junto_client_core::protocol::message::{Document, Message};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{UploadSource, UploadStage};
@@ -86,7 +86,7 @@ pub(crate) struct Candidate {
 
 /// A place of a server and the account that writes there. The text that one account
 /// left in a place is not shown to another account of the same server.
-type Desk = (ServerId, AccountId, PlaceId);
+type Desk = crate::drafts::Desk;
 
 /// The message that the composer changes.
 #[derive(Clone)]
@@ -94,7 +94,7 @@ pub(crate) struct Editing {
     pub(crate) message_id: MessageId,
     /// The document at the start of the edit, and the text that the composer got for it.
     /// What the person does not change is taken from the document (ADR 0740).
-    original: Arc<(Document, compose::Written)>,
+    pub(super) original: Arc<(Document, compose::Written)>,
 }
 
 /// Files attached to the next message of a place whose sizes are being read.
@@ -111,7 +111,8 @@ struct Attaching {
 pub(crate) struct Composer {
     pub(crate) input: Entity<TextareaState>,
     /// The place whose text the input holds, and the account that writes there.
-    place: Option<Desk>,
+    pub(super) place: Option<Desk>,
+    pub(super) saved: std::cell::RefCell<Option<crate::drafts::SavedDraft>>,
     /// The composer has held the text of a place before.
     placed: bool,
     pub(crate) reply_to: Option<MessageId>,
@@ -338,6 +339,7 @@ impl Composer {
         Self {
             input,
             place: None,
+            saved: Default::default(),
             placed: false,
             reply_to: None,
             editing: None,
@@ -440,6 +442,13 @@ impl Composer {
             let shown = self.input.read(cx).content();
             let empty =
                 shown.text().trim().is_empty() && self.reply_to.is_none() && self.editing.is_none();
+            if shown == draft.content
+                && self.reply_to == draft.reply_to
+                && self.editing.as_ref().map(|edit| edit.message_id)
+                    == draft.editing.as_ref().map(|edit| edit.message_id)
+            {
+                return;
+            }
             let content = if empty {
                 self.reply_to = draft.reply_to;
                 self.editing = draft.editing;
@@ -570,33 +579,38 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.save_composer(pane, cx);
+        let restored = shown.and_then(|desk| self.state.read(cx).saved_draft(desk).cloned());
+        let generation = shown.and_then(|desk| self.state.read(cx).draft_entry_generation(desk.0));
         let pen = self.pen_mut(pane);
-        if shown == pen.place {
+        if shown == pen.place
+            && pen
+                .saved
+                .borrow()
+                .as_ref()
+                .is_none_or(|saved| Some(saved.entry_generation) == generation)
+        {
             return;
         }
-        if let Some((server_id, account_id, _)) = shown {
-            // The server has another account now: the texts of the one before are gone.
-            pen.drafts
-                .retain(|(server, account, _), _| *server != server_id || *account == account_id);
-        }
-        let content = pen.input.read(cx).content();
         if let Some(before) = pen.place.take() {
-            let draft = Draft {
-                content,
-                reply_to: pen.reply_to.take(),
-                editing: pen.editing.take(),
-            };
-            let empty = draft.content.text().trim().is_empty()
-                && draft.reply_to.is_none()
-                && draft.editing.is_none();
-            if empty {
-                pen.drafts.remove(&before);
-            } else {
-                pen.drafts.insert(before, draft);
-            }
+            pen.drafts.remove(&before);
+            pen.reply_to = None;
+            pen.editing = None;
         }
         let first = shown.is_some() && !std::mem::replace(&mut pen.placed, true);
-        let held = shown.and_then(|place| pen.drafts.remove(&place));
+        if let Some(place) = shown {
+            pen.drafts.remove(&place);
+        }
+        let held = restored.map(|draft| Draft {
+            content: draft.content(),
+            reply_to: draft.reply,
+            editing: draft
+                .editing
+                .map(|(message_id, document, written)| Editing {
+                    message_id,
+                    original: Arc::new((document, written)),
+                }),
+        });
         let (content, reply_to, editing) = match held {
             Some(draft) => (draft.content, draft.reply_to, draft.editing),
             // What was put into the composer before the window had a place stays.
@@ -616,16 +630,19 @@ impl Shell {
         pen.preview_scroll = ScrollHandle::new();
         pen.reply_to = reply_to;
         pen.editing = editing;
+        pen.saved.replace(None);
         if !first {
             pen.problem = None;
             pen.mention = None;
             pen.emoji_completion = None;
         }
+        self.save_composer(pane, cx);
     }
 
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
     pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        self.save_composer(pane, cx);
         let drawings = Drawings::current(cx);
         let pen = self.pen_mut(pane);
         pen.problem = None;
@@ -1023,11 +1040,14 @@ impl Shell {
     }
 
     /// Files are being attached to the next message of the place that the composer shows.
-    fn attaching_here(&self, pane: Pane) -> bool {
+    fn attaching_here(&self, pane: Pane, cx: &gpui::App) -> bool {
         let pen = self.pen(pane);
         pen.attaching
             .iter()
             .any(|entry| Some(entry.asked) == pen.place)
+            || pen
+                .place
+                .is_some_and(|desk| self.state.read(cx).recovering_draft_files(desk))
     }
 
     /// Attaches the files at these paths, as the file dialog and a drop do.
@@ -1156,6 +1176,7 @@ impl Shell {
         self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
+        self.save_composer(pane, cx);
         cx.notify();
     }
 
@@ -1252,6 +1273,7 @@ impl Shell {
             input.set_selected_range(end..end, cx);
             input.focus(window, cx);
         });
+        self.save_composer(pane, cx);
         cx.notify();
     }
 
@@ -1264,6 +1286,7 @@ impl Shell {
         }
         self.pen_mut(pane).reply_to = None;
         self.pen_mut(pane).problem = None;
+        self.save_composer(pane, cx);
         cx.notify();
     }
 
@@ -1326,7 +1349,7 @@ impl Shell {
             .editing
             .as_ref()
             .map(|editing| editing.message_id);
-        if editing.is_none() && self.attaching_here(pane) {
+        if editing.is_none() && self.attaching_here(pane, cx) {
             self.pen_mut(pane).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
             cx.notify();
             return;
@@ -1393,6 +1416,8 @@ impl Shell {
                 input.focus(window, cx);
             }
         });
+        self.save_composer(pane, cx);
+        self.state.update(cx, |state, cx| state.flush_drafts(cx));
         // The person sent a message: the list shows its end.
         if editing.is_none() {
             self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
@@ -1966,7 +1991,7 @@ impl Shell {
 
         // The files of the next message, each with the state of its upload.
         let place = self.composer_place(pane);
-        let attaching = self.attaching_here(pane);
+        let attaching = self.attaching_here(pane, cx);
         let files = (!draft.is_empty() || attaching).then(|| {
             div()
                 .flex()

@@ -17,7 +17,7 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceRoleId};
 use junto_client_core::protocol::message::{Block, CheckItem, Document, Inline, Mark};
 
 /// What a mention names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MentionTarget {
     Channel(ChannelId),
     Account(AccountId),
@@ -26,7 +26,7 @@ pub enum MentionTarget {
 }
 
 /// A mention in the text of the composer: the bytes that show it, and what it names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Mention {
     pub range: Range<usize>,
     pub target: MentionTarget,
@@ -1031,7 +1031,7 @@ impl Writer<'_> {
 
 /// The bytes of a written text that show one block, and for a list the bytes of the
 /// content of each of its items.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct WrittenBlock {
     range: Range<usize>,
     items: Vec<Range<usize>>,
@@ -1039,7 +1039,7 @@ struct WrittenBlock {
 
 /// The text of the composer for a document, with its mentions and the place of each block
 /// in the text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Written {
     pub text: String,
     pub mentions: Vec<Mention>,
