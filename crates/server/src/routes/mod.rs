@@ -180,6 +180,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(attachments::put_chunk));
     add(&mut router, || routes!(attachments::complete_upload));
+    add(&mut router, || routes!(attachments::get_attachment_message));
     add(&mut router, || routes!(attachments::download));
     add(&mut router, || {
         routes!(messages::channel_history, messages::send_channel_message)

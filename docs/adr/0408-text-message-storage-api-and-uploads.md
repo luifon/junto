@@ -311,6 +311,8 @@ Read cost and future copies:
   new attachment directory. Removing either copy leaves the other intact; editing or
   removing copied messages requires no shared mutable attachment ownership.
 
+`GET /api/v1/attachments/{attachment_id}/message` resolves a file link to its parent message. It shares the download lookup: the file must be complete, attached and not removed, and the caller must be allowed to read the parent message under the live/history policy. An unattached upload, a removed file, a deleted message and an inaccessible parent give not_found. It counts against the account's message-read limit. The client applies its ordinary inbound message bounds to the answer. No access-token reach is added. Server test: `attachment_permissions::a_file_link_resolves_only_an_attached_file_of_a_readable_message`.
+
 ## Consequences
 
 - An old direct conversation is preserved but inaccessible during loss of contact.
