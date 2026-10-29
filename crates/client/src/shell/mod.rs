@@ -586,6 +586,7 @@ impl Shell {
             // A key that is held when the window loses the focus is not seen when it is
             // released: push-to-talk ends with the focus (ADR 0507).
             cx.observe_window_activation(window, |this, window, cx| {
+                crate::menus::refresh(window, cx);
                 // The rules of a system notification read whether the person looks at
                 // the window (ADR 0742).
                 let active = window.is_window_active();
@@ -1725,6 +1726,17 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> E {
         element
+            .on_action(
+                cx.listener(|_, _: &crate::menus::Minimize, window, _| window.minimize_window()),
+            )
+            .on_action(
+                cx.listener(|_, _: &crate::menus::ZoomWindow, window, _| window.zoom_window()),
+            )
+            .on_action(
+                cx.listener(|_, _: &crate::menus::FullScreen, window, _| {
+                    window.toggle_fullscreen()
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &crate::app::CloseWindow, window, cx| {
                     this.close_window(window, cx);

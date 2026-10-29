@@ -1,8 +1,8 @@
 //! Starting the application: the fonts, the theme, the keys, and the main window.
 
 use gpui::{
-    App, AppContext as _, Entity, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
-    WindowHandle, WindowOptions, actions, point, px,
+    App, AppContext as _, Entity, KeyBinding, TitlebarOptions, WindowBounds, WindowHandle,
+    WindowOptions, actions, point, px,
 };
 use gpui_base::Root;
 use junto_client_core::Client;
@@ -112,6 +112,7 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
         KeyBinding::new("secondary-w", CloseWindow, Some("Shell")),
     ]);
     cx.on_action(|_: &Quit, cx| quit(cx));
+    crate::menus::init(cx);
     Ok(())
 }
 
@@ -207,11 +208,6 @@ pub fn open_main_window(
     start: WindowStart,
     cx: &mut App,
 ) -> gpui::Result<WindowHandle<Root>> {
-    cx.set_menus(vec![Menu {
-        name: text::APP_NAME.into(),
-        items: vec![MenuItem::action(text::QUIT, Quit)],
-        disabled: false,
-    }]);
     let scale = state.read(cx).settings().scale_percent;
     let saved = state.read(cx).main_window_settings();
     let restored = crate::window_placement::restore(

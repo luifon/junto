@@ -10,6 +10,7 @@ impl Shell {
     ) {
         self._subscriptions
             .push(cx.observe_window_bounds(window, move |this, window, cx| {
+                crate::menus::refresh(window, cx);
                 let saved = if detached {
                     this.state.read(cx).call_window_settings()
                 } else {

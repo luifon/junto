@@ -10,7 +10,7 @@ use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSBitmapImageRep, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSApplication, NSBitmapImageRep, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSSize, NSString};
@@ -136,5 +136,30 @@ impl StatusItem {
 impl Drop for StatusItem {
     fn drop(&mut self) {
         NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
+    }
+}
+
+/// Registers the actual submenus after the application installs its menu bar.
+pub fn register_application_menus(app_name: &str, services_name: &str, help_name: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(main) = app.mainMenu() else {
+        return;
+    };
+    if let Some(services) = main
+        .itemWithTitle(&NSString::from_str(app_name))
+        .and_then(|item| item.submenu())
+        .and_then(|menu| menu.itemWithTitle(&NSString::from_str(services_name)))
+        .and_then(|item| item.submenu())
+    {
+        app.setServicesMenu(Some(&services));
+    }
+    if let Some(help) = main
+        .itemWithTitle(&NSString::from_str(help_name))
+        .and_then(|item| item.submenu())
+    {
+        app.setHelpMenu(Some(&help));
     }
 }

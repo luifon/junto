@@ -95,3 +95,5 @@ mod window_frame;
 mod window_placement;
 
 mod updates;
+
+mod menus;
