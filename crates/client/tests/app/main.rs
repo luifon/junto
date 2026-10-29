@@ -28,6 +28,7 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod attachment_menus;
 mod badges;
 mod book;
 mod call_notices;

@@ -678,8 +678,6 @@ impl Rich {
             crate::selectable::SelectableText::rich(
                 InteractiveText::new(("rich", id), styled)
                     .on_click(ranges, move |index, window, cx| {
-                        // The address is HTTP, HTTPS or mailto: the application of the system
-                        // for it opens it.
                         if let Some((_, link)) = links.get(index) {
                             window.dispatch_action(
                                 Box::new(crate::ui::OpenLink { link: link.clone() }),
@@ -2218,13 +2216,18 @@ impl Shell {
         &mut self,
         feed: &Feed,
         message: &Message,
-        window: &Window,
+        window: &mut Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let server_id = feed.server_id;
         let message_id = message.id;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
         self.message_pictures.fit = list_fit(window);
         // The pictures of the message, which the viewer shows one after the other.
         let pictures: Rc<Vec<Attachment>> = Rc::new(
@@ -2241,58 +2244,71 @@ impl Shell {
             .iter()
             .enumerate()
             .map(|(index, attachment)| {
-                let download = self.download_control(server_id, attachment, index, "", theme, cx);
-                let name: SharedString = text::label(&attachment.name).into();
-                let size: SharedString = text::file_size(attachment.bytes).into();
-                if is_picture(attachment) {
-                    let key = self.want_picture(server_id, attachment, cx);
-                    let held = key
-                        .as_ref()
-                        .and_then(|key| self.message_pictures.held.get(key));
-                    #[cfg(feature = "test-support")]
-                    let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
-                    let (width, height) = picture_size(attachment);
-                    let attachment_id = attachment.id;
-                    let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
-                    let picture: AnyElement = match held {
-                        Some(Picture::Ready(image)) => {
-                            moving::picture(image.clone(), slot, &self.message_pictures.playback)
-                        }
-                        Some(Picture::Failed | Picture::Unanswered { .. }) => div()
-                            .p(u(8.0))
-                            .typeface(theme.types.small, theme)
-                            .ink(colors.ink_3)
-                            .child(text::PICTURE_FAILED)
-                            .into_any_element(),
-                        _ => div()
-                            .typeface(theme.types.small, theme)
-                            .ink(colors.ink_3)
-                            .child(text::PICTURE_LOADING)
-                            .into_any_element(),
-                    };
-                    let place = pictures
-                        .iter()
-                        .position(|picture| picture.id == attachment_id)
-                        .unwrap_or_default();
-                    let open = {
-                        let pictures = Rc::clone(&pictures);
-                        move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                            this.open_picture_viewer(
-                                server_id,
-                                message_id,
-                                pictures.as_ref().clone(),
-                                place,
-                                window,
-                                cx,
-                            );
-                        }
-                    };
-                    let by_key = open.clone();
-                    let ring = ring.clone();
-                    let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
-                    // The card takes the width of the list up to the size of the picture,
-                    // and the picture keeps its proportions in the width that it gets.
-                    return div()
+                let (target, actions) = crate::ui::collect_actions(|| {
+                    self.file_copy_actions(server_id, attachment, cx);
+                    let download =
+                        self.download_control(server_id, attachment, index, "", theme, cx);
+                    let name: SharedString = text::label(&attachment.name).into();
+                    let size: SharedString = text::file_size(attachment.bytes).into();
+                    if is_picture(attachment) {
+                        let key = self.want_picture(server_id, attachment, cx);
+                        let held = key
+                            .as_ref()
+                            .and_then(|key| self.message_pictures.held.get(key));
+                        #[cfg(feature = "test-support")]
+                        let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
+                        let (width, height) = picture_size(attachment);
+                        let attachment_id = attachment.id;
+                        let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
+                        let picture: AnyElement = match held {
+                            Some(Picture::Ready(image)) => moving::picture(
+                                image.clone(),
+                                slot,
+                                &self.message_pictures.playback,
+                            ),
+                            Some(Picture::Failed | Picture::Unanswered { .. }) => div()
+                                .p(u(8.0))
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_3)
+                                .child(text::PICTURE_FAILED)
+                                .into_any_element(),
+                            _ => div()
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_3)
+                                .child(text::PICTURE_LOADING)
+                                .into_any_element(),
+                        };
+                        let place = pictures
+                            .iter()
+                            .position(|picture| picture.id == attachment_id)
+                            .unwrap_or_default();
+                        let open = {
+                            let pictures = Rc::clone(&pictures);
+                            move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                                this.open_picture_viewer(
+                                    server_id,
+                                    message_id,
+                                    pictures.as_ref().clone(),
+                                    place,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        };
+                        let by_key = open.clone();
+                        let by_menu = open.clone();
+                        crate::ui::RowAction::new(
+                            text::OPEN_PICTURE,
+                            cx.listener(move |this, _, window, cx| {
+                                by_menu(this, window, cx);
+                            }),
+                        )
+                        .register();
+                        let ring = ring.clone();
+                        let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
+                        // The card takes the width of the list up to the size of the picture,
+                        // and the picture keeps its proportions in the width that it gets.
+                        return div()
                         .flex_none()
                         .mt(u(5.0))
                         .w_full()
@@ -2374,62 +2390,80 @@ impl Shell {
                                 .child(download),
                         )
                         .into_any_element();
-                }
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(u(10.0))
-                    .mt(u(5.0))
+                    }
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(10.0))
+                        .mt(u(5.0))
+                        .w_full()
+                        .max_w(u(PICTURE_WIDTH + 60.0))
+                        .min_h(u(42.0))
+                        .pl(u(6.0))
+                        .pr(u(6.0))
+                        .rounded(u(theme.metrics.radius))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .bg(Hsla::from(colors.travertine_hi))
+                        .debug_selector(move || format!("file:{}", index))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .size(u(30.0))
+                                .rounded(u(theme.metrics.radius_small))
+                                .bg(Hsla::from(colors.terracotta))
+                                .font_family(theme.fonts.mono.clone())
+                                .font_weight(FontWeight::BOLD)
+                                .text_size(u(12.0))
+                                .ink(colors.on_terracotta)
+                                .child(extension(&attachment.name)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(u(13.5))
+                                        .line_height(u(17.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .ink(colors.ink)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(u(12.5))
+                                        .line_height(u(17.0))
+                                        .ink(colors.ink_3)
+                                        .child(size),
+                                ),
+                        )
+                        .child(download)
+                        .into_any_element()
+                });
+                let id: SharedString = format!(
+                    "attachment-actions:{server_id}:{owner:?}:{message_id}:{}",
+                    attachment.id
+                )
+                .into();
+                let ring = ring.clone();
+                let frame = div()
+                    .id(id.clone())
+                    .role(Role::Group)
+                    .aria_label(SharedString::from(text::label(&attachment.name)))
                     .w_full()
-                    .max_w(u(PICTURE_WIDTH + 60.0))
-                    .min_h(u(42.0))
-                    .pl(u(6.0))
-                    .pr(u(6.0))
-                    .rounded(u(theme.metrics.radius))
-                    .border_1()
-                    .border_color(Hsla::from(colors.rule))
-                    .bg(Hsla::from(colors.travertine_hi))
-                    .debug_selector(move || format!("file:{}", index))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(u(30.0))
-                            .rounded(u(theme.metrics.radius_small))
-                            .bg(Hsla::from(colors.terracotta))
-                            .font_family(theme.fonts.mono.clone())
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(u(12.0))
-                            .ink(colors.on_terracotta)
-                            .child(extension(&attachment.name)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(u(13.5))
-                                    .line_height(u(17.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .ink(colors.ink)
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(u(12.5))
-                                    .line_height(u(17.0))
-                                    .ink(colors.ink_3)
-                                    .child(size),
-                            ),
-                    )
-                    .child(download)
-                    .into_any_element()
+                    .flex_none()
+                    .focusable()
+                    .tab_stop(!is_picture(attachment))
+                    .focus_visible(move |style| style.shadow(ring))
+                    .child(target);
+                crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
             })
             .collect()
     }

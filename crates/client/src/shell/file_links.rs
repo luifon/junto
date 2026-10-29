@@ -46,6 +46,32 @@ impl OpenFileLink {
 }
 
 impl Shell {
+    pub(super) fn file_copy_actions(
+        &self,
+        server_id: junto_client_core::protocol::ids::ServerId,
+        file: &junto_client_core::protocol::message::Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        let name = file.name.clone();
+        let id = file.id;
+        RowAction::new(
+            text::COPY_FILE_NAME,
+            cx.listener(move |this, _, _, cx| {
+                this.copy_text(name.clone(), cx);
+            }),
+        )
+        .register();
+        RowAction::new(
+            text::COPY_TARGET_LINK,
+            cx.listener(move |this, _, _, cx| {
+                if let Some(link) = this.state.read(cx).file_link(server_id, id) {
+                    this.copy_text(link, cx);
+                }
+            }),
+        )
+        .register();
+    }
+
     pub(super) fn render_linked_file(
         &mut self,
         window: &mut Window,

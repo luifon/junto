@@ -116,7 +116,6 @@ pub fn bind_action_menu(
     });
     let by_open = popup.clone();
     frame
-        .relative()
         .when(has_actions, |frame| {
             frame.on_context_menu(move |window, cx| {
                 by_open.update(cx, |popup, cx| {
