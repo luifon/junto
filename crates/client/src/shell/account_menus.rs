@@ -59,7 +59,9 @@ impl OpenAccountMenu {
         };
         match source {
             AccountSource::CallOccupant { seat, account_id } => {
-                return seat.target.server_id == self.owner.entry.server_id
+                return self.people.len() == 1
+                    && self.people[0].account_id == *account_id
+                    && seat.target.server_id == self.owner.entry.server_id
                     && state.calls().view().call.is_some_and(|call| {
                         call.phase == junto_media::calls::Phase::Connected
                             && call.seat() == *seat.as_ref()
@@ -264,11 +266,17 @@ impl Shell {
                 .server(open.owner.entry.server_id)
                 .is_some_and(|server| server.owner() == Some(open.owner))
         {
-            self.open_layer(Layer::AccountMenu(Box::new(open)), window, cx);
+            self.open_layer(Layer::AccountMenu(Box::new(open.clone())), window, cx);
+            self.start_call_menu_volume(&open, cx);
         }
     }
 
-    fn account_menu_current(&self, owner: Owner, person: &AccountTarget, cx: &App) -> bool {
+    pub(super) fn account_menu_current(
+        &self,
+        owner: Owner,
+        person: &AccountTarget,
+        cx: &App,
+    ) -> bool {
         matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
             && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx))))
             && self
@@ -280,14 +288,17 @@ impl Shell {
 
     pub(super) fn render_account_menu(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Layer::AccountMenu(open) = &self.layer else {
             return div().into_any_element();
         };
         let open = open.as_ref().clone();
-        let mut items = Vec::new();
+        let mut items: Vec<_> = self
+            .call_volume_row(&open, window, cx)
+            .into_iter()
+            .collect();
         for (index, person) in open.people.iter().enumerate() {
             let account = person.account_id;
             let owner = open.owner;

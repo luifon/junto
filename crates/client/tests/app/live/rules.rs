@@ -2648,3 +2648,77 @@ fn call_tiles_offer_account_actions_in_both_windows_and_close_with_their_source(
             window.view().call.is_none()
         });
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_volume_menu_changes_and_keeps_its_value_but_rejects_the_previous_seat(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    scene.window.press("down");
+    scene.window.press("left");
+    scene
+        .window
+        .until("the volume was changed from the menu", |window| {
+            occupants(window)
+                .iter()
+                .any(|person| person.account_id == ada && person.volume == 90)
+        });
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    let calls = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.calls().clone());
+    let old_seat = calls.view().call.unwrap().seat();
+    scene.world.run(async {
+        calls.leave().await;
+        calls.join(scene.target).await.unwrap();
+        let mut watch = calls.watch();
+        tokio::time::timeout(PATIENCE, async {
+            while !watch
+                .borrow_and_update()
+                .call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected)
+            {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the replacement call did not connect");
+    });
+    assert_ne!(calls.view().call.unwrap().seat(), old_seat);
+    scene.window.press_as_drawn("call-menu-volume");
+    scene
+        .window
+        .until("the previous seat volume menu closes", |window| {
+            !window.shows("account-menu")
+        });
+    assert_eq!(
+        scene
+            .window
+            .state
+            .read_with(&scene.window.cx, |state, _| state
+                .voice()
+                .volume(scene.target.server_id, ada)),
+        90
+    );
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| state.leave_call(cx));
+    scene
+        .window
+        .until("the new call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}

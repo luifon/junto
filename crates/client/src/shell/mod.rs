@@ -9,6 +9,7 @@ pub mod admin;
 mod arrange;
 mod book;
 pub mod call;
+mod call_menus;
 mod camera;
 mod channels;
 mod composer;
@@ -299,6 +300,7 @@ pub struct Shell {
     /// The server book is drawn as its row of icons in this drawing.
     pub(crate) book_collapsed: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
+    account_volume: Option<VolumeControl>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
@@ -769,6 +771,7 @@ impl Shell {
             invitations_scroll: ScrollHandle::new(),
             invitations_newest: None,
             volumes: HashMap::new(),
+            account_volume: None,
             device_menu_closed_by_press: false,
             share_menu_closed_by_press: false,
             detached,
@@ -1345,6 +1348,7 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_volume = None;
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
@@ -1369,6 +1373,7 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_volume = None;
         if let Layer::ThreadMenu(open) = self.layer {
             self.state.update(cx, |state, cx| {
                 state.end_thread_menu(open.owner, open.root_id, cx)

@@ -566,8 +566,7 @@ impl RenderOnce for VolumeSlider {
             .items_center()
             .gap(u(8.0))
             .rounded(u(theme.metrics.radius))
-            .track_focus(&self.focus)
-            .tab_stop(true)
+            .track_focus(&self.focus.clone().tab_stop(true))
             .children(super::reveal::report(&self.focus, window))
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {

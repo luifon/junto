@@ -311,3 +311,47 @@ fn a_popup_that_grows_keeps_its_existing_actions_in_place(cx: &mut TestAppContex
     assert!(resized.left() >= px(0.0) && resized.right() <= px(320.0));
     assert!(resized.top() >= px(0.0) && resized.bottom() <= px(240.0));
 }
+
+struct SliderMenu {
+    menu: FocusHandle,
+    slider: FocusHandle,
+    state: Entity<gpui_base::slider::SliderState>,
+}
+
+impl Render for SliderMenu {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Menu::new("slider-menu", "Person actions", &self.menu)
+            .child(div().flex().w_full().child(crate::ui::VolumeSlider::new(
+                "slider-menu-volume",
+                &self.state,
+                &self.slider,
+                "Volume for Rin",
+            )))
+            .child(MenuItem::new("slider-menu-copy", "Copy name"))
+    }
+}
+
+#[gpui::test]
+fn menu_arrows_reach_an_explicit_volume_focus_handle(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| SliderMenu {
+        menu: cx.focus_handle(),
+        slider: cx.focus_handle(),
+        state: cx.new(|_| crate::ui::VolumeSlider::state(100)),
+    });
+    let (menu, slider, state) = host.read_with(cx, |host, _| {
+        (host.menu.clone(), host.slider.clone(), host.state.clone())
+    });
+    cx.update(|window, cx| menu.focus(window, cx));
+    settle(cx);
+    cx.simulate_keystrokes("down");
+    settle(cx);
+    assert!(cx.update(|window, _| slider.is_focused(window)));
+    cx.simulate_keystrokes("left");
+    settle(cx);
+    assert_eq!(state.read_with(cx, |state, _| state.value().end()), 90.0);
+}
