@@ -38,6 +38,17 @@ pub const WINDOW_MINIMIZE: &str = "Minimize";
 pub const WINDOW_MAXIMIZE: &str = "Maximize";
 pub const WINDOW_RESTORE: &str = "Restore";
 pub const WINDOW_CLOSE: &str = "Close";
+pub const START_AT_LOGIN: &str = "Start Junto at login";
+pub const START_AT_LOGIN_HELP: &str = "Open Junto when you log in to your computer.";
+pub const LOGIN_CUSTOM_PROFILE: &str =
+    "Open Junto with its normal profile to change whether it starts at login.";
+pub const LOGIN_SYSTEM_VERSION: &str = "Start at login needs macOS 13 or later.";
+pub const LOGIN_NOT_INSTALLED: &str = "Install Junto to choose whether it starts at login.";
+pub const LOGIN_CHECKING: &str = "Checking the login setting…";
+pub const LOGIN_NOT_CHANGED: &str = "The system did not apply the requested login setting.";
+pub const LOGIN_FAILED: &str = "The login setting could not be read or changed.";
+pub const LOGIN_APPROVAL: &str = "Allow Junto in Login Items to finish enabling start at login.";
+pub const LOGIN_OPEN_SETTINGS: &str = "Open Login Items";
 pub const KEEP_RUNNING_AFTER_CLOSE: &str = "Keep Junto running after closing the window";
 pub const KEEP_RUNNING_AFTER_CLOSE_HELP: &str = "Messages, notifications and calls continue. Open Junto from its app icon or tray. Use Quit to exit.";
 

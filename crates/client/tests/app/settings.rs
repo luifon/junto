@@ -228,3 +228,152 @@ fn the_switches_of_the_sounds_are_kept_and_all_sounds_holds_every_kind(cx: &mut 
     let again = sounds(&mut window);
     assert!(!again.plays(SoundKind::PersonJoined) && again.plays(SoundKind::Messages));
 }
+
+#[gpui::test]
+fn startup_at_login_is_available_in_the_interface_settings(cx: &mut TestAppContext) {
+    let (_directory, mut window) = named(cx, "Member");
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    assert!(window.shows("start-at-login"));
+}
+
+#[gpui::test]
+fn startup_at_login_follows_the_system_adapter_and_refreshes_external_changes(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::startup::{KeptStartup, Startup, Status};
+    let (directory, mut window) = named(cx, "Member");
+    let system = std::sync::Arc::new(KeptStartup::default());
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_startup_service(system.clone(), cx)
+    });
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    window.click("start-at-login");
+    window.until("the login setting is on", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.startup().status == Some(Status::On) && !state.startup().busy
+        })
+    });
+    assert_eq!(system.status().unwrap(), Status::On);
+    window.close();
+    let mut window = open(cx, directory.path());
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_startup_service(system.clone(), cx)
+    });
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.startup().status),
+        Some(Status::On)
+    );
+    system.show(Status::Off);
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_window_active(false, cx);
+        state.set_window_active(true, cx);
+    });
+    window.until("an external change is read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.startup().status == Some(Status::Off) && !state.startup().busy
+        })
+    });
+}
+
+#[gpui::test]
+fn startup_at_login_keeps_a_failed_write_and_retries_it(cx: &mut TestAppContext) {
+    use junto_client_core::startup::{KeptStartup, Startup, Status};
+    struct Refusal {
+        saved: KeptStartup,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+    impl Startup for Refusal {
+        fn status(&self) -> std::io::Result<Status> {
+            self.saved.status()
+        }
+        fn set(&self, enabled: bool) -> std::io::Result<Status> {
+            if self.refuse.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "test refusal",
+                ))
+            } else {
+                self.saved.set(enabled)
+            }
+        }
+    }
+    let (_directory, mut window) = named(cx, "Member");
+    let system = std::sync::Arc::new(Refusal {
+        saved: KeptStartup::default(),
+        refuse: true.into(),
+    });
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_startup_service(system.clone(), cx)
+    });
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    window.click("start-at-login");
+    window.until("the login failure is shown", |window| {
+        window.shows("startup-error")
+    });
+    assert_eq!(system.status().unwrap(), Status::Off);
+    system
+        .refuse
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    window.click_in_settings("startup-retry");
+    window.until("the failed write is retried", |window| {
+        system.status().unwrap() == Status::On && !window.shows("startup-error")
+    });
+}
+
+#[gpui::test]
+fn startup_at_login_shows_approval_and_unavailable_statuses(cx: &mut TestAppContext) {
+    use junto_client_core::startup::{KeptStartup, Startup, Status, Unavailable};
+    struct Approval(KeptStartup, std::sync::atomic::AtomicBool);
+    impl Startup for Approval {
+        fn status(&self) -> std::io::Result<Status> {
+            self.0.status()
+        }
+        fn set(&self, enabled: bool) -> std::io::Result<Status> {
+            self.0.set(enabled)
+        }
+        fn open_approval(&self) -> std::io::Result<()> {
+            self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+    let (_directory, mut window) = named(cx, "Member");
+    let system = std::sync::Arc::new(Approval(KeptStartup::default(), false.into()));
+    system.0.show(Status::RequiresApproval);
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_startup_service(system.clone(), cx)
+    });
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    window.until("the approval requirement is shown", |window| {
+        window.shows("startup-approval")
+    });
+    window.click_in_settings("startup-open-approval");
+    window.until("the approval settings are opened", |_| {
+        system.1.load(std::sync::atomic::Ordering::Relaxed)
+    });
+    system
+        .0
+        .show(Status::Unavailable(Unavailable::CustomProfile));
+    window
+        .state
+        .update(&mut window.cx, |state, cx| state.refresh_startup(cx));
+    window.until("the unsupported profile is shown", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.startup().status)
+            == Some(Status::Unavailable(Unavailable::CustomProfile))
+    });
+    assert!(!window.shows("startup-approval"));
+    window.click_in_settings("start-at-login");
+    assert_eq!(
+        system.status().unwrap(),
+        Status::Unavailable(Unavailable::CustomProfile)
+    );
+}

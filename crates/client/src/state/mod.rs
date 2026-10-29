@@ -34,6 +34,7 @@ mod recorded_work;
 pub mod recording;
 pub mod search;
 mod searching;
+pub mod startup;
 mod threads;
 pub mod transcript_work;
 mod tray;
@@ -656,6 +657,7 @@ pub struct AppState {
     tray_mentions: u64,
     /// The main window is the active window of the system.
     window_active: bool,
+    startup: startup::StartupState,
     /// The call window is the active window of the system.
     call_window_active: bool,
     /// The panel of the call window shows the notices of the server of the call.
@@ -1048,6 +1050,7 @@ impl AppState {
             tray_shown: None,
             tray_mentions: 0,
             window_active: false,
+            startup: startup::StartupState::default(),
             call_window_active: false,
             call_window_notices: false,
             call_shown: false,

@@ -39,6 +39,10 @@ chmod +x Junto-<version>-x86_64.AppImage
 ./Junto-<version>-x86_64.AppImage
 ```
 
+Closing the main window keeps Junto running with notifications and calls. Open it again from the tray. Use Quit to end it. Settings, Interface can turn off this behavior.
+
+Settings, Interface also offers "Start Junto at login" for the normal profile, off until enabled. It uses your personal XDG autostart entry, normally `~/.config/autostart/chat.junto.Junto.desktop`. Updates and recovery keep it because the executable or AppImage path stays the same. If you move the installation, enable the setting again from its new location. Turn it off before removal, or remove that desktop entry yourself afterward; removing the package does not change other accounts' preferences.
+
 ## Data and updates
 
 The server book and the device keys are in `~/.local/share/junto` (or `$XDG_DATA_HOME/junto`, ADR 0710). A package never writes there.
@@ -47,7 +51,7 @@ A configured build checks for a new version at start and periodically. The serve
 
 ## Log and error reports
 
-Junto writes its log to `logs/junto.log` in its data directory (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. When a second instance of Junto runs on the same data directory, only the first writes the log. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`$TMPDIR` or `/tmp`) (ADR 0757).
+Junto writes its log to `logs/junto.log` in its data directory (at most three files of 4 MiB: `junto.log`, `junto.log.1`, `junto.log.2`). When an error stops an action of Junto, it writes a report to `panics/` in the same directory, continues, and names the report in a notice at the bottom of the window. Nothing of either is sent anywhere; send a report to whoever runs your server only if you choose to. `JUNTO_LOG_LEVEL` sets the level of the log; by default the log holds the information lines of Junto and the warnings of the libraries it uses. Starting Junto again with the same data directory restores the running window and exits the second process. When Junto cannot open its data directory at the start, it writes the reason to `junto-start-failure.txt` in the temporary directory (`$TMPDIR` or `/tmp`) (ADR 0757).
 
 ## Recovery
 

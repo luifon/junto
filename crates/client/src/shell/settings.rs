@@ -282,6 +282,9 @@ impl Shell {
         // The permissions are read again when a section shows them (ADR 0708).
         self.state.update(cx, |state, cx| {
             state.set_input_test(section == SettingsSection::Voice);
+            if section == SettingsSection::Interface {
+                state.refresh_startup(cx);
+            }
             if matches!(
                 section,
                 SettingsSection::Permissions | SettingsSection::Notifications
@@ -425,8 +428,46 @@ impl Shell {
             )
         };
         let selected = theme::SCALES.iter().position(|option| *option == scale);
+        let startup = self.state.read(cx).startup().clone();
+        let unavailable = match startup.status {
+            Some(junto_client_core::startup::Status::Unavailable(
+                junto_client_core::startup::Unavailable::CustomProfile,
+            )) => Some(text::LOGIN_CUSTOM_PROFILE),
+            Some(junto_client_core::startup::Status::Unavailable(
+                junto_client_core::startup::Unavailable::SystemVersion,
+            )) => Some(text::LOGIN_SYSTEM_VERSION),
+            Some(junto_client_core::startup::Status::Unavailable(_)) => {
+                Some(text::LOGIN_NOT_INSTALLED)
+            }
+            _ => None,
+        };
         vec![
             group_label(text::INTERFACE, theme).into_any_element(),
+            Toggle::new(
+                "start-at-login",
+                text::START_AT_LOGIN,
+                startup
+                    .status
+                    .is_some_and(junto_client_core::startup::Status::requested),
+                (text::ON, text::OFF),
+            )
+            .selector("start-at-login")
+            .held(if startup.busy || startup.status.is_none() {
+                Some(text::LOGIN_CHECKING)
+            } else {
+                unavailable
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    let enabled = !state
+                        .startup()
+                        .status
+                        .is_some_and(junto_client_core::startup::Status::requested);
+                    state.set_start_at_login(enabled, cx);
+                });
+            }))
+            .into_any_element(),
+            help(unavailable.unwrap_or(text::START_AT_LOGIN_HELP), theme).into_any_element(),
             Toggle::new(
                 "keep-running-after-close",
                 text::KEEP_RUNNING_AFTER_CLOSE,
@@ -497,6 +538,38 @@ impl Shell {
                 )
                 .into_any_element(),
             help(text::THEME_HELP, theme).into_any_element(),
+            crate::ui::notice_slot("startup-result-slot")
+                .at_end()
+                .children(startup.error.map(|error| {
+                    Notice::error(format!("{} {error}", text::LOGIN_FAILED))
+                        .selector("startup-error")
+                        .action(
+                            Button::new("startup-retry")
+                                .label(text::TRY_AGAIN)
+                                .selector("startup-retry")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| state.retry_startup(cx))
+                                })),
+                        )
+                }))
+                .children(
+                    (startup.status == Some(junto_client_core::startup::Status::RequiresApproval))
+                        .then(|| {
+                            Notice::new(text::LOGIN_APPROVAL)
+                                .selector("startup-approval")
+                                .action(
+                                    Button::new("startup-open-approval")
+                                        .label(text::LOGIN_OPEN_SETTINGS)
+                                        .selector("startup-open-approval")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.state.update(cx, |state, cx| {
+                                                state.open_login_approval(cx)
+                                            })
+                                        })),
+                                )
+                        }),
+                )
+                .into_any_element(),
             crate::ui::notice_slot("settings-error-slot")
                 .at_end()
                 .children(

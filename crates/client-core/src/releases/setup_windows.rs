@@ -65,6 +65,9 @@ impl SetupSystem for WindowsSetup {
     fn unregister_notifications(&self) -> std::io::Result<()> {
         crate::app_identity::unregister(crate::app_identity::APP_ID).map(|_| ())
     }
+    fn unregister_startup(&self, program: &Path) -> std::io::Result<()> {
+        crate::startup::remove_windows_entry(program)
+    }
 }
 
 /// Writes a shortcut that starts `target` from its folder and names the application

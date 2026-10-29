@@ -34,6 +34,7 @@ pub mod runtime;
 pub mod saved_exports;
 pub mod secret;
 pub mod settings;
+pub mod startup;
 pub mod storage;
 pub mod stream;
 #[cfg(windows)]

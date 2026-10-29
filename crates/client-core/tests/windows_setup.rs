@@ -16,6 +16,7 @@ struct Recorded {
     entry: RefCell<Option<UninstallEntry>>,
     shortcuts: RefCell<Vec<(PathBuf, PathBuf)>>,
     unregistered: RefCell<u32>,
+    startup: RefCell<Option<PathBuf>>,
 }
 
 impl SetupSystem for Recorded {
@@ -46,6 +47,12 @@ impl SetupSystem for Recorded {
     }
     fn unregister_notifications(&self) -> std::io::Result<()> {
         *self.unregistered.borrow_mut() += 1;
+        Ok(())
+    }
+    fn unregister_startup(&self, program: &Path) -> std::io::Result<()> {
+        if self.startup.borrow().as_deref() == Some(program) {
+            self.startup.borrow_mut().take();
+        }
         Ok(())
     }
 }
@@ -206,12 +213,14 @@ fn the_removal_takes_away_every_part_and_keeps_the_data_unless_asked() {
     setup::install(&archive, &places, false, &system).unwrap();
     fs::create_dir_all(&places.data).unwrap();
     fs::write(places.data.join("book.json"), "{}").unwrap();
+    *system.startup.borrow_mut() = Some(places.program());
     setup::uninstall(&places, false, &system).unwrap();
     assert!(!places.folder().exists());
     assert!(!places.updates().exists());
     assert!(!places.shortcut().exists());
     assert!(system.entry.borrow().is_none());
     assert_eq!(*system.unregistered.borrow(), 1);
+    assert!(system.startup.borrow().is_none());
     assert!(places.data.join("book.json").is_file());
     // A second removal refuses an absent installation; a new installation can remove data.
     assert!(setup::uninstall(&places, true, &system).is_err());
@@ -227,6 +236,7 @@ fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup
     let system = Recorded::default();
     let archive = setup::payload(&setup_program(root.path(), "0.1.0")).unwrap();
     setup::install(&archive, &installed, false, &system).unwrap();
+    *system.startup.borrow_mut() = Some(installed.program());
     // A person extracted the ZIP file into another folder and runs its uninstall program.
     let other = Places::of_folder(
         &root.path().join("Apps/Junto"),
@@ -240,6 +250,7 @@ fn a_copy_extracted_elsewhere_keeps_the_entries_of_the_installation_of_the_setup
     assert!(system.entry.borrow().is_some());
     assert!(installed.shortcut().exists());
     assert!(installed.folder().join("junto.exe").exists());
+    assert_eq!(*system.startup.borrow(), Some(installed.program()));
 }
 
 #[test]

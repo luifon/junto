@@ -257,6 +257,7 @@ pub trait SetupSystem {
     fn create_shortcut(&self, link: &Path, target: &Path) -> std::io::Result<()>;
     /// Removes the key of the identity of the notifications (ADR 0742).
     fn unregister_notifications(&self) -> std::io::Result<()>;
+    fn unregister_startup(&self, program: &Path) -> std::io::Result<()>;
 }
 
 /// What an installation did.
@@ -426,7 +427,10 @@ pub fn uninstall(
     let owned = system
         .uninstall_entry_location()
         .map(|location| location.as_deref().is_some_and(same));
-    let mut results = vec![system.unregister_notifications()];
+    let mut results = vec![
+        system.unregister_notifications(),
+        system.unregister_startup(&places.program()),
+    ];
     match owned {
         Ok(true) => {
             results.push(absent(fs::remove_file(places.shortcut())));
@@ -462,6 +466,9 @@ mod tests {
             panic!("unexpected shortcut")
         }
         fn unregister_notifications(&self) -> std::io::Result<()> {
+            panic!("unexpected registration")
+        }
+        fn unregister_startup(&self, _: &Path) -> std::io::Result<()> {
             panic!("unexpected registration")
         }
     }

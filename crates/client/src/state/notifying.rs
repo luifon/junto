@@ -890,6 +890,7 @@ impl AppState {
         // A person who changed the zone of the system or a permission did it in another
         // application, and comes back to this window.
         if active {
+            self.refresh_startup(cx);
             self.read_system_zone(cx);
             self.read_permissions(cx);
         }
