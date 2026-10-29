@@ -37,7 +37,6 @@ use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
 };
-use crate::state::people::ServerFaces;
 use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -3002,6 +3001,101 @@ impl Shell {
             .into_any_element()
     }
 
+    fn thread_person(
+        &self,
+        feed: &Feed,
+        root: MessageId,
+        identity: (
+            Option<junto_client_core::protocol::ids::AccountId>,
+            Option<&str>,
+        ),
+        content: impl IntoElement,
+        cx: &gpui::App,
+    ) -> AnyElement {
+        let (Some(account), name) = identity else {
+            return content.into_any_element();
+        };
+        let owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let target = super::account_menus::AccountTarget {
+            account_id: account,
+            name: name
+                .or_else(|| feed.names.accounts.get(&account).map(String::as_str))
+                .unwrap_or(text::UNKNOWN_PERSON)
+                .to_owned(),
+            departed: feed.names.departed.contains_key(&account),
+        };
+        let selector = format!("thread-person:{root}:{account}");
+        super::account_menus::account_target(
+            selector.clone().into(),
+            owner,
+            Some(target),
+            Some(super::account_menus::AccountSource::ThreadAuthor { root, account }),
+            div().debug_selector(move || selector).child(content),
+            cx,
+        )
+    }
+
+    fn thread_chip_menu(
+        &self,
+        frame: gpui::Stateful<gpui::Div>,
+        feed: &Feed,
+        row: &MessageRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner())
+        else {
+            return frame;
+        };
+        let Some(channel) = crate::state::feed::channel_of(feed.place) else {
+            return frame;
+        };
+        let (server_id, root) = (feed.server_id, row.message.id);
+        let mut actions = vec![crate::ui::RowAction::new(
+            text::COPY_TARGET_LINK,
+            cx.listener(move |this, _, _, cx| {
+                let state = this.state.read(cx);
+                let link = state
+                    .server(server_id)
+                    .filter(|server| server.owner() == Some(owner))
+                    .and_then(|_| state.thread_link(server_id, root));
+                if let Some(link) = link {
+                    this.copy_text(link, cx);
+                }
+            }),
+        )];
+        if row.can_thread && row.thread_refused.is_none() {
+            actions.push(crate::ui::RowAction::new(
+                text::OPEN_THREAD,
+                cx.listener(move |this, _, window, cx| {
+                    if this
+                        .state
+                        .read(cx)
+                        .server(server_id)
+                        .is_some_and(|server| server.owner() == Some(owner))
+                    {
+                        this.open_thread(server_id, channel, root, window, cx);
+                    }
+                }),
+            ));
+        }
+        crate::ui::bind_action_menu(
+            frame.focusable().tab_stop(true),
+            SharedString::from(format!("thread-preview-menu:{server_id}:{root}")),
+            actions,
+            window,
+            cx,
+        )
+    }
+
     /// What a message of a channel shows of its thread: the count of the replies, the
     /// author and the time of the last one, and what the person has not read in it. A
     /// press opens the thread in the side panel.
@@ -3010,6 +3104,7 @@ impl Shell {
         feed: &Feed,
         row: &MessageRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme.colors;
@@ -3101,9 +3196,15 @@ impl Shell {
                             for (place, author) in mark.authors.iter().enumerate() {
                                 authors = authors.child(
                                     div().absolute().top_0().left(u(step * place as f32)).child(
-                                        Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
-                                            .radius(2.0)
-                                            .image(faces.image(*author)),
+                                        self.thread_person(
+                                            feed,
+                                            message_id,
+                                            (Some(*author), None),
+                                            Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
+                                                .radius(2.0)
+                                                .image(faces.image(*author)),
+                                            cx,
+                                        ),
                                     ),
                                 );
                             }
@@ -3116,7 +3217,13 @@ impl Shell {
                                     .author_id
                                     .map_or(0, |author| author.as_uuid().as_u128());
                                 let picture = last.author_id.and_then(|author| faces.image(author));
-                                chip.child(Avatar::new(seed, 18.0).radius(2.0).image(picture))
+                                chip.child(self.thread_person(
+                                    feed,
+                                    message_id,
+                                    (last.author_id, Some(&last.author)),
+                                    Avatar::new(seed, 18.0).radius(2.0).image(picture),
+                                    cx,
+                                ))
                             },
                         )
                         .child(
@@ -3159,7 +3266,8 @@ impl Shell {
                                     .ink(colors.terracotta_deep)
                                     .child(text::SHOWN_IN_PANEL),
                             )
-                        }),
+                        })
+                        .map(|chip| self.thread_chip_menu(chip, feed, row, window, cx)),
                 )
                 .into_any_element(),
         )
@@ -3240,7 +3348,7 @@ impl Shell {
             }
             body.extend(self.reactions(feed, row, &theme, cx));
             if !bare {
-                body.extend(self.thread_chip(feed, row, &theme, cx));
+                body.extend(self.thread_chip(feed, row, &theme, window, cx));
             }
             body
         };

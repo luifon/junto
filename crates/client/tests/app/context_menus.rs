@@ -1459,3 +1459,40 @@ fn a_reply_preview_copies_its_target_and_gives_its_author_a_separate_menu(cx: &m
         !window.shows("account-menu")
     });
 }
+
+#[gpui::test]
+fn thread_preview_people_and_the_thread_have_separate_context_targets(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _, root) = with_root(cx, &world);
+    let ada = admin.handle.account().unwrap();
+    admin.reply(&world, root, document("A thread preview"));
+    window.until("the thread picture is listed", |window| {
+        window.messages().iter().any(|row| {
+            row.message.id == root
+                && row
+                    .thread
+                    .as_ref()
+                    .is_some_and(|mark| mark.authors.contains(&ada))
+        })
+    });
+    window.right_click_named(format!("thread-person:{root}:{ada}"));
+    window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        ada.to_string()
+    );
+    assert!(!window.shows("message-menu"));
+    window.right_click_named(format!("thread-chip:{root}"));
+    window.click("context-action:Copy link");
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(copied.starts_with("junto://thread?") && copied.contains(&root.to_string()));
+    window.right_click_named(format!("thread-chip:{root}"));
+    window.click("context-action:Open the thread");
+    window.until("the thread is open", |window| window.shows("thread-panel"));
+    window.click("close-thread");
+    window.right_click_named(format!("thread-person:{root}:{ada}"));
+    world.run(admin.handle.api().delete_message(root)).unwrap();
+    window.until("the removed thread closes its person menu", |window| {
+        !window.shows("account-menu")
+    });
+}

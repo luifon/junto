@@ -42,6 +42,10 @@ pub(crate) enum AccountSource {
         account_id: AccountId,
         surface: CallSurface,
     },
+    ThreadAuthor {
+        root: MessageId,
+        account: AccountId,
+    },
     ReplyAuthor {
         parent: Box<AccountSource>,
         quoted: MessageId,
@@ -133,6 +137,15 @@ impl OpenAccountMenu {
                         .lists()
                         .and_then(|lists| lists.notices.as_ref())
                         .is_some_and(|panel| panel.rows.iter().any(|row| row.id == *id));
+            }
+            AccountSource::ThreadAuthor { root, account } => {
+                return view.selected.as_ref().is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && view.lists().and_then(|lists| lists.feed.as_ref()).is_some_and(|feed| {
+                        feed.rows.iter().any(|row| matches!(row, FeedRow::Message(row)
+                            if row.message.id == *root && !row.message.deleted && row.thread.as_ref().is_some_and(|mark| {
+                                mark.authors.contains(account) || (mark.authors.is_empty() && mark.last.as_ref().is_some_and(|last| last.author_id == Some(*account)))
+                            })))
+                    });
             }
             AccountSource::ReplyAuthor {
                 parent,
