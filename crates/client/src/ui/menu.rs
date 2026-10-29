@@ -424,7 +424,8 @@ impl RenderOnce for MenuItem {
 }
 
 /// A label above a group of items of a menu.
-pub fn menu_label(text: &'static str, dark: bool, cx: &App) -> impl IntoElement + use<> {
+pub fn menu_label(text: impl Into<SharedString>, dark: bool, cx: &App) -> gpui::Div {
+    let text: SharedString = text.into();
     let theme = theme(cx);
     div()
         .flex_none()
@@ -437,7 +438,8 @@ pub fn menu_label(text: &'static str, dark: bool, cx: &App) -> impl IntoElement 
         } else {
             theme.colors.bronze
         })
-        .child(text)
+        .min_w_0()
+        .child(div().truncate().child(text))
 }
 
 /// A line between two groups of items of a menu.

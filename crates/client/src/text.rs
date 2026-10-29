@@ -3790,3 +3790,6 @@ pub const CUT: &str = "Cut";
 pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";
 pub const SELECT_ALL: &str = "Select all";
+
+pub const LINK_ACTIONS: &str = "Link actions";
+pub const OPEN_LINK: &str = "Open link";

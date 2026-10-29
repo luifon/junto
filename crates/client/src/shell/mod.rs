@@ -1765,6 +1765,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> E {
         element
+            .on_action(
+                cx.listener(|this, action: &crate::ui::CopyToClipboard, _, cx| {
+                    this.copy_text(action.text.clone(), cx);
+                }),
+            )
             // After every click: a press that closed the menu of the server is over. A press
             // ends without a release in the window when the system took it, for example a
             // press on the title bar of Windows that moves the window; the next press ends it
