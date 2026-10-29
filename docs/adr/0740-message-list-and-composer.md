@@ -134,3 +134,11 @@ reaction-toggle action. Both windows share at most eight roster pages, pinned to
 saved entry/account; late responses are discarded after eviction or replacement. Message,
 profile and access changes clear their old names before rereading; owner changes discard
 them. A roster and tooltip recheck current place access before drawing names.
+
+A reply quote is a focusable link. A pointer press, Enter or Space opens its original
+through the shared message-link reader, which checks the current account and loads the
+original's place and older history when necessary. Thread and conversation replies,
+pinned messages and pending replies use the same quote renderer. A deleted or
+inaccessible original has the same plain refusal as a missing message. A stale quote
+cannot act for a replacement account, and the quote's keyboard action does not open its
+parent message menu. Read-only selection still suppresses activation after a drag.

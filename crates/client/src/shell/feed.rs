@@ -37,7 +37,6 @@ use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
 };
-use crate::state::people::ServerFaces;
 use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -1640,13 +1639,14 @@ impl Shell {
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(
-        quote: &Quote,
-        faces: &ServerFaces,
-        theme: &Theme,
-        drawings: &Drawings,
-    ) -> AnyElement {
+    fn reply_line(&self, server_id: ServerId, quote: &Quote, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme(cx);
+        let faces = self.faces(server_id);
+        let drawings = Drawings::of(cx);
         let colors = theme.colors;
+        let message_id = quote.message_id;
+        let owner = self.state.read(cx).owner(server_id);
+        let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let (sentence, known): (StyledText, bool) = match &quote.text {
             QuoteText::Text(text) => (drawings.shown(text).styled(colors.ink_3.into()), true),
             QuoteText::File(name) => (StyledText::new(name.clone()), true),
@@ -1654,6 +1654,33 @@ impl Shell {
             QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
         div()
+            .id(SharedString::from(format!("reply-quote-{message_id}")))
+            .role(if owner.is_some() {
+                Role::Link
+            } else {
+                Role::Note
+            })
+            .aria_label(text::VIEW_QUOTED_MESSAGE)
+            .debug_selector(move || format!("reply-quote:{message_id}"))
+            .rounded(u(theme.metrics.radius_small))
+            .when(owner.is_some(), |line| {
+                line.focusable()
+                    .tab_stop(true)
+                    .cursor_pointer()
+                    .tooltip(tooltip(text::VIEW_QUOTED_MESSAGE))
+                    .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_reply_quote(server_id, message_id, owner, cx);
+                        cx.stop_propagation();
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.open_reply_quote(server_id, message_id, owner, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+            })
             .relative()
             .flex()
             .items_center()
@@ -1677,7 +1704,7 @@ impl Shell {
                     .border_color(Hsla::from(colors.rule)),
             )
             .when_some(quote.author_id, |line, author_id| {
-                line.child(super::people::avatar(faces, author_id, 14.0).radius(2.0))
+                line.child(super::people::avatar(&faces, author_id, 14.0).radius(2.0))
             })
             .when_some(quote.author.clone(), |line, author| {
                 line.child(
@@ -1696,6 +1723,23 @@ impl Shell {
                     .child(sentence),
             )
             .into_any_element()
+    }
+
+    fn open_reply_quote(
+        &mut self,
+        server_id: ServerId,
+        id: MessageId,
+        owner: Option<junto_client_core::Owner>,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            if owner.is_none() || state.owner(server_id) != owner {
+                return;
+            }
+            if let Some(address) = state.server(server_id).map(|server| server.entry().address) {
+                state.open_message_link(&address, id, cx);
+            }
+        });
     }
 
     /// The blocks of a document. A check box takes a click when the person can edit its
@@ -3179,7 +3223,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
+                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
             )
             .child(
                 div()
@@ -3284,7 +3328,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
+                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
             )
             .child(
                 div()

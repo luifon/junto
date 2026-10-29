@@ -3800,3 +3800,5 @@ pub const DELETED_REACTOR: &str = "Deleted account";
 pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
 pub const REACTION_PREVIOUS: &str = "Previous people";
 pub const REACTION_NEXT: &str = "Next people";
+
+pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
