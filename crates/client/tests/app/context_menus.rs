@@ -140,3 +140,69 @@ fn a_direct_menu_marks_its_conversation_read_without_opening_it(cx: &mut TestApp
         0
     );
 }
+
+#[gpui::test]
+fn a_notice_menu_reads_one_notice_and_opens_another_notices_message(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let own = window.own_account();
+    let first = admin.mention(&world, target, "First notice ", own);
+    let second = admin.mention(&world, target, "Second notice ", own);
+    window.until("the two mentions make unread notices", |window| {
+        window.unread_notices() == 2
+    });
+    window.open_notices();
+    window.until("the notices have their message targets", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.rows.len() == 2 && panel.rows.iter().all(|row| row.jump.is_some())
+        })
+    });
+    let first_notice = window
+        .notices()
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|row| row.jump.is_some_and(|jump| jump.message_id == first.id))
+        .unwrap()
+        .id;
+    let second_notice = window
+        .notices()
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|row| row.jump.is_some_and(|jump| jump.message_id == second.id))
+        .unwrap()
+        .id;
+    window.right_click_named(format!("notice:{first_notice}"));
+    window.click("notice-mark-read");
+    window.until("only the chosen notice is read", |window| {
+        window.notices().is_some_and(|panel| {
+            panel.unread == 1
+                && panel
+                    .rows
+                    .iter()
+                    .any(|row| row.id == first_notice && row.read)
+                && panel
+                    .rows
+                    .iter()
+                    .any(|row| row.id == second_notice && !row.read)
+        })
+    });
+    assert_eq!(window.selected_channel(), selected);
+    assert!(!window.shows("notice-menu"));
+    window.right_click_named(format!("notice:{second_notice}"));
+    window.click("notice-go-to");
+    window.until("the notice opens its message and is read", |window| {
+        window.selected_channel() == target
+            && window.unread_notices() == 0
+            && window
+                .texts()
+                .iter()
+                .any(|text| text.starts_with("Second notice"))
+    });
+    assert!(!window.shows("notice-menu"));
+}

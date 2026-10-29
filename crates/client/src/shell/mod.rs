@@ -99,6 +99,8 @@ pub(crate) enum Layer {
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
     Fork(threads::ForkDialog),
+    /// The menu of one notification, at its row.
+    NoticeMenu(ServerId, uuid::Uuid),
     /// The menu of a channel, at its row.
     ChannelMenu(junto_client_core::protocol::ids::ChannelId),
     /// The menu of a group of the server book, at its head (ADR 0775).
@@ -1811,6 +1813,15 @@ impl Shell {
                     .is_none_or(|workspace| workspace.thread.is_none())
                     || Self::fork_is_done(dialog, view)
             }
+            Layer::NoticeMenu(server_id, notice_id) => {
+                view.selected
+                    .as_ref()
+                    .is_none_or(|server| server.id != *server_id)
+                    || view
+                        .lists()
+                        .and_then(|lists| lists.notices.as_ref())
+                        .is_none_or(|panel| !panel.rows.iter().any(|row| row.id == *notice_id))
+            }
             // The channel or the conversation of the menu is no longer listed.
             Layer::ChannelMenu(channel_id) => view.workspace().is_none_or(|workspace| {
                 !workspace
@@ -1883,6 +1894,7 @@ impl Shell {
             | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
             | Layer::MessageMenu(_)
+            | Layer::NoticeMenu(..)
             | Layer::ChannelMenu(_)
             | Layer::GroupMenu(_)
             | Layer::WorkspaceMenu(..)

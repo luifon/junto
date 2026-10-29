@@ -31,9 +31,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, Segmented,
-    SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label, menu_separator,
-    scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ChannelRow, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice,
+    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
+    menu_separator, scroll_bar, unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -625,7 +625,11 @@ impl Shell {
         .into();
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let held = row.clone();
+        let menu = matches!(self.layer, Layer::NoticeMenu(server, notice)
+            if server == server_id && notice == notice_id)
+        .then(|| self.render_notice_menu(server_id, row, cx));
         div()
+            .relative()
             .w_full()
             .child(
                 div()
@@ -633,6 +637,12 @@ impl Shell {
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                        this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
+                    }))
                     .when(below_a_notice, |entry| {
                         entry
                             .border_t_1()
@@ -641,17 +651,51 @@ impl Shell {
                     .when(row.jump.is_some(), |entry| {
                         entry
                             .cursor_pointer()
-                            .focusable()
-                            .tab_stop(true)
                             .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
-                            .focus_visible(move |style| style.shadow(ring))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.go_to_notice(&held, cx);
                             }))
                     })
                     .child(shown.element(&theme, cx)),
             )
+            .children(menu)
             .into_any_element()
+    }
+
+    fn render_notice_menu(
+        &mut self,
+        server_id: ServerId,
+        row: &NoticeRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let notice_id = row.id;
+        let mut items = vec![
+            MenuItem::new("notice-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("notice-mark-read")
+                .disabled(row.read)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state.mark_notice_read(server_id, notice_id, cx);
+                    });
+                }))
+                .into_any_element(),
+        ];
+        if row.jump.is_some() {
+            let held = row.clone();
+            items.push(
+                MenuItem::new("notice-go-to", text::GO_TO_MESSAGE)
+                    .icon(Icon::Chat)
+                    .selector("notice-go-to")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.go_to_notice(&held, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        self.row_menu("notice-menu", text::NOTIFICATIONS.to_owned(), items, cx)
     }
 
     /// The control above the oldest listed notice that reads the older ones.
