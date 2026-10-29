@@ -297,6 +297,7 @@ pub const MEETING_PARTICIPANT_HELP: &str =
     "Microphones are blocked. Raise your hand to ask to speak.";
 pub const RAISED_A_HAND: &str = " raised their hand";
 pub const ALLOW: &str = "Allow";
+pub const ALLOW_TO_SPEAK: &str = "Allow to speak";
 pub const LOWER_HAND_OF_PERSON: &str = "Lower hand";
 pub const LOWER_HAND_HELP: &str = "Their microphone stays as it is.";
 pub const NO_RAISED_HAND: &str = "No hand is raised.";

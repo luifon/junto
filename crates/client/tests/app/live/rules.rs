@@ -600,6 +600,9 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(!meeting.by_self && !meeting.may_speak);
     assert_eq!(meeting.presenter.as_deref(), Some("Ada"));
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(!scene.window.shows("call-menu-allow-speak"));
+    scene.window.press("escape");
     assert_eq!(
         scene.window.view().controls.microphone,
         MicrophoneButton::Held
@@ -661,14 +664,11 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
         .until("the microphone is closed again", |window| {
             window.view().controls.microphone == MicrophoneButton::Held
         });
+    scene.window.hover_named("call-hand".to_owned());
     scene.world.run(api.end_meeting(voice)).unwrap();
     scene.window.until("the open microphone is told", |window| {
         window.shows("call-told") && window.view().controls.microphone == MicrophoneButton::Open
     });
-    // The notice waits while the pointer rests on the tile, which the end of the meeting made
-    // larger; the person moves the pointer to the notice before the press.
-    let told = scene.window.cx.debug_bounds("call-told").unwrap();
-    scene.window.move_pointer(told.center());
     scene.window.click("dismiss-call-told");
     assert!(!scene.window.shows("call-told"));
 
@@ -715,6 +715,10 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
         })
     });
     assert!(!scene.window.shows("meeting-allow"));
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    assert!(scene.window.shows("menu-allow-speak"));
+    assert!(!scene.window.shows("menu-mute"));
+    scene.window.press("escape");
     // Ada raises a hand, and the person allows her to speak.
     scene.world.run(api.raise_hand()).unwrap();
     scene.window.until("the hand of Ada is shown", |window| {
@@ -763,6 +767,37 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(meeting.hands.is_empty());
     assert_eq!(meeting.waiting, [Some("Ada".to_owned())]);
+    scene.window.click("meeting-toggle");
+    scene.window.until("the first meeting has ended", |window| {
+        room_view(window).is_some_and(|room| room.meeting.is_none())
+    });
+    scene
+        .world
+        .run(scene.window.handle().api().start_meeting(voice))
+        .unwrap();
+    scene.window.until("the next meeting blocks Ada", |window| {
+        room_view(window)
+            .and_then(|room| room.meeting)
+            .is_some_and(|meeting| meeting.by_self)
+            && calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_some())
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-allow-speak"));
+    scene.window.click("call-menu-allow-speak");
+    scene
+        .window
+        .until("the tile menu allows Ada to speak", |_| {
+            calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_none())
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(!scene.window.shows("call-menu-allow-speak"));
+    scene.window.press("escape");
     // The presenter turns meeting mode off.
     scene.window.click("meeting-toggle");
     scene.window.until("the meeting has ended", |window| {

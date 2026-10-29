@@ -1403,6 +1403,8 @@ pub struct PersonMenu {
     pub volume: u16,
     /// With "mute members": whether the microphone of the person is blocked now.
     pub microphone_blocked: Option<bool>,
+    /// The presenter may remove the microphone block in this call.
+    pub allow_to_speak: bool,
     /// With "deafen members": whether the sound of the person is blocked now.
     pub sound_blocked: Option<bool>,
     /// With "mute members", or for the presenter of meeting mode in that call: whether the
@@ -1491,6 +1493,8 @@ impl ShellView {
             microphone_blocked: allowed
                 .mute
                 .then_some(matches!(occupant.microphone, Microphone::Held(_))),
+            allow_to_speak: row.voice.as_ref().is_some_and(|voice| voice.presents)
+                && matches!(occupant.microphone, Microphone::Held(_)),
             sound_blocked: allowed.deafen.then_some(occupant.sound_blocked),
             hand_raised: (allowed.mute || row.voice.as_ref().is_some_and(|voice| voice.presents))
                 .then_some(occupant.hand_raised),

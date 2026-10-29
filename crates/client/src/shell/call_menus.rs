@@ -145,6 +145,7 @@ enum CallMenuAction {
 
 #[derive(Clone)]
 enum ParticipantAction {
+    AllowSpeak,
     Microphone(bool),
     Sound(bool),
     LowerHand,
@@ -314,6 +315,9 @@ impl Shell {
                             CallMenuAction::Participant(action) => {
                                 if let Some((room, account)) = participant {
                                     match action {
+                                        ParticipantAction::AllowSpeak => {
+                                            state.allow_to_speak(account, cx)
+                                        }
                                         ParticipantAction::Microphone(block) => {
                                             state.set_microphone_block(room, account, *block, cx)
                                         }
@@ -377,7 +381,14 @@ impl Shell {
                 text::PERMISSION_MOVE,
             ));
         }
-        if let Some(blocked) = menu.microphone_blocked {
+        if menu.allow_to_speak {
+            items.push(make(
+                "call-menu-allow-speak",
+                text::ALLOW_TO_SPEAK,
+                ParticipantAction::AllowSpeak,
+                &text::allow_help(menu.name.as_deref().unwrap_or(text::UNKNOWN_PERSON)),
+            ));
+        } else if let Some(blocked) = menu.microphone_blocked {
             items.push(make(
                 "call-menu-block-microphone",
                 if blocked {

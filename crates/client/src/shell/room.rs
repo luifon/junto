@@ -1178,7 +1178,8 @@ impl Shell {
                     )
                     .into_any_element(),
             );
-            let moderates = menu.microphone_blocked.is_some()
+            let moderates = menu.allow_to_speak
+                || menu.microphone_blocked.is_some()
                 || menu.hand_raised.is_some()
                 || menu.sound_blocked.is_some()
                 || menu.disconnect;
@@ -1186,7 +1187,20 @@ impl Shell {
                 items.push(menu_separator(cx).into_any_element());
                 items.push(menu_label(text::MODERATION, false, cx).into_any_element());
             }
-            if let Some(blocked) = menu.microphone_blocked {
+            if menu.allow_to_speak {
+                items.push(
+                    MenuItem::new("menu-allow-speak", text::ALLOW_TO_SPEAK)
+                        .icon(Icon::Microphone)
+                        .detail(text::allow_help(&name))
+                        .selector("menu-allow-speak")
+                        .on_click(self.call_listener(cx, move |this, _, window, cx| {
+                            this.close_layer(window, cx);
+                            this.state
+                                .update(cx, |state, cx| state.allow_to_speak(account_id, cx));
+                        }))
+                        .into_any_element(),
+                );
+            } else if let Some(blocked) = menu.microphone_blocked {
                 items.push(
                     MenuItem::new(
                         "menu-mute",
