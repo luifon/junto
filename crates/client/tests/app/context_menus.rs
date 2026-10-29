@@ -1124,3 +1124,112 @@ fn search_and_notice_author_targets_have_account_menus_that_end_with_their_panel
         !window.shows("account-menu")
     });
 }
+
+#[gpui::test]
+fn thread_menu_actions_read_and_follow_their_target_without_opening_its_panel(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, root) = with_root(cx, &world);
+    let own = window.own_account();
+    admin.reply(&world, root, crate::notices::mention("A plan for ", own));
+    window.until("the closed thread is unread", |window| {
+        window
+            .channels()
+            .iter()
+            .flat_map(|channel| &channel.threads)
+            .any(|thread| thread.root_id == root && thread.unread > 0)
+    });
+    let owner = window.handle().owner().unwrap();
+    let mut another_entry = owner;
+    another_entry.entry.generation ^= 1;
+    assert!(
+        !window
+            .state
+            .update(&mut window.cx, |state, cx| state.begin_thread_menu(
+                another_entry,
+                root,
+                cx
+            ))
+    );
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.begin_thread_menu(owner, root, cx)
+    }));
+    window.until("the target follow state is read", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.thread_menu_control(owner, root)
+            })
+            .is_some_and(|control| control.following)
+    });
+    assert!(!window.shows("thread-panel"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.end_thread_menu(another_entry, root, cx)
+    });
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state
+                .thread_menu_control(owner, root))
+            .is_some()
+    );
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.mark_thread_menu_read(owner, root, cx)
+    }));
+    window.until("the target is marked read", |window| {
+        window
+            .channels()
+            .iter()
+            .flat_map(|channel| &channel.threads)
+            .all(|thread| thread.root_id != root || thread.unread == 0)
+            && window
+                .state
+                .read_with(&window.cx, |state, _| {
+                    state.thread_menu_control(owner, root)
+                })
+                .is_some_and(|control| !control.busy)
+    });
+    assert_eq!(
+        world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .unread,
+        0
+    );
+    for following in [false, true] {
+        assert!(window.state.update(&mut window.cx, |state, cx| {
+            state.set_thread_menu_follow(owner, root, following, cx)
+        }));
+        window.until("the target follow choice is stored", |window| {
+            window
+                .state
+                .read_with(&window.cx, |state, _| {
+                    state.thread_menu_control(owner, root)
+                })
+                .is_some_and(|control| !control.busy && control.following == following)
+        });
+        assert_eq!(
+            world
+                .run(window.handle().api().thread_state(root))
+                .unwrap()
+                .follow_setting,
+            Some(following)
+        );
+    }
+    assert_eq!(window.selected_channel(), channel);
+    assert!(!window.shows("thread-panel"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.end_thread_menu(owner, root, cx)
+    });
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state
+                .thread_menu_control(owner, root))
+            .is_none()
+    );
+    assert!(!window.state.update(&mut window.cx, |state, cx| {
+        state.set_thread_menu_follow(owner, root, false, cx)
+    }));
+}

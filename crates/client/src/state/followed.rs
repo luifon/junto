@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::Context;
-use junto_client_core::ServerHandle;
 use junto_client_core::api::{ApiError, ErrorCategory};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
@@ -20,6 +19,7 @@ use junto_client_core::model::{self as core_model, Named, PlaceId, ServerModel};
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, MessageId, ServerId};
 use junto_client_core::protocol::message::{FollowedThreads, Message, ThreadState};
+use junto_client_core::{Owner, ServerHandle};
 
 use super::AppState;
 use super::view::{FollowControl, MoreFollowed, ShellView};
@@ -731,12 +731,32 @@ impl Roots {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ThreadMenu {
+    owner: Option<Owner>,
+    follow: ThreadFollow,
+}
+
+impl ThreadMenu {
+    fn close(&mut self) {
+        self.owner = None;
+        self.follow.show(None);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ThreadMenuAction {
+    Follow(bool),
+    Read,
+}
+
 /// What the window holds about followed threads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Followed {
     pub thread: ThreadFollow,
     pub list: FollowedList,
     pub roots: Roots,
+    menu: ThreadMenu,
     /// The account that the entries of a server were read for.
     owners: HashMap<ServerId, AccountId>,
 }
@@ -747,6 +767,13 @@ impl Followed {
         self.owners
             .retain(|server_id, _| servers.contains(server_id));
         self.roots.retain(servers);
+        if self
+            .menu
+            .owner
+            .is_some_and(|owner| !servers.contains(&owner.entry.server_id))
+        {
+            self.menu.close();
+        }
     }
 
     /// Tells the account of the session of a server. With another account than the one
@@ -757,6 +784,13 @@ impl Followed {
             self.thread.forget(server_id);
             self.list.forget(server_id);
             self.roots.forget(server_id);
+            if self
+                .menu
+                .owner
+                .is_some_and(|owner| owner.entry.server_id == server_id)
+            {
+                self.menu.close();
+            }
         }
     }
 
@@ -770,7 +804,11 @@ impl Followed {
     ) -> bool {
         let thread = self.thread.told(server_id, root_id, following, setting);
         let list = self.list.told(server_id, root_id, following);
-        thread || list
+        let menu = self
+            .menu
+            .follow
+            .told(server_id, root_id, following, setting);
+        thread || list || menu
     }
 
     /// An event of a server that tells nothing about a followed thread. `changed`: the
@@ -778,7 +816,8 @@ impl Followed {
     pub fn event(&mut self, server_id: ServerId, changed: Option<MessageId>) -> bool {
         let retried = self.thread.retry(server_id);
         let dropped = changed.is_some_and(|message_id| self.roots.changed(server_id, message_id));
-        retried || dropped
+        let menu = self.menu.follow.retry(server_id);
+        retried || dropped || menu
     }
 
     /// The state of a server was replaced, or events were not told: everything of the
@@ -787,7 +826,8 @@ impl Followed {
         let thread = self.thread.stale(server_id);
         let list = self.list.trigger(server_id);
         let roots = self.roots.stale(server_id);
-        thread || list || roots
+        let menu = self.menu.follow.stale(server_id);
+        thread || list || roots || menu
     }
 
     /// The answer to a change of the thread of the side panel. The list of the channel
@@ -798,9 +838,24 @@ impl Followed {
         answer: Result<Option<(bool, Option<bool>)>, String>,
         followed: core_model::Followed,
     ) -> bool {
+        self.answer_change(ask, answer, followed, false)
+    }
+
+    fn answer_change(
+        &mut self,
+        ask: &ThreadAsk,
+        answer: Result<Option<(bool, Option<bool>)>, String>,
+        followed: core_model::Followed,
+        menu: bool,
+    ) -> bool {
+        let thread = if menu {
+            &mut self.menu.follow
+        } else {
+            &mut self.thread
+        };
         let made = answer.as_ref().ok().copied();
-        let overtaken = self.thread.asking == Some(ask.number) && self.thread.overtaken;
-        if !self.thread.ask_answered(ask.number, answer, followed) {
+        let overtaken = thread.asking == Some(ask.number) && thread.overtaken;
+        if !thread.ask_answered(ask.number, answer, followed) {
             return false;
         }
         match made {
@@ -901,6 +956,210 @@ fn change_refusal(error: &ApiError) -> String {
 }
 
 impl AppState {
+    fn thread_menu_matches(&self, owner: Owner, root: MessageId) -> bool {
+        self.known.followed.menu.owner == Some(owner)
+            && self.known.followed.menu.follow.thread == Some((owner.entry.server_id, root))
+            && self
+                .client
+                .server(owner.entry.server_id)
+                .and_then(|server| server.owner())
+                == Some(owner)
+    }
+
+    pub fn begin_thread_menu(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self
+            .client
+            .server(owner.entry.server_id)
+            .and_then(|server| server.owner())
+            != Some(owner)
+        {
+            return false;
+        }
+        let menu = &mut self.known.followed.menu;
+        menu.close();
+        menu.owner = Some(owner);
+        menu.follow.show(Some((owner.entry.server_id, root)));
+        self.read_thread_menu(cx);
+        cx.notify();
+        true
+    }
+
+    pub fn end_thread_menu(&mut self, owner: Owner, root: MessageId, cx: &mut Context<Self>) {
+        let menu = &mut self.known.followed.menu;
+        if menu.owner == Some(owner) && menu.follow.thread == Some((owner.entry.server_id, root)) {
+            menu.close();
+            cx.notify();
+        }
+    }
+
+    pub fn thread_menu_control(&self, owner: Owner, root: MessageId) -> Option<FollowControl> {
+        if !self.thread_menu_matches(owner, root) {
+            return None;
+        }
+        self.known
+            .followed
+            .menu
+            .follow
+            .control(owner.entry.server_id, root, false)
+    }
+
+    pub fn thread_menu_read_failed(&self, owner: Owner, root: MessageId) -> bool {
+        self.thread_menu_matches(owner, root)
+            && self.known.followed.menu.follow.read == FollowRead::Failed
+    }
+
+    pub fn retry_thread_menu(&mut self, owner: Owner, root: MessageId, cx: &mut Context<Self>) {
+        if self.thread_menu_matches(owner, root)
+            && self.known.followed.menu.follow.retry(owner.entry.server_id)
+        {
+            self.read_thread_menu(cx);
+            cx.notify();
+        }
+    }
+
+    fn read_thread_menu(&mut self, cx: &mut Context<Self>) {
+        let menu = &self.known.followed.menu;
+        let (Some(owner), Some((_, root))) = (menu.owner, menu.follow.thread) else {
+            return;
+        };
+        if !self.thread_menu_matches(owner, root) {
+            self.known.followed.menu.close();
+            return;
+        }
+        let Some(server) = self.client.server(owner.entry.server_id) else {
+            return;
+        };
+        let api = server.api_for(owner.account_id);
+        let Some(ask) = self.known.followed.menu.follow.next_read() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let read = api.thread_state(root).await;
+            let answer = match read {
+                Ok(state) if state.root_id == root => Some((state.following, state.follow_setting)),
+                Err(error) if error.category() == Some(ErrorCategory::NotFound) => {
+                    Some((false, None))
+                }
+                _ => None,
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.thread_menu_matches(owner, root)
+                    && this
+                        .known
+                        .followed
+                        .menu
+                        .follow
+                        .read_answered(ask.number, answer)
+                {
+                    this.followed_changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn set_thread_menu_follow(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        following: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.change_thread_menu(owner, root, ThreadMenuAction::Follow(following), cx)
+    }
+
+    pub fn mark_thread_menu_read(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.change_thread_menu(owner, root, ThreadMenuAction::Read, cx)
+    }
+
+    fn change_thread_menu(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        action: ThreadMenuAction,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.thread_menu_matches(owner, root) {
+            return false;
+        }
+        let Some(server) = self.client.server(owner.entry.server_id) else {
+            return false;
+        };
+        let api = server.api_for(owner.account_id);
+        let Some(ask) = self.known.followed.menu.follow.ask() else {
+            return false;
+        };
+        cx.spawn(async move |this, cx| {
+            let answer = async {
+                let (state, receipt) = match action {
+                    ThreadMenuAction::Follow(following) => {
+                        let changed = api
+                            .set_thread_follow(root, following)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        (changed.value, Some(changed.receipt))
+                    }
+                    ThreadMenuAction::Read => {
+                        let read = api
+                            .thread_state(root)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        if read.root_id != root {
+                            return Err(text::followed::THREAD_GONE.to_owned());
+                        }
+                        let changed = api
+                            .mark_thread_read(root, read.latest)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        (changed, None)
+                    }
+                };
+                if state.root_id != root {
+                    return Err(text::followed::THREAD_GONE.to_owned());
+                }
+                Ok((state, receipt))
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.thread_menu_matches(owner, root) {
+                    return;
+                }
+                let followed = answer
+                    .as_ref()
+                    .ok()
+                    .and_then(|(_, receipt)| *receipt)
+                    .and_then(|receipt| {
+                        this.client
+                            .server(owner.entry.server_id)
+                            .and_then(|server| server.live().view().model)
+                            .map(|model| model.followed(receipt))
+                    })
+                    .unwrap_or(core_model::Followed::Unknown);
+                let answer = answer.map(|(state, _)| Some((state.following, state.follow_setting)));
+                if this
+                    .known
+                    .followed
+                    .answer_change(&ask, answer, followed, true)
+                {
+                    this.followed_changed(cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+        true
+    }
+
     /// After the view is derived: the thread of the side panel and the channel that the
     /// window shows now are taken, and what they need is read.
     pub(super) fn follow_followed(&mut self, view: &ShellView, cx: &mut Context<Self>) {
@@ -915,6 +1174,7 @@ impl AppState {
         );
         followed.list.show(shown.server.zip(shown.channel));
         self.read_followed(cx);
+        self.read_thread_menu(cx);
     }
 
     /// The server of the requests with its state, when the state is the one of the
@@ -991,6 +1251,7 @@ impl AppState {
     /// draws again.
     fn followed_changed(&mut self, cx: &mut Context<Self>) {
         self.read_followed(cx);
+        self.read_thread_menu(cx);
         cx.notify();
     }
 
