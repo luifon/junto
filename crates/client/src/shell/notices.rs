@@ -48,6 +48,13 @@ pub(crate) fn place_icon(place: &Whereabouts) -> Icon {
     }
 }
 
+pub(crate) struct ExcerptAccount {
+    owner: junto_client_core::Owner,
+    account_id: junto_client_core::protocol::ids::AccountId,
+    departed: bool,
+    source: super::account_menus::AccountSource,
+}
+
 /// A message outside its list, as a notice and a search result show it (view H of the
 /// design): the line of its place, and its author, its time and its text.
 pub(crate) struct Excerpt {
@@ -61,6 +68,7 @@ pub(crate) struct Excerpt {
     /// The picture of the author, when the window holds it (ADR 0783).
     pub picture: Option<std::sync::Arc<gpui::RenderImage>>,
     pub author: SharedString,
+    pub account: Option<ExcerptAccount>,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
     pub tag: Option<SharedString>,
@@ -73,6 +81,16 @@ pub(crate) struct Excerpt {
 
 impl Excerpt {
     pub(crate) fn element(self, theme: &Theme, cx: &gpui::App) -> gpui::Div {
+        let owner = self.account.as_ref().map(|account| account.owner);
+        let source = self.account.as_ref().map(|account| account.source);
+        let target = self
+            .account
+            .as_ref()
+            .map(|account| super::account_menus::AccountTarget {
+                account_id: account.account_id,
+                name: self.author.to_string(),
+                departed: account.departed,
+            });
         let colors = theme.colors;
         let mark = HighlightStyle {
             color: Some(colors.ink.into()),
@@ -161,12 +179,16 @@ impl Excerpt {
                 div()
                     .flex()
                     .gap(u(10.0))
-                    .child(
-                        div()
-                            .flex_none()
-                            .mt(u(2.0))
-                            .child(Avatar::new(self.seed, 30.0).image(self.picture)),
-                    )
+                    .child(div().flex_none().mt(u(2.0)).child(
+                        super::account_menus::account_target(
+                            SharedString::from(format!("excerpt-avatar:{}", self.seed)),
+                            owner,
+                            target.clone(),
+                            source,
+                            Avatar::new(self.seed, 30.0).image(self.picture),
+                            cx,
+                        ),
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -177,7 +199,11 @@ impl Excerpt {
                                     .items_baseline()
                                     .gap(u(8.0))
                                     .line_height(u(19.0))
-                                    .child(
+                                    .child(super::account_menus::account_target(
+                                        SharedString::from(format!("excerpt-author:{}", self.seed)),
+                                        owner,
+                                        target,
+                                        source,
                                         div()
                                             .min_w_0()
                                             .truncate()
@@ -185,7 +211,8 @@ impl Excerpt {
                                             .text_size(u(14.5))
                                             .ink(colors.ink)
                                             .child(self.author),
-                                    )
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .flex_none()
@@ -322,6 +349,22 @@ impl NoticeList {
 }
 
 impl Shell {
+    pub(super) fn excerpt_account(
+        &self,
+        server_id: ServerId,
+        account_id: junto_client_core::protocol::ids::AccountId,
+        source: super::account_menus::AccountSource,
+        cx: &gpui::App,
+    ) -> Option<ExcerptAccount> {
+        let state = self.state.read(cx);
+        Some(ExcerptAccount {
+            owner: state.server(server_id)?.owner()?,
+            account_id,
+            departed: state.account_departure(server_id, account_id).is_some(),
+            source,
+        })
+    }
+
     /// Opens the notices of the shown server in the side panel, or closes them.
     pub fn toggle_notices(&mut self, cx: &mut Context<Self>) {
         let view = self.state.read(cx).view();
@@ -605,6 +648,14 @@ impl Shell {
             seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
             picture: row.author_id.and_then(|id| faces.image(id)),
             author: row.author.clone().into(),
+            account: row.author_id.and_then(|id| {
+                self.excerpt_account(
+                    server_id,
+                    id,
+                    super::account_menus::AccountSource::Notice(notice_id),
+                    cx,
+                )
+            }),
             time: row.time.clone().into(),
             tag: row.jump.map(|_| text::notice_kind(row.kind).into()),
             text: row.text.clone().into(),

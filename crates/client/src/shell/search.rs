@@ -409,6 +409,12 @@ impl Shell {
             seed: row.author_id.as_uuid().as_u128(),
             picture: self.faces(server_id).image(row.author_id),
             author: row.author.clone().into(),
+            account: self.excerpt_account(
+                server_id,
+                row.author_id,
+                super::account_menus::AccountSource::Search(row.target),
+                cx,
+            ),
             time: row.time.clone().into(),
             tag,
             text: row.text.clone().into(),

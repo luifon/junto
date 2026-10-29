@@ -1031,3 +1031,96 @@ fn a_search_result_menu_copies_its_text_and_link_and_opens_its_target(cx: &mut T
                 .any(|row| row.message.id == message.id && row.target)
     });
 }
+
+#[gpui::test]
+fn search_and_notice_author_targets_have_account_menus_that_end_with_their_panel(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let author = admin.handle.account().unwrap();
+    let own = window.own_account();
+    let message = admin.send(
+        &world,
+        window.selected_channel(),
+        crate::notices::mention("quartz for ", own),
+    );
+    window.search_for("quartz");
+    window.until_searched();
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "search-result:{}",
+            message.id
+        )))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(38.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    assert!(!window.shows("row-context-menu"));
+    window.click_named(format!("account-copy-id:{author}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        author.to_string()
+    );
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(38.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    window.in_shell(|shell, window, cx| shell.close_search(window, cx));
+    window.until("closing search ends the author menu", |window| {
+        !window.shows("account-menu")
+    });
+    window.click("notices-row");
+    window.until("the mention is in the notice list", |window| {
+        window
+            .view()
+            .lists()
+            .and_then(|lists| lists.notices.as_ref())
+            .is_some_and(|panel| panel.rows.iter().any(|row| row.author_id == Some(author)))
+    });
+    let notice = window
+        .view()
+        .lists()
+        .unwrap()
+        .notices
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.author_id == Some(author))
+        .unwrap()
+        .id;
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("notice:{notice}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(25.0), bounds.top() + px(45.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    assert!(!window.shows("notice-menu"));
+    window.click_named(format!("account-copy-name:{author}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Ada"
+    );
+    window.press_at_count(
+        gpui::point(bounds.left() + px(25.0), bounds.top() + px(45.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    window.in_shell(|shell, _, cx| shell.toggle_notices(cx));
+    window.until("closing notices ends the author menu", |window| {
+        !window.shows("account-menu")
+    });
+}

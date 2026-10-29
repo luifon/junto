@@ -26,6 +26,8 @@ pub(crate) struct AccountTarget {
 pub(crate) enum AccountSource {
     Message(MessageId),
     Pending(u64),
+    Search(crate::state::search::ResultTarget),
+    Notice(uuid::Uuid),
 }
 
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
@@ -43,6 +45,28 @@ impl OpenAccountMenu {
         let Some(source) = self.source else {
             return true;
         };
+        match source {
+            AccountSource::Search(target) => {
+                return view
+                    .workspace()
+                    .and_then(|workspace| workspace.search.as_ref())
+                    .is_some_and(|panel| {
+                        panel.server_id == self.owner.entry.server_id
+                            && panel.results.iter().any(|row| row.target == target)
+                    });
+            }
+            AccountSource::Notice(id) => {
+                return view
+                    .selected
+                    .as_ref()
+                    .is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && view
+                        .lists()
+                        .and_then(|lists| lists.notices.as_ref())
+                        .is_some_and(|panel| panel.rows.iter().any(|row| row.id == id));
+            }
+            AccountSource::Message(_) | AccountSource::Pending(_) => {}
+        }
         let held = |feed: Option<&crate::state::feed::Feed>| {
             feed.is_some_and(|feed| {
                 feed.server_id == self.owner.entry.server_id
