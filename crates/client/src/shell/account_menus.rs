@@ -4,7 +4,10 @@ use gpui::{
     AnyElement, App, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Pixels,
     Point, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
-use junto_client_core::{Owner, protocol::ids::AccountId};
+use junto_client_core::{
+    Owner,
+    protocol::ids::{AccountId, MessageId},
+};
 
 use super::{Layer, Shell};
 use crate::{
@@ -19,18 +22,68 @@ pub(crate) struct AccountTarget {
     pub departed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AccountSource {
+    Message(MessageId),
+    Pending(u64),
+}
+
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = accounts, no_json, no_register)]
 pub(crate) struct OpenAccountMenu {
     pub owner: Owner,
     pub people: Vec<AccountTarget>,
+    pub source: Option<AccountSource>,
     pub position: Point<Pixels>,
+}
+
+impl OpenAccountMenu {
+    pub(super) fn source_is_present(&self, view: &crate::state::view::ShellView) -> bool {
+        use crate::state::{feed::FeedRow, view::PinsState};
+        let Some(source) = self.source else {
+            return true;
+        };
+        let held = |feed: Option<&crate::state::feed::Feed>| {
+            feed.is_some_and(|feed| {
+                feed.server_id == self.owner.entry.server_id
+                    && feed.rows.iter().any(|row| match (source, row) {
+                        (AccountSource::Message(id), FeedRow::Message(row)) => {
+                            row.message.id == id && !row.message.deleted
+                        }
+                        (AccountSource::Pending(id), FeedRow::Waiting(row)) => row.pending.id == id,
+                        _ => false,
+                    })
+            })
+        };
+        let workspace = view.workspace();
+        let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+        if held(view.lists().and_then(|lists| lists.feed.as_ref()))
+            || held(thread.and_then(|thread| thread.feed.as_ref()))
+        {
+            return true;
+        }
+        let AccountSource::Message(id) = source else {
+            return false;
+        };
+        if view
+            .selected
+            .as_ref()
+            .is_none_or(|server| server.id != self.owner.entry.server_id)
+        {
+            return false;
+        }
+        thread.and_then(|thread| thread.root.as_ref()).is_some_and(|row| row.message.id == id && !row.message.deleted)
+            || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| {
+                matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(|row| row.message.id == id && !row.message.deleted))
+            })
+    }
 }
 
 pub(super) fn account_target(
     id: SharedString,
     owner: Option<Owner>,
     target: Option<AccountTarget>,
+    source: Option<AccountSource>,
     child: impl IntoElement,
     cx: &App,
 ) -> AnyElement {
@@ -51,6 +104,7 @@ pub(super) fn account_target(
             Box::new(OpenAccountMenu {
                 owner,
                 people: vec![target.clone()],
+                source,
                 position,
             }),
             cx,
@@ -96,6 +150,10 @@ impl Shell {
             .retain(|person| accounts.insert(person.account_id));
         if !open.people.is_empty()
             && self
+                .view
+                .as_ref()
+                .is_some_and(|view| open.source_is_present(view))
+            && self
                 .state
                 .read(cx)
                 .server(open.owner.entry.server_id)
@@ -106,7 +164,8 @@ impl Shell {
     }
 
     fn account_menu_current(&self, owner: Owner, person: &AccountTarget, cx: &App) -> bool {
-        matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person))
+        matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
+            && self.view.as_ref().is_some_and(|view| open.source_is_present(view)))
             && self
                 .state
                 .read(cx)

@@ -1935,11 +1935,14 @@ impl Shell {
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
-            Layer::AccountMenu(open) => self
-                .state
-                .read(cx)
-                .server(open.owner.entry.server_id)
-                .is_none_or(|server| server.owner() != Some(open.owner)),
+            Layer::AccountMenu(open) => {
+                !open.source_is_present(view)
+                    || self
+                        .state
+                        .read(cx)
+                        .server(open.owner.entry.server_id)
+                        .is_none_or(|server| server.owner() != Some(open.owner))
+            }
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {

@@ -869,3 +869,66 @@ fn an_account_mention_has_its_own_menu_beside_links_and_the_message(cx: &mut Tes
         author.to_string()
     );
 }
+
+#[gpui::test]
+fn an_account_menu_closes_when_its_source_message_is_deleted_or_hidden(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    admin.send(
+        &world,
+        window.selected_channel(),
+        document("A removable plan"),
+    );
+    let message = window.until_message("A removable plan").message.id;
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    world
+        .run(admin.handle.api().delete_message(message))
+        .unwrap();
+    window.until("the source message is removed", |window| {
+        window
+            .messages()
+            .iter()
+            .all(|row| row.message.id != message || row.message.deleted)
+    });
+    assert!(!window.shows("account-menu"));
+    let channel = window.selected_channel();
+    let workspace = window.view().workspace().unwrap().id;
+    admin.send(&world, channel, document("A hidden plan"));
+    let message = window.until_message("A hidden plan").message.id;
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("account-menu"));
+    let everyone = crate::channel_use::everyone(&world, &admin, workspace);
+    world
+        .run(admin.handle.api().set_channel_rule(
+            channel,
+            junto_client_core::protocol::structure::RuleSubject::Role { role_id: everyone },
+            &junto_client_core::protocol::structure::SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![junto_client_core::protocol::WorkspacePermission::ViewChannel],
+            },
+        ))
+        .unwrap();
+    window.until("the source channel is hidden", |window| {
+        !window.channels().iter().any(|row| row.id == channel)
+    });
+    assert!(!window.shows("account-menu"));
+}

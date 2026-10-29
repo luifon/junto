@@ -669,7 +669,12 @@ impl Rich {
 
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
-    fn element(self, id: usize, owner: Option<junto_client_core::Owner>) -> AnyElement {
+    fn element(
+        self,
+        id: usize,
+        owner: Option<junto_client_core::Owner>,
+        source: Option<super::account_menus::AccountSource>,
+    ) -> AnyElement {
         let links = self.links;
         let styled = StyledText::new(self.text)
             .with_highlights(self.highlights)
@@ -729,6 +734,7 @@ impl Rich {
                 Box::new(super::account_menus::OpenAccountMenu {
                     owner,
                     people,
+                    source,
                     position,
                 }),
                 cx,
@@ -746,10 +752,11 @@ fn paragraph(
     drawings: &Drawings,
     id: usize,
     owner: Option<junto_client_core::Owner>,
+    source: Option<super::account_menus::AccountSource>,
 ) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme, drawings).element(id, owner))
+        .child(Rich::of(content, names, theme, drawings).element(id, owner, source))
         .into_any_element()
 }
 
@@ -1750,7 +1757,7 @@ impl Shell {
     /// message: the third part of `message`.
     fn document(
         &mut self,
-        server_id: ServerId,
+        origin: (ServerId, Option<u64>),
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
@@ -1758,6 +1765,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let (server_id, pending) = origin;
+        let source = message
+            .map(|(_, message, _)| super::account_menus::AccountSource::Message(message.id))
+            .or_else(|| pending.map(super::account_menus::AccountSource::Pending));
         let owner = self
             .state
             .read(cx)
@@ -1773,7 +1784,15 @@ impl Shell {
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, &drawings, next(), owner));
+                    blocks.push(paragraph(
+                        content,
+                        names,
+                        theme,
+                        &drawings,
+                        next(),
+                        owner,
+                        source,
+                    ));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1782,7 +1801,15 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, &drawings, next(), owner))
+                        .child(paragraph(
+                            content,
+                            names,
+                            theme,
+                            &drawings,
+                            next(),
+                            owner,
+                            source,
+                        ))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1816,7 +1843,15 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, &drawings, next(), owner))
+                                .child(paragraph(
+                                    item,
+                                    names,
+                                    theme,
+                                    &drawings,
+                                    next(),
+                                    owner,
+                                    source,
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -1901,6 +1936,7 @@ impl Shell {
                                     &drawings,
                                     next(),
                                     owner,
+                                    source,
                                 ))
                                 .into_any_element(),
                         );
@@ -3069,7 +3105,7 @@ impl Shell {
         } else {
             let mut body = match &message.document {
                 Some(document) => self.document(
-                    feed.server_id,
+                    (feed.server_id, None),
                     document,
                     Some((feed, message, row.can_edit)),
                     &feed.names,
@@ -3114,6 +3150,7 @@ impl Shell {
                     SharedString::from(format!("author-name:{message_id}")),
                     account_owner,
                     account_target.clone(),
+                    Some(super::account_menus::AccountSource::Message(message_id)),
                     div()
                         .min_w_0()
                         .truncate()
@@ -3233,6 +3270,7 @@ impl Shell {
                                 SharedString::from(format!("author-picture:{message_id}")),
                                 account_owner,
                                 account_target,
+                                Some(super::account_menus::AccountSource::Message(message_id)),
                                 Avatar::new(seed, 34.0).image(picture),
                                 cx,
                             ))
@@ -3317,7 +3355,7 @@ impl Shell {
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
         let body = self.document(
-            feed.server_id,
+            (feed.server_id, Some(pending.id)),
             &pending.document,
             None,
             &feed.names,
