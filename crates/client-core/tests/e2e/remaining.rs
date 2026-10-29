@@ -470,6 +470,8 @@ async fn an_invite_names_its_creator_and_loses_a_workspace_with_the_removal_of_i
     let role = owner
         .api()
         .create_server_role(&junto_client_core::protocol::roles::CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Hosts".to_owned(),
             permissions: vec![junto_client_core::protocol::ServerPermission::CreateInvites],
         })

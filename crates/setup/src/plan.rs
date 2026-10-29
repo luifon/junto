@@ -517,6 +517,20 @@ pub fn plan(
     }
 }
 
+fn appearance_description(
+    color: Option<junto_protocol::appearance::RoleColor>,
+    hoist: bool,
+) -> String {
+    if color.is_none() && !hoist {
+        String::new()
+    } else {
+        format!(
+            "; colour {}; separate member group {hoist}",
+            color.map_or_else(|| "default".to_owned(), |color| color.to_string())
+        )
+    }
+}
+
 fn server_roles(planner: &mut Planner<'_>, file: &StructureFile) {
     for entry in &file.server_roles {
         let id = entry.id;
@@ -532,8 +546,14 @@ fn server_roles(planner: &mut Planner<'_>, file: &StructureFile) {
                 entry.name.trim(),
                 names(&permissions)
             );
+            let line = format!(
+                "{line}{}",
+                appearance_description(entry.color.unwrap_or(None), entry.hoist.unwrap_or(false))
+            );
             planner.add(
                 StructureChange::CreateServerRole {
+                    color: entry.color.unwrap_or(None),
+                    hoist: entry.hoist.unwrap_or(false),
                     id,
                     name: entry.name.trim().to_owned(),
                     permissions,
@@ -546,6 +566,12 @@ fn server_roles(planner: &mut Planner<'_>, file: &StructureFile) {
         let name = differences.name(&existing.name, &entry.name);
         let permissions =
             differences.permissions(existing.permissions.as_ref(), entry.permissions.as_ref());
+        let color = differences.value("color", existing.color, entry.color, |value| {
+            value.map_or_else(|| "default".to_owned(), |color| color.to_string())
+        });
+        let hoist = differences.value("hoist", existing.hoist, entry.hoist, |value| {
+            value.to_string()
+        });
         if !differences.is_empty() {
             let line = format!(
                 "~ server role {:?} ({id}): {}",
@@ -554,6 +580,8 @@ fn server_roles(planner: &mut Planner<'_>, file: &StructureFile) {
             );
             planner.add(
                 StructureChange::UpdateServerRole {
+                    color,
+                    hoist,
                     id,
                     name,
                     permissions,
@@ -795,8 +823,14 @@ fn new_workspace(planner: &mut Planner<'_>, places: &Places<'_>, entry: &Workspa
                     .as_ref()
                     .map_or_else(|| "as the server sets them".to_owned(), |held| names(held))
             );
+            let line = format!(
+                "{line}{}",
+                appearance_description(role.color.unwrap_or(None), role.hoist.unwrap_or(false))
+            );
             planner.add(
                 StructureChange::UpdateWorkspaceRole {
+                    color: role.color,
+                    hoist: role.hoist,
                     id: role.id,
                     name: Some(role.name.trim().to_owned()),
                     permissions: role.permissions.clone(),
@@ -893,8 +927,14 @@ fn create_role(planner: &mut Planner<'_>, workspace: StructureId, role: &RoleEnt
         role.id,
         names(&permissions)
     );
+    let line = format!(
+        "{line}{}",
+        appearance_description(role.color.unwrap_or(None), role.hoist.unwrap_or(false))
+    );
     planner.add(
         StructureChange::CreateWorkspaceRole {
+            color: role.color.unwrap_or(None),
+            hoist: role.hoist.unwrap_or(false),
             id: role.id,
             workspace,
             name: role.name.trim().to_owned(),
@@ -909,6 +949,12 @@ fn update_role(planner: &mut Planner<'_>, role: &RoleEntry, existing: &RoleEntry
     let name = differences.name(&existing.name, &role.name);
     let permissions =
         differences.permissions(existing.permissions.as_ref(), role.permissions.as_ref());
+    let color = differences.value("color", existing.color, role.color, |value| {
+        value.map_or_else(|| "default".to_owned(), |color| color.to_string())
+    });
+    let hoist = differences.value("hoist", existing.hoist, role.hoist, |value| {
+        value.to_string()
+    });
     if !differences.is_empty() {
         let line = format!(
             "~ role {:?} ({}): {}",
@@ -918,6 +964,8 @@ fn update_role(planner: &mut Planner<'_>, role: &RoleEntry, existing: &RoleEntry
         );
         planner.add(
             StructureChange::UpdateWorkspaceRole {
+                color,
+                hoist,
                 id: existing.id,
                 name,
                 permissions,

@@ -127,6 +127,8 @@ pub struct PermissionSwitch {
 /// One role in the order of its level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleRow {
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    pub hoist: bool,
     pub role: RoleRef,
     pub name: String,
     pub position: i32,
@@ -254,6 +256,7 @@ impl RolesPage {
 /// A role in the list of the roles that an account holds or can be given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleChoice {
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub role: RoleRef,
     pub name: String,
     /// The account holds the role.
@@ -380,6 +383,8 @@ fn workspace_rows(
         .map(|role| {
             let held = role.is_everyone || workspace.own_role_ids.contains(&role.id);
             RoleRow {
+                color: role.color,
+                hoist: role.hoist,
                 role: RoleRef::Workspace(workspace_id, role.id),
                 name: role.name.clone(),
                 position: role.position,
@@ -423,6 +428,8 @@ fn server_rows(model: &ServerModel, own: RoleRank) -> Option<Vec<RoleRow>> {
     let mut rows: Vec<RoleRow> = roles
         .iter()
         .map(|role| RoleRow {
+            color: role.color,
+            hoist: role.hoist,
             stated: stated(state, model.admin.server_role_actions(role.id)),
             role: RoleRef::Server(role.id),
             name: role.name.clone(),
@@ -592,6 +599,7 @@ pub fn server_choices(model: &ServerModel, held: &[ServerRoleId]) -> Option<Vec<
             .map(|row| {
                 let holds = matches!(row.role, RoleRef::Server(role_id) if held.contains(&role_id));
                 RoleChoice {
+                    color: row.color,
                     blocked: assignment(&row, holds, full, false),
                     role: row.role,
                     name: row.name,
@@ -626,6 +634,7 @@ pub fn workspace_choices(
                     .iter()
                     .any(|switch| switch.on && switch.beyond_own);
                 RoleChoice {
+                    color: row.color,
                     blocked: assignment(&row, holds, full, beyond),
                     role: row.role,
                     name: row.name,
@@ -665,6 +674,8 @@ mod tests {
     fn scene() -> Scene {
         let studio = WorkspaceId::generate();
         let role = |name: &str, position, permissions: &[WorkspacePermission]| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
@@ -682,6 +693,7 @@ mod tests {
                 position: 1,
             },
             account: OwnAccount {
+                appearance: Default::default(),
                 id: AccountId::generate(),
                 name: "Luca".to_owned(),
                 avatar: None,
@@ -762,6 +774,8 @@ mod tests {
 
     fn server_role(name: &str, position: i32, permissions: &[ServerPermission]) -> ServerRole {
         ServerRole {
+            color: None,
+            hoist: false,
             position,
             id: ServerRoleId::generate(),
             name: name.to_owned(),
@@ -1324,6 +1338,8 @@ mod tests {
         let roles = &mut scene.snapshot.workspaces[0].roles;
         for position in 4..=i32::try_from(MOST_ROLES).unwrap() - 1 {
             roles.push(WorkspaceRole {
+                color: None,
+                hoist: false,
                 position,
                 id: WorkspaceRoleId::generate(),
                 workspace_id: studio,

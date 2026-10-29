@@ -232,10 +232,10 @@ async fn audit_a_subscribe_runs_no_statement_per_mention_event_of_the_log() {
             crate::discovery_support::mention(&server, &owner, &channel, &other).await;
         }
         let before = crate::messages_queries::statements(&mut observer, role).await;
-        let started = subscribe(&server.state, &who, Level::Full, Some(start))
+        let started = subscribe(&server.state, &who, Level::Full, Some(start), false)
             .await
             .unwrap();
-        assert!(matches!(started, Start::Subscribed(_)));
+        assert!(matches!(started, Start::Subscribed { .. }));
         let run = crate::messages_queries::since(
             crate::messages_queries::statements(&mut observer, role).await,
             before,

@@ -1451,7 +1451,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
-        let faces = self.shown_faces();
+        let faces = self.shown_faces().in_workspace(
+            self.view
+                .as_ref()
+                .and_then(|view| view.call.as_ref())
+                .and_then(|call| call.workspace_id),
+        );
         let watched = stage.watched();
         let several = stage.shares.len() > 1;
         let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
@@ -1673,6 +1678,10 @@ impl Shell {
                         strong,
                         gpui::HighlightStyle {
                             font_weight: Some(gpui::FontWeight::BOLD),
+                            color:
+                                faces.color(share.account_id).map(|color| {
+                                    crate::theme::role_ink(color, colors.basalt_2).into()
+                                }),
                             ..gpui::HighlightStyle::default()
                         },
                     )]),
@@ -1834,6 +1843,7 @@ impl Shell {
                     )
                     .picture(faces.image(occupant.account_id))
                     .presence(faces.presence(occupant.account_id))
+                    .name_color(faces.color(occupant.account_id))
                     .when_some(faces.server_id(), |tile, server| {
                         tile.profile(crate::ui::OpenProfile {
                             server,

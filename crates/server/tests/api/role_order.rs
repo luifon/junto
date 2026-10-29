@@ -949,6 +949,8 @@ async fn role_order_setup_binary() {
         }
         file.server_roles
             .push(junto_protocol::structure_file::ServerRoleEntry {
+                color: None,
+                hoist: None,
                 id: junto_protocol::ids::StructureId::generate(),
                 name: format!("new {positioned}"),
                 permissions: Some(vec![]),

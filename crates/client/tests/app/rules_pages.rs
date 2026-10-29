@@ -84,6 +84,8 @@ fn role(
     permissions: &[WorkspacePermission],
 ) -> WorkspaceRoleId {
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: name.to_owned(),
         permissions: permissions.to_vec(),
     };

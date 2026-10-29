@@ -106,6 +106,8 @@ fn create_workspace_role(
     permissions: &[WorkspacePermission],
 ) -> WorkspaceRoleId {
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: name.to_owned(),
         permissions: permissions.to_vec(),
     };
@@ -533,6 +535,8 @@ fn create_server_role(
     permissions: &[ServerPermission],
 ) -> ServerRoleId {
     let role = CreateServerRole {
+        color: None,
+        hoist: false,
         name: name.to_owned(),
         permissions: permissions.to_vec(),
     };
@@ -784,6 +788,8 @@ fn the_row_of_a_role_tells_the_refusal_of_its_newest_request(cx: &mut TestAppCon
     let workspace_id = default_workspace(&world, &owner);
     let create = |name: &str| {
         let role = CreateWorkspaceRole {
+            color: None,
+            hoist: false,
             name: name.to_owned(),
             permissions: Vec::new(),
         };
@@ -850,6 +856,8 @@ fn the_permissions_of_a_role_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
         .run(owner.api().create_workspace_role(
             workspace_id,
             &CreateWorkspaceRole {
+                color: None,
+                hoist: false,
                 name: "Chiefs".to_owned(),
                 permissions: Vec::new(),
             },
@@ -940,6 +948,8 @@ fn a_cancelled_rename_of_a_role_keeps_its_permissions_waiting_and_tells_the_refu
     let workspace_id = default_workspace(&world, &owner);
     let create = |name: &str| {
         let role = CreateWorkspaceRole {
+            color: None,
+            hoist: false,
             name: name.to_owned(),
             permissions: Vec::new(),
         };
@@ -1042,6 +1052,8 @@ fn a_permission_given_taken_and_given_again_ends_as_the_last_change(cx: &mut Tes
     let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
     let workspace_id = default_workspace(&world, &owner);
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Helpers".to_owned(),
         permissions: Vec::new(),
     };
@@ -1136,4 +1148,245 @@ fn a_permission_given_taken_and_given_again_ends_as_the_last_change(cx: &mut Tes
     });
     assert_eq!(changes(), 3);
     assert_eq!(stored(), [permission]);
+}
+
+#[gpui::test]
+fn role_appearance_editor_validates_saves_and_resets_without_changing_permissions(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &server.address());
+    let workspace = default_workspace(&world, &owner);
+    let role = world
+        .run(owner.api().create_workspace_role(
+            workspace,
+            &CreateWorkspaceRole {
+                name: "Guides".to_owned(),
+                permissions: vec![WorkspacePermission::ManageMessages],
+                color: None,
+                hoist: false,
+            },
+        ))
+        .unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        role_rows(window).is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.role == RoleRef::Workspace(workspace, role.id))
+        })
+    });
+    let target = RoleRef::Workspace(workspace, role.id);
+    click_in_page(&mut window, sel("role-appearance", target.written()));
+    window.until("the appearance form is open", |window| {
+        window.shows("role-color")
+    });
+    window.until(
+        "the whole appearance form is visible after opening",
+        |window| {
+            window
+                .cx
+                .debug_bounds("role-form-send")
+                .zip(window.cx.debug_bounds("admin-page"))
+                .is_some_and(|(save, page)| {
+                    save.top() >= page.top() && save.bottom() <= page.bottom()
+                })
+        },
+    );
+    assert!(window.shows("role-color-preview"));
+    window.in_shell(|shell, window, cx| shell.type_role_color("#123", window, cx));
+    click_in_page(&mut window, "role-form-send");
+    assert!(window.shows("role-form-invalid"));
+    window.in_shell(|shell, window, cx| shell.type_role_color("#336699", window, cx));
+    click_in_page(&mut window, "role-hoist");
+    click_in_page(&mut window, "role-form-send");
+    window.until("the new appearance is shown", |window| {
+        !window.shows("role-color")
+            && role_row(window, target)
+                .is_some_and(|row| row.color == Some("#336699".parse().unwrap()) && row.hoist)
+    });
+    let stored = world
+        .run(owner.api().workspace_roles(workspace))
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == role.id)
+        .unwrap();
+    assert_eq!(stored.permissions, role.permissions);
+    click_in_page(&mut window, sel("role-appearance", target.written()));
+    click_in_page(&mut window, "role-color-default");
+    click_in_page(&mut window, "role-hoist");
+    click_in_page(&mut window, "role-form-send");
+    window.until("reset keeps the default appearance", |window| {
+        !window.shows("role-color")
+            && role_row(window, target).is_some_and(|row| row.color.is_none() && !row.hoist)
+    });
+}
+
+#[gpui::test]
+fn ordinary_member_windows_follow_role_colours_groups_search_and_server_fallback(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::view::Members;
+    use junto_client_core::protocol::roles::UpdateWorkspaceRole;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let workspace = default_workspace(&world, &admin.handle);
+    let (_one_dir, mut one) = member(cx, &world, &server.address(), &admin, "Alpha");
+    let (_two_dir, mut two) = member(cx, &world, &server.address(), &admin, "Bravo");
+    let person = one.own_account();
+    for window in [&mut one, &mut two] {
+        window.in_shell(|shell, window, cx| {
+            shell.open(junto_client::shell::Open::Members, window, cx)
+        });
+    }
+    let global = world
+        .run(admin.handle.api().create_server_role(&CreateServerRole {
+            name: "Hosts".to_owned(),
+            permissions: Vec::new(),
+            color: Some("#8844AA".parse().unwrap()),
+            hoist: true,
+        }))
+        .unwrap();
+    world
+        .run(admin.handle.api().assign_server_role(person, global.id))
+        .unwrap();
+    let row = |window: &mut Window| match &window.view().workspace()?.members {
+        Members::Loaded(rows) => rows.iter().find(|row| row.account_id == person).cloned(),
+        _ => None,
+    };
+    for window in [&mut one, &mut two] {
+        window.until("public server appearance reaches this window", |window| {
+            row(window).is_some_and(|row| {
+                row.color == global.color && row.group.is_some_and(|group| group.name == "Hosts")
+            })
+        });
+    }
+    let local = world
+        .run(admin.handle.api().create_workspace_role(
+            workspace,
+            &CreateWorkspaceRole {
+                name: "Guides".to_owned(),
+                permissions: Vec::new(),
+                color: Some("#227744".parse().unwrap()),
+                hoist: true,
+            },
+        ))
+        .unwrap();
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .assign_workspace_role(workspace, person, local.id),
+        )
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until("workspace appearance takes precedence", |window| {
+            row(window).is_some_and(|row| {
+                row.color == local.color
+                    && row
+                        .group
+                        .is_some_and(|group| group.workspace && group.name == "Guides")
+            })
+        });
+    }
+    let secondary = world
+        .run(admin.handle.api().create_workspace_role(
+            workspace,
+            &CreateWorkspaceRole {
+                name: "Editors".to_owned(),
+                permissions: Vec::new(),
+                color: Some("#BB6622".parse().unwrap()),
+                hoist: true,
+            },
+        ))
+        .unwrap();
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .assign_workspace_role(workspace, person, secondary.id),
+        )
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until("the lower role keeps the highest appearance", |window| {
+            row(window).is_some_and(|row| {
+                row.color == local.color && row.group.is_some_and(|group| group.name == "Guides")
+            })
+        });
+    }
+    world
+        .run(admin.handle.api().reorder_workspace_roles(
+            workspace,
+            vec![
+                junto_client_core::protocol::roles::WorkspaceRolePosition {
+                    role_id: local.id,
+                    position: 1,
+                },
+                junto_client_core::protocol::roles::WorkspaceRolePosition {
+                    role_id: secondary.id,
+                    position: 2,
+                },
+            ],
+        ))
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until(
+            "reorder changes colour and group in both windows",
+            |window| {
+                row(window).is_some_and(|row| {
+                    row.color == secondary.color
+                        && row.group.is_some_and(|group| group.name == "Editors")
+                })
+            },
+        );
+    }
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .unassign_workspace_role(workspace, person, secondary.id),
+        )
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until("removal restores the remaining assigned role", |window| {
+            row(window).is_some_and(|row| {
+                row.color == local.color && row.group.is_some_and(|group| group.name == "Guides")
+            })
+        });
+    }
+    two.in_shell(|shell, window, cx| shell.type_member_search("Alpha", window, cx));
+    two.until("search retains the matching group", |window| {
+        window.shows_named("member-group:Guides".to_owned())
+    });
+    world
+        .run(admin.handle.api().update_workspace_role(
+            workspace,
+            local.id,
+            &UpdateWorkspaceRole {
+                name: None,
+                permissions: None,
+                color: Some(None),
+                hoist: Some(false),
+            },
+        ))
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until("reset restores the server fallback", |window| {
+            row(window).is_some_and(|row| {
+                row.color == global.color && row.group.is_some_and(|group| group.name == "Hosts")
+            })
+        });
+    }
+    world
+        .run(admin.handle.api().delete_server_role(global.id))
+        .unwrap();
+    for window in [&mut one, &mut two] {
+        window.until("deletion removes public appearance", |window| {
+            row(window).is_some_and(|row| row.color.is_none() && row.group.is_none())
+        });
+    }
 }

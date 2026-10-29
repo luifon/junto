@@ -62,6 +62,8 @@ pub(crate) fn scene() -> Scene {
     let account_id = AccountId::generate();
     let workspace_id = WorkspaceId::generate();
     let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+        color: None,
+        hoist: false,
         position,
         id: WorkspaceRoleId::generate(),
         workspace_id,
@@ -82,6 +84,7 @@ pub(crate) fn scene() -> Scene {
             position: 40,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: account_id,
             name: "Luca".to_owned(),
             avatar: None,
@@ -177,6 +180,7 @@ pub(crate) fn participant(account_id: AccountId) -> CallParticipant {
 
 pub(crate) fn member(name: &str) -> WorkspaceMember {
     WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id: AccountId::generate(),
         name: name.to_owned(),
@@ -344,6 +348,8 @@ fn structure_events_replace_whole_objects_and_keep_the_order_of_positions() {
     );
 
     let role = WorkspaceRole {
+        color: None,
+        hoist: false,
         position: 1,
         id: scene.helpers,
         workspace_id: scene.workspace_id,
@@ -1363,6 +1369,7 @@ fn members_follow_the_events_once_they_are_loaded() {
     let mut model = scene.model();
     let (ana, bruno) = (member("Ana"), member("Bruno"));
     let own = WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id: scene.account_id,
         name: "Luca".to_owned(),
@@ -1406,6 +1413,7 @@ fn members_follow_the_events_once_they_are_loaded() {
     assert_eq!(members(&model), ["Ana", "Bruno", "Luca"]);
     model.apply(&Event::AccountProfileUpdated {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: ana.account_id,
             name: "Ana Maria".to_owned(),
             avatar: None,
@@ -1414,6 +1422,7 @@ fn members_follow_the_events_once_they_are_loaded() {
     });
     model.apply(&Event::AccountProfileUpdated {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: scene.account_id,
             name: "Luca B.".to_owned(),
             avatar: None,

@@ -916,6 +916,8 @@ fn arranger(
         .run(api.create_workspace_role(
             default,
             &CreateWorkspaceRole {
+                color: None,
+                hoist: false,
                 name: "Arrangers".to_owned(),
                 permissions: vec![WorkspacePermission::ManageChannel],
             },

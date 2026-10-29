@@ -63,6 +63,8 @@ fn the_own_card_shows_roles_and_has_no_self_message_or_call(cx: &mut TestAppCont
     let own = window.own_account();
     let role = world
         .run(admin.handle.api().create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Guide".to_owned(),
             permissions: Vec::new(),
         }))
@@ -319,6 +321,8 @@ fn a_shown_card_refreshes_public_roles_and_a_target_that_becomes_unavailable(
     });
     let role = world
         .run(admin.handle.api().create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Guide".to_owned(),
             permissions: Vec::new(),
         }))

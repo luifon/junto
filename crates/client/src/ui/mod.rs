@@ -155,3 +155,5 @@ pub(crate) fn ledge(colour: Rgba) -> Vec<BoxShadow> {
 pub(crate) fn float_shadow(colour: Rgba, offset: f32, blur: f32) -> Vec<BoxShadow> {
     vec![BoxShadow::new(px(0.0), px(offset), colour.into()).blur_radius(px(blur))]
 }
+
+pub(crate) use profile::role_name;

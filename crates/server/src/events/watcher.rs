@@ -20,6 +20,7 @@ struct Arrival {
     position: i64,
     ordinal: i32,
     class: String,
+    kind: String,
     addressed_to: Option<AccountId>,
     revalidates: Option<AccountId>,
     audience_kind: Option<String>,
@@ -43,7 +44,7 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
     loop {
         let (rows, receivers) = read!(app.unattended(), |connection| {
             let rows: Vec<Arrival> = sqlx::query_as(
-                "select id, position, ordinal, class, audience_account_id as addressed_to,
+                "select id, position, ordinal, class, kind, audience_account_id as addressed_to,
                         revalidates_account_id as revalidates, audience->>'to' as audience_kind,
                         audience->>'low_account_id' as low, audience->>'high_account_id' as high
                  from events where (position, ordinal) > ($1, $3)
@@ -82,6 +83,7 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
             }
         }
         for row in rows {
+            arrivals.appearance |= super::delivery::changes_appearance(&row.kind);
             match row.audience_kind.as_deref() {
                 Some("notification") => continue,
                 Some("direct") => {

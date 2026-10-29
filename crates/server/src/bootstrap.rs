@@ -692,6 +692,8 @@ pub async fn create_workspace(
         .execute(&mut *connection)
         .await?;
     let everyone = WorkspaceRole {
+        color: None,
+        hoist: false,
         position: 0,
         id: WorkspaceRoleId::generate(),
         workspace_id,

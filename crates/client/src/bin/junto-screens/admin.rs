@@ -184,12 +184,16 @@ pub(crate) fn accounts(owner: &str) -> Vec<AccountSummary> {
 pub(crate) fn server_roles() -> Vec<ServerRole> {
     vec![
         ServerRole {
+            color: None,
+            hoist: false,
             position: 3,
             id: id(ADMINISTRATORS),
             name: "Administrators".to_owned(),
             permissions: vec![ServerPermission::Administrator],
         },
         ServerRole {
+            color: None,
+            hoist: false,
             position: 2,
             id: id(MODERATORS),
             name: "Moderators".to_owned(),
@@ -199,6 +203,8 @@ pub(crate) fn server_roles() -> Vec<ServerRole> {
             ],
         },
         ServerRole {
+            color: None,
+            hoist: false,
             position: 1,
             id: id(INVITERS),
             name: "Inviters".to_owned(),

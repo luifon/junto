@@ -36,6 +36,8 @@ fn role_id(model: &ServerModel, workspace_id: WorkspaceId, name: &str) -> Worksp
 
 fn server_role(name: &str, position: i32, permissions: &[ServerPermission]) -> ServerRole {
     ServerRole {
+        color: None,
+        hoist: false,
         position,
         id: ServerRoleId::generate(),
         name: name.to_owned(),
@@ -109,6 +111,8 @@ fn the_roles_of_a_workspace_stand_in_their_order_and_follow_a_shift() {
         ["everyone:0", "leads:3", "helpers:2"]
     );
     let guests = WorkspaceRole {
+        color: None,
+        hoist: false,
         position: 1,
         id: WorkspaceRoleId::generate(),
         workspace_id: scene.workspace_id,

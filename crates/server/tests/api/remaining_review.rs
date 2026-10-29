@@ -594,10 +594,10 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         };
         let cursor = at_change(middle);
         assert!(matches!(
-            delivery::subscribe(&server.state, &who, Level::Full, Some(cursor))
+            delivery::subscribe(&server.state, &who, Level::Full, Some(cursor), false)
                 .await
                 .unwrap(),
-            Start::Subscribed(_)
+            Start::Subscribed { .. }
         ));
         let batch = delivery::next_batch(
             &server.state,
@@ -620,10 +620,10 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         );
         assert!(deliveries.iter().all(|delivery| delivery.events == 1));
         assert!(matches!(
-            delivery::subscribe(&server.state, &who, Level::Background, Some(initial))
+            delivery::subscribe(&server.state, &who, Level::Background, Some(initial), false)
                 .await
                 .unwrap(),
-            Start::Subscribed(_)
+            Start::Subscribed { .. }
         ));
         let oldest = positions[0];
         pairs(1).await;
@@ -636,17 +636,29 @@ async fn review2_the_kept_log_covers_the_original_number_of_messages() {
         assert_eq!(old, 0);
         let old_cursor = at_change(oldest - 1);
         assert!(matches!(
-            delivery::subscribe(&server.state, &who, Level::Background, Some(old_cursor))
-                .await
-                .unwrap(),
+            delivery::subscribe(
+                &server.state,
+                &who,
+                Level::Background,
+                Some(old_cursor),
+                false
+            )
+            .await
+            .unwrap(),
             Start::Resync(_)
         ));
         let boundary = at_change(oldest);
         assert!(matches!(
-            delivery::subscribe(&server.state, &who, Level::Background, Some(boundary))
-                .await
-                .unwrap(),
-            Start::Subscribed(_)
+            delivery::subscribe(
+                &server.state,
+                &who,
+                Level::Background,
+                Some(boundary),
+                false
+            )
+            .await
+            .unwrap(),
+            Start::Subscribed { .. }
         ));
     }
 }

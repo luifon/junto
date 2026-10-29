@@ -819,3 +819,111 @@ mod tests {
         assert_eq!(colors.scrim.a, 0.5);
     }
 }
+
+/// The stored role colour, adjusted only when it lacks text contrast on this surface.
+pub fn role_ink(
+    color: junto_client_core::protocol::appearance::RoleColor,
+    background: Rgba,
+) -> Rgba {
+    let original = hex(color.rgb());
+    let back = luminance(background);
+    let target = if back > 0.179 { 0.0 } else { 1.0 };
+    let mut value = original;
+    for step in 0..=100 {
+        let light = luminance(value);
+        if (light.max(back) + 0.05) / (light.min(back) + 0.05) >= 4.5 {
+            return value;
+        }
+        let amount = (step + 1) as f32 / 100.0;
+        value = Rgba {
+            r: original.r + (target - original.r) * amount,
+            g: original.g + (target - original.g) * amount,
+            b: original.b + (target - original.b) * amount,
+            a: 1.0,
+        };
+    }
+    value
+}
+
+fn luminance(color: Rgba) -> f32 {
+    let linear = |part: f32| {
+        if part <= 0.04045 {
+            part / 12.92
+        } else {
+            ((part + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+/// A name stays readable on each ordinary panel, including its selected and hover fills.
+pub fn role_name_ink(
+    color: junto_client_core::protocol::appearance::RoleColor,
+    theme: &Theme,
+) -> Rgba {
+    let colors = theme.colors;
+    let light = luminance(colors.travertine) > 0.179;
+    let background = [
+        colors.plaster,
+        colors.limestone,
+        colors.limestone_lo,
+        colors.limestone_hover,
+    ]
+    .into_iter()
+    .fold(colors.travertine, |held, candidate| {
+        let darker = luminance(candidate) < luminance(held);
+        if light == darker { candidate } else { held }
+    });
+    role_ink(color, background)
+}
+
+#[cfg(test)]
+mod role_colour_tests {
+    use super::*;
+    #[test]
+    fn role_name_colours_keep_text_contrast_on_light_dark_and_selected_panels() {
+        fn light(color: Rgba) -> f64 {
+            let channel = |value: f32| {
+                let value = f64::from(value);
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        for theme in [Theme::stone(), Theme::broadcast()] {
+            let colors = theme.colors;
+            for rgb in [
+                (0, 0, 0),
+                (255, 255, 255),
+                (51, 102, 153),
+                (34, 119, 68),
+                (136, 68, 170),
+                (187, 102, 34),
+                (255, 0, 0),
+                (0, 255, 0),
+                (0, 0, 255),
+            ] {
+                let color = junto_client_core::protocol::appearance::RoleColor::from_rgb(
+                    rgb.0, rgb.1, rgb.2,
+                );
+                let ink = role_name_ink(color, &theme);
+                for surface in [
+                    colors.travertine,
+                    colors.plaster,
+                    colors.limestone,
+                    colors.limestone_lo,
+                    colors.limestone_hover,
+                ] {
+                    let (one, two) = (light(ink), light(surface));
+                    assert!(
+                        (one.max(two) + 0.05) / (one.min(two) + 0.05) >= 4.5,
+                        "{color}: {ink:?} on {surface:?}"
+                    );
+                }
+            }
+        }
+    }
+}

@@ -122,6 +122,8 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
     // The owner gives a role: the message rows, the composer, the call controls and the
     // pages of the administration follow, without an act in the window.
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Stewards".to_owned(),
         permissions: vec![
             WorkspacePermission::ManageMessages,
@@ -218,6 +220,8 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
 
     // The role loses a permission: the holders follow.
     let fewer = UpdateWorkspaceRole {
+        color: None,
+        hoist: None,
         name: None,
         permissions: Some(vec![
             WorkspacePermission::ManageMessages,

@@ -362,6 +362,7 @@ impl ServerModel {
                 if profile.id == self.account.id {
                     self.account.name.clone_from(&profile.name);
                     self.account.avatar.clone_from(&profile.avatar);
+                    self.account.appearance.clone_from(&profile.appearance);
                 }
                 for workspace in &mut self.workspaces {
                     // The description of the avatar of a member is the one of the profile
@@ -369,7 +370,9 @@ impl ServerModel {
                     let changed = workspace.members.loaded().is_some_and(|members| {
                         members.iter().any(|member| {
                             member.account_id == profile.id
-                                && (member.name != profile.name || member.avatar != profile.avatar)
+                                && (member.name != profile.name
+                                    || member.avatar != profile.avatar
+                                    || member.appearance != profile.appearance)
                         })
                     });
                     if !changed {
@@ -380,6 +383,7 @@ impl ServerModel {
                             if member.account_id == profile.id {
                                 member.name.clone_from(&profile.name);
                                 member.avatar.clone_from(&profile.avatar);
+                                member.appearance.clone_from(&profile.appearance);
                             }
                         }
                     }

@@ -39,6 +39,8 @@ impl Admin {
         let mut permissions = everyone.permissions.clone();
         permissions.extend_from_slice(more);
         let update = UpdateWorkspaceRole {
+            color: None,
+            hoist: None,
             name: None,
             permissions: Some(permissions),
         };
@@ -610,6 +612,8 @@ fn a_mention_in_a_direct_conversation_offers_the_other_person_only(cx: &mut Test
     let api = admin.handle.api();
     let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Editors".to_owned(),
         permissions: Vec::new(),
     };
@@ -1027,6 +1031,8 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
     let api = admin.handle.api();
     let workspace_id = world.run(api.workspaces()).unwrap()[0].id;
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Editors".to_owned(),
         permissions: Vec::new(),
     };

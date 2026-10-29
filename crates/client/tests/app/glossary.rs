@@ -231,6 +231,8 @@ fn take_from_everyone(
         .filter(|held| *held != permission)
         .collect();
     let update = UpdateWorkspaceRole {
+        color: None,
+        hoist: None,
         name: None,
         permissions: Some(permissions),
     };

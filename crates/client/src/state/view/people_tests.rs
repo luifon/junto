@@ -37,6 +37,7 @@ fn avatar(hash: PictureHash) -> Avatar {
 
 fn member(account_id: AccountId, name: &str) -> WorkspaceMember {
     WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id,
         name: name.to_owned(),

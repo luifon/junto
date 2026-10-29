@@ -834,6 +834,9 @@ pub struct ChannelSection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberRow {
+    pub role_colors: Vec<Option<junto_client_core::protocol::appearance::RoleColor>>,
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    pub group: Option<super::role_appearance::MemberGroup>,
     pub account_id: AccountId,
     pub name: String,
     pub is_self: bool,
@@ -1317,6 +1320,7 @@ pub struct ConversationRefusal {
 /// The selected workspace of the selected server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceView {
+    pub role_colors: HashMap<WorkspaceRoleId, junto_client_core::protocol::appearance::RoleColor>,
     pub id: WorkspaceId,
     pub name: String,
     pub sections: Vec<ChannelSection>,
@@ -2419,24 +2423,51 @@ fn members(
         Loadable::Loaded(members) => {
             let mut rows: Vec<MemberRow> = members
                 .iter()
-                .map(|member| MemberRow {
-                    pictured: member.avatar.is_some(),
-                    account_id: member.account_id,
-                    name: crate::text::label(&member.name),
-                    is_self: member.account_id == model.account.id,
-                    roles: workspace
-                        .roles
-                        .iter()
-                        .filter(|role| !role.is_everyone && member.role_ids.contains(&role.id))
-                        .map(|role| crate::text::label(&role.name))
-                        .collect(),
+                .map(|member| {
+                    let (color, group) = super::role_appearance::appearance(
+                        &workspace.roles,
+                        &member.role_ids,
+                        &member.appearance,
+                    );
+                    MemberRow {
+                        role_colors: workspace
+                            .roles
+                            .iter()
+                            .filter(|role| !role.is_everyone && member.role_ids.contains(&role.id))
+                            .map(|role| role.color)
+                            .collect(),
+                        color,
+                        group,
+                        pictured: member.avatar.is_some(),
+                        account_id: member.account_id,
+                        name: crate::text::label(&member.name),
+                        is_self: member.account_id == model.account.id,
+                        roles: workspace
+                            .roles
+                            .iter()
+                            .filter(|role| !role.is_everyone && member.role_ids.contains(&role.id))
+                            .map(|role| crate::text::label(&role.name))
+                            .collect(),
+                    }
                 })
                 .collect();
             rows.sort_by(|one, other| {
-                one.name
-                    .to_lowercase()
-                    .cmp(&other.name.to_lowercase())
-                    .then(one.account_id.cmp(&other.account_id))
+                match (&one.group, &other.group) {
+                    (Some(one), Some(other)) => other
+                        .workspace
+                        .cmp(&one.workspace)
+                        .then(other.position.cmp(&one.position))
+                        .then(one.id.cmp(&other.id)),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+                .then_with(|| {
+                    one.name
+                        .to_lowercase()
+                        .cmp(&other.name.to_lowercase())
+                        .then(one.account_id.cmp(&other.account_id))
+                })
             });
             Members::Loaded(rows)
         }
@@ -3067,6 +3098,11 @@ fn workspace_view(
     let in_call = call.is_some() || conversation.is_some_and(|shown| shown.in_call);
     let (no_thread, no_pins) = (thread.is_none(), pins.is_none());
     let view = WorkspaceView {
+        role_colors: workspace
+            .roles
+            .iter()
+            .filter_map(|role| Some((role.id, role.color?)))
+            .collect(),
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
         sections,
@@ -3114,6 +3150,11 @@ fn names(
     }
     accounts.insert(model.account.id, crate::text::label(&model.account.name));
     Names {
+        role_colors: workspace
+            .into_iter()
+            .flat_map(|workspace| workspace.roles.iter())
+            .filter_map(|role| Some((role.id, role.color?)))
+            .collect(),
         accounts,
         roles: workspace
             .map(|workspace| workspace.roles.as_slice())

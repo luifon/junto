@@ -224,6 +224,8 @@ pub(crate) fn grant_server(
     permission: ServerPermission,
 ) {
     let role = CreateServerRole {
+        color: None,
+        hoist: false,
         name: "Helpers".to_owned(),
         permissions: vec![permission],
     };
@@ -243,6 +245,8 @@ pub(crate) fn grant_workspace(
     permission: WorkspacePermission,
 ) {
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Leads".to_owned(),
         permissions: vec![permission],
     };
@@ -2106,6 +2110,8 @@ fn a_permission_that_returns_keeps_the_shown_page_of_the_administration(cx: &mut
     let own = window.view().person.account_id.unwrap();
     let api = admin.handle.api();
     let role = CreateServerRole {
+        color: None,
+        hoist: false,
         name: "Helpers".to_owned(),
         permissions: vec![ServerPermission::CreateInvites],
     };
@@ -2766,6 +2772,8 @@ fn a_token_form_that_a_lost_permission_puts_away_holds_its_row_until_a_release(
     let own = window.view().person.account_id.unwrap();
     let api = admin.handle.api();
     let role = CreateServerRole {
+        color: None,
+        hoist: false,
         name: "Administrators".to_owned(),
         permissions: vec![ServerPermission::Administrator],
     };

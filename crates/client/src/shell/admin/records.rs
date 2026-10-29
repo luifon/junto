@@ -211,6 +211,7 @@ fn audit_row(
     cycle: junto_client_core::clock::HourCycle,
     presence: Option<junto_client_core::protocol::presence::Presence>,
     profile: Option<crate::ui::OpenProfile>,
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
 ) -> AnyElement {
     let id = row.id;
     let content = line(theme).child(
@@ -230,7 +231,13 @@ fn audit_row(
                             "audit-person",
                             target,
                             text::profile::OPEN,
-                            txt::audit_head(row, cycle),
+                            crate::shell::people::name_in_sentence(
+                                txt::audit_head(row, cycle),
+                                txt::audit_actor_range(row, cycle),
+                                color,
+                                theme.colors.travertine,
+                                false,
+                            ),
                         )
                         .into_any_element(),
                         None => txt::audit_head(row, cycle).into_any_element(),
@@ -687,11 +694,13 @@ impl Shell {
                 ],
                 theme,
             )
-            .child(crate::shell::people::person_label(
+            .child(crate::shell::people::person_sentence_label(
                 &self.faces(server_id),
                 row.created_by,
                 txt::token_detail(row, self.state.read(cx).hour_cycle()),
+                txt::token_creator_range(row),
                 "token-creator",
+                theme.colors.travertine,
             )),
         );
         if row.expired {
@@ -1800,6 +1809,12 @@ impl Shell {
                         server: server_id,
                         account: id,
                     })
+                }
+                _ => None,
+            },
+            match row.actor {
+                crate::state::admin::view::records::Actor::Account { id, .. } => {
+                    self.faces(server_id).color(id)
                 }
                 _ => None,
             },

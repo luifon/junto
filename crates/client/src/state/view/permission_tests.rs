@@ -157,6 +157,8 @@ fn in_call(server_id: ServerId, scene: &Scene, channel_id: ChannelId) -> Known {
 fn role_with_everything(scene: &mut Scene) {
     let workspace_id = scene.studio;
     let role = WorkspaceRole {
+        color: None,
+        hoist: false,
         position: 1,
         id: junto_client_core::protocol::ids::WorkspaceRoleId::generate(),
         workspace_id,

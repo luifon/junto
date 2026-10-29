@@ -83,6 +83,11 @@ pub struct Avatar {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AccountProfile {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::appearance::AccountAppearance::is_empty"
+    )]
+    pub appearance: crate::appearance::AccountAppearance,
     pub id: AccountId,
     pub name: String,
     pub avatar: Option<Avatar>,
@@ -94,6 +99,8 @@ pub struct AccountProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProfileRole {
+    #[serde(default)]
+    pub color: Option<crate::appearance::RoleColor>,
     pub id: uuid::Uuid,
     pub name: String,
     pub position: i32,
@@ -125,6 +132,11 @@ pub struct UpdateProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnAccount {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::appearance::AccountAppearance::is_empty"
+    )]
+    pub appearance: crate::appearance::AccountAppearance,
     pub id: AccountId,
     pub name: String,
     pub avatar: Option<Avatar>,

@@ -278,9 +278,12 @@ impl Shell {
                                         account_id,
                                         &name,
                                         "meeting-hand-person",
-                                        strong(
+                                        super::people::name_in_sentence(
                                             format!("{name}{}", text::RAISED_A_HAND),
-                                            name.len(),
+                                            0..name.len(),
+                                            faces.color(account_id),
+                                            colors.cypress,
+                                            true,
                                         ),
                                     )),
                             )
@@ -333,7 +336,13 @@ impl Shell {
                                 account_id,
                                 &name,
                                 "meeting-allowed-person",
-                                strong(format!("{name}{}", text::MAY_SPEAK_NOT_OPEN), name.len()),
+                                super::people::name_in_sentence(
+                                    format!("{name}{}", text::MAY_SPEAK_NOT_OPEN),
+                                    0..name.len(),
+                                    faces.color(account_id),
+                                    colors.cypress,
+                                    true,
+                                ),
                             ))
                             .into_any_element(),
                     )
@@ -401,7 +410,30 @@ impl Shell {
                     meeting.presenter_id,
                     meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON),
                     "meeting-presenter",
-                    strong(line, text::MEETING_IS_ON.len()),
+                    {
+                        let name = meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+                        let prefix = text::MEETING_IS_ON.len();
+                        let start = prefix + " · ".len();
+                        StyledText::new(line).with_highlights([
+                            (
+                                0..prefix,
+                                gpui::HighlightStyle {
+                                    font_weight: Some(gpui::FontWeight::BOLD),
+                                    color: Some(colors.call_text_hi.into()),
+                                    ..Default::default()
+                                },
+                            ),
+                            (
+                                start..start + name.len(),
+                                gpui::HighlightStyle {
+                                    color: faces.color(meeting.presenter_id).map(|color| {
+                                        crate::theme::role_ink(color, colors.cypress).into()
+                                    }),
+                                    ..Default::default()
+                                },
+                            ),
+                        ])
+                    },
                 )
             }))
             .child(

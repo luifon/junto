@@ -102,6 +102,7 @@ impl Shell {
             )
             .avatar(account_id.as_uuid().as_u128())
             .presence(faces.presence(account_id))
+            .name_color(faces.color(account_id))
             .profile(crate::ui::OpenProfile {
                 server: view.server_id,
                 account: account_id,

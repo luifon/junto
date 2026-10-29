@@ -333,6 +333,8 @@ fn mention_suggestions_offer_only_what_the_person_may_mention(cx: &mut TestAppCo
         ..
     } = &scene;
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Editors".to_owned(),
         permissions: Vec::new(),
     };

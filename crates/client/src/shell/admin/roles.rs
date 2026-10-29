@@ -15,7 +15,7 @@ use gpui_base::input::InputState;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
 
-use super::{line, line_text, named, page_title, refusal, sentence};
+use super::{line, named, page_title, refusal, sentence};
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::roles::{
@@ -37,6 +37,7 @@ pub enum Open {
     Create,
     /// The form of a new name.
     Rename(RoleRef),
+    Appearance(RoleRef),
     /// The question before a deletion.
     Delete(RoleRef),
 }
@@ -46,6 +47,7 @@ impl Open {
     pub(crate) fn done(self) -> &'static str {
         match self {
             Self::Create => text::admin::done::ROLE_CREATED,
+            Self::Appearance(_) => txt::APPEARANCE_SAVED,
             Self::Rename(_) => text::admin::done::NAME_SAVED,
             Self::Delete(_) => text::admin::done::ROLE_DELETED,
         }
@@ -56,6 +58,8 @@ impl Open {
 pub(crate) struct Ui {
     /// The name of a new role, or the new name of a role.
     pub(crate) name: Entity<InputState>,
+    color: Entity<InputState>,
+    hoist: bool,
     pub(crate) open: Option<Open>,
     /// The role whose permissions the page shows.
     pub(crate) expanded: Option<RoleRef>,
@@ -72,7 +76,8 @@ pub(crate) struct Ui {
 impl Ui {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let name = Field::state(text::admin::NAME_FIELD, window, cx);
-        let subscriptions = vec![Field::observe(
+        let color = Field::state(txt::COLOR, window, cx);
+        let mut subscriptions = vec![Field::observe(
             &name,
             window,
             cx,
@@ -84,8 +89,22 @@ impl Ui {
                 FieldEvent::Submitted => this.submit_role_form(window, cx),
             },
         )];
+        subscriptions.push(Field::observe(
+            &color,
+            window,
+            cx,
+            |this: &mut Shell, event, window, cx| match event {
+                FieldEvent::Changed => {
+                    this.admin.roles.invalid = None;
+                    cx.notify();
+                }
+                FieldEvent::Submitted => this.submit_role_form(window, cx),
+            },
+        ));
         let ui = Self {
             name,
+            color,
+            hoist: false,
             open: None,
             expanded: None,
             account: None,
@@ -167,6 +186,34 @@ impl Shell {
         field.update(cx, |field, cx| field.set_value(name, window, cx));
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
+        if let Some(Open::Appearance(role)) = open {
+            let appearance = self.state.read(cx).admin_view().and_then(|view| {
+                roles_page(&view).and_then(|page| {
+                    page.roles
+                        .loaded()?
+                        .iter()
+                        .enumerate()
+                        .find(|(_, row)| row.role == role)
+                        .map(|(index, row)| (row.color, row.hoist, index + 1))
+                })
+            });
+            if let Some((color, hoist, index)) = appearance {
+                self.admin.list.state.scroll_to(gpui::ListOffset {
+                    item_ix: index,
+                    offset_in_item: gpui::px(0.),
+                });
+                self.admin.roles.hoist = hoist;
+                let field = self.admin.roles.color.clone();
+                field.update(cx, |field, cx| {
+                    field.set_value(
+                        color.map_or_else(String::new, |color| color.to_string()),
+                        window,
+                        cx,
+                    )
+                });
+                self.focus_field(&field, window, cx);
+            }
+        }
         if matches!(open, Some(Open::Create | Open::Rename(_))) {
             self.focus_field(&field, window, cx);
         }
@@ -241,6 +288,33 @@ impl Shell {
                 self.await_admin_form(AskKind::UpdateRole(role));
                 self.state
                     .update(cx, |state, cx| state.rename_role(server_id, role, name, cx));
+            }
+            Some(Open::Appearance(role)) => {
+                let Some(row) = page.row(role) else {
+                    return;
+                };
+                if row.locked.is_some() || (row.is_everyone && self.admin.roles.hoist) {
+                    return;
+                }
+                let value = self.admin.roles.color.read(cx).value();
+                let color = if value.trim().is_empty() {
+                    None
+                } else {
+                    match value.trim().parse() {
+                        Ok(color) => Some(color),
+                        Err(_) => {
+                            self.admin.roles.invalid = Some(txt::COLOR_INVALID);
+                            cx.notify();
+                            return;
+                        }
+                    }
+                };
+                let hoist = self.admin.roles.hoist;
+                self.admin.roles.sent = Some(AskKind::UpdateRole(role));
+                self.await_admin_form(AskKind::UpdateRole(role));
+                self.state.update(cx, |state, cx| {
+                    state.set_role_appearance(server_id, role, color, hoist, cx)
+                });
             }
             Some(Open::Delete(_)) | None => {}
         }
@@ -345,6 +419,125 @@ impl Shell {
             .when_some(help, |column, help| {
                 column.child(sentence(help, theme).mt(u(5.0)))
             })
+    }
+
+    pub fn type_role_color(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.admin.roles.color.update(cx, |field, cx| {
+            field.set_value(value.to_owned(), window, cx)
+        });
+        self.admin.roles.invalid = None;
+        cx.notify();
+    }
+
+    fn render_role_appearance(
+        &mut self,
+        row: &RoleRow,
+        sending: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let field = self.admin.roles.color.clone();
+        let on = self.admin.roles.hoist;
+        let preview = field.read(cx).value().trim().parse().ok();
+        let default = Button::new("role-color-default")
+            .label(txt::DEFAULT_COLOR)
+            .selector("role-color-default")
+            .disabled(sending)
+            .on_click(cx.listener(|this, _, window, cx| this.type_role_color("", window, cx)));
+        let hoist = Toggle::new("role-hoist", txt::HOIST, on, (text::ON, text::OFF))
+            .selector("role-hoist")
+            .held((sending || row.is_everyone).then_some(if row.is_everyone {
+                txt::EVERYONE_NOT_GROUPED
+            } else {
+                text::admin::SENDING
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.admin.roles.hoist = !this.admin.roles.hoist;
+                cx.notify();
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .gap(u(8.))
+            .child(
+                div()
+                    .debug_selector(|| "role-color-preview".to_owned())
+                    .typeface(theme.types.control_strong, theme)
+                    .ink(preview.map_or(theme.colors.ink, |color| {
+                        crate::theme::role_name_ink(color, theme)
+                    }))
+                    .child(crate::ui::paint_text(row.name.clone().into(), None)),
+            )
+            .child(sentence(txt::COLOR, theme))
+            .child(Field::new(&field, txt::COLOR).selector("role-color"))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(u(6.))
+                    .children(txt::COLOR_PRESETS.iter().enumerate().map(
+                        |(index, (label, value))| {
+                            Button::new(("role-color-preset", index))
+                                .label(*label)
+                                .disabled(sending)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.type_role_color(value, window, cx)
+                                }))
+                        },
+                    ))
+                    .child(default),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(u(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(u(120.))
+                            .typeface(theme.types.control, theme)
+                            .child(txt::HOIST),
+                    )
+                    .child(hoist),
+            )
+            .child(sentence(txt::APPEARANCE_HELP, theme))
+            .child(
+                crate::ui::notice_slot("role-appearance-invalid-slot").children(
+                    self.admin
+                        .roles
+                        .invalid
+                        .map(|invalid| Notice::error(invalid).selector("role-form-invalid")),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(u(8.))
+                    .child(
+                        Button::new("role-form-cancel")
+                            .label(text::CANCEL)
+                            .selector("role-form-cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_roles_open(None, "", window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("role-form-send")
+                            .kind(ButtonKind::Primary)
+                            .label(text::SAVE)
+                            .selector("role-form-send")
+                            .disabled(sending)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.submit_role_form(window, cx)
+                                }),
+                            ),
+                    ),
+            )
     }
 
     /// Why the switch of a permission of a role takes no press, or None when a press
@@ -467,6 +660,15 @@ impl Shell {
             .then_some(text::admin::FORM_SENT);
         let locked = row.locked.map(txt::locked);
         let mut actions = Vec::new();
+        let appearance = Button::new(("role-appearance", number))
+            .label(txt::APPEARANCE)
+            .h(u(28.))
+            .px(u(8.))
+            .disabled(locked.is_some() || naming.is_some())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_roles_open(Some(Open::Appearance(role)), "", window, cx)
+            }));
+        actions.push(named(format!("role-appearance-{written}"), appearance).into_any_element());
         for (up, place) in [(true, row.up), (false, row.down)] {
             let held = place
                 .err()
@@ -572,6 +774,7 @@ impl Shell {
         // A form or a question of a role that the person cannot change any more is put
         // away for good: it does not return when the role can be changed again.
         let stale = match self.admin.roles.open {
+            Some(Open::Appearance(of)) if of == role => row.locked.is_some(),
             Some(Open::Rename(of)) if of == role => row.locked.is_some() || !row.named,
             Some(Open::Delete(of)) if of == role => {
                 !row.named
@@ -595,6 +798,9 @@ impl Shell {
         let content: AnyElement = match self.admin.roles.open {
             // A role that became locked while its form or its question was open shows
             // its row again: nothing is asked about a role that the person cannot change.
+            Some(Open::Appearance(of)) if of == role && row.locked.is_none() => self
+                .render_role_appearance(row, view.sending(AskKind::UpdateRole(role)), theme, cx)
+                .into_any_element(),
             Some(Open::Rename(of)) if of == role && row.locked.is_none() && row.named => self
                 .render_role_form(
                     text::admin::RENAME,
@@ -678,16 +884,36 @@ impl Shell {
                     });
                 let mut content = div()
                     .flex()
+                    .flex_wrap()
                     .flex_1()
                     .min_w_0()
                     .items_center()
-                    .gap(u(6.0))
+                    .gap(u(6.))
                     .child(handle)
-                    .child(line_text(
-                        row.name.clone(),
-                        Some(txt::summary(row.granted()).into()),
-                        theme,
-                    ));
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(u(120.))
+                            .child(
+                                div()
+                                    .typeface(theme.types.control_strong, theme)
+                                    .ink(row.color.map_or(colors.ink, |color| {
+                                        crate::theme::role_name_ink(color, theme)
+                                    }))
+                                    .truncate()
+                                    .child(crate::ui::paint_text(name.clone(), None)),
+                            )
+                            .child(
+                                div()
+                                    .typeface(theme.types.small, theme)
+                                    .ink(colors.ink_2)
+                                    .truncate()
+                                    .child(crate::ui::paint_text(
+                                        txt::summary(row.granted()).into(),
+                                        None,
+                                    )),
+                            ),
+                    );
                 if row.is_everyone {
                     content = content.child(Chip::new(txt::EVERY_MEMBER));
                 }
@@ -736,7 +962,11 @@ impl Shell {
             }))
             .child(self.admin.roles.space.row(
                 self.admin.roles.open,
-                &[Open::Rename(role), Open::Delete(role)],
+                &[
+                    Open::Rename(role),
+                    Open::Appearance(role),
+                    Open::Delete(role),
+                ],
                 named(format!("role-row-{written}"), line(theme).child(content)).flex_1(),
             ));
         if let Some(reason) = row.locked {
@@ -978,7 +1208,11 @@ impl Shell {
                         .flex_none()
                         .typeface(theme.types.control, theme)
                         .ink(colors.ink)
-                        .child(choice.name.clone()),
+                        .child(crate::ui::role_name(
+                            choice.name.clone(),
+                            choice.color,
+                            theme,
+                        )),
                 );
             if let Some(reason) = blocked {
                 let selector = format!("account-role-held-{account_id}-{written}");

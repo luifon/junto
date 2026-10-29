@@ -73,11 +73,13 @@ impl Shell {
                     .ink(colors.ink)
                     .child(txt::state(row)),
             )
-            .child(crate::shell::people::person_label(
+            .child(crate::shell::people::person_sentence_label(
                 &self.faces(server_id),
                 row.starter,
                 txt::started_by(row),
+                txt::starter_range(row),
                 "recording-starter",
+                theme.colors.travertine,
             ))
             .child(detail(txt::transcript(
                 row.transcript,

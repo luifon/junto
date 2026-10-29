@@ -2281,6 +2281,31 @@
         ],
         "type": "object"
       },
+      "AccountAppearance": {
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HoistedRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "AccountId": {
         "format": "uuid",
         "type": "string"
@@ -2288,6 +2313,9 @@
       "AccountProfile": {
         "description": "What an account shows of itself to the accounts that may see it.",
         "properties": {
+          "appearance": {
+            "$ref": "#/components/schemas/AccountAppearance"
+          },
           "avatar": {
             "oneOf": [
               {
@@ -2802,6 +2830,10 @@
           {
             "description": "Starts or restarts the delivery after `cursor` at `level`. Without a cursor the\ndelivery starts after the newest event.",
             "properties": {
+              "appearance": {
+                "description": "Opt in to public appearance invalidations (revision 4).",
+                "type": "boolean"
+              },
               "cursor": {
                 "oneOf": [
                   {
@@ -5295,6 +5327,36 @@
         ],
         "type": "string"
       },
+      "HoistedRole": {
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "position"
+        ],
+        "type": "object"
+      },
       "ImageType": {
         "description": "The formats in which the server stores an avatar.",
         "enum": [
@@ -5891,6 +5953,10 @@
         ],
         "type": "string"
       },
+      "RoleColor": {
+        "pattern": "^#[0-9a-fA-F]{6}$",
+        "type": "string"
+      },
       "RulePlace": {
         "description": "Where a permission rule is.",
         "oneOf": [
@@ -6193,6 +6259,21 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "Public role appearance changed; reload the snapshot and demanded profiles.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "appearance_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -6210,6 +6291,19 @@
       },
       "ServerRole": {
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/ServerRoleId"
           },
@@ -6426,6 +6520,9 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "appearance": {
+            "$ref": "#/components/schemas/AccountAppearance"
+          },
           "avatar": {
             "oneOf": [
               {
@@ -6493,6 +6590,19 @@
       },
       "WorkspaceRole": {
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/WorkspaceRoleId"
           },

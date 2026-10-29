@@ -158,6 +158,15 @@ fn names_of(
         MessagePlace::Direct { .. } => HashMap::new(),
     };
     Names {
+        role_colors: match place {
+            MessagePlace::Channel { workspace_id, .. } => model
+                .workspace(*workspace_id)
+                .into_iter()
+                .flat_map(|workspace| workspace.roles.iter())
+                .filter_map(|role| Some((role.id, role.color?)))
+                .collect(),
+            MessagePlace::Direct { .. } => HashMap::new(),
+        },
         accounts: accounts.clone(),
         roles,
         departed: HashMap::new(),

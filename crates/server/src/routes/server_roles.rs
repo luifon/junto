@@ -26,15 +26,27 @@ use crate::{store, validate};
 async fn locked_role(
     connection: &mut PgConnection,
     role_id: ServerRoleId,
-) -> ApiResult<(String, ServerPermissions, i32)> {
-    let row: Option<(String, i64, i32)> = sqlx::query_as(
-        "select name, permissions, position from server_roles where id = $1 for update",
+) -> ApiResult<(
+    String,
+    ServerPermissions,
+    i32,
+    Option<junto_protocol::appearance::RoleColor>,
+    bool,
+)> {
+    let row: Option<(String, i64, i32, Option<i32>, bool)> = sqlx::query_as(
+        "select name, permissions, position, color, hoist from server_roles where id = $1 for update",
     )
     .bind(role_id)
     .fetch_optional(connection)
     .await?;
-    let (name, bits, position) = row.ok_or_else(ApiError::not_found)?;
-    Ok((name, db::server_permissions(bits)?, position))
+    let (name, bits, position, color, hoist) = row.ok_or_else(ApiError::not_found)?;
+    Ok((
+        name,
+        db::server_permissions(bits)?,
+        position,
+        crate::appearance::color(color),
+        hoist,
+    ))
 }
 
 async fn require_role_action(
@@ -87,14 +99,14 @@ pub async fn list_server_roles(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::BanMembers))?;
-        let rows: Vec<(ServerRoleId, String, i64, i32)> = sqlx::query_as(
-            "select id, name, permissions, position from server_roles order by position",
+        let rows: Vec<(ServerRoleId, String, i64, i32, Option<i32>, bool)> = sqlx::query_as(
+            "select id, name, permissions, position, color, hoist from server_roles order by position",
         )
         .fetch_all(&mut *connection)
         .await?;
         let rank = access.rank(connection, None).await?;
         let mut roles = Vec::with_capacity(rows.len());
-        for (id, name, bits, position) in rows {
+        for (id, name, bits, position, color, hoist) in rows {
             let permissions = db::server_permissions(bits)?;
             let assign = crate::role_order::permitted(decide_role_action(
                 &access,
@@ -118,7 +130,7 @@ pub async fn list_server_roles(
                 ) && remove,
             };
             roles.push(ListedServerRole {
-                role: ServerRole {
+                role: ServerRole { color: crate::appearance::color(color), hoist,
                     position,
                     id,
                     name,
@@ -148,6 +160,8 @@ pub async fn create_server_role(
 ) -> ApiResult<(StatusCode, Json<ServerRole>)> {
     let permissions: ServerPermissions = body.permissions.iter().copied().collect();
     let role = ServerRole {
+        color: body.color,
+        hoist: body.hoist,
         position: 1,
         id: ServerRoleId::generate(),
         name: validate::name("name", &body.name)?,
@@ -192,13 +206,15 @@ pub(crate) async fn create(
     }
     crate::role_order::insert_bottom(connection, access, now, None).await?;
     sqlx::query(
-        "insert into server_roles (id, name, permissions, created_at, position)
-         values ($1, $2, $3, $4, 1)",
+        "insert into server_roles (id, name, permissions, created_at, position, color, hoist)
+         values ($1, $2, $3, $4, 1, $5, $6)",
     )
     .bind(role.id)
     .bind(&role.name)
     .bind(db::server_bits(permissions))
     .bind(now)
+    .bind(crate::appearance::stored(role.color))
+    .bind(role.hoist)
     .execute(&mut *connection)
     .await?;
     audit::record(
@@ -252,6 +268,7 @@ pub async fn update_server_role(
             role_id,
             new_name.clone(),
             new_permissions,
+            crate::appearance::Patch::from(&body),
         )
         .await
     })
@@ -265,9 +282,11 @@ pub(crate) async fn update(
     role_id: ServerRoleId,
     new_name: Option<String>,
     new_permissions: Option<ServerPermissions>,
+    appearance: crate::appearance::Patch,
 ) -> ApiResult<ServerRole> {
     access.require(Request::Server(ServerPermission::Administrator))?;
-    let (old_name, old_permissions, position) = locked_role(connection, role_id).await?;
+    let (old_name, old_permissions, position, old_color, old_hoist) =
+        locked_role(connection, role_id).await?;
     Access::require_rank(
         access.rank(connection, None).await?,
         RoleRank::Server(position),
@@ -278,20 +297,30 @@ pub(crate) async fn update(
     })?;
 
     let role = ServerRole {
+        color: appearance.color.unwrap_or(old_color),
+        hoist: appearance.hoist.unwrap_or(old_hoist),
         position,
         id: role_id,
         name: new_name.unwrap_or_else(|| old_name.clone()),
         permissions: db::server_list(permissions),
     };
-    if role.name == old_name && permissions == old_permissions {
+    if role.name == old_name
+        && permissions == old_permissions
+        && role.color == old_color
+        && role.hoist == old_hoist
+    {
         return Ok(role);
     }
-    sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
-        .bind(role_id)
-        .bind(&role.name)
-        .bind(db::server_bits(permissions))
-        .execute(&mut *connection)
-        .await?;
+    sqlx::query(
+        "update server_roles set name = $2, permissions = $3, color = $4, hoist = $5 where id = $1",
+    )
+    .bind(role_id)
+    .bind(&role.name)
+    .bind(db::server_bits(permissions))
+    .bind(crate::appearance::stored(role.color))
+    .bind(role.hoist)
+    .execute(&mut *connection)
+    .await?;
     audit::record(
         connection,
         now,
@@ -347,7 +376,7 @@ pub(crate) async fn delete(
     access.require(Request::ManageServerRoles {
         granting: ServerPermissions::EMPTY,
     })?;
-    let (name, permissions, position) = locked_role(connection, role_id).await?;
+    let (name, permissions, position, _, _) = locked_role(connection, role_id).await?;
     require_role_action(connection, access, permissions, position, false).await?;
     if administers(permissions) {
         store::contact_changed_for_holders(connection, now, role_id).await?;
@@ -440,7 +469,7 @@ pub async fn assign_server_role(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::Administrator))?;
-        let (_, permissions, position) = locked_role(connection, role_id).await?;
+        let (_, permissions, position, _, _) = locked_role(connection, role_id).await?;
         require_role_action(connection, &access, permissions, position, true).await?;
         require_active_account(connection, account_id).await?;
 
@@ -499,7 +528,7 @@ pub async fn unassign_server_role(
         access.require(Request::ManageServerRoles {
             granting: ServerPermissions::EMPTY,
         })?;
-        let (_, permissions, position) = locked_role(connection, role_id).await?;
+        let (_, permissions, position, _, _) = locked_role(connection, role_id).await?;
         require_role_action(connection, &access, permissions, position, false).await?;
         let deleted =
             sqlx::query("delete from account_server_roles where account_id = $1 and role_id = $2")
@@ -508,7 +537,7 @@ pub async fn unassign_server_role(
                 .execute(&mut *connection)
                 .await?;
         if deleted.rows_affected() > 0 {
-            let (_, permissions, _) = locked_role(connection, role_id).await?;
+            let (_, permissions, _, _, _) = locked_role(connection, role_id).await?;
             audit::record(
                 connection,
                 now,
@@ -570,14 +599,23 @@ pub async fn change_permission(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::Administrator))?;
-        let (_, permissions, _) = locked_role(connection, role_id).await?;
+        let (_, permissions, _, _, _) = locked_role(connection, role_id).await?;
         let bit: ServerPermissions = [body.permission].into_iter().collect();
         let permissions = if body.enabled {
             permissions.union(bit)
         } else {
             permissions.difference(bit)
         };
-        update(connection, &access, now, role_id, None, Some(permissions)).await
+        update(
+            connection,
+            &access,
+            now,
+            role_id,
+            None,
+            Some(permissions),
+            Default::default(),
+        )
+        .await
     })
     .map(Json)
 }

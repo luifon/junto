@@ -369,3 +369,13 @@ mod tests {
         }
     }
 }
+
+pub fn starter_range(line: &RecordingLine) -> std::ops::Range<usize> {
+    let start = "Started by ".len();
+    let length = line
+        .started_by
+        .as_deref()
+        .map(shown_name)
+        .map_or(0, |name| name.len());
+    start..start + length
+}

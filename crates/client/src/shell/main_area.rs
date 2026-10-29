@@ -1499,9 +1499,31 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let mut sections: Vec<(
+            Option<crate::state::role_appearance::MemberGroup>,
+            Vec<usize>,
+        )> = Vec::new();
+        for (index, member) in rows.iter().enumerate() {
+            if sections
+                .last()
+                .is_none_or(|(group, _)| group != &member.group)
+            {
+                sections.push((member.group.clone(), Vec::new()));
+            }
+            if let Some((_, members)) = sections.last_mut() {
+                members.push(index);
+            }
+        }
+        if sections.is_empty() {
+            sections.push((None, Vec::new()));
+        }
+        let mut entries = Vec::new();
+        for (group, members) in sections {
+            entries.push(Err((group, members.len())));
+            entries.extend(members.into_iter().map(Ok));
+        }
         if self.member_rows.as_ref() != Some(&rows) {
-            // The label of the section, each member, and the space at the end.
-            super::changed_rows(&self.members_list, rows.len() + 2);
+            super::changed_rows(&self.members_list, entries.len() + 1);
             self.member_rows = Some(rows.clone());
         }
         if self.member_search.take_scroll_reset() {
@@ -1514,29 +1536,40 @@ impl Shell {
             .map(|server| server.id);
         let refused = lists.conversation_refused.clone();
         let asked = lists.conversation_asked;
-        let count = rows.len();
-        let render = cx.processor(move |this: &mut Self, index: usize, _window, cx| {
-            if index == 0 {
-                return div()
-                    .w_full()
-                    .child(SectionLabel::new(text::MEMBERS).count(count))
-                    .into_any_element();
-            }
-            match rows.get(index - 1) {
-                Some(member) => div()
-                    .w_full()
-                    .child(this.member_row(
-                        index - 1,
-                        member,
-                        server_id,
-                        refused.as_ref(),
-                        asked,
-                        cx,
-                    ))
-                    .into_any_element(),
-                None => div().w_full().h(u(4.0)).into_any_element(),
-            }
-        });
+        let render =
+            cx.processor(move |this: &mut Self, index: usize, _window, cx| {
+                match entries.get(index) {
+                    Some(Err((group, count))) => {
+                        let label = group
+                            .as_ref()
+                            .map_or_else(|| text::MEMBERS.to_owned(), |group| group.name.clone());
+                        div()
+                            .w_full()
+                            .debug_selector(move || format!("member-group:{label}"))
+                            .child(
+                                SectionLabel::new(group.as_ref().map_or_else(
+                                    || text::MEMBERS.to_owned(),
+                                    |group| group.name.clone(),
+                                ))
+                                .count(*count)
+                                .role_color(group.as_ref().and_then(|group| group.color)),
+                            )
+                            .into_any_element()
+                    }
+                    Some(Ok(member_index)) => div()
+                        .w_full()
+                        .child(this.member_row(
+                            *member_index,
+                            &rows[*member_index],
+                            server_id,
+                            refused.as_ref(),
+                            asked,
+                            cx,
+                        ))
+                        .into_any_element(),
+                    None => div().w_full().h(u(4.0)).into_any_element(),
+                }
+            });
         let state = self.members_list.clone();
         div()
             .id("member-list")
@@ -1587,6 +1620,25 @@ impl Shell {
         let colors = theme.colors;
         let faces = self.shown_faces();
         let detail: SharedString = member.roles.join(" · ").into();
+        let mut offset = 0;
+        let role_marks: Vec<_> = member
+            .roles
+            .iter()
+            .zip(&member.role_colors)
+            .filter_map(|(name, color)| {
+                let start = offset;
+                offset += name.len() + " · ".len();
+                color.map(|color| {
+                    (
+                        start..start + name.len(),
+                        gpui::HighlightStyle {
+                            color: Some(crate::theme::role_name_ink(color, &theme).into()),
+                            ..Default::default()
+                        },
+                    )
+                })
+            })
+            .collect();
         let account_id = member.account_id;
         let owner = server_id.and_then(|server| self.state.read(cx).owner(server));
         let write = (!member.is_self).then(|| {
@@ -1687,7 +1739,7 @@ impl Shell {
                                 .line_height(u(18.0))
                                 .ink(colors.ink_2)
                                 .truncate()
-                                .child(detail),
+                                .child(gpui::StyledText::new(detail).with_highlights(role_marks)),
                         )
                     })
                     .children(refusal),

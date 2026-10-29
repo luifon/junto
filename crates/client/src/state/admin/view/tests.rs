@@ -74,6 +74,8 @@ fn scene() -> Scene {
     let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
     let projects = CategoryId::generate();
     let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+        color: None,
+        hoist: false,
         position,
         id: WorkspaceRoleId::generate(),
         workspace_id: studio,
@@ -97,6 +99,7 @@ fn scene() -> Scene {
             position: 1,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: own,
             name: "Luca".to_owned(),
             avatar: None,

@@ -322,6 +322,7 @@ async fn leaving_the_last_workspace_makes_the_account_inactive_and_an_invite_ret
         && entry.actor_id == Some(guest.account_id)));
 
     let departed = AccountProfile {
+        appearance: Default::default(),
         id: guest.account_id,
         name: "Guest".to_owned(),
         avatar: None,
@@ -563,6 +564,7 @@ async fn deleting_the_account_keeps_its_content_and_audit_and_frees_its_key() {
     assert_eq!(
         seen,
         AccountProfile {
+            appearance: Default::default(),
             id: guest.account_id,
             name: "Guest".to_owned(),
             avatar: None,

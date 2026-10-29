@@ -239,6 +239,7 @@ pub enum ResultTarget {
 /// One result as the panel shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResultRow {
+    pub workspace_id: Option<WorkspaceId>,
     pub place: Whereabouts,
     pub day: String,
     /// The time of day of a message, or the line of a transcript in words.
@@ -488,6 +489,7 @@ pub fn search_panel(
         let local = known.zone.local(hit.created_at);
         let day = text::day_or_today(local.date(), known.today);
         let row = |time: String, target: ResultTarget| ResultRow {
+            workspace_id: channel.map(|(workspace, _)| workspace),
             place: place.clone(),
             day: day.clone(),
             time,

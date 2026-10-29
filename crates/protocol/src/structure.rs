@@ -28,6 +28,11 @@ pub struct UpdateWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkspaceMember {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::appearance::AccountAppearance::is_empty"
+    )]
+    pub appearance: crate::appearance::AccountAppearance,
     /// Metadata of the avatar, without its image bytes.
     #[serde(default)]
     pub avatar: Option<crate::account::Avatar>,

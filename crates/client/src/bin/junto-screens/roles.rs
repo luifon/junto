@@ -39,6 +39,8 @@ fn with_roles(model: &mut ServerModel, held: &[u32]) {
     let workspace_id = studio.workspace.id;
     let role =
         |number: u32, name: &str, position, permissions: &[WorkspacePermission]| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: id(number),
             workspace_id,
@@ -94,6 +96,8 @@ fn as_lead() -> Vec<ServerSnapshot> {
 
 fn server_roles() -> Vec<ServerRole> {
     let role = |number: u32, name: &str, position, permissions: &[ServerPermission]| ServerRole {
+        color: None,
+        hoist: false,
         position,
         id: id(number),
         name: name.to_owned(),
@@ -157,7 +161,67 @@ fn roles_page(shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Conte
     open_page(shell, AdminPage::Roles, window, cx);
 }
 
+fn coloured() -> Vec<ServerSnapshot> {
+    servers(|model| {
+        with_roles(model, &[LEADS]);
+        let mut messages = super::messages::Made::new(super::messages::GENERAL);
+        messages.message("Ana", 0, "Can @Bruno review the notes before our call?");
+        messages.message("Bruno", 1, "Yes, @Ana. I will check them with @Luca.");
+        messages.message("Marta", 2, "I will check the recording.");
+        model.timelines = vec![Arc::new(messages.timeline())];
+        model.account.is_owner = true;
+        let workspace = Arc::make_mut(&mut model.workspaces[0]);
+        let palette = [
+            None,
+            Some(junto_client_core::protocol::appearance::RoleColor::from_rgb(136, 68, 170)),
+            Some(junto_client_core::protocol::appearance::RoleColor::from_rgb(51, 102, 153)),
+            Some(junto_client_core::protocol::appearance::RoleColor::from_rgb(34, 119, 68)),
+            None,
+        ];
+        for (role, color) in workspace.roles.iter_mut().zip(palette) {
+            role.color = color;
+            role.hoist = !role.is_everyone && color.is_some();
+        }
+        if let junto_client_core::model::Loadable::Loaded(members) = &mut workspace.members {
+            for (index, member) in members.iter_mut().enumerate() {
+                member.role_ids = match index {
+                    0 | 1 => vec![id(LEADS)],
+                    2 | 3 => vec![id(ENGINEERS)],
+                    _ => Vec::new(),
+                };
+            }
+        }
+    })
+}
+
+pub(crate) fn draw_appearance(studio: &mut Studio) -> Result<(), String> {
+    studio.draw(
+        Screen::new("role-appearance-editor", coloured()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            shell.set_roles_open(
+                Some(Open::Appearance(workspace_role(ENGINEERS))),
+                "",
+                window,
+                cx,
+            );
+        },
+    )?;
+    studio.draw(
+        Screen::new("role-appearance-members", coloured()),
+        |shell, window, cx| {
+            shell.open(junto_client::shell::Open::Members, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("role-appearance-messages", coloured()),
+        |_, _, _| {},
+    )?;
+    Ok(())
+}
+
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
+    draw_appearance(studio)?;
     // The roles of a workspace for a person who holds "Leads": "Board" and "Leads" are
     // locked, "Engineers" and "Guests" can be changed.
     studio.draw(Screen::new("roles-workspace", as_lead()), roles_page)?;

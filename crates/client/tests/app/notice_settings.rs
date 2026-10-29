@@ -246,6 +246,8 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
     let api = admin.handle.api();
     let workspace_id = window.view().workspace().unwrap().id;
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "Editors".to_owned(),
         permissions: Vec::new(),
     };

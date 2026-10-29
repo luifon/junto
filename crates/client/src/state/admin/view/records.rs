@@ -1237,6 +1237,8 @@ mod tests {
         let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
         let projects = CategoryId::generate();
         let role = |name: &str, position| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
@@ -1265,6 +1267,7 @@ mod tests {
                     position: 1,
                 },
                 account: OwnAccount {
+                    appearance: Default::default(),
                     id: own,
                     name: "Luca".to_owned(),
                     avatar: None,
@@ -2809,6 +2812,8 @@ mod tests {
         let moderators = ServerRoleId::generate();
         let model = scene.model(AdminModel {
             server_roles: Collection::Loaded(vec![ServerRole {
+                color: None,
+                hoist: false,
                 position: 1,
                 id: moderators,
                 name: "Moderators".to_owned(),

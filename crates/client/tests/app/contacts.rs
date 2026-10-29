@@ -108,6 +108,8 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
     let eve_id = logged_in(&eve);
     let operators = world
         .run(api.create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Operators".to_owned(),
             permissions: vec![ServerPermission::Administrator],
         }))
@@ -224,6 +226,8 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     let eve_id = logged_in(&eve);
     let operators = world
         .run(api.create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Operators".to_owned(),
             permissions: vec![ServerPermission::Administrator],
         }))
@@ -411,6 +415,8 @@ fn a_conversation_that_the_server_does_not_open_without_a_workspace_is_stated_wi
     let eve_id = logged_in(&eve);
     let operators = world
         .run(api.create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Operators".to_owned(),
             permissions: vec![ServerPermission::Administrator],
         }))

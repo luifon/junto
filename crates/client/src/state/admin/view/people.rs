@@ -871,6 +871,7 @@ mod tests {
                     position: 1,
                 },
                 account: OwnAccount {
+                    appearance: Default::default(),
                     id: own,
                     name: "Luca".to_owned(),
                     avatar: None,
@@ -935,6 +936,8 @@ mod tests {
 
     fn server_role(name: &str, position: i32) -> ServerRole {
         ServerRole {
+            color: None,
+            hoist: false,
             position,
             id: ServerRoleId::generate(),
             name: name.to_owned(),
@@ -1008,6 +1011,7 @@ mod tests {
         role_ids: Vec<WorkspaceRoleId>,
     ) -> WorkspaceMember {
         WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id,
             name: name.to_owned(),
@@ -1353,6 +1357,8 @@ mod tests {
     fn the_roles_of_an_account_are_named_when_the_server_roles_are_loaded() {
         let scene = scene();
         let role = |name: &str, position| ServerRole {
+            color: None,
+            hoist: false,
             position,
             id: ServerRoleId::generate(),
             name: name.to_owned(),
@@ -1437,6 +1443,8 @@ mod tests {
     fn the_members_of_a_workspace_carry_the_names_of_their_roles_without_the_everyone_role() {
         let mut scene = scene();
         let role = |name: &str, position| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: WorkspaceRoleId::generate(),
             workspace_id: scene.studio,
@@ -2031,6 +2039,8 @@ mod tests {
     #[test]
     fn an_administrator_sees_before_trying_whether_a_member_can_be_removed_from_a_workspace() {
         let administrators = |name: &str, position: i32| ServerRole {
+            color: None,
+            hoist: false,
             position,
             id: ServerRoleId::generate(),
             name: name.to_owned(),
@@ -2042,6 +2052,8 @@ mod tests {
         scene.snapshot.account.server_role_ids = vec![admins.id];
         scene.snapshot.account.server_permissions = vec![ServerPermission::Administrator];
         let leads = WorkspaceRole {
+            color: None,
+            hoist: false,
             position: 9,
             id: WorkspaceRoleId::generate(),
             workspace_id: scene.studio,

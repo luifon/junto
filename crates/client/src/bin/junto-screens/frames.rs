@@ -238,6 +238,7 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
             workspace.members = Loadable::Loaded(
                 (0..members)
                     .map(|index| WorkspaceMember {
+                        appearance: Default::default(),
                         avatar: None,
                         account_id: super::id(5_000 + index as u32),
                         name: format!("Person {index:04}"),

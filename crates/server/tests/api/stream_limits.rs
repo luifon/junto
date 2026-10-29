@@ -109,6 +109,7 @@ async fn a_connection_that_does_not_subscribe_in_time_is_closed() {
     subscribed
         .send(&ClientMessage::Subscribe {
             presence: false,
+            appearance: false,
             level: Level::Full,
             cursor: Some(behind),
         })
@@ -240,6 +241,7 @@ async fn a_client_that_sends_too_many_frames_is_closed() {
     stream
         .send(&ClientMessage::Subscribe {
             presence: false,
+            appearance: false,
             level: Level::Full,
             cursor: None,
         })

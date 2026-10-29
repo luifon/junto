@@ -316,7 +316,7 @@ fn rule_43_the_file_of_another_server_uses_the_default_workspace_and_its_everyon
 fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
     let current = server();
     let cases = [
-        (json!({ "format": 5 }), "the file has the format 5"),
+        (json!({ "format": 6 }), "the file has the format 6"),
         (
             json!({ "format": 1, "workspaces": [
                 { "id": id(1), "name": "Main" }, { "id": id(1), "name": "Again" }] }),
@@ -394,7 +394,7 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
         assert!(found.contains(stated), "{desired}: {found}");
     }
     let several = problems(
-        json!({ "format": 5, "workspaces": [{ "id": id(1), "name": "" },
+        json!({ "format": 6, "workspaces": [{ "id": id(1), "name": "" },
                                              { "id": id(1), "name": "x" }] }),
         &current,
     );
@@ -655,7 +655,7 @@ fn lines(desired: &StructureFile, current: &StructureFile) -> Vec<String> {
 fn format_4_an_export_with_category_overrides_and_sync_states_plans_no_change() {
     let current = file(synced_value());
     assert_eq!(changes(&current, &current), Vec::<Value>::new());
-    for format in 1..=4 {
+    for format in 1..=5 {
         let mut older = current.clone();
         older.format = format;
         assert_eq!(changes(&older, &current), Vec::<Value>::new(), "{format}");
@@ -876,11 +876,11 @@ fn format_4_a_file_with_a_wrong_sync_state_or_category_override_is_refused() {
         let found = problems(desired.clone(), &current);
         assert!(found.contains(stated), "{desired}: {found}");
     }
-    for format in [3, 4] {
+    for format in [3, 4, 5] {
         let accepted = file(json!({ "format": format }));
         assert_eq!(changes(&accepted, &current), Vec::<Value>::new());
     }
-    assert!(problems(json!({ "format": 5 }), &current).contains("the formats 1 to 4"));
+    assert!(problems(json!({ "format": 6 }), &current).contains("the formats 1 to 5"));
 }
 #[test]
 fn a_glossary_that_differs_replaces_the_whole_glossary_after_the_channels_of_its_workspace() {
@@ -978,5 +978,45 @@ fn an_absent_glossary_is_kept_and_an_empty_one_removes_every_term() {
     assert_eq!(
         changes(&foreign, &current),
         [json!({ "change": "replace_glossary", "workspace": id(1), "terms": ["Tarnwick"] })]
+    );
+}
+
+#[test]
+fn role_appearance_omission_keeps_values_and_null_explicitly_resets_colour() {
+    let mut current = server();
+    let color = "#336699".parse().unwrap();
+    current.server_roles[0].color = Some(Some(color));
+    current.server_roles[0].hoist = Some(true);
+    current.workspaces[0].roles[1].color = Some(Some(color));
+    current.workspaces[0].roles[1].hoist = Some(true);
+    assert!(changes(&server(), &current).is_empty());
+    let mut desired = current.clone();
+    desired.server_roles[0].color = Some(None);
+    desired.workspaces[0].roles[1].hoist = Some(false);
+    let changed = changes(&desired, &current);
+    assert!(
+        changed
+            .iter()
+            .any(|change| change["change"] == "update_server_role"
+                && change.get("color") == Some(&Value::Null))
+    );
+    assert!(
+        changed
+            .iter()
+            .any(|change| change["change"] == "update_workspace_role" && change["hoist"] == false)
+    );
+}
+
+#[test]
+fn a_create_plan_names_the_requested_role_colour_and_group() {
+    let current = server();
+    let desired = file(
+        json!({"format":5,"server_roles":[{"id":id(91),"name":"Guides","color":"#336699","hoist":true}]}),
+    );
+    let changes = planned(&desired, &current);
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.line.contains("#336699") && change.line.contains("group true"))
     );
 }

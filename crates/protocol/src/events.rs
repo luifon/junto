@@ -85,6 +85,9 @@ pub enum ClientMessage {
         /// Opt in to ephemeral presence invalidations (revision 3).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         presence: bool,
+        /// Opt in to public appearance invalidations (revision 4).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        appearance: bool,
     },
 }
 
@@ -171,6 +174,8 @@ pub enum ServerMessage {
     /// A known identity's presence may have changed. Read the visible identities again;
     /// the message carries no identities and changes no durable event cursor. Opt-in only.
     PresenceChanged {},
+    /// Public role appearance changed; reload the snapshot and demanded profiles.
+    AppearanceChanged {},
 }
 
 /// One event of a `change`.
@@ -195,6 +200,7 @@ impl ServerMessage {
         "resync",
         "ended",
         "presence_changed",
+        "appearance_changed",
     ];
 }
 
@@ -264,7 +270,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 3;
+pub const EVENT_REVISION: u32 = 4;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -1105,6 +1111,8 @@ mod tests {
             position: 0,
         };
         let workspace_role = WorkspaceRole {
+            color: None,
+            hoist: false,
             position: 1,
             id: WorkspaceRoleId::generate(),
             workspace_id,
@@ -1113,6 +1121,8 @@ mod tests {
             is_everyone: false,
         };
         let server_role = ServerRole {
+            color: None,
+            hoist: false,
             position: 1,
             id: ServerRoleId::generate(),
             name: "moderators".to_owned(),
@@ -1195,6 +1205,7 @@ mod tests {
             },
             Event::AccountProfileUpdated {
                 profile: AccountProfile {
+                    appearance: Default::default(),
                     id: account_id,
                     name: "Newcomer".to_owned(),
                     avatar: Some(crate::account::Avatar {
@@ -1295,6 +1306,7 @@ mod tests {
             Event::WorkspaceMemberAdded {
                 workspace_id,
                 member: WorkspaceMember {
+                    appearance: Default::default(),
                     avatar: None,
                     account_id,
                     name: "Newcomer".to_owned(),
@@ -1657,6 +1669,7 @@ mod tests {
                 recovery: None,
             },
             ServerMessage::PresenceChanged {},
+            ServerMessage::AppearanceChanged {},
         ];
         let mut names = Vec::new();
         for message in messages {
@@ -1689,6 +1702,7 @@ mod tests {
             message,
             ClientMessage::Subscribe {
                 presence: false,
+                appearance: false,
                 level: Level::Full,
                 cursor: None
             }

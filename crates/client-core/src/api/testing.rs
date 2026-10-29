@@ -976,6 +976,7 @@ impl World {
 impl World {
     fn own_account(&self, account_id: AccountId) -> OwnAccount {
         OwnAccount {
+            appearance: Default::default(),
             id: account_id,
             name: self.accounts[&account_id].name.clone(),
             avatar: self.avatar_description(account_id),
@@ -1001,6 +1002,7 @@ impl World {
             (Method::Get, "profile") => json(
                 200,
                 &AccountProfile {
+                    appearance: Default::default(),
                     id: account_id,
                     name: known.name.clone(),
                     avatar: self.avatar_description(account_id),

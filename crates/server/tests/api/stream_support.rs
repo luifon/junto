@@ -356,6 +356,7 @@ impl Stream {
     pub async fn subscribe(&mut self, level: Level, cursor: Option<Cursor>) -> Cursor {
         self.send(&ClientMessage::Subscribe {
             presence: false,
+            appearance: false,
             level,
             cursor,
         })

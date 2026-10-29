@@ -346,3 +346,8 @@ pub fn request_times(
 
 pub const COPY_INVITE_LINK: &str = "Copy invite link";
 pub const COPY_APP_LINK: &str = "Copy app link";
+
+pub fn invite_creator_range(name: Option<&str>) -> std::ops::Range<usize> {
+    let start = "Created by ".len();
+    start..start + name.map_or(0, str::len)
+}

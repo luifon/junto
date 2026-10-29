@@ -231,8 +231,8 @@ async fn announce(
     position: i32,
 ) -> ApiResult<()> {
     let (event, audit, affected, about) = if let Some(workspace_id) = workspace {
-        let (name, bits, is_everyone): (String, i64, bool) = sqlx::query_as(
-            "select name, permissions, is_everyone from workspace_roles where id = $1",
+        let (name, bits, is_everyone, color, hoist): (String, i64, bool, Option<i32>, bool) = sqlx::query_as(
+            "select name, permissions, is_everyone, color, hoist from workspace_roles where id = $1",
         )
         .bind(id)
         .fetch_one(&mut *connection)
@@ -241,6 +241,8 @@ async fn announce(
         (
             Event::WorkspaceRoleUpdated {
                 role: WorkspaceRole {
+                    color: crate::appearance::color(color),
+                    hoist,
                     id: role_id,
                     workspace_id,
                     position,
@@ -254,15 +256,18 @@ async fn announce(
             About::Workspace(workspace_id),
         )
     } else {
-        let (name, bits): (String, i64) =
-            sqlx::query_as("select name, permissions from server_roles where id = $1")
-                .bind(id)
-                .fetch_one(&mut *connection)
-                .await?;
+        let (name, bits, color, hoist): (String, i64, Option<i32>, bool) = sqlx::query_as(
+            "select name, permissions, color, hoist from server_roles where id = $1",
+        )
+        .bind(id)
+        .fetch_one(&mut *connection)
+        .await?;
         let role_id = ServerRoleId::from_uuid(id);
         (
             Event::ServerRoleUpdated {
                 role: ServerRole {
+                    color: crate::appearance::color(color),
+                    hoist,
                     id: role_id,
                     position,
                     name,

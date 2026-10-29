@@ -215,6 +215,7 @@ async fn presence_invalidation_is_opt_in_and_moves_no_durable_cursor() {
             level: Level::Background,
             cursor: None,
             presence: true,
+            appearance: false,
         })
         .await;
     assert!(matches!(
@@ -262,6 +263,7 @@ async fn invisible_connections_and_input_do_not_emit_public_invalidations() {
             level: Level::Full,
             cursor: None,
             presence: true,
+            appearance: false,
         })
         .await;
     assert!(matches!(

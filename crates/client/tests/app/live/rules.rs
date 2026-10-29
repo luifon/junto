@@ -128,6 +128,8 @@ impl Scene {
                 workspace_id,
                 everyone.id,
                 &UpdateWorkspaceRole {
+                    color: None,
+                    hoist: None,
                     name: None,
                     permissions: Some(permissions),
                 },

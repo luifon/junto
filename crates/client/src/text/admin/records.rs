@@ -1194,3 +1194,26 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
     };
     capital(sentence)
 }
+
+pub fn audit_actor_range(
+    line: &AuditLine,
+    cycle: junto_client_core::clock::HourCycle,
+) -> std::ops::Range<usize> {
+    let start = date_time(line.at, cycle).len() + " · ".len();
+    let length = match &line.actor {
+        Actor::Account {
+            name: Some(name), ..
+        } => name.len(),
+        _ => 0,
+    };
+    start..start + length
+}
+pub fn token_creator_range(row: &TokenLine) -> std::ops::Range<usize> {
+    let start = "Created by ".len();
+    let length = if row.own {
+        "you".len()
+    } else {
+        row.creator.as_ref().map_or(0, String::len)
+    };
+    start..start + length
+}

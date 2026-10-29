@@ -78,6 +78,7 @@ impl Link {
 /// The new events that the watcher found, reduced to what decides a wake-up.
 #[derive(Debug, Default)]
 pub struct Arrivals {
+    pub appearance: bool,
     /// An event of the general class that is not addressed to one account.
     pub general: bool,
     /// An event of another class that is not addressed to one account.
@@ -90,6 +91,7 @@ pub struct Arrivals {
 impl Arrivals {
     pub fn everything() -> Self {
         Self {
+            appearance: true,
             general: true,
             other: true,
             ..Self::default()
@@ -201,6 +203,7 @@ pub struct Streams {
     session_reads: Arc<Semaphore>,
     held: watch::Sender<bool>,
     presence: watch::Sender<()>,
+    appearance: watch::Sender<()>,
     calls: CallRegistry,
 }
 
@@ -217,8 +220,13 @@ impl Streams {
             session_reads: Arc::new(Semaphore::new(limits.concurrent_session_checks.max(1))),
             held: watch::Sender::new(false),
             presence: watch::Sender::new(()),
+            appearance: watch::Sender::new(()),
             calls: CallRegistry::default(),
         }
+    }
+
+    pub fn appearance_watch(&self) -> watch::Receiver<()> {
+        self.appearance.subscribe()
     }
 
     pub fn presence_watch(&self) -> watch::Receiver<()> {
@@ -438,6 +446,9 @@ impl Streams {
     /// Wakes the connections that the new events can concern and makes the connections of
     /// the accounts in `revalidate` check their session.
     pub fn wake(&self, arrivals: &Arrivals) {
+        if arrivals.appearance {
+            self.appearance.send_replace(());
+        }
         let registry = lock(&self.registry);
         for account_id in &arrivals.revalidate {
             for link in registry.by_account.get(account_id).into_iter().flatten() {

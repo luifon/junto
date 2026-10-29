@@ -29,6 +29,8 @@ use crate::validate;
 use crate::{read, transact};
 
 struct StoredRole {
+    color: Option<junto_protocol::appearance::RoleColor>,
+    hoist: bool,
     position: i32,
     name: String,
     permissions: WorkspacePermissions,
@@ -40,8 +42,8 @@ async fn locked_role(
     workspace_id: WorkspaceId,
     role_id: WorkspaceRoleId,
 ) -> ApiResult<StoredRole> {
-    let row: Option<(String, i64, bool, i32)> = sqlx::query_as(
-        "select name, permissions, is_everyone, position from workspace_roles
+    let row: Option<(String, i64, bool, i32, Option<i32>, bool)> = sqlx::query_as(
+        "select name, permissions, is_everyone, position, color, hoist from workspace_roles
          where id = $1 and workspace_id = $2
          for update",
     )
@@ -49,8 +51,10 @@ async fn locked_role(
     .bind(workspace_id)
     .fetch_optional(connection)
     .await?;
-    let (name, bits, is_everyone, position) = row.ok_or_else(ApiError::not_found)?;
+    let (name, bits, is_everyone, position, color, hoist) = row.ok_or_else(ApiError::not_found)?;
     Ok(StoredRole {
+        color: crate::appearance::color(color),
+        hoist,
         position,
         name,
         permissions: db::workspace_permissions(bits)?,
@@ -113,8 +117,8 @@ pub async fn roles_of(
     connection: &mut PgConnection,
     workspace_id: WorkspaceId,
 ) -> ApiResult<Vec<WorkspaceRole>> {
-    let rows: Vec<(WorkspaceRoleId, String, i64, bool, i32)> = sqlx::query_as(
-        "select id, name, permissions, is_everyone, position from workspace_roles
+    let rows: Vec<(WorkspaceRoleId, String, i64, bool, i32, Option<i32>, bool)> = sqlx::query_as(
+        "select id, name, permissions, is_everyone, position, color, hoist from workspace_roles
          where workspace_id = $1
          order by position",
     )
@@ -122,8 +126,10 @@ pub async fn roles_of(
     .fetch_all(connection)
     .await?;
     rows.into_iter()
-        .map(|(id, name, bits, is_everyone, position)| {
+        .map(|(id, name, bits, is_everyone, position, color, hoist)| {
             Ok(WorkspaceRole {
+                color: crate::appearance::color(color),
+                hoist,
                 position,
                 id,
                 workspace_id,
@@ -187,6 +193,8 @@ pub async fn create_workspace_role(
 ) -> ApiResult<(StatusCode, Json<WorkspaceRole>)> {
     let permissions: WorkspacePermissions = body.permissions.iter().copied().collect();
     let role = WorkspaceRole {
+        color: body.color,
+        hoist: body.hoist,
         position: 1,
         id: WorkspaceRoleId::generate(),
         workspace_id,
@@ -231,14 +239,16 @@ pub(crate) async fn create(
     }
     crate::role_order::insert_bottom(connection, access, now, Some(workspace_id)).await?;
     sqlx::query(
-        "insert into workspace_roles (id, workspace_id, name, permissions, created_at, position)
-         values ($1, $2, $3, $4, $5, 1)",
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at, position, color, hoist)
+         values ($1, $2, $3, $4, $5, 1, $6, $7)",
     )
     .bind(role.id)
     .bind(workspace_id)
     .bind(&role.name)
     .bind(db::workspace_bits(permissions))
     .bind(now)
+    .bind(crate::appearance::stored(role.color))
+    .bind(role.hoist)
     .execute(&mut *connection)
     .await?;
     audit::record(
@@ -292,6 +302,7 @@ pub async fn update_workspace_role(
             (workspace_id, role_id),
             new_name.clone(),
             new_permissions,
+            crate::appearance::Patch::from(&body),
         )
         .await
     })
@@ -305,6 +316,7 @@ pub(crate) async fn update(
     (workspace_id, role_id): (WorkspaceId, WorkspaceRoleId),
     new_name: Option<String>,
     new_permissions: Option<WorkspacePermissions>,
+    appearance: crate::appearance::Patch,
 ) -> ApiResult<WorkspaceRole> {
     let scope = access.workspace(connection, workspace_id).await?;
     access.require(Request::Workspace {
@@ -324,6 +336,8 @@ pub(crate) async fn update(
     })?;
 
     let role = WorkspaceRole {
+        color: appearance.color.unwrap_or(stored.color),
+        hoist: appearance.hoist.unwrap_or(stored.hoist),
         position: stored.position,
         id: role_id,
         workspace_id,
@@ -331,13 +345,24 @@ pub(crate) async fn update(
         permissions: db::workspace_list(permissions),
         is_everyone: stored.is_everyone,
     };
-    if role.name == stored.name && permissions == stored.permissions {
+    if role.is_everyone && role.hoist {
+        return Err(ApiError::invalid(
+            "the everyone role cannot be shown separately",
+        ));
+    }
+    if role.name == stored.name
+        && permissions == stored.permissions
+        && role.color == stored.color
+        && role.hoist == stored.hoist
+    {
         return Ok(role);
     }
-    sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
+    sqlx::query("update workspace_roles set name = $2, permissions = $3, color = $4, hoist = $5 where id = $1")
         .bind(role_id)
         .bind(&role.name)
         .bind(db::workspace_bits(permissions))
+        .bind(crate::appearance::stored(role.color))
+        .bind(role.hoist)
         .execute(&mut *connection)
         .await?;
     audit::record(
@@ -540,6 +565,8 @@ impl RoleChecks {
 impl StoredRole {
     fn description(&self, workspace_id: WorkspaceId, id: WorkspaceRoleId) -> WorkspaceRole {
         WorkspaceRole {
+            color: self.color,
+            hoist: self.hoist,
             position: self.position,
             id,
             workspace_id,
@@ -777,6 +804,7 @@ pub async fn change_permission(
             (workspace_id, role_id),
             None,
             Some(permissions),
+            Default::default(),
         )
         .await
     })

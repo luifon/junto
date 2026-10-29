@@ -118,6 +118,7 @@ pub(super) fn scene() -> Scene {
             position: 1,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: own,
             name: "Luca".to_owned(),
             avatar: None,
@@ -583,12 +584,14 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     let workspace = Arc::make_mut(&mut model.workspaces[1]);
     workspace.members = Loadable::Loaded(vec![
         WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: ana,
             name: "Ana".to_owned(),
             role_ids: Vec::new(),
         },
         WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: bruno,
             name: "Bruno".to_owned(),
@@ -737,6 +740,8 @@ fn the_members_are_in_the_order_of_their_names_with_their_roles() {
     let mut scene = scene();
     let workspace_id = scene.studio;
     let role = |name: &str, position| WorkspaceRole {
+        color: None,
+        hoist: false,
         position,
         id: WorkspaceRoleId::generate(),
         workspace_id,
@@ -748,6 +753,7 @@ fn the_members_are_in_the_order_of_their_names_with_their_roles() {
         (role("everyone", 0), role("Leads", 2), role("Engineers", 1));
     scene.studio_mut().roles = vec![everyone.clone(), leads.clone(), engineers.clone()];
     let member = |account_id, name: &str, role_ids| WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id,
         name: name.to_owned(),
@@ -1709,6 +1715,7 @@ pub(super) mod calls {
         scene.call(daily, vec![participant(ana), held]);
         let mut model = scene.model();
         Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: ana,
             name: "Ana".to_owned(),
@@ -1959,6 +1966,7 @@ pub(super) mod calls {
         scene.call(focus_id, vec![participant(ben)]);
         let mut model = scene.model();
         let member = |account_id, name: &str| WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id,
             name: name.to_owned(),
@@ -2336,6 +2344,8 @@ pub(super) mod calls {
         let (own, daily) = (scene.own, scene.daily);
         let call_id = scene.call(daily, vec![participant(own)]).id;
         let everyone = WorkspaceRole {
+            color: None,
+            hoist: false,
             position: 0,
             id: WorkspaceRoleId::generate(),
             workspace_id: scene.studio,
@@ -2535,6 +2545,8 @@ pub(super) mod calls {
     fn everyone_may(scene: &mut Scene, permissions: &[WorkspacePermission]) {
         let workspace_id = scene.studio;
         scene.studio_mut().roles = vec![WorkspaceRole {
+            color: None,
+            hoist: false,
             position: 0,
             id: WorkspaceRoleId::generate(),
             workspace_id,
@@ -3057,12 +3069,14 @@ pub(super) mod calls {
         let workspace = Arc::make_mut(&mut model.workspaces[1]);
         workspace.members = Loadable::Loaded(vec![
             WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id: ben,
                 name: "Ben".to_owned(),
                 role_ids: Vec::new(),
             },
             WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id: ana,
                 name: "Ana".to_owned(),
@@ -3342,6 +3356,7 @@ fn a_direct_invitation_names_the_caller_without_a_cached_name() {
     });
     let mut model = scene.model();
     Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id: caller,
         name: "Ana".to_owned(),
@@ -3378,4 +3393,55 @@ fn direct_call_end_notices_do_not_describe_a_voice_channel() {
         assert!(!line.contains("voice channel"), "{line}");
         assert!(!line.contains("in Direct call"), "{line}");
     }
+}
+
+#[test]
+fn role_appearance_covers_a_roster_larger_than_the_profile_cache_without_images() {
+    use junto_client_core::protocol::appearance::{AccountAppearance, RoleColor};
+    let scene = scene();
+    let mut server = scene.server();
+    let mut model = scene.model();
+    let workspace = Arc::make_mut(&mut model.workspaces[1]);
+    let role_id = WorkspaceRoleId::generate();
+    let local = Some(RoleColor::from_rgb(34, 119, 68));
+    workspace.roles.push(WorkspaceRole {
+        id: role_id,
+        workspace_id: workspace.workspace.id,
+        name: "Guides".to_owned(),
+        position: 1,
+        color: local,
+        hoist: true,
+        is_everyone: false,
+        permissions: Vec::new(),
+    });
+    let global = RoleColor::from_rgb(51, 102, 153);
+    let roster: Vec<_> = (0..700)
+        .map(|index| WorkspaceMember {
+            account_id: AccountId::generate(),
+            name: format!("Member {index:03}"),
+            role_ids: vec![role_id],
+            avatar: None,
+            appearance: AccountAppearance {
+                color: Some(global),
+                group: None,
+            },
+        })
+        .collect();
+    let last = roster.last().unwrap().account_id;
+    workspace.members = Loadable::Loaded(roster);
+    let workspace_id = workspace.workspace.id;
+    let derived = members(server.id, workspace, &scene.model(), &Known::default());
+    let Members::Loaded(rows) = derived else {
+        panic!("loaded members")
+    };
+    assert_eq!(rows.len(), 700);
+    assert!(
+        rows.iter()
+            .all(|row| row.color == local && row.group.is_some())
+    );
+    server.model = Some(Arc::new(model));
+    let faces = people::faces(&[server.clone()], &people::People::default()).of(server.id);
+    assert!(faces.face(last).is_none());
+    assert_eq!(faces.color(last), Some(global));
+    assert_eq!(faces.in_workspace(Some(workspace_id)).color(last), local);
 }

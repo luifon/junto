@@ -324,6 +324,7 @@ mod tests {
                     position: 1,
                 },
                 account: OwnAccount {
+                    appearance: Default::default(),
                     id: own,
                     name: "Luca".to_owned(),
                     avatar: None,
@@ -525,6 +526,7 @@ mod tests {
         let mut model = scene.model();
         Arc::make_mut(&mut model.workspaces[0]).members =
             junto_client_core::model::Loadable::Loaded(vec![WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id: scene.ana,
                 name: "Ana".to_owned(),

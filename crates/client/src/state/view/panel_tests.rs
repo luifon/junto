@@ -310,6 +310,8 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
     let mut scene = scene();
     let ana = AccountId::generate();
     let manage = WorkspaceRole {
+        color: None,
+        hoist: false,
         position: 0,
         id: junto_client_core::protocol::ids::WorkspaceRoleId::generate(),
         workspace_id: scene.studio,
@@ -359,6 +361,7 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
     model.workspaces[1] = {
         let mut workspace = model.workspaces[1].as_ref().clone();
         workspace.members = Loadable::Loaded(vec![WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: ana,
             name: "Ana".to_owned(),

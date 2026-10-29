@@ -76,6 +76,8 @@ pub(crate) fn give_everyone(
     let mut permissions = everyone.permissions.clone();
     permissions.push(permission);
     let update = UpdateWorkspaceRole {
+        color: None,
+        hoist: None,
         name: None,
         permissions: Some(permissions),
     };

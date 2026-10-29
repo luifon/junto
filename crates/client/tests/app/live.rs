@@ -912,6 +912,8 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             workspace_id,
             everyone.id,
             &UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(permissions),
             },

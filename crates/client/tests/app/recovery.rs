@@ -50,6 +50,8 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
     // A server role that the owner can give, so that the row of an account has switches.
     let helpers = world
         .run(owner_handle.api().create_server_role(&CreateServerRole {
+            color: None,
+            hoist: false,
             name: "Helpers".to_owned(),
             permissions: Vec::new(),
         }))

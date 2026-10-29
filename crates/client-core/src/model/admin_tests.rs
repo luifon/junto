@@ -510,6 +510,7 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
         },
         Event::AccountProfileUpdated {
             profile: AccountProfile {
+                appearance: Default::default(),
                 id: ana.id,
                 name: "Ana Lima".to_owned(),
                 avatar: None,
@@ -531,6 +532,8 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
 
     // Server roles: a deleted role leaves the accounts too.
     let role = ServerRole {
+        color: None,
+        hoist: false,
         position: 1,
         id: role_id,
         name: "inviters".to_owned(),
@@ -1074,6 +1077,8 @@ fn the_flags_of_the_server_are_held_by_their_read_and_read_again_after_a_change_
     assert_eq!(model.admin.may_unban(bruno.id), Some(false));
 
     let role = ServerRole {
+        color: None,
+        hoist: false,
         position: 1,
         id: ServerRoleId::generate(),
         name: "hosts".to_owned(),

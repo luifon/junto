@@ -42,6 +42,7 @@ async fn an_account_sets_its_name_and_the_accounts_that_see_it_are_told() {
     assert_eq!(account.name, "Grace");
     assert_eq!(account.avatar, None);
     let expected = AccountProfile {
+        appearance: Default::default(),
         id: guest.account_id,
         name: "Grace".to_owned(),
         avatar: None,
@@ -133,6 +134,7 @@ async fn an_avatar_is_stored_served_and_removed() {
             to_fellow.event().await.1,
             Event::AccountProfileUpdated {
                 profile: AccountProfile {
+                    appearance: Default::default(),
                     id: guest.account_id,
                     name: "Guest".to_owned(),
                     avatar: Some(expected.clone()),
@@ -174,6 +176,7 @@ async fn an_avatar_is_stored_served_and_removed() {
         to_fellow.event().await.1,
         Event::AccountProfileUpdated {
             profile: AccountProfile {
+                appearance: Default::default(),
                 id: guest.account_id,
                 name: "Guest".to_owned(),
                 avatar: None,

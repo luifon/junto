@@ -61,6 +61,14 @@ Refusals:
 - A `forbidden` answer to a request about a role states that a role at or above the highest role of the person cannot be changed, moved, given or taken. A `forbidden` answer to a removal, a ban or an unban states the same for an account.
 - An `invalid_request` answer to a move states that the order has changed.
 
+## Colour and member grouping
+
+Each role row has Appearance, including everyone when the person outranks it. The form accepts a custom `#RRGGBB`, offers named presets and Default colour, and has a separate-group switch. Everyone's group switch is held with its reason. Opening Appearance brings its row to the top of the page list so the form and its save control fit when its height allows. Invalid text stays in the form with a reason. Saving names only colour and grouping, preserving permissions. Permission and hierarchy changes close an unavailable form. Requests use the existing role receipt and retained form space.
+
+The members panel follows ADR 0309's precedence and groups while keeping its virtual list and account-bound controls. Name colours are also used on messages, replies, mentions, system identities, conversations, contacts, the switcher, calls, shares, invitations, meetings, recordings, transcripts, notices, search and administration. Historical text without an account identifier stays plain. Only the name portion of a sentence is coloured; dates and other labels keep their styles. The colour is mixed towards black or white only when needed for a text contrast of 4.5 against its surface. This changes the drawing, never the stored RGB value. Tile nameplates use their dark surface. The profile card's role chips, member role labels, assignment choices, permission subjects and role mention choices show each role's own colour. Rendered role mentions keep their mention weight and background while taking that role colour.
+
+Appearance maps are independent of avatar images. Member metadata seeds every loaded roster, including members outside the bounded profile cache. Renderers take shared maps for their server and workspace rather than rebuilding a map for every name. Message and thread rendering use their channel's workspace, and a detached call uses its own workspace.
+
 ## Consequences
 
 - Every screen of roles is designed in this record.

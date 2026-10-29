@@ -27,6 +27,7 @@ fn hash(number: u32) -> PictureHash {
 
 fn profile(id: AccountId, name: &str, avatar: Option<PictureHash>) -> AccountProfile {
     AccountProfile {
+        appearance: Default::default(),
         id,
         name: name.to_owned(),
         avatar: avatar.map(|hash| Avatar {
@@ -1007,5 +1008,37 @@ fn a_departure_event_marks_the_name_at_once_and_reads_the_profile_again() {
         !scene
             .people
             .departure_changed(scene.server, AccountId::generate(), None)
+    );
+}
+
+#[test]
+fn a_replaced_state_clears_public_role_colour_while_retaining_the_profile_name() {
+    let mut scene = scene();
+    let person = AccountId::generate();
+    scene.show(&[person]);
+    let ask = scene.next(true).remove(0);
+    let mut value = profile(person, "Member", None);
+    value.appearance.color = Some("#336699".parse().unwrap());
+    scene.people.profile_answered(&ask, Answer::Read(value));
+    assert_eq!(
+        scene.people.servers[&scene.server].profiles[&person]
+            .value
+            .as_ref()
+            .unwrap()
+            .color,
+        Some("#336699".parse().unwrap())
+    );
+    scene.people.stale(scene.server);
+    assert_eq!(
+        scene.people.name(scene.server, person).as_deref(),
+        Some("Member")
+    );
+    assert_eq!(
+        scene.people.servers[&scene.server].profiles[&person]
+            .value
+            .as_ref()
+            .unwrap()
+            .color,
+        None
     );
 }

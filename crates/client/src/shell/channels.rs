@@ -551,6 +551,7 @@ impl Shell {
                     )
                     .picture(faces.image(account_id))
                     .presence(faces.presence(account_id))
+                    .name_color(faces.color(account_id))
                     .when_some(faces.server_id(), |row, server| {
                         row.profile(crate::ui::OpenProfile {
                             server,
@@ -669,6 +670,7 @@ impl Shell {
             let row = ChannelRow::new(("direct", index), Icon::Person, name)
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .presence(faces.presence(direct.account_id))
+                .name_color(faces.color(direct.account_id))
                 .when_some(faces.server_id(), |row, server| {
                     row.profile(crate::ui::OpenProfile {
                         server,

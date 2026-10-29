@@ -152,6 +152,7 @@ async fn review2_upgrade_renews_the_epoch_without_rewriting_events() {
         &crate::stream_review::opened(&scene.ann),
         Level::Full,
         Some(old_cursor),
+        false,
     )
     .await
     .unwrap();

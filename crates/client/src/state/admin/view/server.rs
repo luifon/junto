@@ -103,6 +103,7 @@ mod tests {
 
     fn account(is_owner: bool, server_permissions: Vec<ServerPermission>) -> OwnAccount {
         OwnAccount {
+            appearance: Default::default(),
             id: AccountId::generate(),
             name: "Luca".to_owned(),
             avatar: None,

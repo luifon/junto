@@ -408,6 +408,10 @@ impl Shell {
             seed: row.author_id.as_uuid().as_u128(),
             picture: self.faces(server_id).image(row.author_id),
             presence: Some(self.faces(server_id).presence(row.author_id)),
+            name_color: self
+                .faces(server_id)
+                .in_workspace(row.workspace_id)
+                .color(row.author_id),
             profile: Some(crate::ui::OpenProfile {
                 server: server_id,
                 account: row.author_id,

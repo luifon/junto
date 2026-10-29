@@ -55,6 +55,7 @@ fn scene() -> Scene {
             position: 1,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: own,
             name: "Luca".to_owned(),
             avatar: None,
@@ -354,12 +355,14 @@ fn the_filters_offer_the_channels_and_the_members_of_the_shown_workspace() {
     let workspace_id = scene.studio;
     let members = vec![
         WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: scene.own,
             name: "Luca".to_owned(),
             role_ids: Vec::new(),
         },
         WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: scene.ana,
             name: "Ana".to_owned(),

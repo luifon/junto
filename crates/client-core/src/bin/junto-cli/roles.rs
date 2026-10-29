@@ -86,12 +86,16 @@ fn server_roles(
     Ok(Some(match action {
         "list" => Action::ServerRoles,
         "create" => Action::NewServerRole(CreateServerRole {
+            color: None,
+            hoist: false,
             name: word(words, 1, "the name")?.to_owned(),
             permissions: given(arguments, server_permission)?,
         }),
         "rename" => Action::ChangeServerRole(
             role(1)?,
             UpdateServerRole {
+                color: None,
+                hoist: None,
                 name: Some(word(words, 2, "the name")?.to_owned()),
                 permissions: None,
             },
@@ -99,6 +103,8 @@ fn server_roles(
         "permissions" => Action::ChangeServerRole(
             role(1)?,
             UpdateServerRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(whole(words, 2, arguments, server_permission)?),
             },
@@ -126,6 +132,8 @@ fn workspace_roles(
         "create" => Action::NewWorkspaceRole(
             workspace()?,
             CreateWorkspaceRole {
+                color: None,
+                hoist: false,
                 name: word(words, 2, "the name")?.to_owned(),
                 permissions: given(arguments, permission)?,
             },
@@ -134,6 +142,8 @@ fn workspace_roles(
             workspace()?,
             role(2)?,
             UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: Some(word(words, 3, "the name")?.to_owned()),
                 permissions: None,
             },
@@ -142,6 +152,8 @@ fn workspace_roles(
             workspace()?,
             role(2)?,
             UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(whole(words, 3, arguments, permission)?),
             },
@@ -401,6 +413,8 @@ mod tests {
         assert_eq!(
             created,
             CreateServerRole {
+                color: None,
+                hoist: false,
                 name: "inviters".to_owned(),
                 permissions: vec![
                     ServerPermission::CreateInvites,
@@ -475,6 +489,8 @@ mod tests {
         assert_eq!(
             created,
             CreateWorkspaceRole {
+                color: None,
+                hoist: false,
                 name: "helpers".to_owned(),
                 permissions: vec![WorkspacePermission::ManageMessages],
             }
@@ -539,6 +555,8 @@ mod tests {
         assert_eq!(
             of_server(&["ban_members,view_server_audit_log"]),
             Some(UpdateServerRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(vec![
                     ServerPermission::BanMembers,
@@ -549,6 +567,8 @@ mod tests {
         assert_eq!(
             of_server(&["--none"]),
             Some(UpdateServerRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(Vec::new()),
             })
@@ -572,6 +592,8 @@ mod tests {
         assert_eq!(
             of_workspace(&["view_channel,lock_room"]),
             Some(UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(vec![
                     WorkspacePermission::ViewChannel,
@@ -582,6 +604,8 @@ mod tests {
         assert_eq!(
             of_workspace(&["--none"]),
             Some(UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(Vec::new()),
             })
@@ -616,6 +640,8 @@ mod tests {
     #[test]
     fn the_line_of_a_role_shows_its_position_its_name_and_its_permissions() {
         let inviters = ServerRole {
+            color: None,
+            hoist: false,
             position: 2,
             id: ServerRoleId::generate(),
             name: "inviters\u{1b}[2J".to_owned(),
@@ -633,6 +659,8 @@ mod tests {
             )
         );
         let hosts = ServerRole {
+            color: None,
+            hoist: false,
             position: 1,
             id: ServerRoleId::generate(),
             name: "hosts".to_owned(),
@@ -650,6 +678,8 @@ mod tests {
 
         let workspace_id = WorkspaceId::generate();
         let role = |name: &str, position: i32| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: WorkspaceRoleId::generate(),
             workspace_id,

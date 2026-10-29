@@ -387,3 +387,12 @@ mod tests {
         assert_eq!(language_name("xx"), None);
     }
 }
+
+pub fn changed_name_range(name: &str) -> std::ops::Range<usize> {
+    let start = "Corrected by ".len();
+    start..start + name.len()
+}
+pub fn named_name_range(name: &str) -> std::ops::Range<usize> {
+    let start = "Named by ".len();
+    start..start + name.len()
+}

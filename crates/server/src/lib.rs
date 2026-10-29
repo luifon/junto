@@ -3,6 +3,7 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
 pub mod access;
+mod appearance;
 pub mod archive;
 pub mod audit;
 pub mod backup;

@@ -1928,11 +1928,13 @@ impl Shell {
         let what = AskKind::RevokeInvite(invite_id);
         let mut content = line(theme).child(
             super::line_identity(
-                crate::shell::people::person_label(
+                crate::shell::people::person_sentence_label(
                     &self.faces(server_id),
                     row.created_by,
                     txt::invite_creator(row.creator.as_deref()),
+                    txt::invite_creator_range(row.creator.as_deref()),
                     "invite-creator",
+                    theme.colors.travertine,
                 ),
                 Some(
                     txt::invite_times(row.created, row.expires, self.state.read(cx).hour_cycle())

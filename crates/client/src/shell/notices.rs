@@ -63,6 +63,7 @@ pub(crate) struct Excerpt {
     pub picture: Option<std::sync::Arc<gpui::RenderImage>>,
     pub presence: Option<junto_client_core::protocol::presence::Presence>,
     pub profile: Option<crate::ui::OpenProfile>,
+    pub name_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub author: SharedString,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
@@ -197,6 +198,7 @@ impl Excerpt {
                                                     self.author,
                                                     target,
                                                 )
+                                                .role_color(self.name_color)
                                                 .into_any_element(),
                                                 None => self.author.into_any_element(),
                                             }),
@@ -610,7 +612,9 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        let faces = self.faces(server_id);
+        let faces = self
+            .faces(server_id)
+            .in_workspace(row.jump.and_then(|jump| jump.workspace_id));
         let notice_id = row.id;
         let shown = Excerpt {
             icon: place_icon(&row.place),
@@ -620,6 +624,7 @@ impl Shell {
             seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
             picture: row.author_id.and_then(|id| faces.image(id)),
             presence: row.author_id.map(|id| faces.presence(id)),
+            name_color: row.author_id.and_then(|id| faces.color(id)),
             profile: row.author_id.map(|account| crate::ui::OpenProfile {
                 server: server_id,
                 account,

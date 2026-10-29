@@ -564,6 +564,8 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             workspace_id,
             everyone.id,
             &UpdateWorkspaceRole {
+                color: None,
+                hoist: None,
                 name: None,
                 permissions: Some(permissions),
             },

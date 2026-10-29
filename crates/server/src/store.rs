@@ -110,6 +110,7 @@ pub async fn own_account(connection: &mut PgConnection, access: &Access) -> ApiR
     .await?;
     let avatar = avatar_of(connection, access.account_id).await?;
     Ok(OwnAccount {
+        appearance: crate::appearance::of(connection, access.account_id).await?,
         id: access.account_id,
         name,
         avatar,
@@ -279,10 +280,12 @@ pub async fn announce_members(
         .fetch_one(&mut *connection)
         .await?;
     let avatar = avatar_of(connection, account_id).await?;
+    let appearance = crate::appearance::of(connection, account_id).await?;
     for workspace_id in workspace_ids {
         let added = Event::WorkspaceMemberAdded {
             workspace_id: *workspace_id,
             member: WorkspaceMember {
+                appearance: appearance.clone(),
                 avatar: avatar.clone(),
                 account_id,
                 name: name.clone(),
@@ -466,6 +469,7 @@ pub async fn profile_of(
         None => avatar_of(connection, account_id).await?,
     };
     Ok(Some(AccountProfile {
+        appearance: crate::appearance::of(connection, account_id).await?,
         id: account_id,
         name,
         avatar,

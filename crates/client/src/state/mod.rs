@@ -3420,3 +3420,5 @@ pub mod event_alerts;
 mod camera;
 
 mod call_window;
+
+pub mod role_appearance;

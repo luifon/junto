@@ -24,7 +24,7 @@ use crate::structure::{ChannelKind, present};
 
 /// The format version that this build writes. It reads every format from
 /// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
-pub const STRUCTURE_FORMAT: u32 = 4;
+pub const STRUCTURE_FORMAT: u32 = 5;
 
 /// The oldest format version that this build reads.
 pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
@@ -43,7 +43,7 @@ pub const MOST_CHANGES: usize = 200;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 4. This tool also reads the formats 1 to 3.
+    /// The version of the file format: 5. This tool also reads the formats 1 to 4.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -90,6 +90,15 @@ impl Deletions {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ServerRoleEntry {
+    #[serde(
+        default,
+        deserialize_with = "crate::structure::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<crate::appearance::RoleColor>))]
+    pub color: Option<Option<crate::appearance::RoleColor>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hoist: Option<bool>,
     /// Optional relative-order key: larger is higher. Numeric gaps are not significant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
@@ -127,6 +136,15 @@ pub struct WorkspaceEntry {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RoleEntry {
+    #[serde(
+        default,
+        deserialize_with = "crate::structure::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<crate::appearance::RoleColor>))]
+    pub color: Option<Option<crate::appearance::RoleColor>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hoist: Option<bool>,
     /// Optional relative-order key: larger is higher; everyone is fixed at zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
@@ -242,12 +260,25 @@ pub enum StructureChange {
         positions: Vec<StructureRolePosition>,
     },
     CreateServerRole {
+        #[serde(default)]
+        color: Option<crate::appearance::RoleColor>,
+        #[serde(default)]
+        hoist: bool,
         id: StructureId,
         name: String,
         #[serde(default)]
         permissions: Vec<ServerPermission>,
     },
     UpdateServerRole {
+        #[serde(
+            default,
+            deserialize_with = "crate::structure::present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<crate::appearance::RoleColor>))]
+        color: Option<Option<crate::appearance::RoleColor>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hoist: Option<bool>,
         id: StructureId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -267,6 +298,10 @@ pub enum StructureChange {
         name: String,
     },
     CreateWorkspaceRole {
+        #[serde(default)]
+        color: Option<crate::appearance::RoleColor>,
+        #[serde(default)]
+        hoist: bool,
         id: StructureId,
         workspace: StructureId,
         name: String,
@@ -274,6 +309,15 @@ pub enum StructureChange {
         permissions: Vec<WorkspacePermission>,
     },
     UpdateWorkspaceRole {
+        #[serde(
+            default,
+            deserialize_with = "crate::structure::present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<crate::appearance::RoleColor>))]
+        color: Option<Option<crate::appearance::RoleColor>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hoist: Option<bool>,
         id: StructureId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -569,7 +613,7 @@ mod tests {
             serde_json::json!([])
         );
         assert!(workspace["channels"][0].get("synced").is_none());
-        assert_eq!(STRUCTURE_FORMAT, 4);
+        assert_eq!(STRUCTURE_FORMAT, 5);
     }
 
     #[test]

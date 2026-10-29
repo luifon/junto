@@ -684,6 +684,7 @@ impl Client {
         }
         link.send_at = None;
         let message = ClientMessage::Subscribe {
+            appearance: self.server_events.is_some_and(|revision| revision >= 4),
             presence: self
                 .shared
                 .presence
@@ -980,6 +981,13 @@ impl Client {
                     && matches!(link.subscription, Subscription::Live { .. })
                 {
                     self.untold.push(Notice::PresenceChanged);
+                }
+            }
+            ServerMessage::AppearanceChanged {} => {
+                if self.server_events.is_some_and(|revision| revision >= 4)
+                    && matches!(link.subscription, Subscription::Live { .. })
+                {
+                    self.server_reload();
                 }
             }
             ServerMessage::Resync { reason } => {

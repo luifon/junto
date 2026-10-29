@@ -104,6 +104,16 @@ roles, and other server roles contribute no position.
 - Role-order refusals use `forbidden` with a fixed message and no target detail. Existing
   visibility checks run before role lookup; hidden workspaces still return `not_found`.
 
+## Role appearance
+
+Server and workspace roles have an optional RGB colour and a `hoist` flag, initially no colour and false. The API writes colours as `#RRGGBB`. An omitted patch field keeps its value, `color: null` removes the colour, and `hoist: false` removes the group. The existing manage-role permission, grant ceiling, token scope and strict role order decide these writes. Reorder events retain the stored colour and grouping fields, so a moved role does not replace them with defaults. Appearance gives no permission. Everyone can have a colour but cannot be hoisted.
+
+In a workspace, an account name takes the highest coloured assigned workspace role, including everyone, then the highest coloured server role. The member list uses the highest hoisted assigned workspace role, then the highest hoisted server role, then Members. Colour and group are chosen independently. Workspace groups precede server groups; each level orders groups by descending position and identifier for a tie. Names sort alphabetically within a group, with account identifiers breaking ties. Each member appears once. Search filters members before grouping and each heading counts its matching members. Empty groups are absent. Global contexts, direct conversations and the profile card use server appearance.
+
+The profile, own account and member metadata contain only the public server colour and highest hoisted server role's identifier, name, position and colour. They contain no permission vector or complete assignment list. The existing visibility check decides the profile read; member metadata has the member list's audience. Departed and inactive accounts have no appearance. Workspace roles retain their workspace audience. Server-role events retain their administrative audience.
+
+An empty, opted-in `appearance_changed` signal (ADR 0206) invalidates public appearance after committed server-role creation, update, deletion, position shift, assignment or account-status changes. The event watcher coalesces signals per log page and covers writes of other server processes. It does not write a profile event for every holder. Subscription catch-up checks the same event kinds after the snapshot cursor in its read transaction, covering a change before the connection opened. A fresh subscription does not signal unconditionally. The client reloads its normal snapshot, demanded member lists and bounded profile cache. Workspace-role changes use their existing scoped events.
+
 ## Consequences
 
 An administrator cannot edit its own highest role or remove an equal administrator.

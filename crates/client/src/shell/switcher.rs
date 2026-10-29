@@ -231,6 +231,7 @@ impl Shell {
                 choice = choice
                     .avatar(account.as_uuid().as_u128())
                     .presence(self.faces(destination.server()).presence(account))
+                    .name_color(self.faces(destination.server()).color(account))
                     .profile(crate::ui::OpenProfile {
                         server: destination.server(),
                         account,

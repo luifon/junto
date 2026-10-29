@@ -1234,6 +1234,7 @@ pub(crate) mod tests {
                 position: 1,
             },
             account: OwnAccount {
+                appearance: Default::default(),
                 id: account_id,
                 name: name.to_owned(),
                 avatar: None,

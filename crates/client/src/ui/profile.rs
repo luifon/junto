@@ -1,4 +1,5 @@
 use crate::{text, theme::theme};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, Role, SharedString,
     StatefulInteractiveElement, Styled, Window, div,
@@ -78,6 +79,8 @@ pub struct ProfileName {
     id: ElementId,
     name: SharedString,
     target: OpenProfile,
+    color: Option<gpui::Rgba>,
+    role_color: Option<junto_client_core::protocol::appearance::RoleColor>,
 }
 impl ProfileName {
     pub fn new(
@@ -89,11 +92,28 @@ impl ProfileName {
             id: id.into(),
             name: name.into(),
             target,
+            color: None,
+            role_color: None,
         }
+    }
+    pub fn role_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.role_color = color;
+        self
+    }
+    pub fn color(mut self, color: Option<gpui::Rgba>) -> Self {
+        self.color = color;
+        self
     }
 }
 impl RenderOnce for ProfileName {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let color = self.color.or_else(|| {
+            self.role_color
+                .map(|color| crate::theme::role_name_ink(color, &theme(cx)))
+        });
         div()
             .debug_selector(move || {
                 format!(
@@ -111,7 +131,22 @@ impl RenderOnce for ProfileName {
                 div()
                     .min_w_0()
                     .truncate()
+                    .when_some(color, |name, color| name.text_color(color))
                     .child(super::paint_text(self.name, None)),
             ))
     }
+}
+
+pub(crate) fn role_name(
+    name: impl Into<SharedString>,
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    theme: &crate::theme::Theme,
+) -> gpui::Div {
+    div()
+        .min_w_0()
+        .truncate()
+        .when_some(color, |name, color| {
+            name.text_color(crate::theme::role_name_ink(color, theme))
+        })
+        .child(super::paint_text(name.into(), None))
 }

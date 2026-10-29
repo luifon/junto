@@ -6,6 +6,7 @@ use crate::{
     theme::{theme, u},
     ui::{Avatar, Button, ButtonKind, Chip, Dialog, Notice, OpenProfile, StyleExt, dialog_footer},
 };
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Styled, WeakFocusHandle,
     Window, div,
@@ -167,6 +168,12 @@ impl Shell {
                                 .child(
                                     div()
                                         .typeface(theme.types.title, &theme)
+                                        .when_some(card.profile.appearance.color, |name, color| {
+                                            name.ink(crate::theme::role_ink(
+                                                color,
+                                                theme.colors.travertine,
+                                            ))
+                                        })
                                         .child(text::label(&card.profile.name)),
                                 )
                                 .child(
@@ -195,7 +202,9 @@ impl Shell {
                             card.server_roles.iter().take(remaining).map(|role| {
                                 div()
                                     .debug_selector(move || format!("profile-role:{}", role.id))
-                                    .child(Chip::new(text::label(&role.name)))
+                                    .child(
+                                        Chip::new(text::label(&role.name)).role_color(role.color),
+                                    )
                             }),
                         ));
                     remaining = remaining.saturating_sub(card.server_roles.len());
@@ -214,7 +223,9 @@ impl Shell {
                             workspace.roles.iter().take(remaining).map(|role| {
                                 div()
                                     .debug_selector(move || format!("profile-role:{}", role.id))
-                                    .child(Chip::new(text::label(&role.name)))
+                                    .child(
+                                        Chip::new(text::label(&role.name)).role_color(role.color),
+                                    )
                             }),
                         ));
                     remaining = remaining.saturating_sub(workspace.roles.len());

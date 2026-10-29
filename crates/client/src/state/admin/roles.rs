@@ -302,6 +302,8 @@ impl AppState {
         match level {
             RoleLevel::Server => {
                 let role = CreateServerRole {
+                    color: None,
+                    hoist: false,
                     name,
                     permissions: Vec::new(),
                 };
@@ -315,6 +317,8 @@ impl AppState {
             }
             RoleLevel::Workspace(workspace_id) => {
                 let role = CreateWorkspaceRole {
+                    color: None,
+                    hoist: false,
                     name,
                     permissions: Vec::new(),
                 };
@@ -329,6 +333,73 @@ impl AppState {
         }
     }
 
+    pub fn set_role_appearance(
+        &mut self,
+        server_id: ServerId,
+        role: RoleRef,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+        hoist: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self.admin_view() else {
+            return;
+        };
+        let super::view::Scope::Server {
+            page: super::view::ServerPage::Roles(page),
+            ..
+        } = &view.scope
+        else {
+            return;
+        };
+        if view.server_id != server_id
+            || page
+                .row(role)
+                .is_none_or(|row| row.locked.is_some() || (row.is_everyone && hoist))
+        {
+            return;
+        }
+        let what = AskKind::UpdateRole(role);
+        match role {
+            RoleRef::Server(id) => self.admin_ask(
+                server_id,
+                what,
+                |api| async move {
+                    api.update_server_role(
+                        id,
+                        &UpdateServerRole {
+                            name: None,
+                            permissions: None,
+                            color: Some(color),
+                            hoist: Some(hoist),
+                        },
+                    )
+                    .await
+                },
+                |_, _, _| {},
+                cx,
+            ),
+            RoleRef::Workspace(workspace, id) => self.admin_ask(
+                server_id,
+                what,
+                |api| async move {
+                    api.update_workspace_role(
+                        workspace,
+                        id,
+                        &UpdateWorkspaceRole {
+                            name: None,
+                            permissions: None,
+                            color: Some(color),
+                            hoist: Some(hoist),
+                        },
+                    )
+                    .await
+                },
+                |_, _, _| {},
+                cx,
+            ),
+        }
+    }
+
     pub fn rename_role(
         &mut self,
         server_id: ServerId,
@@ -340,6 +411,8 @@ impl AppState {
         match role {
             RoleRef::Server(role_id) => {
                 let change = UpdateServerRole {
+                    color: None,
+                    hoist: None,
                     name: Some(name),
                     permissions: None,
                 };
@@ -353,6 +426,8 @@ impl AppState {
             }
             RoleRef::Workspace(workspace_id, role_id) => {
                 let change = UpdateWorkspaceRole {
+                    color: None,
+                    hoist: None,
                     name: Some(name),
                     permissions: None,
                 };

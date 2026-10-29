@@ -307,6 +307,7 @@ pub struct ChannelRow {
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
     profile: Option<super::OpenProfile>,
+    name_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     nested: bool,
     muted: bool,
     /// Why the row cannot be used.
@@ -332,6 +333,7 @@ impl ChannelRow {
             picture: None,
             presence: None,
             profile: None,
+            name_color: None,
             nested: false,
             muted: false,
             unavailable: None,
@@ -378,6 +380,14 @@ impl ChannelRow {
     /// The image of the avatar of the person of the row, when the window holds it.
     pub fn profile(mut self, target: super::OpenProfile) -> Self {
         self.profile = Some(target);
+        self
+    }
+
+    pub fn name_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.name_color = color;
         self
     }
 
@@ -593,6 +603,7 @@ impl RenderOnce for ChannelRow {
                     .min_w_0()
                     .child(match self.profile {
                         Some(target) => super::ProfileName::new("person-name", self.name, target)
+                            .role_color(self.name_color)
                             .into_any_element(),
                         None => div().truncate().child(self.name).into_any_element(),
                     })
@@ -660,6 +671,7 @@ pub struct OccupantRow {
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
     profile: Option<super::OpenProfile>,
+    name_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     marks: Vec<OccupantMark>,
     selector: Option<SharedString>,
     /// The menu of the person is open.
@@ -676,6 +688,7 @@ impl OccupantRow {
             picture: None,
             presence: None,
             profile: None,
+            name_color: None,
             marks: Vec::new(),
             selector: None,
             open: false,
@@ -691,6 +704,14 @@ impl OccupantRow {
 
     pub fn profile(mut self, target: super::OpenProfile) -> Self {
         self.profile = Some(target);
+        self
+    }
+
+    pub fn name_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.name_color = color;
         self
     }
 
@@ -815,12 +836,14 @@ impl RenderOnce for OccupantRow {
                     .when_some(self.presence, |avatar, presence| avatar.presence(presence))
                     .when_some(self.profile, |avatar, profile| avatar.profile(profile)),
             )
-            .child(div().flex_1().min_w_0().child(match self.profile {
-                Some(target) => {
-                    super::ProfileName::new("person-name", self.name, target).into_any_element()
-                }
-                None => div().truncate().child(self.name).into_any_element(),
-            }))
+            .child(
+                div().flex_1().min_w_0().child(match self.profile {
+                    Some(target) => super::ProfileName::new("person-name", self.name, target)
+                        .role_color(self.name_color)
+                        .into_any_element(),
+                    None => div().truncate().child(self.name).into_any_element(),
+                }),
+            )
             .child(
                 div()
                     .flex()

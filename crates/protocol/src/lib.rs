@@ -10,6 +10,7 @@
 
 pub mod access_token;
 pub mod account;
+pub mod appearance;
 pub mod audit;
 pub mod auth;
 pub mod call;

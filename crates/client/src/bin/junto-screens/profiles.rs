@@ -45,6 +45,7 @@ fn card(many: bool) -> ProfileRead {
     let roles = if many {
         (0..140)
             .map(|index| ProfileRole {
+                color: None,
                 id: id::<uuid::Uuid>(500 + index),
                 name: format!("Project group {}", index + 1),
                 position: index as i32,
@@ -52,6 +53,7 @@ fn card(many: bool) -> ProfileRead {
             .collect()
     } else {
         vec![ProfileRole {
+            color: None,
             id: id(500),
             name: "Editors".to_owned(),
             position: 1,
@@ -59,12 +61,14 @@ fn card(many: bool) -> ProfileRead {
     };
     ProfileRead::Shown(Arc::new(AccountCard {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: person("Ana"),
             name: "Ana".to_owned(),
             avatar: None,
             departure: None,
         },
         server_roles: vec![ProfileRole {
+            color: None,
             id: id(499),
             name: "Moderators".to_owned(),
             position: 1,

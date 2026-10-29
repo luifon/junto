@@ -276,7 +276,14 @@ impl Shell {
                                         invited.caller,
                                         by,
                                         "invitation-caller",
-                                        sentence,
+                                        super::people::name_in_sentence(
+                                            sentence.clone(),
+                                            0..by.len(),
+                                            self.faces(invited.target.server_id)
+                                                .color(invited.caller),
+                                            colors.travertine,
+                                            false,
+                                        ),
                                     )),
                             ),
                     ),

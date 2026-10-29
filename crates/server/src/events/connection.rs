@@ -132,6 +132,8 @@ struct Connection<S> {
     pending: bool,
     presence_enabled: bool,
     presence_dirty: bool,
+    appearance_enabled: bool,
+    appearance_dirty: bool,
     unsubscribed_since: Instant,
 }
 
@@ -179,6 +181,8 @@ pub async fn run<S>(
         pending: false,
         presence_enabled: false,
         presence_dirty: false,
+        appearance_enabled: false,
+        appearance_dirty: false,
         unsubscribed_since: Instant::now(),
         app,
     };
@@ -213,6 +217,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut held = app.streams.held();
         let mut presence = app.streams.presence_watch();
+        let mut appearance = app.streams.appearance_watch();
         let mut last_heard = Instant::now();
         let mut check_session = true;
         let mut not_before = Instant::now();
@@ -286,6 +291,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                     if changed.is_err() { return End::Close(CloseCode::Stopping); }
                     self.presence_dirty = true;
                 }
+                changed = appearance.changed(), if self.appearance_enabled => {
+                    if changed.is_err() { return End::Close(CloseCode::Stopping); }
+                    self.appearance_dirty = true;
+                }
                 changed = held.changed() => {
                     if changed.is_err() {
                         return End::Close(CloseCode::Stopping);
@@ -325,6 +334,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             self.presence_dirty = false;
             self.control.push_back(Control {
                 message: ServerMessage::PresenceChanged {},
+                starts: None,
+            });
+            return Ok(Step::Again);
+        }
+        if self.appearance_dirty && self.appearance_enabled && self.subscription.is_some() {
+            self.appearance_dirty = false;
+            self.control.push_back(Control {
+                message: ServerMessage::AppearanceChanged {},
                 starts: None,
             });
             return Ok(Step::Again);
@@ -397,6 +414,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// the client connects again with its cursor.
     async fn check_session(&mut self) -> Result<Step, End> {
         let (app, who) = (self.app.clone(), self.who);
+
         let checked = self
             .read(Lane::Session, async move {
                 delivery::validate(&app, &who).await
@@ -424,9 +442,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// subscription starts when the socket has taken it.
     async fn answer(&mut self, level: Level, cursor: Option<Cursor>) -> Result<Step, End> {
         let (app, who) = (self.app.clone(), self.who);
+        let appearance = self.appearance_enabled;
         let start = self
             .read(Lane::Events, async move {
-                delivery::subscribe(&app, &who, level, cursor).await
+                delivery::subscribe(&app, &who, level, cursor, appearance).await
             })
             .await;
         let message = match start {
@@ -437,14 +456,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 message: ServerMessage::Resync { reason },
                 starts: None,
             },
-            Read::Done(Start::Subscribed(cursor)) => Control {
-                message: ServerMessage::Subscribed { level, cursor },
-                starts: Some(Subscription {
-                    level,
-                    position: crate::events::log::change_of(cursor.position),
-                    epoch: cursor.epoch,
-                }),
-            },
+            Read::Done(Start::Subscribed {
+                cursor,
+                appearance_changed,
+            }) => {
+                self.appearance_dirty |= appearance_changed;
+                Control {
+                    message: ServerMessage::Subscribed { level, cursor },
+                    starts: Some(Subscription {
+                        level,
+                        position: crate::events::log::change_of(cursor.position),
+                        epoch: cursor.epoch,
+                    }),
+                }
+            }
         };
         self.asked = None;
         self.unsubscribed_since = Instant::now();
@@ -652,6 +677,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             level,
             cursor,
             presence,
+            appearance,
         }) = serde_json::from_str(&message)
         else {
             return Err(End::Close(CloseCode::InvalidMessage));
@@ -661,6 +687,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             control.starts = None;
         }
         self.presence_enabled = presence;
+        self.appearance_enabled = appearance;
+        if !appearance {
+            self.appearance_dirty = false;
+            self.control
+                .retain(|control| !matches!(control.message, ServerMessage::AppearanceChanged {}));
+        }
         self.asked = Some((level, cursor));
         Ok(())
     }

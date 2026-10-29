@@ -270,6 +270,8 @@ fn an_administrator_sees_why_a_member_above_cannot_be_removed_from_a_workspace_b
     let role = |name: &str| {
         world
             .run(ada.handle.api().create_server_role(&CreateServerRole {
+                color: None,
+                hoist: false,
                 name: name.to_owned(),
                 permissions: vec![ServerPermission::Administrator],
             }))

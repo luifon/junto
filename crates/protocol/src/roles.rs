@@ -1,3 +1,4 @@
+use crate::appearance::RoleColor;
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +7,10 @@ use crate::ids::{AccountId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServerRole {
+    #[serde(default)]
+    pub color: Option<RoleColor>,
+    #[serde(default)]
+    pub hoist: bool,
     #[serde(default)]
     pub position: i32,
     pub id: ServerRoleId,
@@ -16,6 +21,10 @@ pub struct ServerRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateServerRole {
+    #[serde(default)]
+    pub color: Option<RoleColor>,
+    #[serde(default)]
+    pub hoist: bool,
     pub name: String,
     #[serde(default)]
     pub permissions: Vec<ServerPermission>,
@@ -25,6 +34,15 @@ pub struct CreateServerRole {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateServerRole {
+    #[serde(
+        default,
+        deserialize_with = "crate::structure::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<RoleColor>))]
+    pub color: Option<Option<RoleColor>>,
+    #[serde(default)]
+    pub hoist: Option<bool>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -34,6 +52,10 @@ pub struct UpdateServerRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkspaceRole {
+    #[serde(default)]
+    pub color: Option<RoleColor>,
+    #[serde(default)]
+    pub hoist: bool,
     #[serde(default)]
     pub position: i32,
     pub id: WorkspaceRoleId,
@@ -47,6 +69,10 @@ pub struct WorkspaceRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateWorkspaceRole {
+    #[serde(default)]
+    pub color: Option<RoleColor>,
+    #[serde(default)]
+    pub hoist: bool,
     pub name: String,
     #[serde(default)]
     pub permissions: Vec<WorkspacePermission>,
@@ -56,6 +82,15 @@ pub struct CreateWorkspaceRole {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateWorkspaceRole {
+    #[serde(
+        default,
+        deserialize_with = "crate::structure::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<RoleColor>))]
+    pub color: Option<Option<RoleColor>>,
+    #[serde(default)]
+    pub hoist: Option<bool>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

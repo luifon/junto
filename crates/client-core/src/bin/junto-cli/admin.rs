@@ -2375,6 +2375,7 @@ mod tests {
     fn the_lines_of_people_show_members_accounts_invites_and_requests() {
         let role_id = WorkspaceRoleId::generate();
         let member = WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id: AccountId::generate(),
             name: "Grace\u{7}".to_owned(),

@@ -107,6 +107,7 @@ pub enum SubjectKind {
 /// The rule of one role or one person at a place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubjectLine {
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub subject: RuleSubject,
     pub name: String,
     pub kind: SubjectKind,
@@ -150,6 +151,7 @@ impl SubjectLine {
 /// A role or a member of the workspace that has no line on the page yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub subject: RuleSubject,
     pub name: String,
 }
@@ -322,6 +324,14 @@ pub fn rule_list(
     let line = |subject: RuleSubject, name: String, kind: SubjectKind, locked| {
         let rule = current(subject);
         SubjectLine {
+            color: match subject {
+                RuleSubject::Role { role_id } => workspace
+                    .roles
+                    .iter()
+                    .find(|role| role.id == role_id)
+                    .and_then(|role| role.color),
+                _ => None,
+            },
             subject,
             name,
             kind,
@@ -354,6 +364,7 @@ pub fn rule_list(
             subjects.push(line(subject, role.name.clone(), kind, None));
         } else {
             candidates.push(Candidate {
+                color: role.color,
                 subject,
                 name: role.name.clone(),
             });
@@ -397,6 +408,7 @@ pub fn rule_list(
         let mut listed: Vec<Candidate> = members
             .iter()
             .map(|member| Candidate {
+                color: None,
                 subject: RuleSubject::Person {
                     account_id: member.account_id,
                 },
@@ -566,6 +578,8 @@ mod tests {
     fn scene() -> Scene {
         let studio = WorkspaceId::generate();
         let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+            color: None,
+            hoist: false,
             position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
@@ -596,6 +610,7 @@ mod tests {
         let luca = AccountId::generate();
         let (bruno, cara) = (AccountId::generate(), AccountId::generate());
         let member = |account_id, name: &str, role_ids: Vec<WorkspaceRoleId>| WorkspaceMember {
+            appearance: Default::default(),
             avatar: None,
             account_id,
             name: name.to_owned(),
@@ -612,6 +627,7 @@ mod tests {
                 position: 1,
             },
             account: OwnAccount {
+                appearance: Default::default(),
                 id: luca,
                 name: "Luca".to_owned(),
                 avatar: None,

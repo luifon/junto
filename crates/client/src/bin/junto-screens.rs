@@ -244,6 +244,8 @@ fn studio() -> WorkspaceState {
     let mut studio = workspace(10, "Studio", true);
     let workspace_id = studio.workspace.id;
     let role = |number, name: &str, position| WorkspaceRole {
+        color: None,
+        hoist: false,
         position,
         id: id(number),
         workspace_id,
@@ -372,6 +374,7 @@ fn snapshot(account: &str, workspaces: Vec<WorkspaceState>) -> Snapshot {
             position: 40,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: person(account),
             name: account.to_owned(),
             avatar: None,
@@ -430,6 +433,7 @@ fn acme_model_of(
             .iter()
             .enumerate()
             .map(|(index, name)| WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id: person(name),
                 name: (*name).to_owned(),
@@ -3290,6 +3294,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("profiles") => profiles::draw(&mut studio),
         Some("profiles-share") => profiles::draw_share(&mut studio),
         Some("rule-pages") => rule_pages::draw(&mut studio),
+        Some("role-appearance") => roles::draw_appearance(&mut studio),
         Some("roles") => roles::draw(&mut studio),
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),

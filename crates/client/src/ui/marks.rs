@@ -104,6 +104,7 @@ pub fn unread_dot(cx: &App) -> impl IntoElement + use<> {
 pub struct Chip {
     text: SharedString,
     icon: Option<Icon>,
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
 }
 
 impl Chip {
@@ -111,7 +112,16 @@ impl Chip {
         Self {
             text: text.into(),
             icon: None,
+            color: None,
         }
+    }
+
+    pub fn role_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.color = color;
+        self
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
@@ -135,7 +145,9 @@ impl RenderOnce for Chip {
             .border_color(Hsla::from(theme.colors.rule_soft))
             .bg(Hsla::from(theme.colors.plaster))
             .typeface(theme.types.small_strong, &theme)
-            .ink(theme.colors.ink_2)
+            .ink(self.color.map_or(theme.colors.ink_2, |color| {
+                crate::theme::role_ink(color, theme.colors.plaster)
+            }))
             .whitespace_nowrap()
             .when_some(self.icon, |chip, shown| {
                 chip.child(icon(shown, 12.0, theme.colors.ink_2))

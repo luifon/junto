@@ -82,6 +82,7 @@ pub struct PersonTile {
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
     profile: Option<super::OpenProfile>,
+    name_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     speaking: bool,
     marks: Vec<TileMark>,
     label: SharedString,
@@ -109,6 +110,7 @@ impl PersonTile {
             picture: None,
             presence: None,
             profile: None,
+            name_color: None,
             speaking: false,
             marks: Vec::new(),
             label: label.into(),
@@ -153,6 +155,14 @@ impl PersonTile {
     /// The image of the avatar of the person, when the window holds it.
     pub fn profile(mut self, target: super::OpenProfile) -> Self {
         self.profile = Some(target);
+        self
+    }
+
+    pub fn name_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.name_color = color;
         self
     }
 
@@ -287,7 +297,12 @@ impl RenderOnce for PersonTile {
                     .child(match self.profile {
                         Some(target) => div()
                             .debug_selector(move || format!("tile-profile-name:{}", self.seed))
-                            .child(super::ProfileName::new("person-name", self.name, target))
+                            .child(
+                                super::ProfileName::new("person-name", self.name, target).color(
+                                    self.name_color
+                                        .map(|color| crate::theme::role_ink(color, colors.plate)),
+                                ),
+                            )
                             .into_any_element(),
                         None => div()
                             .min_w_0()

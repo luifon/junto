@@ -2253,6 +2253,7 @@ async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_curso
             level,
             cursor,
             presence,
+            ..
         } = serde_json::from_str(&frame).unwrap();
         assert_eq!(presence, enabled && revision >= 3);
         let cursor = cursor.unwrap();
@@ -2281,5 +2282,60 @@ async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_curso
         }
         assert_eq!(rig.live.view().model.unwrap().cursor, cursor);
         assert_eq!(rig.http.count("/snapshot"), 1);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn appearance_invalidations_negotiate_revision_and_reload_the_public_snapshot() {
+    for revision in [3, 4] {
+        let mut rig = rig();
+        rig.want(ConnectionLevel::Selected, "jst_one");
+        let mut peer = rig.peer().await;
+        peer.hello_of(rig.epoch(), "0.1.0", revision).await;
+        let frame = soon("the appearance subscription", peer.from_client.recv())
+            .await
+            .unwrap();
+        let ClientMessage::Subscribe {
+            level,
+            cursor,
+            appearance,
+            ..
+        } = serde_json::from_str(&frame).unwrap();
+        assert_eq!(appearance, revision >= 4);
+        let cursor = cursor.unwrap();
+        peer.send(&ServerMessage::Subscribed { level, cursor })
+            .await;
+        rig.when("live", |view| view.status == StreamStatus::Live)
+            .await;
+        let color = "#336699".parse().unwrap();
+        let position = cursor.position + 100;
+        rig.set_snapshot(position, |model| {
+            model.account.appearance.color = Some(color)
+        });
+        peer.send(&ServerMessage::AppearanceChanged {}).await;
+        if appearance {
+            let (level, cursor) = peer.subscribe().await;
+            assert_eq!(cursor.position, position);
+            peer.send(&ServerMessage::Subscribed { level, cursor })
+                .await;
+            let view = rig
+                .when("the new appearance is live", |view| {
+                    view.status == StreamStatus::Live
+                        && view
+                            .model
+                            .as_ref()
+                            .is_some_and(|model| model.account.appearance.color == Some(color))
+                })
+                .await;
+            assert_eq!(view.model.unwrap().cursor, cursor);
+            assert_eq!(rig.http.count("/snapshot"), 2);
+        } else {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), peer.from_client.recv())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(rig.http.count("/snapshot"), 1);
+        }
     }
 }

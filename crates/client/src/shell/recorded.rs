@@ -405,7 +405,7 @@ impl Shell {
     fn transcript_line(
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
-        presence: junto_client_core::protocol::presence::Presence,
+        faces: &crate::state::people::ServerFaces,
         server: ServerId,
         wide: bool,
         marked: bool,
@@ -429,7 +429,7 @@ impl Shell {
             .child(SharedString::from(row.text.clone()))
             .into_any_element();
         Self::line_frame(
-            row, picture, presence, server, wide, marked, theme, corrected, spoken, None,
+            row, picture, faces, server, wide, marked, theme, corrected, spoken, None,
         )
     }
 
@@ -440,7 +440,7 @@ impl Shell {
     fn line_frame(
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
-        presence: junto_client_core::protocol::presence::Presence,
+        faces: &crate::state::people::ServerFaces,
         server: ServerId,
         wide: bool,
         marked: bool,
@@ -451,6 +451,7 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let line = row.line;
+        let presence = faces.presence(row.account_id);
         let source: SharedString = match &row.source {
             LineFrom::Microphone => text::LINE_MICROPHONE.into(),
             LineFrom::Shared { of } => text::shared_audio_of(of).into(),
@@ -505,6 +506,7 @@ impl Shell {
                                     account: row.account_id,
                                 },
                             )
+                            .role_color(faces.color(row.account_id))
                             .into_any_element(),
                             _ => SharedString::from(row.name.clone()).into_any_element(),
                         }),
@@ -534,6 +536,7 @@ impl Shell {
                                 account: row.account_id,
                             },
                         )
+                        .role_color(faces.color(row.account_id))
                         .into_any_element(),
                         _ => source.into_any_element(),
                     }),
@@ -651,13 +654,7 @@ impl Shell {
         for row in transcript.lines.iter().take(SHOWN_LINES) {
             let picture = faces.image(row.account_id);
             parts.push(Self::transcript_line(
-                row,
-                picture,
-                faces.presence(row.account_id),
-                server_id,
-                true,
-                false,
-                theme,
+                row, picture, &faces, server_id, true, false, theme,
             ));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
@@ -1264,7 +1261,7 @@ impl Shell {
                             ))),
                     )
                     .child(match &detail.started_by {
-                        Some(_) => div()
+                        Some(name) => div()
                             .flex()
                             .items_center()
                             .gap(u(4.))
@@ -1280,7 +1277,17 @@ impl Shell {
                                     account: detail.starter,
                                 },
                                 text::profile::OPEN,
-                                line(text::recording_span(detail)),
+                                div().text_size(u(12.5)).ink(colors.ink_2).child({
+                                    let label = text::recording_span(detail);
+                                    let end = label.len();
+                                    super::people::name_in_sentence(
+                                        label,
+                                        end.saturating_sub(name.len())..end,
+                                        self.faces(card.server_id).color(detail.starter),
+                                        colors.travertine,
+                                        false,
+                                    )
+                                }),
                             ))
                             .into_any_element(),
                         None => line(text::recording_span(detail)).into_any_element(),
@@ -1429,7 +1436,7 @@ impl Shell {
         let line = Self::line_frame(
             row,
             picture,
-            self.faces(server_id).presence(row.account_id),
+            &self.faces(server_id),
             server_id,
             false,
             marked,

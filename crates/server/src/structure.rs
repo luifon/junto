@@ -152,7 +152,7 @@ async fn register(
 /// The statements of the export. Their number does not depend on the size of the
 /// structure. They are constants so that a test can read their plans.
 pub const EXPORT_SERVER_ROLES: &str =
-    "select coalesce(i.identifier, r.id), r.name, r.permissions, r.position
+    "select coalesce(i.identifier, r.id), r.name, r.permissions, r.position, r.color, r.hoist
      from server_roles r
      left join structure_identifiers i on i.kind = 'server_role' and i.object_id = r.id
      order by r.id";
@@ -162,7 +162,7 @@ pub const EXPORT_WORKSPACES: &str = "select w.id, coalesce(i.identifier, w.id), 
      where w.deleted_at is null
      order by w.id";
 pub const EXPORT_ROLES: &str =
-    "select r.workspace_id, coalesce(i.identifier, r.id), r.name, r.permissions, r.is_everyone, r.position
+    "select r.workspace_id, coalesce(i.identifier, r.id), r.name, r.permissions, r.is_everyone, r.position, r.color, r.hoist
      from workspace_roles r
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = r.id
      order by r.is_everyone desc, r.id";
@@ -256,15 +256,17 @@ fn override_entries(
 async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let default_workspace = store::default_workspace(&mut *connection).await?;
 
-    let server_roles: Vec<(Uuid, String, i64, i32)> = sqlx::query_as(EXPORT_SERVER_ROLES)
-        .fetch_all(&mut *connection)
-        .await?;
+    let server_roles: Vec<(Uuid, String, i64, i32, Option<i32>, bool)> =
+        sqlx::query_as(EXPORT_SERVER_ROLES)
+            .fetch_all(&mut *connection)
+            .await?;
     let workspaces: Vec<(WorkspaceId, Uuid, String)> = sqlx::query_as(EXPORT_WORKSPACES)
         .fetch_all(&mut *connection)
         .await?;
-    let roles: Vec<(WorkspaceId, Uuid, String, i64, bool, i32)> = sqlx::query_as(EXPORT_ROLES)
-        .fetch_all(&mut *connection)
-        .await?;
+    let roles: Vec<(WorkspaceId, Uuid, String, i64, bool, i32, Option<i32>, bool)> =
+        sqlx::query_as(EXPORT_ROLES)
+            .fetch_all(&mut *connection)
+            .await?;
     let categories: Vec<(Uuid, WorkspaceId, Uuid, String, i32)> = sqlx::query_as(EXPORT_CATEGORIES)
         .fetch_all(&mut *connection)
         .await?;
@@ -303,10 +305,12 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
             .get_or_insert_with(Vec::new)
             .push(term);
     }
-    for (workspace_id, entry, name, permissions, everyone, position) in roles {
+    for (workspace_id, entry, name, permissions, everyone, position, color, hoist) in roles {
         entry_of(&mut entries, &place, workspace_id)?
             .roles
             .push(RoleEntry {
+                color: Some(crate::appearance::color(color)),
+                hoist: Some(hoist),
                 position: Some(position),
                 id: StructureId::from_uuid(entry),
                 name,
@@ -361,8 +365,10 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
         format: STRUCTURE_FORMAT,
         server_roles: server_roles
             .into_iter()
-            .map(|(entry, name, permissions, position)| {
+            .map(|(entry, name, permissions, position, color, hoist)| {
                 Ok(ServerRoleEntry {
+                    color: Some(crate::appearance::color(color)),
+                    hoist: Some(hoist),
                     position: Some(position),
                     id: StructureId::from_uuid(entry),
                     name,
@@ -463,6 +469,8 @@ async fn apply_one(
             crate::role_order::reorder(connection, access, now, Some(workspace), &resolved).await
         }
         StructureChange::CreateServerRole {
+            color,
+            hoist,
             id,
             name,
             permissions,
@@ -470,6 +478,8 @@ async fn apply_one(
             require_unused(&mut *connection, ServerRoleKind, *id).await?;
             let held: ServerPermissions = permissions.iter().copied().collect();
             let role = ServerRole {
+                color: *color,
+                hoist: *hoist,
                 position: 1,
                 id: ServerRoleId::generate(),
                 name: validate::name("name", name)?,
@@ -486,6 +496,8 @@ async fn apply_one(
             register(connection, created, ServerRoleKind, *id, role.id.as_uuid()).await
         }
         StructureChange::UpdateServerRole {
+            color,
+            hoist,
             id,
             name,
             permissions,
@@ -496,7 +508,19 @@ async fn apply_one(
                 .as_ref()
                 .map(|permissions| permissions.iter().copied().collect());
             let role_id = ServerRoleId::from_uuid(role_id);
-            server_roles::update(connection, access, now, role_id, name, held).await?;
+            server_roles::update(
+                connection,
+                access,
+                now,
+                role_id,
+                name,
+                held,
+                crate::appearance::Patch {
+                    color: *color,
+                    hoist: *hoist,
+                },
+            )
+            .await?;
             Ok(())
         }
         StructureChange::CreateWorkspace {
@@ -522,6 +546,8 @@ async fn apply_one(
             Ok(())
         }
         StructureChange::CreateWorkspaceRole {
+            color,
+            hoist,
             id,
             workspace,
             name,
@@ -531,6 +557,8 @@ async fn apply_one(
             let workspace_id = resolve(&mut *connection, Workspace, *workspace).await?;
             let held: WorkspacePermissions = permissions.iter().copied().collect();
             let role = WorkspaceRole {
+                color: *color,
+                hoist: *hoist,
                 position: 1,
                 id: WorkspaceRoleId::generate(),
                 workspace_id: WorkspaceId::from_uuid(workspace_id),
@@ -543,6 +571,8 @@ async fn apply_one(
             register(connection, created, role_kind, *id, role.id.as_uuid()).await
         }
         StructureChange::UpdateWorkspaceRole {
+            color,
+            hoist,
             id,
             name,
             permissions,
@@ -559,7 +589,19 @@ async fn apply_one(
                 .as_ref()
                 .map(|permissions| permissions.iter().copied().collect());
             let ids = (workspace_id, WorkspaceRoleId::from_uuid(role_id));
-            workspace_roles::update(connection, access, now, ids, name, held).await?;
+            workspace_roles::update(
+                connection,
+                access,
+                now,
+                ids,
+                name,
+                held,
+                crate::appearance::Patch {
+                    color: *color,
+                    hoist: *hoist,
+                },
+            )
+            .await?;
             Ok(())
         }
         StructureChange::CreateCategory {

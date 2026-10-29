@@ -439,11 +439,13 @@ impl Shell {
                                 .debug_selector(move || format!("line-changed:{line}"))
                                 .ink(colors.ink_3)
                                 .child(match changed.account {
-                                    Some(account) => super::people::person_label(
+                                    Some(account) => super::people::person_sentence_label(
                                         &faces,
                                         account,
                                         txt::changed_by(&changed.by, &changed.at),
+                                        txt::changed_name_range(&changed.by),
                                         "transcript-corrector",
+                                        colors.travertine,
                                     ),
                                     None => SharedString::from(txt::changed_by(
                                         &changed.by,
@@ -560,14 +562,21 @@ impl Shell {
                                     voice.name.clone().unwrap_or_else(|| voice.label.clone()),
                                 )),
                         )
-                        .child(div().text_size(u(12.5)).ink(colors.ink_2).child(
-                            super::people::person_label(
-                                &faces,
-                                voice.account_id,
-                                txt::voice_of(&voice.label, &voice.of),
-                                "voice-source",
+                        .child(
+                            div().text_size(u(12.5)).ink(colors.ink_2).child(
+                                super::people::person_sentence_label(
+                                    &faces,
+                                    voice.account_id,
+                                    txt::voice_of(&voice.label, &voice.of),
+                                    txt::voice_of(&voice.label, &voice.of)
+                                        .len()
+                                        .saturating_sub(voice.of.len())
+                                        ..txt::voice_of(&voice.label, &voice.of).len(),
+                                    "voice-source",
+                                    colors.travertine,
+                                ),
                             ),
-                        ))
+                        )
                         .when_some(voice.changed.clone(), |column, changed| {
                             column.child(
                                 div()
@@ -575,11 +584,13 @@ impl Shell {
                                     .text_size(u(12.5))
                                     .ink(colors.ink_3)
                                     .child(match changed.account {
-                                        Some(account) => super::people::person_label(
+                                        Some(account) => super::people::person_sentence_label(
                                             &faces,
                                             account,
                                             txt::named_by(&changed.by, &changed.at),
+                                            txt::named_name_range(&changed.by),
                                             "voice-renamed-by",
+                                            colors.travertine,
                                         ),
                                         None => SharedString::from(txt::named_by(
                                             &changed.by,

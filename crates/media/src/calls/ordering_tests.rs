@@ -116,6 +116,7 @@ fn fixture() -> Fixture {
             position: 40,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: account_id,
             name: "Person".into(),
             avatar: None,

@@ -112,6 +112,7 @@ impl RenderOnce for SideHeader {
 pub struct SectionLabel {
     text: SharedString,
     count: Option<usize>,
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
 }
 
 impl SectionLabel {
@@ -119,9 +120,17 @@ impl SectionLabel {
         Self {
             text: text.into(),
             count: None,
+            color: None,
         }
     }
 
+    pub fn role_color(
+        mut self,
+        color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    ) -> Self {
+        self.color = color;
+        self
+    }
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
         self
@@ -141,7 +150,9 @@ impl RenderOnce for SectionLabel {
             .pl(u(14.0))
             .pr(u(12.0))
             .typeface(theme.types.label, &theme)
-            .ink(theme.colors.bronze)
+            .ink(self.color.map_or(theme.colors.bronze, |color| {
+                crate::theme::role_ink(color, theme.colors.plaster)
+            }))
             .child(self.text)
             .child(
                 div()

@@ -72,3 +72,7 @@ The card uses a separate focus handle and element scope. A dialog beneath it rem
 - An account whose requests get no answer is asked for three times after each replaced state.
 - An avatar that an account changes twice in a short time is read twice. An image whose bytes changed between the profile and the read is not drawn until the event with the new hash arrives.
 - A picture of the preset with more than 1024 pixels per side is stored and shown, and each server that the device joins afterwards refuses it. The settings name those servers.
+
+The shared identity view also carries public role colour (ADR 0309). It is independent of the image cache and includes avatarless profiles, the own account and every member of loaded rosters. Workspace overlays retain only roster entries and share their maps between renderers. Role chips and names use the surface contrast rule of ADR 0791. Public appearance invalidation reloads profiles through the existing ownership checks.
+
+A replaced state clears cached role colours while retaining names and images for their existing display rule. Fresh own-account and roster metadata are authoritative, including an absent colour. A previous cached colour cannot survive an explicit reset.

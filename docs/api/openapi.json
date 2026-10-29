@@ -12558,6 +12558,31 @@
           }
         }
       },
+      "AccountAppearance": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HoistedRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "AccountCard": {
         "type": "object",
         "required": [
@@ -12610,6 +12635,9 @@
           "name"
         ],
         "properties": {
+          "appearance": {
+            "$ref": "#/components/schemas/AccountAppearance"
+          },
           "avatar": {
             "oneOf": [
               {
@@ -16212,6 +16240,19 @@
           "name"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },
@@ -16240,6 +16281,19 @@
           "name"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },
@@ -16838,6 +16892,36 @@
               "null"
             ],
             "description": "True while the free disk space of the recordings, of the attachments or of the\nexports is at or below the reserve: the server starts no recording, stops the ones\nthat run, and refuses new uploads and exports (ADR 0006). Absent on a server without\nsuch a directory, and when no free space can be read."
+          }
+        }
+      },
+      "HoistedRole": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "position"
+        ],
+        "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
@@ -17980,6 +18064,9 @@
           "workspace_ids"
         ],
         "properties": {
+          "appearance": {
+            "$ref": "#/components/schemas/AccountAppearance"
+          },
           "avatar": {
             "oneOf": [
               {
@@ -18235,6 +18322,16 @@
           "position"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -18935,6 +19032,10 @@
           }
         }
       },
+      "RoleColor": {
+        "type": "string",
+        "pattern": "^#[0-9a-fA-F]{6}$"
+      },
       "RoleEntry": {
         "type": "object",
         "required": [
@@ -18942,9 +19043,25 @@
           "name"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "everyone": {
             "type": "boolean",
             "description": "True for the role that every member holds. An entry with this mark stands for that\nrole of its workspace, whatever its identifier is."
+          },
+          "hoist": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "id": {
             "$ref": "#/components/schemas/StructureId"
@@ -19426,6 +19543,19 @@
           "permissions"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/ServerRoleId"
           },
@@ -19451,6 +19581,22 @@
           "name"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "id": {
             "$ref": "#/components/schemas/StructureId"
           },
@@ -19971,6 +20117,19 @@
                   "create_server_role"
                 ]
               },
+              "color": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RoleColor"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "hoist": {
+                "type": "boolean"
+              },
               "id": {
                 "$ref": "#/components/schemas/StructureId"
               },
@@ -19996,6 +20155,22 @@
                 "type": "string",
                 "enum": [
                   "update_server_role"
+                ]
+              },
+              "color": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RoleColor"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "hoist": {
+                "type": [
+                  "boolean",
+                  "null"
                 ]
               },
               "id": {
@@ -20082,6 +20257,19 @@
                   "create_workspace_role"
                 ]
               },
+              "color": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RoleColor"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "hoist": {
+                "type": "boolean"
+              },
               "id": {
                 "$ref": "#/components/schemas/StructureId"
               },
@@ -20110,6 +20298,22 @@
                 "type": "string",
                 "enum": [
                   "update_workspace_role"
+                ]
+              },
+              "color": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RoleColor"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "hoist": {
+                "type": [
+                  "boolean",
+                  "null"
                 ]
               },
               "id": {
@@ -20567,7 +20771,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 4. This tool also reads the formats 1 to 3.",
+            "description": "The version of the file format: 5. This tool also reads the formats 1 to 4.",
             "minimum": 0
           },
           "server_roles": {
@@ -21183,6 +21387,22 @@
         "type": "object",
         "description": "An absent field keeps its value.",
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "name": {
             "type": [
               "string",
@@ -21215,6 +21435,22 @@
         "type": "object",
         "description": "An absent field keeps its value.",
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "name": {
             "type": [
               "string",
@@ -21376,6 +21612,9 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "appearance": {
+            "$ref": "#/components/schemas/AccountAppearance"
+          },
           "avatar": {
             "oneOf": [
               {
@@ -21467,6 +21706,19 @@
           "is_everyone"
         ],
         "properties": {
+          "color": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RoleColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hoist": {
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/WorkspaceRoleId"
           },

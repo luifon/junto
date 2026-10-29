@@ -78,6 +78,7 @@ async fn the_first_owner_and_a_join_record_the_new_account_and_its_device() {
         Event::WorkspaceMemberAdded {
             workspace_id: workspace.id,
             member: WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id: session.account_id,
                 name: "Newcomer".to_owned(),
@@ -211,6 +212,7 @@ async fn joining_further_workspaces_and_join_requests_are_recorded() {
         .empty(StatusCode::NO_CONTENT);
 
     let member = WorkspaceMember {
+        appearance: Default::default(),
         avatar: None,
         account_id: guest.account_id,
         name: "Guest".to_owned(),

@@ -475,7 +475,12 @@ impl Shell {
         cx: &gpui::App,
     ) -> AnyElement {
         let colors = theme.colors;
-        let faces = self.shown_faces();
+        let faces = self.shown_faces().in_workspace(
+            self.view
+                .as_ref()
+                .and_then(|view| view.call.as_ref())
+                .and_then(|call| call.workspace_id),
+        );
         let people = panel.people.as_slice();
         // A direct-message call rings until the other person takes a place in it.
         let ringing = panel.direct().filter(|direct| !direct.joined);
@@ -627,6 +632,7 @@ impl Shell {
                     .focused(focused)
                     .picture(faces.image(occupant.account_id))
                     .presence(faces.presence(occupant.account_id))
+                    .name_color(faces.color(occupant.account_id))
                     .when_some(faces.server_id(), |tile, server| {
                         tile.profile(crate::ui::OpenProfile {
                             server,
@@ -761,7 +767,21 @@ impl Shell {
                                         direct.other,
                                         direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
                                         "ringing-person",
-                                        note(text::calling(direct.name.as_deref())),
+                                        {
+                                            let name = direct
+                                                .name
+                                                .as_deref()
+                                                .unwrap_or(text::UNKNOWN_PERSON);
+                                            let line = text::calling(Some(name));
+                                            let end = line.len().saturating_sub('…'.len_utf8());
+                                            super::people::name_in_sentence(
+                                                line,
+                                                end.saturating_sub(name.len())..end,
+                                                faces.color(direct.other),
+                                                colors.travertine,
+                                                false,
+                                            )
+                                        },
                                     )),
                             )
                         })
@@ -1121,7 +1141,12 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        let faces = self.shown_faces();
+        let faces = self.shown_faces().in_workspace(
+            self.view
+                .as_ref()
+                .and_then(|view| view.call.as_ref())
+                .and_then(|call| call.workspace_id),
+        );
         let state_line = |states: Vec<(Icon, SharedString)>| {
             let mut line = div()
                 .flex()

@@ -46,6 +46,7 @@ pub(crate) fn person_name(
             name,
             crate::ui::OpenProfile { server, account },
         )
+        .role_color(faces.color(account))
         .into_any_element(),
         None => name.into_any_element(),
     }
@@ -121,7 +122,13 @@ impl Shell {
     pub(crate) fn shown_faces(&self) -> ServerFaces {
         self.view
             .as_ref()
-            .and_then(|view| Some(view.faces.of(view.selected.as_ref()?.id)))
+            .and_then(|view| {
+                Some(
+                    view.faces
+                        .of(view.selected.as_ref()?.id)
+                        .in_workspace(view.workspace().map(|workspace| workspace.id)),
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -273,4 +280,54 @@ impl Shell {
         );
         rows
     }
+}
+
+/// Colours a retained account name within a sentence without colouring its other words.
+pub(crate) fn name_in_sentence(
+    line: impl Into<SharedString>,
+    range: std::ops::Range<usize>,
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    background: gpui::Rgba,
+    bold: bool,
+) -> gpui::StyledText {
+    let line = line.into();
+    let style = gpui::HighlightStyle {
+        color: color.map(|color| crate::theme::role_ink(color, background).into()),
+        font_weight: bold.then_some(gpui::FontWeight::BOLD),
+        ..gpui::HighlightStyle::default()
+    };
+    if range.start <= range.end
+        && range.end <= line.len()
+        && line.is_char_boundary(range.start)
+        && line.is_char_boundary(range.end)
+    {
+        gpui::StyledText::new(line).with_highlights([(range, style)])
+    } else {
+        gpui::StyledText::new(line)
+    }
+}
+
+pub(crate) fn person_sentence_label(
+    faces: &ServerFaces,
+    account: AccountId,
+    line: impl Into<SharedString>,
+    range: std::ops::Range<usize>,
+    id: &'static str,
+    background: gpui::Rgba,
+) -> AnyElement {
+    let line = line.into();
+    div()
+        .flex()
+        .items_center()
+        .gap(u(4.))
+        .min_w_0()
+        .child(crate::ui::PresenceMark::new(faces.presence(account), 10.))
+        .child(person_element(
+            faces,
+            account,
+            &line,
+            id,
+            name_in_sentence(line.clone(), range, faces.color(account), background, false),
+        ))
+        .into_any_element()
 }

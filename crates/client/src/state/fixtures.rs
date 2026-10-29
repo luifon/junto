@@ -83,6 +83,7 @@ pub fn model_at(position: u64) -> ServerModel {
             position,
         },
         account: OwnAccount {
+            appearance: Default::default(),
             id: AccountId::generate(),
             name: "Luca".to_owned(),
             avatar: None,

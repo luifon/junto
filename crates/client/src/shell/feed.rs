@@ -612,7 +612,24 @@ impl Rich {
                     rich.highlights.push((
                         start..status_mark.map_or(rich.text.len(), |(start, _)| start),
                         HighlightStyle {
-                            color: Some(colors.terracotta_deep.into()),
+                            color: Some(
+                                match node {
+                                    Inline::Account { account_id } => presence
+                                        .and_then(|faces| faces.color(*account_id))
+                                        .map_or(colors.terracotta_deep, |color| {
+                                            crate::theme::role_ink(color, colors.terracotta_wash)
+                                        }),
+                                    Inline::Role { role_id } => names
+                                        .role_colors
+                                        .get(role_id)
+                                        .copied()
+                                        .map_or(colors.terracotta_deep, |color| {
+                                            crate::theme::role_ink(color, colors.terracotta_wash)
+                                        }),
+                                    _ => colors.terracotta_deep,
+                                }
+                                .into(),
+                            ),
                             background_color: Some(colors.terracotta_wash.into()),
                             font_weight: Some(FontWeight::BOLD),
                             ..HighlightStyle::default()
@@ -1786,7 +1803,11 @@ impl Shell {
                         .child(text::NEW_MESSAGES),
                 )
                 .into_any_element(),
-            FeedRow::System(row) => system_line(row, &self.faces(feed.server_id), &theme),
+            FeedRow::System(row) => system_line(
+                row,
+                &self.faces(feed.server_id).for_place(feed.place),
+                &theme,
+            ),
             FeedRow::Recording(row) => self.render_recording_card(index, row, cx),
             FeedRow::Message(row) => {
                 let shape = if compact {
@@ -2939,7 +2960,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme.colors;
-        let faces = self.faces(feed.server_id);
+        let faces = self.faces(feed.server_id).for_place(feed.place);
         let mark = row.thread.as_ref()?;
         let channel_id = crate::state::feed::channel_of(feed.place)?;
         let (server_id, message_id) = (feed.server_id, row.message.id);
@@ -3128,7 +3149,7 @@ impl Shell {
         let seed = message
             .author_id
             .map_or(0, |author| author.as_uuid().as_u128());
-        let faces = self.faces(feed.server_id);
+        let faces = self.faces(feed.server_id).for_place(feed.place);
         let picture = message.author_id.and_then(|author| faces.image(author));
         let body: Vec<AnyElement> = if message.deleted {
             vec![
@@ -3828,7 +3849,14 @@ fn system_line(
                 start..line.len(),
                 HighlightStyle {
                     font_weight: Some(FontWeight::BOLD),
-                    color: Some(colors.ink.into()),
+                    color: Some(
+                        part.account
+                            .and_then(|account| faces.color(account))
+                            .map_or(colors.ink, |color| {
+                                crate::theme::role_ink(color, colors.travertine)
+                            })
+                            .into(),
+                    ),
                     ..HighlightStyle::default()
                 },
             ));
@@ -4144,5 +4172,38 @@ mod tests {
             end = held.end;
         }
         assert_eq!(end, a.text.len());
+    }
+}
+
+#[cfg(test)]
+mod role_label_colours {
+    use super::*;
+    #[test]
+    fn role_mentions_keep_their_role_colour_and_ordinary_mention_styling() {
+        let role = junto_client_core::protocol::ids::WorkspaceRoleId::generate();
+        let color = junto_client_core::protocol::appearance::RoleColor::from_rgb(51, 102, 153);
+        let names = Names {
+            roles: [(role, "Guides".to_owned())].into(),
+            role_colors: [(role, color)].into(),
+            ..Default::default()
+        };
+        let theme = Theme::stone();
+        let rich = Rich::of(
+            &[Inline::Role { role_id: role }],
+            &names,
+            &theme,
+            &Drawings::default(),
+        );
+        assert!(rich.text.contains("@Guides"));
+        let style = rich.highlights[0].1;
+        assert_eq!(
+            style.color,
+            Some(crate::theme::role_ink(color, theme.colors.terracotta_wash).into())
+        );
+        assert_eq!(style.font_weight, Some(FontWeight::BOLD));
+        assert_eq!(
+            style.background_color,
+            Some(theme.colors.terracotta_wash.into())
+        );
     }
 }

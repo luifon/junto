@@ -321,7 +321,8 @@ pub const MEMBER_LIST: &str = "select m.account_id,
                     (select jsonb_build_object(
                         'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
                         'bytes', octet_length(av.content), 'width', av.width, 'height', av.height)
-                     from account_avatars av where av.account_id = m.account_id) as avatar
+                     from account_avatars av where av.account_id = m.account_id) as avatar,
+                    account_role_appearance(m.account_id) as appearance
              from workspace_members m
              where m.workspace_id = $1
              order by m.account_id";
@@ -352,6 +353,7 @@ pub async fn list_members(
         Ok(rows
             .into_iter()
             .map(|row| WorkspaceMember {
+                appearance: row.appearance.0,
                 avatar: row.avatar.map(|value| value.0),
                 account_id: row.account_id,
                 name: row.name,
@@ -364,6 +366,7 @@ pub async fn list_members(
 
 #[derive(sqlx::FromRow)]
 struct MemberRow {
+    appearance: sqlx::types::Json<junto_protocol::appearance::AccountAppearance>,
     account_id: AccountId,
     name: String,
     role_ids: Vec<WorkspaceRoleId>,

@@ -107,6 +107,8 @@ fn every_control_follows_a_rule_and_a_role_that_change_while_the_window_is_open(
         })
         .collect();
     let change = |permissions: Vec<WorkspacePermission>| UpdateWorkspaceRole {
+        color: None,
+        hoist: None,
         name: None,
         permissions: Some(permissions),
     };

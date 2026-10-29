@@ -337,7 +337,11 @@ impl Shell {
                     Some(summary.into()),
                     theme,
                 ),
-                _ => line_text(name.clone(), Some(summary.into()), theme),
+                _ => super::line_identity(
+                    crate::ui::role_name(name.clone(), subject.color, theme),
+                    Some(summary.into()),
+                    theme,
+                ),
             })
             .child(Chip::new(text::admin::overrides::kind(subject.kind)));
         let locked = subject.locked.map(text::admin::overrides::locked);
@@ -519,7 +523,11 @@ impl Shell {
                             None,
                             theme,
                         ),
-                        _ => line_text(candidate.name.clone(), None, theme),
+                        _ => super::line_identity(
+                            crate::ui::role_name(candidate.name.clone(), candidate.color, theme),
+                            None,
+                            theme,
+                        ),
                     })
                     .child(Chip::new(text::admin::overrides::kind(kind)))
                     .child(named(

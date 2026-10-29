@@ -70,6 +70,7 @@ enum Step {
 /// One entry of the mention picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Candidate {
+    pub color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub target: MentionTarget,
     pub name: String,
     /// What the entry is, under its name.
@@ -177,6 +178,7 @@ fn direct_candidates(row: &DirectRow, query: &str) -> Vec<Candidate> {
     row.name
         .as_ref()
         .map(|name| Candidate {
+            color: None,
             target: MentionTarget::Account(row.account_id),
             name: name.clone(),
             detail: text::IN_THIS_CONVERSATION,
@@ -214,6 +216,7 @@ fn candidates(
                 .iter()
                 .filter(|member| Some(member.account_id) != own)
                 .map(|member| Candidate {
+                    color: None,
                     target: MentionTarget::Account(member.account_id),
                     name: member.name.clone(),
                     detail: text::MEMBER,
@@ -224,6 +227,7 @@ fn candidates(
     // everyone from a person with "mention everyone" (ADR 0790).
     if writing.mention_roles {
         all.extend(workspace.roles.iter().map(|(role_id, name)| Candidate {
+            color: workspace.role_colors.get(role_id).copied(),
             target: MentionTarget::Role(*role_id),
             name: name.clone(),
             detail: text::ROLE,
@@ -231,6 +235,7 @@ fn candidates(
     }
     if writing.mention_everyone {
         all.push(Candidate {
+            color: None,
             target: MentionTarget::Everyone,
             name: text::EVERYONE.to_owned(),
             detail: text::EVERYONE_HELP,
@@ -1818,8 +1823,12 @@ impl Shell {
                                         candidate.name.clone(),
                                         "mention-candidate-name",
                                     ),
-                                    None => SharedString::from(candidate.name.clone())
-                                        .into_any_element(),
+                                    None => crate::ui::role_name(
+                                        candidate.name.clone(),
+                                        candidate.color,
+                                        &theme,
+                                    )
+                                    .into_any_element(),
                                 }),
                         )
                         .child(div().flex_1())

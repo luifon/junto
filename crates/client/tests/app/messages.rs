@@ -1834,6 +1834,8 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
         .run(api.create_workspace_role(
             workspace_id,
             &CreateWorkspaceRole {
+                color: None,
+                hoist: false,
                 name: "Moderators".to_owned(),
                 permissions: vec![WorkspacePermission::ManageMessages],
             },

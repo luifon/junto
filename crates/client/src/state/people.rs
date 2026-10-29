@@ -112,6 +112,9 @@ pub struct Face {
     pub image: Option<Arc<RenderImage>>,
 }
 
+type LocalColors = HashMap<AccountId, Option<junto_client_core::protocol::appearance::RoleColor>>;
+type WorkspaceColors = HashMap<junto_client_core::protocol::ids::WorkspaceId, Arc<LocalColors>>;
+
 /// The pictures of the people of one server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerFaces {
@@ -121,9 +124,46 @@ pub struct ServerFaces {
     own: Option<(AccountId, Option<Face>)>,
     others: Arc<HashMap<AccountId, Face>>,
     presence: Arc<HashMap<AccountId, junto_client_core::protocol::presence::Presence>>,
+    channel_workspaces: Arc<
+        HashMap<
+            junto_client_core::protocol::ids::ChannelId,
+            junto_client_core::protocol::ids::WorkspaceId,
+        >,
+    >,
+    colors: Arc<HashMap<AccountId, junto_client_core::protocol::appearance::RoleColor>>,
+    workspace_colors: Arc<WorkspaceColors>,
+    local_colors: Option<Arc<LocalColors>>,
 }
 
 impl ServerFaces {
+    pub fn for_place(self, place: junto_client_core::model::PlaceId) -> Self {
+        let workspace = match place {
+            junto_client_core::model::PlaceId::Channel(id)
+            | junto_client_core::model::PlaceId::Thread { channel_id: id, .. } => {
+                self.channel_workspaces.get(&id).copied()
+            }
+            _ => None,
+        };
+        self.in_workspace(workspace)
+    }
+    pub fn color(
+        &self,
+        account: AccountId,
+    ) -> Option<junto_client_core::protocol::appearance::RoleColor> {
+        self.local_colors
+            .as_ref()
+            .and_then(|local| local.get(&account).copied())
+            .unwrap_or_else(|| self.colors.get(&account).copied())
+    }
+    pub fn in_workspace(
+        mut self,
+        workspace: Option<junto_client_core::protocol::ids::WorkspaceId>,
+    ) -> Self {
+        self.local_colors = workspace
+            .and_then(|id| self.workspace_colors.get(&id))
+            .cloned();
+        self
+    }
     pub fn server_id(&self) -> Option<ServerId> {
         self.server_id
     }
@@ -263,6 +303,7 @@ struct Entry<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Profile {
+    color: Option<junto_client_core::protocol::appearance::RoleColor>,
     /// Absent when the server sent no character that a name can hold.
     name: Option<String>,
     avatar: Option<PictureHash>,
@@ -279,6 +320,11 @@ impl Profile {
             .take(NAME_CHARACTERS)
             .collect();
         Self {
+            color: profile
+                .departure
+                .is_none()
+                .then_some(profile.appearance.color)
+                .flatten(),
             name: (!name.trim().is_empty()).then_some(name),
             avatar: profile
                 .avatar
@@ -701,6 +747,9 @@ impl People {
         };
         for entry in held.profiles.values_mut() {
             entry.read = Read::Wanted;
+            if let Some(profile) = &mut entry.value {
+                profile.color = None;
+            }
         }
         for entry in held.images.values_mut() {
             if matches!(entry.read, Read::Unanswered(_)) {
@@ -823,6 +872,7 @@ impl People {
             Entry {
                 read: Read::Settled,
                 value: Some(Profile {
+                    color: None,
                     name: Some(name.to_owned()),
                     avatar: picture.as_ref().map(|(hash, _)| *hash),
                     departure: None,
@@ -914,7 +964,52 @@ pub(super) fn faces(servers: &[ServerSnapshot], people: &People) -> Faces {
         servers: servers
             .iter()
             .filter_map(|server| {
-                let account = &shown_model(server)?.account;
+                let model = shown_model(server)?;
+                let account = &model.account;
+                let mut colors: HashMap<_, _> = people
+                    .servers
+                    .get(&server.id)
+                    .into_iter()
+                    .flat_map(|held| held.profiles.iter())
+                    .filter_map(|(id, entry)| Some((*id, entry.value.as_ref()?.color?)))
+                    .collect();
+                for workspace in &model.workspaces {
+                    for member in workspace.members.loaded().into_iter().flatten() {
+                        match member.appearance.color {
+                            Some(color) => {
+                                colors.insert(member.account_id, color);
+                            }
+                            None => {
+                                colors.remove(&member.account_id);
+                            }
+                        }
+                    }
+                }
+                match account.appearance.color {
+                    Some(color) => {
+                        colors.insert(account.id, color);
+                    }
+                    None => {
+                        colors.remove(&account.id);
+                    }
+                }
+                let workspace_colors = model
+                    .workspaces
+                    .iter()
+                    .filter_map(|workspace| {
+                        let members = workspace.members.loaded()?;
+                        let mut local = HashMap::new();
+                        for member in members {
+                            let (color, _) = super::role_appearance::appearance(
+                                &workspace.roles,
+                                &member.role_ids,
+                                &member.appearance,
+                            );
+                            local.insert(member.account_id, color);
+                        }
+                        Some((workspace.workspace.id, Arc::new(local)))
+                    })
+                    .collect();
                 let own = account
                     .avatar
                     .as_ref()
@@ -930,6 +1025,20 @@ pub(super) fn faces(servers: &[ServerSnapshot], people: &People) -> Faces {
                         own: Some((account.id, own)),
                         others: people.faces(server.id),
                         presence: Arc::default(),
+                        channel_workspaces: Arc::new(
+                            model
+                                .workspaces
+                                .iter()
+                                .flat_map(|workspace| {
+                                    workspace.channels.iter().map(move |channel| {
+                                        (channel.channel.id, workspace.workspace.id)
+                                    })
+                                })
+                                .collect(),
+                        ),
+                        colors: Arc::new(colors),
+                        workspace_colors: Arc::new(workspace_colors),
+                        local_colors: None,
                     },
                 ))
             })

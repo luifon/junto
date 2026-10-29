@@ -50,6 +50,8 @@ async fn a_member_follows_new_roles_their_order_and_a_reorder_without_a_request(
     let (owner, member, workspace_id) = (&scene.owner, &scene.member, scene.workspace_id);
     let create = |name: &str, permissions: Vec<WorkspacePermission>| {
         let role = CreateWorkspaceRole {
+            color: None,
+            hoist: false,
             name: name.to_owned(),
             permissions,
         };
@@ -191,6 +193,8 @@ async fn the_server_roles_are_read_in_their_order_by_a_holder_of_ban_members() {
     let (owner, member) = (&scene.owner, &scene.member);
     let create = |name: &str, permissions: Vec<ServerPermission>| {
         let role = CreateServerRole {
+            color: None,
+            hoist: false,
             name: name.to_owned(),
             permissions,
         };
@@ -287,6 +291,8 @@ async fn the_lists_of_the_snapshot_follow_a_role_an_override_and_an_archived_cha
 
     // A role gives the permission in the workspace; an override takes it in one channel.
     let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
         name: "stewards".to_owned(),
         permissions: vec![WorkspacePermission::ManageChannel],
     };

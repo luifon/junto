@@ -103,7 +103,10 @@ pub enum Batch {
 
 #[derive(Debug)]
 pub enum Start {
-    Subscribed(Cursor),
+    Subscribed {
+        cursor: Cursor,
+        appearance_changed: bool,
+    },
     Resync(ResyncReason),
     Ended(Ended),
 }
@@ -494,6 +497,19 @@ fn parsed<T: serde::de::DeserializeOwned>(stored: Option<Json<serde_json::Value>
 
 type CountedRow = (i64, i32, String, Option<Json<serde_json::Value>>);
 
+pub(super) fn changes_appearance(kind: &str) -> bool {
+    APPEARANCE_KINDS.contains(&kind)
+}
+
+const APPEARANCE_KINDS: &[&str] = &[
+    "server_role_created",
+    "server_role_updated",
+    "server_role_deleted",
+    "server_role_positions_shifted",
+    "account_server_roles_changed",
+    "account_status_changed",
+];
+
 /// Decides where a subscription starts, or that the client must load a snapshot (ADR 0207).
 /// The decision counts the events after the cursor that the account may receive at the
 /// level, so it does not depend on events that the account may not receive.
@@ -502,6 +518,7 @@ pub async fn subscribe(
     who: &Opened,
     level: Level,
     cursor: Option<Cursor>,
+    appearance: bool,
 ) -> ApiResult<Start> {
     let most = app.config.limits.stream.replay_most_events;
     read!(app.unattended(), |connection| {
@@ -516,7 +533,10 @@ pub async fn subscribe(
         let classes = selected_classes(level, in_call);
         let log = log::state(connection).await?;
         let Some(cursor) = cursor else {
-            return Ok(Start::Subscribed(log.cursor(log.head)?));
+            return Ok(Start::Subscribed {
+                cursor: log.cursor(log.head)?,
+                appearance_changed: false,
+            });
         };
         let change = log::change_of(cursor.position);
         if cursor.epoch != log.epoch || change > log.head {
@@ -586,7 +606,21 @@ pub async fn subscribe(
                 break;
             }
         }
-        Ok(Start::Subscribed(cursor))
+        let appearance_changed = if appearance {
+            sqlx::query_scalar::<_, bool>(
+                "select exists(select 1 from events where position > $1 and kind = any($2))",
+            )
+            .bind(change)
+            .bind(APPEARANCE_KINDS)
+            .fetch_one(&mut *connection)
+            .await?
+        } else {
+            false
+        };
+        Ok(Start::Subscribed {
+            cursor,
+            appearance_changed,
+        })
     })
 }
 
@@ -1242,6 +1276,7 @@ mod tests {
         let added = |account_id| Event::WorkspaceMemberAdded {
             workspace_id: WorkspaceId::generate(),
             member: WorkspaceMember {
+                appearance: Default::default(),
                 avatar: None,
                 account_id,
                 name: "Member".to_owned(),

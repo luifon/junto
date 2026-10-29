@@ -410,6 +410,8 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     let mut permissions = everyone.permissions.clone();
     permissions.push(WorkspacePermission::ManageRecordings);
     let update = UpdateWorkspaceRole {
+        color: None,
+        hoist: None,
         name: None,
         permissions: Some(permissions),
     };

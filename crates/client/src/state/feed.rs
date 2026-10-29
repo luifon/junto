@@ -448,6 +448,7 @@ impl Feed {
 /// The names that the messages of a place mention.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Names {
+    pub role_colors: HashMap<WorkspaceRoleId, junto_client_core::protocol::appearance::RoleColor>,
     /// The names of departed accounts carry their mark here (ADR 0121).
     pub accounts: HashMap<AccountId, String>,
     pub roles: HashMap<WorkspaceRoleId, String>,
@@ -1278,6 +1279,7 @@ mod tests {
                 position: 1,
             },
             account: OwnAccount {
+                appearance: Default::default(),
                 id: own,
                 name: "Luca".to_owned(),
                 avatar: None,
@@ -1328,6 +1330,7 @@ mod tests {
         let names = Names {
             accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
             roles: HashMap::from([(role, "Leads".to_owned())]),
+            role_colors: HashMap::new(),
             departed: HashMap::new(),
         };
         Scene {

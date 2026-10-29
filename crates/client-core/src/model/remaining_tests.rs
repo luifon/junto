@@ -126,6 +126,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
     // The account set a picture: its row of the member list describes it.
     model.apply(&Event::AccountProfileUpdated {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: ana.account_id,
             name: ana.name.clone(),
             avatar: Some(avatar("a")),
@@ -155,6 +156,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
     let held = model.workspaces[0].clone();
     model.apply(&Event::AccountProfileUpdated {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: ana.account_id,
             name: ana.name.clone(),
             avatar: Some(avatar("a")),
@@ -166,6 +168,7 @@ fn the_description_of_the_avatar_of_a_member_follows_the_profile_of_the_account(
     // The picture is removed, and the name changes with it.
     model.apply(&Event::AccountProfileUpdated {
         profile: AccountProfile {
+            appearance: Default::default(),
             id: ana.account_id,
             name: "Ana Maria".to_owned(),
             avatar: None,
