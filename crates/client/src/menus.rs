@@ -111,62 +111,72 @@ fn configuration(fullscreen: bool) -> Vec<Menu> {
         menu(
             text::APP_NAME,
             vec![
-                MenuItem::action("About Junto", About),
+                MenuItem::action(text::menus::ABOUT, About),
                 MenuItem::separator(),
-                MenuItem::action("Settings…", Settings),
+                MenuItem::action(text::menus::SETTINGS, Settings),
                 MenuItem::separator(),
-                MenuItem::submenu(menu("Services", vec![])),
+                MenuItem::submenu(menu(text::menus::SERVICES, vec![])),
                 MenuItem::separator(),
-                MenuItem::action("Hide Junto", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
+                MenuItem::action(text::menus::HIDE, Hide),
+                MenuItem::action(text::menus::HIDE_OTHERS, HideOthers),
+                MenuItem::action(text::menus::SHOW_ALL, ShowAll),
                 MenuItem::separator(),
                 MenuItem::action(text::QUIT, Quit),
             ],
         ),
-        menu("File", vec![MenuItem::action("Close Window", CloseWindow)]),
         menu(
-            "Edit",
+            text::menus::FILE,
+            vec![MenuItem::action(text::menus::CLOSE_WINDOW, CloseWindow)],
+        ),
+        menu(
+            text::menus::EDIT,
             vec![
-                MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
-                MenuItem::os_action("Redo", input::Redo, OsAction::Redo),
+                MenuItem::os_action(text::menus::UNDO, input::Undo, OsAction::Undo),
+                MenuItem::os_action(text::menus::REDO, input::Redo, OsAction::Redo),
                 MenuItem::separator(),
-                MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
-                MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
-                MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                MenuItem::os_action(text::menus::CUT, input::Cut, OsAction::Cut),
+                MenuItem::os_action(text::menus::COPY, input::Copy, OsAction::Copy),
+                MenuItem::os_action(text::menus::PASTE, input::Paste, OsAction::Paste),
                 MenuItem::separator(),
-                MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                MenuItem::os_action(
+                    text::menus::SELECT_ALL,
+                    input::SelectAll,
+                    OsAction::SelectAll,
+                ),
             ],
         ),
         menu(
-            "View",
+            text::menus::VIEW,
             vec![
-                MenuItem::action("Zoom In", ZoomIn),
-                MenuItem::action("Zoom Out", ZoomOut),
-                MenuItem::action("Actual Size", ResetZoom),
+                MenuItem::action(text::menus::ZOOM_IN, ZoomIn),
+                MenuItem::action(text::menus::ZOOM_OUT, ZoomOut),
+                MenuItem::action(text::menus::ACTUAL_SIZE, ResetZoom),
                 MenuItem::separator(),
                 MenuItem::action(
                     if fullscreen {
-                        "Exit Full Screen"
+                        text::menus::EXIT_FULL_SCREEN
                     } else {
-                        "Enter Full Screen"
+                        text::menus::ENTER_FULL_SCREEN
                     },
                     FullScreen,
                 ),
             ],
         ),
         menu(
-            "Window",
+            text::menus::WINDOW,
             vec![
-                MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Zoom", ZoomWindow),
+                MenuItem::action(text::menus::MINIMIZE, Minimize),
+                MenuItem::action(text::menus::ZOOM, ZoomWindow),
                 MenuItem::separator(),
-                MenuItem::action("Bring All to Front", BringAllToFront),
+                MenuItem::action(text::menus::BRING_ALL_TO_FRONT, BringAllToFront),
             ],
         ),
         menu(
-            "Help",
-            vec![MenuItem::action("Keyboard Shortcuts", KeyboardShortcuts)],
+            text::menus::HELP,
+            vec![MenuItem::action(
+                text::menus::KEYBOARD_SHORTCUTS,
+                KeyboardShortcuts,
+            )],
         ),
     ]
 }
@@ -174,7 +184,11 @@ fn configuration(fullscreen: bool) -> Vec<Menu> {
 fn install(fullscreen: bool, cx: &App) {
     cx.set_menus(configuration(fullscreen));
     #[cfg(target_os = "macos")]
-    junto_client_core::menu_bar::register_application_menus(text::APP_NAME, "Services", "Help");
+    junto_client_core::menu_bar::register_application_menus(
+        text::APP_NAME,
+        text::menus::SERVICES,
+        text::menus::HELP,
+    );
 }
 
 pub(crate) fn sync_shortcuts(bindings: &junto_client_core::keybinds::Keybinds, cx: &mut App) {

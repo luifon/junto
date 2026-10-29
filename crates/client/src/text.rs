@@ -26,6 +26,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 pub mod followed;
+pub mod menus;
 pub mod people;
 pub mod permissions;
 pub mod transcripts;
