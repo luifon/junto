@@ -90,6 +90,7 @@ pub fn measure(sources: Vec<UploadSource>) -> Vec<Measured> {
                     .filter(std::fs::Metadata::is_file)
                     .map(|metadata| metadata.len()),
                 UploadSource::Bytes { bytes, .. } => Some(bytes.len() as u64),
+                UploadSource::Remote { attachment, .. } => Some(attachment.bytes),
             };
             Measured { source, bytes }
         })

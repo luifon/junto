@@ -243,6 +243,13 @@ pub(super) mod tests {
         }
     }
 
+    pub(in crate::transfers) fn ranged(body: &[u8], starts: u64) -> Answer {
+        Answer {
+            starts: Some(starts),
+            ..rest(body)
+        }
+    }
+
     pub(in crate::transfers) fn cut(body: &[u8]) -> Answer {
         Answer {
             cut: true,

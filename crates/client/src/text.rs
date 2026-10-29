@@ -2324,10 +2324,10 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
     use crate::compose::Problem;
     match problem {
         Problem::Empty => "Write a text or attach a file.".to_owned(),
-        Problem::TooLong { bytes } => format!(
+        Problem::TooLong { bytes, limit } => format!(
             "The message is too long: {} of {} that a message can have with its formatting.",
             file_size(bytes as u64),
-            file_size(crate::compose::MOST_BYTES as u64)
+            file_size(limit as u64)
         ),
         Problem::TooManyBlocks { blocks } => format!(
             "The message has {blocks} paragraphs, lists and blocks. A message can have {}.",
@@ -3811,3 +3811,7 @@ pub const REVEAL_SPOILER: &str = "Reveal spoiler";
 pub const SPOILER_KEYBOARD: &str = "Reveal the next spoiler with Enter or Space";
 pub const HEADING: &str = "Heading";
 pub const SMALL_TEXT: &str = "Small text";
+
+pub const FORWARD_FILE_FAILED: &str = "The files could not be copied to this destination.";
+
+pub const FORWARD_ORIGIN_UNAVAILABLE: &str = "You cannot open the original message.";

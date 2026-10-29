@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
-use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId};
+use junto_protocol::ids::{
+    AccountId, AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId,
+};
 use junto_protocol::message::Document;
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -147,7 +149,10 @@ pub(crate) enum Command {
         position: u64,
         explicit: bool,
     },
-    Enqueue(Box<PendingMessage>),
+    Enqueue {
+        account_id: AccountId,
+        pending: Box<PendingMessage>,
+    },
     /// The uploads of a waiting message are complete: the upload of this client and the
     /// attachment that the server holds for it.
     FilesReady {
@@ -405,11 +410,29 @@ impl LiveServer {
         reply_to: Option<MessageId>,
         files: Vec<PendingFile>,
     ) -> Option<u64> {
+        let account_id = self.shared.model()?.account.id;
+        self.enqueue_message_for(account_id, place, document, reply_to, files)
+    }
+
+    pub(crate) fn enqueue_message_for(
+        &self,
+        account_id: AccountId,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+        files: Vec<PendingFile>,
+    ) -> Option<u64> {
+        if self.shared.model()?.account.id != account_id {
+            return None;
+        }
         let id = self.shared.next_number();
         let created_at = OffsetDateTime::now_utc();
         let pending = PendingMessage::new(id, place, document, reply_to, files, created_at);
         self.shared
-            .send(Command::Enqueue(Box::new(pending)))
+            .send(Command::Enqueue {
+                account_id,
+                pending: Box::new(pending),
+            })
             .then_some(id)
     }
 

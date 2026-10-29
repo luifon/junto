@@ -49,9 +49,10 @@ const LONGEST_LANGUAGE: usize = 32;
 pub enum Problem {
     /// The document has no text. A message without text needs a file.
     Empty,
-    /// The document is longer than 16 KiB in the form that the server stores.
+    /// The document exceeds its byte limit in the form that the server stores.
     TooLong {
         bytes: usize,
+        limit: usize,
     },
     TooManyBlocks {
         blocks: usize,
@@ -661,7 +662,11 @@ pub fn parse(text: &str, mentions: &[Mention]) -> Document {
 /// The document of a text, and whether the text ends inside a code block that has no
 /// closing line.
 fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
-    if text.len() > MOST_TEXT {
+    read_with_limit(text, mentions, MOST_TEXT)
+}
+
+fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Document, bool) {
+    if text.len() > most_text {
         let content = vec![Inline::Text {
             text: clean(text),
             marks: Vec::new(),
@@ -779,7 +784,7 @@ pub(crate) fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
 pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
         Block::Code { text, .. } => !text.trim().is_empty(),
-        Block::Forward { .. } => true,
+        Block::Forward { .. } => false,
         _ => false,
     }) || nodes_of(document).any(|node| match node {
         Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
@@ -799,7 +804,7 @@ pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
     if !has_content(document) && !has_files {
         return Err(Problem::Empty);
     }
-    let blocks = document.blocks.len();
+    let blocks = document.content_blocks().count();
     if blocks > MOST_BLOCKS {
         return Err(Problem::TooManyBlocks { blocks });
     }
@@ -826,8 +831,13 @@ pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
         });
     }
     let bytes = serde_json::to_vec(document).map_or(usize::MAX, |bytes| bytes.len());
-    if bytes > MOST_BYTES {
-        return Err(Problem::TooLong { bytes });
+    let limit = if document.forward_origins() == 1 {
+        junto_client_core::protocol::message::MAX_FORWARDED_BYTES
+    } else {
+        MOST_BYTES
+    };
+    if bytes > limit {
+        return Err(Problem::TooLong { bytes, limit });
     }
     Ok(())
 }
@@ -1052,9 +1062,7 @@ pub fn written(document: &Document, name: &dyn Fn(MentionTarget) -> String) -> W
         let start = writer.text.len();
         let mut items = Vec::new();
         match block {
-            Block::Forward { server, message_id } => writer
-                .text
-                .push_str(&format!("> Forwarded message: {server} · {message_id}")),
+            Block::Forward { .. } => writer.text.push_str("> Forwarded message"),
             Block::Heading { level, content } => writer.lines(
                 content,
                 &format!("{} ", "#".repeat(usize::from(*level).clamp(1, 3))),
@@ -1222,8 +1230,13 @@ pub fn parse_edit(
     text: &str,
     mentions: &[Mention],
 ) -> Document {
-    if text.len() > MOST_TEXT || shown.blocks.len() != original.blocks.len() {
-        return parse(text, mentions);
+    let most_text = if original.forward_origins() == 1 {
+        4 * junto_client_core::protocol::message::MAX_FORWARDED_BYTES
+    } else {
+        MOST_TEXT
+    };
+    if text.len() > most_text || shown.blocks.len() != original.blocks.len() {
+        return read_with_limit(text, mentions, most_text).0;
     }
     let unchanged = |old: &Range<usize>, start: usize| {
         let new = start..start + old.len();
@@ -1262,7 +1275,11 @@ pub fn parse_edit(
     }
     let between = |end: usize| {
         let range = middle_start..end;
-        read(&text[range.clone()], &mentions_in(mentions, &range))
+        read_with_limit(
+            &text[range.clone()],
+            &mentions_in(mentions, &range),
+            most_text,
+        )
     };
     let (mut middle, open) = between(middle_end);
     if open && after > 0 {
@@ -1647,7 +1664,7 @@ mod tests {
         let long = "word ".repeat(4000);
         assert!(matches!(
             check(&parse(&long, &[]), false),
-            Err(Problem::TooLong { bytes }) if bytes > MOST_BYTES
+            Err(Problem::TooLong { bytes, .. }) if bytes > MOST_BYTES
         ));
         let blocks = "p\n\n".repeat(101);
         assert_eq!(

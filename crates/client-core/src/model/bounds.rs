@@ -136,7 +136,8 @@ pub fn fits(message: &Message) -> bool {
     message.attachments.len() <= MOST_FILES
         && message.reactions.len() <= MOST_REACTIONS
         && message.document.as_ref().is_none_or(|document| {
-            document.blocks.len() <= MOST_BLOCKS
+            document.content_blocks().count() <= MOST_BLOCKS
+                && document.forward_origins() <= 1
                 && inline_nodes(document) <= MOST_INLINE_NODES
                 && list_items(document) <= MOST_LIST_ITEMS
                 && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)

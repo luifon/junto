@@ -178,13 +178,7 @@ fn inlines(nodes: &[Inline], names: &Names, out: &mut String) {
 fn document(document: &Document, names: &Names, out: &mut String) {
     for block in &document.blocks {
         match block {
-            Block::Forward { server, message_id } => {
-                let _ = writeln!(
-                    out,
-                    "<blockquote>Forwarded message: {} · {message_id}</blockquote>",
-                    escape(server.as_str())
-                );
-            }
+            Block::Forward { .. } => out.push_str("<blockquote>Forwarded message · Original unavailable in this export</blockquote>\n"),
             Block::Heading { level, content } => {
                 let level = (*level).clamp(1, 3);
                 let _ = write!(

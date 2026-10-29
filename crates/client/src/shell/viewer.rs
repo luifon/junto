@@ -41,7 +41,6 @@ const LONGEST_SIDE: u32 = 8192;
 pub(crate) struct PictureViewer {
     pub(crate) server_id: ServerId,
     pub(crate) message_id: MessageId,
-    pub(crate) forwarded: bool,
     /// The pictures of the message, in the order of its files.
     pictures: Vec<Attachment>,
     shown: usize,
@@ -94,21 +93,6 @@ impl PictureViewer {
         let Some(shown) = self.shown().map(|attachment| attachment.id) else {
             return true;
         };
-        if self.forwarded {
-            let readable = state.server(self.server_id).is_some_and(|server| {
-                match state.forward_preview(server.entry().address.origin(), self.message_id) {
-                    crate::state::forwarding::Preview::Read(source) => source
-                        .message
-                        .attachments
-                        .iter()
-                        .any(|file| file.id == shown),
-                    _ => false,
-                }
-            });
-            if !readable {
-                return true;
-            }
-        }
         let lost = |feed: Option<&Feed>| {
             feed.is_some_and(|feed| {
                 feed.rows.iter().any(|row| {
@@ -172,7 +156,6 @@ impl Shell {
         let viewer = PictureViewer {
             server_id,
             message_id,
-            forwarded: false,
             pictures,
             shown: shown.min(last),
             large: None,

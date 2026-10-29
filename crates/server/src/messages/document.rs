@@ -5,7 +5,12 @@ use junto_protocol::message::{Block, Document, Inline};
 
 pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
     let bytes = serde_json::to_vec(document).map_err(|error| ApiError::internal(&error))?;
-    if document.blocks.len() > 100 {
+    if document.forward_origins() > 1 {
+        return Err(ApiError::invalid(
+            "a message has at most one forward origin",
+        ));
+    }
+    if document.content_blocks().count() > 100 {
         return Err(ApiError::invalid(
             "a message has at most 16 KiB of formatted text and 100 blocks",
         ));
@@ -76,9 +81,14 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
     if mentions.len() > 100 {
         return Err(ApiError::invalid("a message has at most 100 mentions"));
     }
-    if bytes.len() > 16 * 1024 {
+    let limit = if document.forward_origins() == 1 {
+        junto_protocol::message::MAX_FORWARDED_BYTES
+    } else {
+        16 * 1024
+    };
+    if bytes.len() > limit {
         return Err(ApiError::invalid(
-            "a message has at most 16 KiB of formatted text",
+            "the formatted message exceeds its size limit",
         ));
     }
     for node in &nodes {
@@ -126,7 +136,7 @@ fn text_ok(text: &str) -> ApiResult<()> {
 }
 pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
-        Block::Forward { .. } => true,
+        Block::Forward { .. } => false,
         Block::Code { text, .. } => !text.trim().is_empty(),
         Block::Heading { content, .. }
         | Block::Small { content }
@@ -290,7 +300,7 @@ mod tests {
         );
     }
     #[test]
-    fn forward_references_are_content_and_keep_the_document_bounds() {
+    fn forward_origins_are_metadata_and_keep_copied_content_bounded() {
         let value = serde_json::json!({"blocks": [{
             "kind": "forward", "server": "https://chat.example.test",
             "message_id": "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"
@@ -299,20 +309,33 @@ mod tests {
         assert!(parsed.is_ok(), "{parsed:?}");
         let document = parsed.unwrap();
         assert!(validate(&document).is_ok());
-        assert!(has_content(&document));
-        let block = document.blocks[0].clone();
+        assert!(!has_content(&document));
+        let mut full = Document {
+            blocks: vec![document.blocks[0].clone()],
+        };
+        full.blocks
+            .extend((0..100).map(|_| paragraph("copied text")));
+        assert!(validate(&full).is_ok());
+        assert!(has_content(&full));
+        full.blocks.push(paragraph("one too many"));
+        assert!(validate(&full).is_err());
         assert!(
             validate(&Document {
-                blocks: vec![block.clone(); 100]
-            })
-            .is_ok()
-        );
-        assert!(
-            validate(&Document {
-                blocks: vec![block; 101]
+                blocks: vec![document.blocks[0].clone(); 2]
             })
             .is_err()
         );
+        let mut large = Document {
+            blocks: vec![
+                document.blocks[0].clone(),
+                paragraph(&"x".repeat(20 * 1024)),
+            ],
+        };
+        assert!(validate(&large).is_ok());
+        large.blocks.push(paragraph(
+            &"x".repeat(junto_protocol::message::MAX_FORWARDED_BYTES),
+        ));
+        assert!(validate(&large).is_err());
     }
 
     #[test]

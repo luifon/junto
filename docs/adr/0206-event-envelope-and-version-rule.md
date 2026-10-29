@@ -66,3 +66,5 @@ position and read revision. The account alone receives it under current place ac
 Revision 5 identifies typed channel-reference inline nodes. They carry an ID and no copied name; current server permissions govern name discovery and navigation (ADR 0408, ADR 0740). The existing everyone mention node retains its wire identity while the interface names it @channel.
 
 Revision 6 identifies heading and small-text blocks and spoiler inline containers. All descendants remain subject to the document and client trust bounds (ADR 0408, ADR 0747).
+
+Revision 7 changes forwarded messages to destination-owned copies with permission-checked origin metadata (ADR 0408). Earlier reference-only clients must update before reading this revision.

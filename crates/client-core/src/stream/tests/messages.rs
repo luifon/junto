@@ -798,6 +798,40 @@ async fn a_reload_keeps_the_open_timeline_until_its_page_has_arrived() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_queued_forward_for_an_old_account_is_discarded() {
+    let room = room().await;
+    let rig = &room.rig;
+    let pending = crate::model::PendingMessage::new(
+        rig.live.shared.next_number(),
+        room.place,
+        document("private copy"),
+        None,
+        Vec::new(),
+        time(),
+    );
+    assert!(rig.live.shared.send(crate::live::Command::Enqueue {
+        account_id: AccountId::generate(),
+        pending: Box::new(pending),
+    }));
+    rig.live
+        .send_message(room.place, document("current account"), None)
+        .unwrap();
+    soon("the current account's send", async {
+        loop {
+            if room.chat(|chat| !chat.posted.is_empty()) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        room.chat(|chat| chat.posted.clone()),
+        [serde_json::to_string(&Some(document("current account"))).unwrap()]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn messages_are_sent_in_their_order_and_a_lost_answer_is_resolved_by_the_history() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);

@@ -1219,7 +1219,18 @@ impl Client {
                 mark.settled = mark.settled.max(read);
                 mark.wanted = mark.wanted.max(position);
             }
-            Command::Enqueue(pending) => self.enqueue(*pending),
+            Command::Enqueue {
+                account_id,
+                pending,
+            } => {
+                if self
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| model.account.id == account_id)
+                {
+                    self.enqueue(*pending);
+                }
+            }
             Command::FilesReady { id, files } => self.files_ready(id, &files),
             Command::FilesFailed(id) => {
                 self.set_send_state(id, SendState::Failed(SendFailure::File));

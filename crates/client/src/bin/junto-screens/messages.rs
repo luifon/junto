@@ -478,6 +478,27 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
             |shell, _, cx| prepare(shell, none(), cx),
         )?;
     }
+    let mut forwarded = Made::new(GENERAL);
+    let copy = forwarded.message("Ana", 2, "## Delivery plan\nA copied **work item** remains readable when its origin is unavailable.\n```rust\nfn ship() {\n    ready();\n}\n```");
+    if let Some(document) = &mut copy.document {
+        document.blocks.insert(
+            0,
+            junto_client_core::protocol::message::Block::Forward {
+                server: junto_client_core::protocol::origin::Origin::parse(
+                    "https://source.example.test",
+                )
+                .map_err(|error| error.to_string())?,
+                message_id: id(9901),
+            },
+        );
+    }
+    copy.attachments
+        .push(file(7, "delivery-plan.txt", 2048, None));
+    studio.draw(
+        Screen::new("messages-forward-copy", with_timeline(forwarded.timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
+
     let mut references = Made::new(GENERAL);
     let row = references.message(
         "Ana",

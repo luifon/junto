@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     Styled, Subscription, Task, Window, div,
@@ -300,27 +301,18 @@ impl Shell {
             .iter()
             .map(|block| match block {
                 Block::Forward { server, message_id } => {
-                    let body = match self.state.read(cx).forward_preview(server, *message_id) {
-                        Preview::Read(source) => {
-                            let mut body = source
-                                .message
-                                .document
-                                .as_ref()
-                                .map(|document| {
-                                    crate::state::feed::copy_text(document, &source.names)
-                                })
-                                .unwrap_or_default();
-                            for attachment in &source.message.attachments {
-                                if !body.is_empty() {
-                                    body.push('\n');
-                                }
-                                body.push_str(&attachment.name);
-                            }
-                            body
-                        }
-                        _ => text::FORWARD_UNAVAILABLE.to_owned(),
-                    };
-                    format!("{body}\n{}", uri(server, *message_id).unwrap_or_default())
+                    match self.state.read(cx).forward_preview(server, *message_id) {
+                        Preview::Read(_) => format!(
+                            "{}\n{}",
+                            text::FORWARDED_MESSAGE,
+                            uri(server, *message_id).unwrap_or_default()
+                        ),
+                        _ => format!(
+                            "{} · {}",
+                            text::FORWARDED_MESSAGE,
+                            text::FORWARD_ORIGIN_UNAVAILABLE
+                        ),
+                    }
                 }
                 block => crate::state::feed::copy_text(
                     &Document {
@@ -337,11 +329,12 @@ impl Shell {
         &mut self,
         origin: &Origin,
         id: MessageId,
-        theme: &Theme,
-        window: &Window,
+        _theme: &Theme,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let preview = self.state.read(cx).forward_preview(origin, id);
+        let available = matches!(&preview, Preview::Read(_));
         let (selector, heading, body) = match preview {
             Preview::Read(source) => {
                 let author = source
@@ -350,44 +343,7 @@ impl Shell {
                     .as_deref()
                     .unwrap_or(text::UNKNOWN_PERSON);
                 let heading = format!("{} · {author} · {}", text::FORWARDED_MESSAGE, source.place);
-                let safe = Document {
-                    blocks: source
-                        .message
-                        .document
-                        .iter()
-                        .flat_map(|document| &document.blocks)
-                        .map(|block| match block {
-                            Block::Forward { server, message_id } => Block::Paragraph {
-                                content: vec![junto_client_core::protocol::message::Inline::Text {
-                                    text: format!(
-                                        "{}: {server} · {message_id}",
-                                        text::FORWARDED_MESSAGE
-                                    ),
-                                    marks: Vec::new(),
-                                }],
-                            },
-                            block => block.clone(),
-                        })
-                        .collect(),
-                };
-                let mut body = self.document(&safe, None, &source.names, theme, window, cx);
-                body.extend(self.attachments(
-                    source.server_id,
-                    PlaceId::of(&source.message.place),
-                    &source.message,
-                    true,
-                    window,
-                    theme,
-                    cx,
-                ));
-                if source.message.files_removed_by_retention {
-                    body.push(
-                        div()
-                            .child(text::FILES_REMOVED_BY_RETENTION)
-                            .into_any_element(),
-                    );
-                }
-                (format!("forward-message:{id}"), heading, body)
+                (format!("forward-message:{id}"), heading, Vec::new())
             }
             Preview::Reading => (
                 format!("forward-reading:{id}"),
@@ -397,7 +353,11 @@ impl Shell {
             Preview::Unavailable => (
                 format!("forward-unavailable:{id}"),
                 text::FORWARDED_MESSAGE.to_owned(),
-                vec![div().child(text::FORWARD_UNAVAILABLE).into_any_element()],
+                vec![
+                    div()
+                        .child(text::FORWARD_ORIGIN_UNAVAILABLE)
+                        .into_any_element(),
+                ],
             ),
         };
         let address = ServerAddress::parse(origin.as_str()).ok();
@@ -409,7 +369,11 @@ impl Shell {
                 .truncate()
                 .text_size(u(12.5))
                 .child(heading.clone()),
-            link.clone().unwrap_or(heading),
+            if available {
+                link.clone().unwrap_or(heading)
+            } else {
+                heading
+            },
         );
         let open = Button::new(("forward-origin", id.as_uuid().as_u128() as u64))
             .kind(ButtonKind::Ghost)
@@ -426,22 +390,20 @@ impl Shell {
             }));
         div()
             .debug_selector(move || selector.clone())
-            .my(u(4.0))
-            .p(u(10.0))
-            .border_l_3()
-            .border_color(theme.colors.rule)
-            .bg(theme.colors.plaster)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(u(8.0))
                     .child(caption)
-                    .child(
-                        div()
-                            .debug_selector(move || format!("forward-origin:{id}"))
-                            .child(open),
-                    ),
+                    .when(available, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .debug_selector(move || format!("forward-origin:{id}"))
+                                .child(open),
+                        )
+                    }),
             )
             .children(body)
             .into_any_element()

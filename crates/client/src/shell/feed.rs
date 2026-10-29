@@ -2216,7 +2216,23 @@ impl Shell {
                 }
             }
         }
-        blocks
+        if document.forward_origins() == 1 {
+            vec![
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(4.0))
+                    .my(u(4.0))
+                    .p(u(10.0))
+                    .border_l_3()
+                    .border_color(colors.rule)
+                    .bg(colors.plaster)
+                    .children(blocks)
+                    .into_any_element(),
+            ]
+        } else {
+            blocks
+        }
     }
 
     /// The reactions of a message, and the control that adds one.
@@ -2638,7 +2654,6 @@ impl Shell {
         server_id: ServerId,
         place_id: PlaceId,
         message: &Message,
-        forwarded: bool,
         window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -2705,9 +2720,6 @@ impl Shell {
                                 window,
                                 cx,
                             );
-                            if forwarded && let Layer::Picture(viewer) = &mut this.layer {
-                                viewer.forwarded = true;
-                            }
                         }
                     };
                     let by_key = open.clone();
@@ -3401,15 +3413,7 @@ impl Shell {
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(
-                feed.server_id,
-                feed.place,
-                message,
-                false,
-                window,
-                &theme,
-                cx,
-            ));
+            body.extend(self.attachments(feed.server_id, feed.place, message, window, &theme, cx));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {

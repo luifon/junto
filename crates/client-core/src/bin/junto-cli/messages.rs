@@ -185,9 +185,7 @@ fn document_lines(document: &Document) -> Vec<String> {
     let mut lines = Vec::new();
     for block in &document.blocks {
         match block {
-            Block::Forward { server, message_id } => {
-                lines.push(format!("> Forwarded message: {server} · {message_id}"))
-            }
+            Block::Forward { .. } => lines.push("> Forwarded message".to_owned()),
             Block::Heading { content, .. }
             | Block::Small { content }
             | Block::Paragraph { content } => lines.push(inline_text(content)),

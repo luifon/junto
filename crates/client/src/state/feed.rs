@@ -562,10 +562,7 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
         .blocks
         .iter()
         .map(|block| match block {
-            Block::Forward { server, message_id } => format!(
-                "{}: {server} · {message_id}",
-                crate::text::FORWARDED_MESSAGE
-            ),
+            Block::Forward { .. } => crate::text::FORWARDED_MESSAGE.to_owned(),
             Block::Heading { content, .. }
             | Block::Small { content }
             | Block::Paragraph { content }

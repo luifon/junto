@@ -102,6 +102,7 @@ pub enum Inline {
     Everyone,
 }
 pub const MAX_INLINE_DEPTH: usize = 8;
+pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
 
 pub struct InlineNodes<'a> {
     stack: Vec<(std::slice::Iter<'a, Inline>, usize)>,
@@ -131,6 +132,16 @@ impl<'a> Iterator for InlineNodes<'a> {
 }
 
 impl Document {
+    pub fn content_blocks(&self) -> impl Iterator<Item = &Block> {
+        self.blocks
+            .iter()
+            .filter(|block| !matches!(block, Block::Forward { .. }))
+    }
+
+    pub fn forward_origins(&self) -> usize {
+        self.blocks.len() - self.content_blocks().count()
+    }
+
     pub fn inlines(&self) -> impl Iterator<Item = (&Inline, usize)> {
         self.blocks.iter().flat_map(|block| {
             let contents: Box<dyn Iterator<Item = &[Inline]>> = match block {

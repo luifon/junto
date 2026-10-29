@@ -12,8 +12,8 @@ ADR 0714 bounds one answer of a server at 4 MiB, and ADR 0721 bounds a timeline 
 
 One message:
 
-- The client takes a message from an answer only inside these bounds: at most 100 blocks, 1,000 inline nodes and 5,500 list items in its document, 100 files, 20 reactions, and a weight of at most 512 KiB. The numbers are those of ADR 0408, with the highest limit of files that a server can be set to; ADR 0408 states no number of list items, and its 16 KiB of text hold fewer than 5,500.
-- The weight of a message is the bytes of its texts, and a fixed number for the message and for each block, list item, inline node, file and reaction. The memory that a message takes is at most a small multiple of its weight. A message inside the bounds of ADR 0408 weighs less than half of the bound.
+- The client takes a message from an answer only inside these bounds: at most 100 content blocks and one forwarding origin header, 1,000 inline nodes and 5,500 list items in its document, 100 files, 20 reactions, and a weight of at most 512 KiB. The numbers are those of ADR 0408, with the highest limit of files that a server can be set to; ADR 0408 states no number of list items, and its 16 KiB of text hold fewer than 5,500.
+- The weight of a message is the bytes of its texts, and a fixed number for the message and for each block, list item, inline node, file and reaction. The memory that a message takes is at most a small multiple of its weight. An ordinary 16 KiB message inside the bounds of ADR 0408 weighs less than half of the bound. Forwarded copies allow 256 KiB after materializing mention labels and must still fit the 512 KiB weight bound.
 - An answer that holds a message above the bounds is an answer that the client cannot read (ADR 0714). Nothing of it is used: a read of one message leaves the timeline marked as not current and is not sent again, a read of a page states that it failed, and a send stays `not confirmed`.
 - The check is made in the functions of the API object that return messages, so the stream task, the window and the command-line tool get no message above the bounds.
 

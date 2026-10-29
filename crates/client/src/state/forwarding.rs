@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use futures_channel::oneshot;
+use futures_util::future::{Either, select, try_join_all};
 use gpui::Context;
 use junto_client_core::model::{Named, PlaceId};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{MessageId, ServerId, WorkspaceId};
-use junto_client_core::protocol::message::{Block, Document, Message, MessagePlace};
+use junto_client_core::protocol::message::{Block, Document, Inline, Message, MessagePlace};
 use junto_client_core::protocol::origin::Origin;
+use junto_client_core::transfers::{Upload, UploadSource};
 use junto_client_core::{Owner, ServerHandle};
 
 use super::{
@@ -37,8 +39,6 @@ impl Destination {
 
 pub(crate) struct Forwarded {
     pub message: Arc<Message>,
-    pub server_id: ServerId,
-    pub names: Names,
     pub place: String,
 }
 
@@ -189,16 +189,11 @@ impl AppState {
             None => return Preview::Reading,
             _ => return Preview::Unavailable,
         };
-        let (workspace, place) = match message.place {
+        let (_workspace, place) = match message.place {
             MessagePlace::Channel {
                 workspace_id,
                 channel_id,
             } => {
-                if model.permissions_in(channel_id).is_some_and(|permissions| {
-                    !permissions.contains(&WorkspacePermission::ReadMessageHistory)
-                }) {
-                    return Preview::Unavailable;
-                }
                 let name = model
                     .channel(channel_id)
                     .map(|channel| channel.channel.name.as_str())
@@ -225,12 +220,7 @@ impl AppState {
             }
         };
         let place = format!("{} · {place}", server.entry().name);
-        Preview::Read(Forwarded {
-            names: super::view::names(server.id(), workspace, &model, &self.known),
-            server_id: server.id(),
-            message,
-            place,
-        })
+        Preview::Read(Forwarded { message, place })
     }
 
     pub(crate) fn forward_message(
@@ -240,7 +230,7 @@ impl AppState {
         destination: Destination,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<(), String>> {
-        let (answer, receive) = oneshot::channel();
+        let (mut answer, receive) = oneshot::channel();
         let handles: Vec<(ServerHandle, Owner)> = self
             .client
             .servers()
@@ -252,42 +242,119 @@ impl AppState {
             .find(|(server, _)| server.id() == destination.server_id)
             .cloned();
         cx.spawn(async move |this, cx| {
-            let prepared = prepare(origin, id, &handles).await;
-            let _ = this.update(cx, move |this, cx| {
-                if answer.is_canceled() {
-                    return;
+            let prepared = {
+                let work = prepare(origin.clone(), id, &handles);
+                match select(Box::pin(work), Box::pin(answer.cancellation())).await {
+                    Either::Left((prepared, _)) => prepared,
+                    Either::Right(_) => return,
                 }
-                let result = (|| {
-                    let (origin, id, owners) = prepared?;
-                    let (target, owner) =
+            };
+            let prepared = this
+                .update(cx, |this, _| {
+                    let (source, source_owner, message) = prepared?;
+                    let (target, target_owner) =
                         target.ok_or_else(|| text::FORWARD_UNAVAILABLE.to_owned())?;
-                    if this.owner(target.id()) != Some(owner)
-                        || owners
-                            .iter()
-                            .any(|(server, owner)| this.owner(*server) != Some(*owner))
+                    if answer.is_canceled()
+                        || this.owner(source.id()) != Some(source_owner)
+                        || this.owner(target.id()) != Some(target_owner)
                         || !this.forward_destination_allowed(&destination)
                     {
                         return Err(text::FORWARD_UNAVAILABLE.to_owned());
                     }
-                    let document = Document {
-                        blocks: vec![Block::Forward {
-                            server: origin,
-                            message_id: id,
-                        }],
-                    };
-                    if target
+                    let model = source
                         .live()
-                        .send_message(destination.place, document, None)
+                        .view()
+                        .model
+                        .filter(|model| model.account.id == source_owner.account_id)
+                        .ok_or_else(|| text::FORWARD_UNAVAILABLE.to_owned())?;
+                    let workspace = match message.place {
+                        MessagePlace::Channel { workspace_id, .. } => model.workspace(workspace_id),
+                        _ => None,
+                    };
+                    let mut names = super::view::names(source.id(), workspace, &model, &this.known);
+                    if let (Some(author), Some(name)) = (message.author_id, &message.author_name) {
+                        names.accounts.insert(author, text::label(name));
+                    }
+                    let document = snapshot(&origin, id, &message, &names);
+                    crate::compose::check(&document, !message.attachments.is_empty())
+                        .map_err(text::compose_problem)?;
+                    if !message.attachments.is_empty() {
+                        let model = target
+                            .live()
+                            .view()
+                            .model
+                            .filter(|model| model.account.id == target_owner.account_id)
+                            .ok_or_else(|| text::FORWARD_UNAVAILABLE.to_owned())?;
+                        if let Some(channel) = super::feed::channel_of(destination.place)
+                            && !model.holds_in(channel, WorkspacePermission::AttachFiles)
+                        {
+                            return Err(
+                                text::not_permitted(WorkspacePermission::AttachFiles).to_owned()
+                            );
+                        }
+                    }
+                    Ok((
+                        source,
+                        source_owner,
+                        target,
+                        target_owner,
+                        message.attachments,
+                        document,
+                    ))
+                })
+                .unwrap_or_else(|_| Err(text::FORWARD_UNAVAILABLE.to_owned()));
+            let (source, source_owner, target, target_owner, files, document) = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = answer.send(Err(error));
+                    return;
+                }
+            };
+            let transfers = target.transfers().for_owner(target_owner);
+            let mut uploads = ForwardUploads(Vec::new());
+            for attachment in files {
+                uploads.0.push(transfers.upload(
+                    destination.place,
+                    UploadSource::remote(source.api_for(source_owner.account_id), attachment),
+                ));
+            }
+            let completed = {
+                let work = try_join_all(uploads.0.iter().map(Upload::finished));
+                match select(Box::pin(work), Box::pin(answer.cancellation())).await {
+                    Either::Left((completed, _)) => completed,
+                    Either::Right(_) => return,
+                }
+            };
+            if let Err(failure) = completed {
+                let _ = answer.send(Err(format!(
+                    "{} {}",
+                    text::FORWARD_FILE_FAILED,
+                    text::transfer_failure(failure)
+                )));
+                return;
+            }
+            let result = this
+                .update(cx, |this, cx| {
+                    if answer.is_canceled()
+                        || this.owner(source.id()) != Some(source_owner)
+                        || this.owner(target.id()) != Some(target_owner)
+                        || !this.forward_destination_allowed(&destination)
+                    {
+                        return Err(text::FORWARD_UNAVAILABLE.to_owned());
+                    }
+                    if transfers
+                        .send(destination.place, document, None, &uploads.0)
                         .is_none()
                     {
                         return Err(text::FORWARD_UNAVAILABLE.to_owned());
                     }
+                    uploads.0.clear();
                     this.select_forward_destination(&destination);
                     this.changed(cx);
                     Ok(())
-                })();
-                let _ = answer.send(result);
-            });
+                })
+                .unwrap_or_else(|_| Err(text::FORWARD_UNAVAILABLE.to_owned()));
+            let _ = answer.send(result);
         })
         .detach();
         receive
@@ -436,36 +503,125 @@ impl AppState {
     }
 }
 
-async fn prepare(
-    mut origin: Origin,
-    mut id: MessageId,
-    handles: &[(ServerHandle, Owner)],
-) -> Result<(Origin, MessageId, Vec<(ServerId, Owner)>), String> {
-    let mut owners = Vec::new();
-    for _ in 0..8 {
-        let (server, owner) = handles
-            .iter()
-            .find(|(server, _)| server.entry().address.origin() == &origin)
-            .ok_or_else(|| text::FORWARD_UNAVAILABLE.to_owned())?;
-        owners.push((server.id(), *owner));
-        let message = server
-            .api_for(owner.account_id)
-            .message(id)
-            .await
-            .map_err(|_| text::FORWARD_UNAVAILABLE.to_owned())?;
-        if message.id != id || message.deleted || message.document.is_none() {
-            return Err(text::FORWARD_UNAVAILABLE.to_owned());
-        }
-        if let Some([Block::Forward { server, message_id }]) = message
-            .document
-            .as_ref()
-            .map(|document| document.blocks.as_slice())
-        {
-            origin = server.clone();
-            id = *message_id;
-        } else {
-            return Ok((origin, id, owners));
+struct ForwardUploads(Vec<Upload>);
+impl Drop for ForwardUploads {
+    fn drop(&mut self) {
+        for upload in &self.0 {
+            upload.cancel();
         }
     }
-    Err(text::FORWARD_UNAVAILABLE.to_owned())
+}
+
+async fn prepare(
+    origin: Origin,
+    id: MessageId,
+    handles: &[(ServerHandle, Owner)],
+) -> Result<(ServerHandle, Owner, Message), String> {
+    let (server, owner) = handles
+        .iter()
+        .find(|(server, _)| server.entry().address.origin() == &origin)
+        .ok_or_else(|| text::FORWARD_UNAVAILABLE.to_owned())?;
+    let message = server
+        .api_for(owner.account_id)
+        .message(id)
+        .await
+        .map_err(|_| text::FORWARD_UNAVAILABLE.to_owned())?;
+    if message.id != id || message.deleted || message.document.is_none() {
+        return Err(text::FORWARD_UNAVAILABLE.to_owned());
+    }
+    Ok((server.clone(), *owner, message))
+}
+
+fn snapshot(origin: &Origin, id: MessageId, message: &Message, names: &Names) -> Document {
+    fn content(nodes: &[Inline], names: &Names) -> Vec<Inline> {
+        nodes
+            .iter()
+            .map(|node| {
+                let label = match node {
+                    Inline::Account { account_id } => Some(format!(
+                        "@{}",
+                        names
+                            .accounts
+                            .get(account_id)
+                            .map_or(text::UNKNOWN_PERSON, String::as_str)
+                    )),
+                    Inline::Role { role_id } => Some(format!(
+                        "@{}",
+                        names
+                            .roles
+                            .get(role_id)
+                            .map_or(text::UNKNOWN_ROLE, String::as_str)
+                    )),
+                    Inline::Channel { channel_id } => Some(format!(
+                        "#{}",
+                        names
+                            .channels
+                            .get(channel_id)
+                            .map_or(text::UNKNOWN_CHANNEL_REFERENCE, String::as_str)
+                    )),
+                    Inline::Everyone => Some(text::MENTION_EVERYONE.to_owned()),
+                    _ => None,
+                };
+                if let Some(text) = label {
+                    return Inline::Text {
+                        text,
+                        marks: Vec::new(),
+                    };
+                }
+                match node {
+                    Inline::Spoiler { content: nodes } => Inline::Spoiler {
+                        content: content(nodes, names),
+                    },
+                    other => other.clone(),
+                }
+            })
+            .collect()
+    }
+    let mut blocks = vec![Block::Forward {
+        server: origin.clone(),
+        message_id: id,
+    }];
+    for block in message.document.iter().flat_map(Document::content_blocks) {
+        blocks.push(match block {
+            Block::Heading {
+                level,
+                content: nodes,
+            } => Block::Heading {
+                level: *level,
+                content: content(nodes, names),
+            },
+            Block::Small { content: nodes } => Block::Small {
+                content: content(nodes, names),
+            },
+            Block::Paragraph { content: nodes } => Block::Paragraph {
+                content: content(nodes, names),
+            },
+            Block::Quote { content: nodes } => Block::Quote {
+                content: content(nodes, names),
+            },
+            Block::List { ordered, items } => Block::List {
+                ordered: *ordered,
+                items: items.iter().map(|item| content(item, names)).collect(),
+            },
+            Block::Checklist { items } => Block::Checklist {
+                items: items
+                    .iter()
+                    .map(|item| junto_client_core::protocol::message::CheckItem {
+                        checked: item.checked,
+                        content: content(&item.content, names),
+                    })
+                    .collect(),
+            },
+            other => other.clone(),
+        });
+    }
+    if message.files_removed_by_retention && blocks.len() <= crate::compose::MOST_BLOCKS {
+        blocks.push(Block::Paragraph {
+            content: vec![Inline::Text {
+                text: text::FILES_REMOVED_BY_RETENTION.to_owned(),
+                marks: Vec::new(),
+            }],
+        });
+    }
+    Document { blocks }
 }
