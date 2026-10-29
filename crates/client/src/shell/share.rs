@@ -964,9 +964,44 @@ impl Shell {
         self.close_layer(window, cx);
     }
 
+    fn share_source_choice(
+        &self,
+        frame: gpui::Stateful<gpui::Div>,
+        source: PictureSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let Layer::SharePicker(picker) = &self.layer else {
+            return frame;
+        };
+        let (seat, read) = (picker.seat.clone(), picker.read);
+        let select = std::rc::Rc::new(self.call_listener(cx, move |this, _, _, cx| {
+            if let Some(picker) = this.picker()
+                && picker.seat == seat
+                && picker.read == read
+            {
+                picker.pick_picture(source);
+                cx.notify();
+            }
+        }));
+        let by_menu = select.clone();
+        crate::ui::bind_action_menu(
+            frame
+                .relative()
+                .on_click(move |event, window, cx| select(event, window, cx)),
+            SharedString::from(format!("share-source-menu:{source:?}")),
+            vec![crate::ui::RowAction::new(
+                text::SELECT_SOURCE,
+                move |event, window, cx| by_menu(event, window, cx),
+            )],
+            window,
+            cx,
+        )
+    }
+
     pub(crate) fn render_share_picker(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1189,12 +1224,7 @@ impl Shell {
                     text::SHARE_DESKTOP_HELP.into(),
                     picture == Some(source),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(picker) = this.picker() {
-                        picker.pick_picture(source);
-                        cx.notify();
-                    }
-                }))
+                .map(|row| self.share_source_choice(row, source, window, cx))
                 .into_any_element(),
             );
         }
@@ -1211,12 +1241,7 @@ impl Shell {
                     text::pixels((display.width, display.height)).into(),
                     picture == Some(source),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(picker) = this.picker() {
-                        picker.pick_picture(source);
-                        cx.notify();
-                    }
-                }))
+                .map(|row| self.share_source_choice(row, source, window, cx))
                 .into_any_element(),
             );
         }
@@ -1233,12 +1258,7 @@ impl Shell {
                     text::SHARE_DESKTOP_HELP.into(),
                     picture == Some(source),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(picker) = this.picker() {
-                        picker.pick_picture(source);
-                        cx.notify();
-                    }
-                }))
+                .map(|row| self.share_source_choice(row, source, window, cx))
                 .into_any_element(),
             );
         }
@@ -1275,12 +1295,7 @@ impl Shell {
                     detail.into(),
                     picture == Some(source),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(picker) = this.picker() {
-                        picker.pick_picture(source);
-                        cx.notify();
-                    }
-                }))
+                .map(|row| self.share_source_choice(row, source, window, cx))
                 .into_any_element(),
             );
         }
@@ -1572,6 +1587,7 @@ impl Shell {
                                 }
                             }),
                     )
+                    .map(|frame| self.call_share_frame(frame, share, false, cx))
             });
             div()
                 .id("shares-bar")
@@ -1726,6 +1742,7 @@ impl Shell {
                         .ink(colors.bone_2)
                         .child(measure),
                 )
+                .map(|header| self.call_share_frame(header, share, true, cx))
         });
 
         let shown = watched.and_then(|share| {
@@ -1796,6 +1813,9 @@ impl Shell {
                         .ink(colors.bone_2)
                         .child(text::PICTURE_ARRIVES),
                 ),
+            })
+            .when_some(watched, |frame, share| {
+                self.call_share_frame(frame, share, true, cx)
             });
 
         // The setting affects only the tiles; the member list stays complete.

@@ -3,6 +3,7 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{
     AnyElement, App, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Pixels,
     Point, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
+    prelude::FluentBuilder,
 };
 use junto_client_core::{
     Owner,
@@ -25,7 +26,13 @@ pub(crate) struct AccountTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
     Tile,
-    Member { inside: bool },
+    Share {
+        id: junto_media::engine::ShareId,
+        watched: bool,
+    },
+    Member {
+        inside: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +88,14 @@ impl OpenAccountMenu {
                         .lists()
                         .and_then(|lists| lists.call.as_ref())
                         .is_some_and(|panel| match surface {
+                            CallSurface::Share { id, watched } => {
+                                panel.stage.as_ref().is_some_and(|stage| {
+                                    stage.shares.iter().any(|share| {
+                                        share.id == *id && share.account_id == *account_id
+                                    }) && (!watched
+                                        || stage.watched().is_some_and(|share| share.id == *id))
+                                })
+                            }
                             CallSurface::Member { inside: false } => {
                                 panel.channel().is_some_and(|channel| {
                                     channel
@@ -188,9 +203,35 @@ pub(super) fn account_target(
     let (Some(owner), Some(target)) = (owner, target) else {
         return child.into_any_element();
     };
+    let label = target.name.clone();
+    bind_account_frame(
+        div()
+            .id(id)
+            .relative()
+            .min_w_0()
+            .role(gpui::Role::Group)
+            .aria_label(label)
+            .child(child),
+        OpenAccountMenu {
+            owner,
+            people: vec![target],
+            source,
+            position: Point::default(),
+        },
+        true,
+        cx,
+    )
+    .into_any_element()
+}
+
+fn bind_account_frame(
+    frame: gpui::Stateful<gpui::Div>,
+    context: OpenAccountMenu,
+    activate: bool,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
     let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
     let placed = bounds.clone();
-    let label = target.name.clone();
     let open = Rc::new(move |window: &mut Window, cx: &mut App| {
         let position = if window.last_input_was_keyboard() {
             let bounds = bounds.get();
@@ -198,42 +239,31 @@ pub(super) fn account_target(
         } else {
             window.mouse_position()
         };
-        window.dispatch_action(
-            Box::new(OpenAccountMenu {
-                owner,
-                people: vec![target.clone()],
-                source: source.clone(),
-                position,
-            }),
-            cx,
-        );
+        let mut open = context.clone();
+        open.position = position;
+        window.dispatch_action(Box::new(open), cx);
     });
     let by_key = open.clone();
     let theme = crate::theme::theme(cx);
     let ring = crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
-    div()
-        .id(id)
-        .relative()
-        .min_w_0()
-        .role(gpui::Role::Group)
-        .aria_label(label)
+    frame
         .focusable()
         .tab_stop(true)
         .focus_visible(move |style| style.shadow(ring))
         .on_context_menu(move |window, cx| open(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                by_key(window, cx);
-            }
+        .when(activate, |frame| {
+            frame.on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    by_key(window, cx);
+                }
+            })
         })
-        .child(child)
         .child(
             canvas(move |value, _, _| placed.set(value), |_, (), _, _| {})
                 .absolute()
                 .inset_0(),
         )
-        .into_any_element()
 }
 
 impl Shell {
@@ -281,6 +311,32 @@ impl Shell {
         })
     }
 
+    pub(super) fn call_share_frame(
+        &self,
+        frame: gpui::Stateful<gpui::Div>,
+        share: &crate::state::view::ShareCard,
+        watched: bool,
+        cx: &App,
+    ) -> gpui::Stateful<gpui::Div> {
+        let Some(open) = self.call_account_menu(
+            share.account_id,
+            share
+                .name
+                .clone()
+                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+            CallSurface::Share {
+                id: share.id,
+                watched,
+            },
+            cx,
+        ) else {
+            return frame;
+        };
+        let theme = crate::theme::theme(cx);
+        let ring = crate::ui::focus_ring(theme.colors.ochre, theme.metrics.focus_ring);
+        bind_account_frame(frame, open, watched, cx).focus_visible(move |style| style.shadow(ring))
+    }
+
     pub(super) fn call_member_target(
         &self,
         account: AccountId,
@@ -324,6 +380,7 @@ impl Shell {
             return false;
         };
         match surface {
+            CallSurface::Share { .. } => self.detached || !self.state.read(cx).is_call_detached(),
             CallSurface::Tile => {
                 (self.detached || !self.state.read(cx).is_call_detached())
                     && (!panel.hide_without_video
@@ -405,6 +462,7 @@ impl Shell {
             .call_volume_row(&open, window, cx)
             .into_iter()
             .collect();
+        items.extend(self.share_call_controls(&open, cx));
         items.extend(self.own_call_controls(&open, cx));
         items.extend(self.participant_controls(&open, cx));
         for (index, person) in open.people.iter().enumerate() {

@@ -3799,3 +3799,6 @@ pub const COPY_NAME: &str = "Copy name";
 pub const COPY_ACCOUNT_ID: &str = "Copy account ID";
 
 pub const ACCOUNT_ACTIONS: &str = "Account actions";
+
+pub const SELECT_SOURCE: &str = "Select source";
+pub const STOP_SHARING: &str = "Stop sharing";

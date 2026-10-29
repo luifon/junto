@@ -15,6 +15,16 @@ use crate::{
     ui::{StyleExt, VolumeSlider},
 };
 
+fn share_sound_volume(open: &OpenAccountMenu) -> bool {
+    matches!(
+        &open.source,
+        Some(AccountSource::CallOccupant {
+            surface: super::account_menus::CallSurface::Share { watched: true, .. },
+            ..
+        })
+    )
+}
+
 impl Shell {
     fn call_source_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
         matches!(&open.source, Some(AccountSource::CallOccupant { .. }))
@@ -46,11 +56,17 @@ impl Shell {
         if *account_id == open.owner.account_id {
             return None;
         }
-        self.view
-            .as_ref()?
-            .lists()?
-            .call
-            .as_ref()?
+        let panel = self.view.as_ref()?.lists()?.call.as_ref()?;
+        if share_sound_volume(open) {
+            let stage = panel.stage.as_ref()?;
+            return stage
+                .watched()
+                .filter(|share| {
+                    share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
+                })
+                .map(|_| stage.volume);
+        }
+        panel
             .people
             .iter()
             .find(|person| person.account_id == *account_id)
@@ -78,9 +94,16 @@ impl Shell {
             let percent = value.round().clamp(0.0, 200.0) as u16;
             let account = context.people[0].account_id;
             this.state.update(cx, |state, cx| {
-                state.set_volume(context.owner.entry.server_id, account, percent, cx);
-                if release {
-                    state.store_volume(context.owner.entry.server_id, account, cx);
+                if share_sound_volume(&context) {
+                    state.set_share_volume(percent, cx);
+                    if release {
+                        state.store_share_volume(cx);
+                    }
+                } else {
+                    state.set_volume(context.owner.entry.server_id, account, percent, cx);
+                    if release {
+                        state.store_volume(context.owner.entry.server_id, account, cx);
+                    }
                 }
             });
         });
@@ -106,6 +129,16 @@ impl Shell {
         }
         let theme = theme(cx);
         let name = &open.people[0].name;
+        let label = if share_sound_volume(open) {
+            text::SHARE_VOLUME.to_owned()
+        } else {
+            text::your_volume_for(name)
+        };
+        let accessible = if share_sound_volume(open) {
+            text::SHARE_VOLUME.to_owned()
+        } else {
+            text::volume_for(name)
+        };
         Some(
             div()
                 .flex()
@@ -116,14 +149,14 @@ impl Shell {
                 .py(u(8.0))
                 .gap(u(5.0))
                 .typeface(theme.types.small, &theme)
-                .child(div().truncate().child(text::your_volume_for(name)))
+                .child(div().truncate().child(label))
                 .child(
                     div().flex().w_full().child(
                         VolumeSlider::new(
                             "call-menu-volume",
                             &control.state,
                             &control.focus,
-                            text::volume_for(name),
+                            accessible,
                         )
                         .selector("call-menu-volume"),
                     ),
@@ -140,6 +173,8 @@ enum CallMenuAction {
     Camera(crate::state::CameraAction),
     Hand(bool),
     Leave,
+    WatchShare(junto_media::engine::ShareId),
+    StopShare(u8),
     Participant(ParticipantAction),
 }
 
@@ -164,6 +199,51 @@ struct CallControl {
 }
 
 impl Shell {
+    pub(super) fn share_call_controls(
+        &self,
+        open: &OpenAccountMenu,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(AccountSource::CallOccupant {
+            account_id,
+            surface: super::account_menus::CallSurface::Share { id, watched },
+            ..
+        }) = &open.source
+        else {
+            return Vec::new();
+        };
+        let Some(share) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .and_then(|lists| lists.call.as_ref())
+            .and_then(|panel| panel.stage.as_ref())
+            .and_then(|stage| stage.shares.iter().find(|share| share.id == *id))
+        else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        if !watched {
+            items.push(CallControl {
+                id: "call-menu-watch-share",
+                label: text::WATCH,
+                action: CallMenuAction::WatchShare(*id),
+                disabled: share.watched,
+                detail: None,
+            });
+        }
+        if *account_id == open.owner.account_id {
+            items.push(CallControl {
+                id: "call-menu-stop-share",
+                label: text::STOP_SHARING,
+                action: CallMenuAction::StopShare(id.slot),
+                disabled: false,
+                detail: None,
+            });
+        }
+        self.call_controls(open, items, cx)
+    }
+
     pub(super) fn own_call_controls(
         &self,
         open: &OpenAccountMenu,
@@ -317,6 +397,8 @@ impl Shell {
                             CallMenuAction::Camera(action) => state.use_camera(action, cx),
                             CallMenuAction::Hand(raised) => state.set_hand(*raised, cx),
                             CallMenuAction::Leave => state.leave_call(cx),
+                            CallMenuAction::WatchShare(id) => state.watch_share(*id),
+                            CallMenuAction::StopShare(slot) => state.stop_share(Some(*slot)),
                             CallMenuAction::Participant(action) => {
                                 if let Some((room, account)) = participant {
                                     match action {
