@@ -125,7 +125,7 @@ impl RenderOnce for Menu {
         let colors = theme.colors;
         let metrics = theme.metrics;
         let close = self.on_close.map(std::rc::Rc::new);
-        let (escape, outside) = (close.clone(), close);
+        let (escape, outside, wheel) = (close.clone(), close.clone(), close);
         let layer = self.focus.clone();
         let margin = u(8.0).to_pixels(window.rem_size());
         let available = window.viewport_size();
@@ -139,6 +139,7 @@ impl RenderOnce for Menu {
             })
             .read(cx)
             .clone();
+        let scrolling = scroll.clone();
         let frame = div()
             .id(self.id)
             .role(Role::Menu)
@@ -200,6 +201,26 @@ impl RenderOnce for Menu {
                 .ink(colors.ink)
         };
         frame
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, _| {
+                        let (wheel, scrolling) = (wheel.clone(), scrolling.clone());
+                        window.on_mouse_event(
+                            move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                                if phase == gpui::DispatchPhase::Capture
+                                    && !scrolling.bounds().contains(&event.position)
+                                    && let Some(close) = &wheel
+                                {
+                                    close(window, cx);
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_0(),
+            )
             .child(super::reveal::start())
             .children(self.children)
             .child(super::reveal::end(&scroll, revealed))

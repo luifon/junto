@@ -224,3 +224,27 @@ fn the_keyboard_chooses_a_menu_action(cx: &mut TestAppContext) {
     assert_eq!(host.read_with(cx, |host, _| host.chosen), Some(0));
     assert!(!host.read_with(cx, |host, _| host.opened));
 }
+
+#[gpui::test]
+fn a_wheel_outside_a_menu_closes_it_but_its_own_list_keeps_scrolling(cx: &mut TestAppContext) {
+    let (host, cx) = popup(cx);
+    cx.simulate_keystrokes("menu");
+    settle(cx);
+    let bounds = cx.debug_bounds("test-menu").unwrap();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+        ..Default::default()
+    });
+    settle(cx);
+    assert!(host.read_with(cx, |host, _| host.opened));
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: point(px(2.0), px(2.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+        ..Default::default()
+    });
+    settle(cx);
+    assert!(!host.read_with(cx, |host, _| host.opened));
+    let trigger = host.read_with(cx, |host, _| host.trigger.clone());
+    assert!(cx.update(|window, _| trigger.is_focused(window)));
+}
