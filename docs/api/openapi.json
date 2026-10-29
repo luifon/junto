@@ -16944,6 +16944,24 @@
           {
             "type": "object",
             "required": [
+              "channel_id",
+              "kind"
+            ],
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "account_id",
               "kind"
             ],

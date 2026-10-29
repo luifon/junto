@@ -62,3 +62,5 @@ Revision 3 introduces the forwarded-message reference in the typed message docum
 
 Revision 4 adds `message_marked_unread`, with the place, optional thread root, backward
 position and read revision. The account alone receives it under current place access.
+
+Revision 5 identifies typed channel-reference inline nodes. They carry an ID and no copied name; current server permissions govern name discovery and navigation (ADR 0408, ADR 0740). The existing everyone mention node retains its wire identity while the interface names it @channel.

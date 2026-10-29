@@ -53,6 +53,7 @@ struct Draft {
 pub(crate) struct MentionPicker {
     /// The byte of the text at which the `@` stands.
     start: usize,
+    channel: bool,
     query: String,
     /// The candidate that Enter takes.
     chosen: usize,
@@ -127,6 +128,7 @@ pub(crate) struct Composer {
 
 fn token_id(target: MentionTarget) -> String {
     match target {
+        MentionTarget::Channel(channel_id) => format!("channel:{channel_id}"),
         MentionTarget::Account(account_id) => format!("account:{account_id}"),
         MentionTarget::Role(role_id) => format!("role:{role_id}"),
         MentionTarget::Everyone => "everyone".to_owned(),
@@ -135,6 +137,7 @@ fn token_id(target: MentionTarget) -> String {
 
 fn token_target(id: &str) -> Option<MentionTarget> {
     match id.split_once(':') {
+        Some(("channel", id)) => id.parse().ok().map(MentionTarget::Channel),
         Some(("account", id)) => id.parse().ok().map(MentionTarget::Account),
         Some(("role", id)) => id.parse().ok().map(MentionTarget::Role),
         None if id == "everyone" => Some(MentionTarget::Everyone),
@@ -160,14 +163,17 @@ fn mentions_of(content: &InputContent) -> Vec<Mention> {
 /// `@` stands at the start of the text or after white space, and no line ends after it.
 fn mention_query(text: &str, cursor: usize) -> Option<(usize, String)> {
     let before = text.get(..cursor)?;
-    let start = before.rfind('@')?;
+    let start = before.rfind(['@', '#'])?;
     let query = &before[start + 1..];
     let opens = before[..start]
         .chars()
         .next_back()
         .is_none_or(char::is_whitespace);
-    (opens && query.chars().count() <= 32 && !query.contains('\n'))
-        .then(|| (start, query.to_owned()))
+    (opens
+        && !query.starts_with(char::is_whitespace)
+        && query.chars().count() <= 32
+        && !query.contains('\n'))
+    .then(|| (start, query.to_owned()))
 }
 
 /// The other participant of a direct conversation, when the query finds the name. A
@@ -610,6 +616,7 @@ impl Shell {
                 _ => 0,
             },
             start,
+            channel: value.as_bytes().get(start) == Some(&b'#'),
             query,
         });
         cx.notify();
@@ -622,6 +629,33 @@ impl Shell {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
+        if open.channel {
+            let Some(feed) = self.composer_feed(pane) else {
+                return Vec::new();
+            };
+            let mut found: Vec<_> = feed
+                .names
+                .channels
+                .iter()
+                .filter_map(|(id, name)| {
+                    let candidate = Candidate {
+                        target: MentionTarget::Channel(*id),
+                        name: name.clone(),
+                        detail: text::CHANNEL_REFERENCE,
+                    };
+                    rank(&candidate, &open.query.to_lowercase()).map(|rank| (rank, candidate))
+                })
+                .collect();
+            found.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()))
+            });
+            return found
+                .into_iter()
+                .take(MOST_CANDIDATES)
+                .map(|(_, candidate)| candidate)
+                .collect();
+        }
         match self.composer_place(pane).map(|(_, place)| place) {
             Some(PlaceId::Direct(conversation_id)) => view
                 .lists()
@@ -659,7 +693,15 @@ impl Shell {
         let Some(open) = self.pen_mut(pane).mention.take() else {
             return;
         };
-        let token = InlineToken::new(token_id(candidate.target), format!("@{}", candidate.name));
+        let prefix = if matches!(candidate.target, MentionTarget::Channel(_)) {
+            '#'
+        } else {
+            '@'
+        };
+        let token = InlineToken::new(
+            token_id(candidate.target),
+            format!("{prefix}{}", candidate.name),
+        );
         self.pen_mut(pane).input.update(cx, |input, cx| {
             let end = input.cursor();
             if input
@@ -1046,6 +1088,11 @@ impl Shell {
                 .get(&role_id)
                 .cloned()
                 .unwrap_or_else(|| text::UNKNOWN_ROLE.to_owned()),
+            MentionTarget::Channel(id) => names
+                .channels
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| text::UNKNOWN_CHANNEL_REFERENCE.to_owned()),
             MentionTarget::Everyone => text::EVERYONE.to_owned(),
         };
         let shown = compose::written(document, &name);
@@ -2112,6 +2159,8 @@ mod tests {
         // An address is no mention.
         assert_eq!(mention_query("mail ana@example", 16), None);
         assert_eq!(mention_query("no sign", 7), None);
+        assert_eq!(mention_query("#gen", 4), Some((0, "gen".to_owned())));
+        assert_eq!(mention_query("# heading", 9), None);
         assert_eq!(mention_query("@one\n two", 9), None);
         // The cursor stands before the sign.
         assert_eq!(mention_query("ab @c", 2), None);
@@ -2123,6 +2172,7 @@ mod tests {
         let role_id = junto_client_core::protocol::ids::WorkspaceRoleId::generate();
         for target in [
             MentionTarget::Account(account_id),
+            MentionTarget::Channel(junto_client_core::protocol::ids::ChannelId::generate()),
             MentionTarget::Role(role_id),
             MentionTarget::Everyone,
         ] {

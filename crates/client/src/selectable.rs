@@ -159,6 +159,16 @@ impl TextSelection {
             .collect()
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn text_point(&self, text: &str, byte: usize) -> Option<Point<Pixels>> {
+        let held = self.0.borrow();
+        let part = held.parts.iter().find(|part| part.text.contains(text))?;
+        let start = part.text.find(text)?;
+        let position = part.layout.position_for_index(start.checked_add(byte)?)?;
+        let position = position + point(px(2.0), part.layout.line_height() / 2.0);
+        part.visible.contains(&position).then_some(position)
+    }
+
     pub fn control(&self, bounds: Option<Bounds<Pixels>>) {
         self.0.borrow_mut().control = bounds;
     }

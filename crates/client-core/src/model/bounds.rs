@@ -45,7 +45,10 @@ fn inline(nodes: &[Inline]) -> usize {
                 Inline::Text { text, marks } => text.len() + marks.len(),
                 Inline::Code { text } => text.len(),
                 Inline::Link { text, url } => text.len() + url.len(),
-                Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => 0,
+                Inline::Channel { .. }
+                | Inline::Account { .. }
+                | Inline::Role { .. }
+                | Inline::Everyone => 0,
             }
         })
         .sum()

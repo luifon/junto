@@ -34,6 +34,7 @@ mod call_notices;
 mod calls;
 mod channel_calls;
 mod channel_history;
+mod channel_references;
 mod channel_use;
 mod composing;
 mod contacts;
@@ -74,9 +75,9 @@ mod people;
 mod permissions;
 mod pictures;
 mod reaction_people;
-mod reply_quotes;
 mod recordings;
 mod recovery;
+mod reply_quotes;
 mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.

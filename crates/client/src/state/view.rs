@@ -3107,6 +3107,8 @@ pub(super) fn names(
     }
     accounts.insert(model.account.id, crate::text::label(&model.account.name));
     Names {
+        server_id: Some(server_id),
+        channels: channel_names(model),
         accounts,
         roles: workspace
             .map(|workspace| workspace.roles.as_slice())
@@ -3116,6 +3118,21 @@ pub(super) fn names(
             .collect(),
         departed: known.people.departures(server_id),
     }
+}
+
+pub(super) fn channel_names(model: &ServerModel) -> HashMap<ChannelId, String> {
+    model
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.channels.iter())
+        .filter(|channel| model.holds_in(channel.channel.id, WorkspacePermission::ViewChannel))
+        .map(|channel| {
+            (
+                channel.channel.id,
+                crate::text::label(&channel.channel.name),
+            )
+        })
+        .collect()
 }
 
 /// What the channels of a workspace hold that the person has not read.

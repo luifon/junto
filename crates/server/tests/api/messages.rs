@@ -1378,3 +1378,44 @@ async fn manual_unread_can_remind_the_author_about_their_own_message() {
         .ok(StatusCode::OK);
     assert_eq!(read_again.unread, 0);
 }
+
+#[tokio::test]
+async fn channel_references_validate_the_authors_current_access() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Writer").await;
+    let place = channel(&server, &owner, "text").await;
+    let target = channel(&server, &owner, "voice").await;
+    let route = format!("/api/v1/channels/{}/messages", place.id);
+    let body = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"channel","channel_id":target.id}]}]}});
+    let sent: Message = server
+        .post(&author, &route, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    let workspace = server.default_workspace(&owner).await;
+    let everyone = server.everyone_role(&owner, workspace.id).await;
+    server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/rules/roles/{}", target.id, everyone.id),
+            &json!({"deny":["view_channel"]}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let denied = server.post(&author, &route, &body).await;
+    denied.error(ErrorCode::NotFound);
+    let mut edited = body.clone();
+    edited["document"]["blocks"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"text","text":" retained", "marks":[]}));
+    server
+        .put(&author, &msg(sent.id), &edited)
+        .await
+        .ok::<Message>(StatusCode::OK);
+    let missing = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"channel","channel_id":junto_protocol::ids::ChannelId::generate()}]}]}});
+    server
+        .post(&author, &route, &missing)
+        .await
+        .error(ErrorCode::NotFound);
+}

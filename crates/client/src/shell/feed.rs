@@ -20,7 +20,7 @@ use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
-use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
+use junto_client_core::protocol::ids::{AttachmentId, ChannelId, MessageId, ServerId};
 use junto_client_core::protocol::message::{
     Attachment, Block, Document, Inline, Mark, Message, Reaction,
 };
@@ -481,6 +481,7 @@ struct Rich {
     families: Vec<(Range<usize>, SharedString)>,
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
+    channels: Vec<(Range<usize>, ChannelId)>,
     copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
 }
@@ -493,6 +494,7 @@ impl Rich {
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
+            channels: Vec::new(),
             copy_targets: Vec::new(),
             replacements: Vec::new(),
         };
@@ -559,6 +561,28 @@ impl Rich {
                     rich.style(range.clone(), style, &stand_ins, theme);
                     rich.copy_targets.push((range.clone(), link.to_string()));
                     rich.links.push((range, link));
+                }
+                Inline::Channel { channel_id } => {
+                    rich.text.push('#');
+                    let name = names.channels.get(channel_id);
+                    rich.text
+                        .push_str(name.map_or(text::UNKNOWN_CHANNEL_REFERENCE, String::as_str));
+                    {
+                        let range = start..rich.text.len();
+                        rich.highlights.push((
+                            range.clone(),
+                            HighlightStyle {
+                                color: Some(colors.cypress_ink.into()),
+                                underline: Some(UnderlineStyle {
+                                    thickness: px(1.0),
+                                    color: None,
+                                    wavy: false,
+                                }),
+                                ..HighlightStyle::default()
+                            },
+                        ));
+                        rich.channels.push((range, *channel_id));
+                    }
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
                     rich.padding();
@@ -652,12 +676,13 @@ impl Rich {
 
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
-    fn element(self, id: usize) -> AnyElement {
+    fn element(self, id: usize, open_channel: Option<ChannelOpener>) -> AnyElement {
         let links = self.links;
+        let channels = self.channels;
         let styled = StyledText::new(self.text)
             .with_highlights(self.highlights)
             .with_font_family_overrides(self.families);
-        if links.is_empty() {
+        if links.is_empty() && (channels.is_empty() || open_channel.is_none()) {
             return crate::selectable::SelectableText::rich(
                 styled,
                 self.copy_targets,
@@ -665,7 +690,11 @@ impl Rich {
             )
             .into_any_element();
         }
-        let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
+        let mut ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
+        if open_channel.is_some() {
+            ranges.extend(channels.iter().map(|(range, _)| range.clone()));
+        }
+        let external_count = links.len();
         let targets = self.copy_targets;
         let hover = links.clone();
         crate::selectable::SelectableText::rich(
@@ -675,6 +704,13 @@ impl Rich {
                     // for it opens it.
                     if let Some((_, link)) = links.get(index) {
                         crate::opening::open_link(link, cx);
+                    } else if let Some(open) = &open_channel
+                        && let Some((_, channel)) = index
+                            .checked_sub(external_count)
+                            .and_then(|index| channels.get(index))
+                    {
+                        open(*channel, cx);
+                        cx.stop_propagation();
                     }
                 })
                 .tooltip(move |index, window, cx| {
@@ -690,6 +726,8 @@ impl Rich {
     }
 }
 
+type ChannelOpener = Rc<dyn Fn(ChannelId, &mut gpui::App)>;
+
 /// One block of a document in the list.
 fn paragraph(
     content: &[Inline],
@@ -697,10 +735,11 @@ fn paragraph(
     theme: &Theme,
     drawings: &Drawings,
     id: usize,
+    open_channel: &Option<ChannelOpener>,
 ) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme, drawings).element(id))
+        .child(Rich::of(content, names, theme, drawings).element(id, open_channel.clone()))
         .into_any_element()
 }
 
@@ -1755,6 +1794,22 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let drawings = Drawings::of(cx);
+        let open_channel: Option<ChannelOpener> = names.server_id.and_then(|server_id| {
+            let owner = self.state.read(cx).owner(server_id)?;
+            let state = self.state.clone();
+            Some(Rc::new(move |channel_id, cx: &mut gpui::App| {
+                state.update(cx, |state, cx| {
+                    if state.owner(server_id) != Some(owner) {
+                        return;
+                    }
+                    if let Some(address) =
+                        state.server(server_id).map(|server| server.entry().address)
+                    {
+                        state.open_channel_link(&address, channel_id, cx);
+                    }
+                });
+            }) as ChannelOpener)
+        });
         let mut blocks = Vec::new();
         let mut texts = 0;
         let mut next = || {
@@ -1767,7 +1822,14 @@ impl Shell {
                     blocks.push(self.render_forward(server, *message_id, theme, window, cx))
                 }
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, &drawings, next()));
+                    blocks.push(paragraph(
+                        content,
+                        names,
+                        theme,
+                        &drawings,
+                        next(),
+                        &open_channel,
+                    ));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1776,7 +1838,14 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, &drawings, next()))
+                        .child(paragraph(
+                            content,
+                            names,
+                            theme,
+                            &drawings,
+                            next(),
+                            &open_channel,
+                        ))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1810,7 +1879,14 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, &drawings, next()))
+                                .child(paragraph(
+                                    item,
+                                    names,
+                                    theme,
+                                    &drawings,
+                                    next(),
+                                    &open_channel,
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -1888,7 +1964,14 @@ impl Shell {
                                 .py(u(1.0))
                                 .when(checked, |row| row.ink(colors.ink_3))
                                 .child(check)
-                                .child(paragraph(&item.content, names, theme, &drawings, next()))
+                                .child(paragraph(
+                                    &item.content,
+                                    names,
+                                    theme,
+                                    &drawings,
+                                    next(),
+                                    &open_channel,
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -3484,6 +3567,15 @@ impl Shell {
             self.hovered_message = shown;
             cx.notify();
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn readonly_text_point(
+        &self,
+        text: &str,
+        byte: usize,
+    ) -> Option<gpui::Point<gpui::Pixels>> {
+        self.text_selection.text_point(text, byte)
     }
 
     #[cfg(feature = "test-support")]

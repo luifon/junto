@@ -13,12 +13,13 @@
 use std::ops::Range;
 
 use junto_client_core::link::Link;
-use junto_client_core::protocol::ids::{AccountId, WorkspaceRoleId};
+use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceRoleId};
 use junto_client_core::protocol::message::{Block, CheckItem, Document, Inline, Mark};
 
 /// What a mention names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MentionTarget {
+    Channel(ChannelId),
     Account(AccountId),
     Role(WorkspaceRoleId),
     Everyone,
@@ -179,6 +180,9 @@ impl Inlines<'_> {
             Some(MentionTarget::Role(role_id)) => {
                 self.nodes.push(Inline::Role { role_id: *role_id });
             }
+            Some(MentionTarget::Channel(channel_id)) => self.nodes.push(Inline::Channel {
+                channel_id: *channel_id,
+            }),
             Some(MentionTarget::Everyone) => self.nodes.push(Inline::Everyone),
             None => {}
         }
@@ -743,7 +747,10 @@ pub fn has_content(document: &Document) -> bool {
         Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
             !text.trim().is_empty()
         }
-        Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => true,
+        Inline::Channel { .. }
+        | Inline::Account { .. }
+        | Inline::Role { .. }
+        | Inline::Everyone => true,
     })
 }
 
@@ -765,7 +772,10 @@ pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
     for node in nodes_of(document) {
         let mention = matches!(
             node,
-            Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone
+            Inline::Channel { .. }
+                | Inline::Account { .. }
+                | Inline::Role { .. }
+                | Inline::Everyone
         );
         if mention && !mentions.contains(&node) {
             mentions.push(node);
@@ -822,7 +832,12 @@ impl Writer<'_> {
     /// is written as a space, so no line prefix or escape is put inside the mention.
     fn mention(&mut self, target: MentionTarget) {
         let start = self.text.len();
-        self.text.push('@');
+        self.text
+            .push(if matches!(target, MentionTarget::Channel(_)) {
+                '#'
+            } else {
+                '@'
+            });
         self.text
             .extend((self.name)(target).chars().map(|character| {
                 if character.is_control() {
@@ -910,6 +925,7 @@ impl Writer<'_> {
                     self.mention(MentionTarget::Account(*account_id));
                 }
                 Inline::Role { role_id } => self.mention(MentionTarget::Role(*role_id)),
+                Inline::Channel { channel_id } => self.mention(MentionTarget::Channel(*channel_id)),
                 Inline::Everyone => self.mention(MentionTarget::Everyone),
             }
         }
@@ -1623,6 +1639,7 @@ mod tests {
             MentionTarget::Account(_) => "Bruno Costa".to_owned(),
             MentionTarget::Role(_) => "leads".to_owned(),
             MentionTarget::Everyone => "everyone".to_owned(),
+            MentionTarget::Channel(_) => "general".to_owned(),
         };
         let documents = [
             Document {

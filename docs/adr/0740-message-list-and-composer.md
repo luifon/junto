@@ -115,7 +115,7 @@ The scoped text-layout observer is the only gpui change for selection (ADR 0757)
 - The composer shows marks while the person types, not formatted text.
 - The syntax colours follow regular expressions and no grammar: a name is coloured by its form, not by its meaning. A language that the library does not know, and a block without a language, stay without colours.
 - A picture above the bounds of the server for pictures is a file row, and so are HEIC, AVIF and every other format (ADR 0408).
-- The name of a channel in a text is plain text: the document of the server has no channel reference.
+- Typed channel references use the permission-checked target opener and the current readable channel names.
 - The list draws the rows in view and a margin of 800 pixels, so the time of a frame does not grow with the loaded messages: measured with the window code and the renderer without a display in a release build on the development machine, a frame without a change and a frame after a scroll of 40 rows take 2.6 to 2.8 milliseconds with 50 and with 10,000 loaded messages (longest 4.8). A frame after a new message derives the rows again and takes 5.3 milliseconds with 50 messages and 9.1 milliseconds with 10,000 (longest 9.9). A debug build is about ten times slower. `junto-screens` repeats the measurement (`JUNTO_SCREENS_ONLY=frames`).
 - A system line of an action that this build does not know is drawn as a line without detail.
 - A finished recording is a card in the chat of its voice channel (ADR 0744).
@@ -142,3 +142,9 @@ pinned messages and pending replies use the same quote renderer. A deleted or
 inaccessible original has the same plain refusal as a missing message. A stale quote
 cannot act for a replacement account, and the quote's keyboard action does not open its
 parent message menu. Read-only selection still suppresses activation after a drag.
+
+## Channel references and channel-wide mentions
+
+A `#` at a word boundary offers visible channels as completion tokens in every composer. The document stores a channel ID without a copied name; editing preserves the token and the current permission-filtered server model supplies the displayed name. An unknown target shows a generic channel label. Activation uses the shared target opener (ADR 0714), which reads fresh server permissions, including archived targets, and gives the same refusal for hidden and missing targets. A token cannot make the recipient's client disclose a channel name that its server state does not contain. The server checks a newly inserted channel reference against the author's current view access, including edits; unchanged references survive edits after access is lost.
+
+`@channel` is the visible name of the existing `everyone` wire node and token identity. The existing MentionEveryone permission and notification switches remain, with current channel visibility filtering recipients when the mention is created. Existing stored mentions render with the new visible name. Role/account mentions and direct-conversation restrictions stay as in ADR 0408. No bare junto URL recognition is added here; that belongs to the shared link component.

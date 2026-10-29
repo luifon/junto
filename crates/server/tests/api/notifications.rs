@@ -1343,3 +1343,88 @@ async fn old_clients_read_and_change_settings_after_a_new_device_sets_privacy() 
     let future = serde_json::from_value::<NotificationSettings>(json!({"future_preference":true}));
     assert!(future.is_ok(), "response settings allow future fields");
 }
+
+#[tokio::test]
+async fn channel_mentions_reach_only_current_readers_and_follow_notification_preferences() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = server.join(&owner, "Reader").await;
+    let hidden = server.join(&owner, "Hidden").await;
+    let muted = server.join(&owner, "Muted").await;
+    let suppressed = server.join(&owner, "Suppressed").await;
+    let channel = channel(&server, &owner, "text").await;
+    let route = format!("/api/v1/channels/{}/messages", channel.id);
+    server
+        .put(
+            &owner,
+            &format!(
+                "/api/v1/channels/{}/rules/people/{}",
+                channel.id, hidden.account_id
+            ),
+            &json!({"deny":["view_channel"]}),
+        )
+        .await
+        .ok::<serde_json::Value>(StatusCode::OK);
+    settings(&server, &muted, channel.id, json!({"mute":true})).await;
+    settings(
+        &server,
+        &suppressed,
+        channel.id,
+        json!({"everyone_mentions":false}),
+    )
+    .await;
+    let body =
+        json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"everyone"}]}]}});
+    server
+        .post(&reader, &route, &body)
+        .await
+        .error(junto_protocol::error::ErrorCode::Forbidden);
+    let message: Message = server
+        .post(&owner, &route, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    assert!(
+        notices(&server, &reader)
+            .await
+            .iter()
+            .any(|notice| notice.message_id == message.id)
+    );
+    for account in [&hidden, &muted, &suppressed] {
+        assert!(notices(&server, account).await.is_empty());
+    }
+    let recipients: Vec<junto_protocol::ids::AccountId> =
+        sqlx::query_scalar("select unnest(recipients) from message_mentions where message_id=$1")
+            .bind(message.id)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert!(recipients.contains(&reader.account_id));
+    assert!(!recipients.contains(&hidden.account_id));
+    server
+        .put(
+            &owner,
+            &format!(
+                "/api/v1/channels/{}/rules/people/{}",
+                channel.id, hidden.account_id
+            ),
+            &json!({"allow":[],"deny":[]}),
+        )
+        .await
+        .ok::<serde_json::Value>(StatusCode::OK);
+    let state: MessageState = server
+        .get(&hidden, &format!("{route}/read"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(state.mentions, 0);
+    let edited = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"everyone"},{"kind":"account","account_id":hidden.account_id}]}]}});
+    server
+        .put(&owner, &format!("/api/v1/messages/{}", message.id), &edited)
+        .await
+        .ok::<Message>(StatusCode::OK);
+    assert!(
+        notices(&server, &hidden)
+            .await
+            .iter()
+            .any(|notice| notice.message_id == message.id)
+    );
+}

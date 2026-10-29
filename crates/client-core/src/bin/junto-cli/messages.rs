@@ -173,7 +173,8 @@ fn inline_text(content: &[Inline]) -> String {
             Inline::Link { text, url } => format!("{text} <{url}>"),
             Inline::Account { account_id } => format!("@account:{account_id}"),
             Inline::Role { role_id } => format!("@role:{role_id}"),
-            Inline::Everyone => "@everyone".to_owned(),
+            Inline::Channel { channel_id } => format!("#channel:{channel_id}"),
+            Inline::Everyone => "@channel".to_owned(),
         })
         .collect()
 }

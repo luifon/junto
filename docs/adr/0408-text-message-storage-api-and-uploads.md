@@ -339,3 +339,7 @@ Reaction rosters:
 - A deleted account has no displayed name; an unavailable account remains identified as
   unavailable. Reading a roster requires access to the message, independently of the
   permission to add a reaction.
+
+Channel references are `Inline::Channel { channel_id }` nodes with no embedded name. New references require the author's current ViewChannel permission; the client resolves names only from its permitted channel state and the server checks a recipient again through the channel metadata opener. Unknown/deleted/hidden references carry no name. Channel references do not notify anyone. The `everyone` mention node is presented as `@channel`; its recipient set is restricted to accounts with current channel access when added, and notification policy continues to filter mute, mention switches and quiet time (ADR 0742). Event revision 5 identifies documents with channel reference nodes.
+
+A new message passes no prior document to reference validation; an edit passes the message read in the same transaction. Looking at the just-inserted row would mistake a new reference for an unchanged one and bypass its access check. Mention delivery and notice eligibility use the captured recipient set, including on later edits; a broadcast that did not reach an account does not suppress a later explicit mention of that account.

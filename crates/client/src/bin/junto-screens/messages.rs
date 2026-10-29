@@ -456,6 +456,41 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let general_place = PlaceId::Channel(general_id());
 
     // View A of the design: a text channel with its messages.
+    let mut references = Made::new(GENERAL);
+    let row = references.message(
+        "Ana",
+        2,
+        "Please see the voice channel and notify this channel.",
+    );
+    row.document = Some(Document {
+        blocks: vec![junto_client_core::protocol::message::Block::Paragraph {
+            content: vec![
+                junto_client_core::protocol::message::Inline::Text {
+                    text: "Please see ".to_owned(),
+                    marks: Vec::new(),
+                },
+                junto_client_core::protocol::message::Inline::Channel {
+                    channel_id: id(DAILY),
+                },
+                junto_client_core::protocol::message::Inline::Text {
+                    text: " and notify ".to_owned(),
+                    marks: Vec::new(),
+                },
+                junto_client_core::protocol::message::Inline::Everyone,
+                junto_client_core::protocol::message::Inline::Text {
+                    text: ".".to_owned(),
+                    marks: Vec::new(),
+                },
+            ],
+        }],
+    });
+    studio.draw(
+        Screen::new(
+            "messages-channel-references",
+            with_timeline(references.timeline()),
+        ),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
     studio.draw(
         Screen::new("messages-text-channel", with_timeline(general().timeline())),
         |shell, _, cx| prepare(shell, none(), cx),

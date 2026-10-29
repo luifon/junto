@@ -79,6 +79,9 @@ pub enum Inline {
         text: String,
         url: String,
     },
+    Channel {
+        channel_id: ChannelId,
+    },
     Account {
         account_id: AccountId,
     },

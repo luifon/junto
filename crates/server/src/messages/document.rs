@@ -61,7 +61,10 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
     for node in &nodes {
         if matches!(
             node,
-            Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone
+            Inline::Channel { .. }
+                | Inline::Account { .. }
+                | Inline::Role { .. }
+                | Inline::Everyone
         ) && !mentions.contains(node)
         {
             mentions.push(*node);

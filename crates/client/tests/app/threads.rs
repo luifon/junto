@@ -1099,7 +1099,7 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
 
     // Everyone: chosen in the picker, sent.
     type_text(&mut window, "Meeting at noon, ");
-    window.simulate(|cx| cx.simulate_input("@every"));
+    window.simulate(|cx| cx.simulate_input("@chan"));
     candidate(&mut window, text::EVERYONE);
     window.press("enter");
     let to_all = sent_with(&mut window, &Inline::Everyone);

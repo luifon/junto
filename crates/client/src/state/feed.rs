@@ -448,6 +448,8 @@ impl Feed {
 /// The names that the messages of a place mention.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Names {
+    pub server_id: Option<ServerId>,
+    pub channels: HashMap<ChannelId, String>,
     /// The names of departed accounts carry their mark here (ADR 0121).
     pub accounts: HashMap<AccountId, String>,
     pub roles: HashMap<WorkspaceRoleId, String>,
@@ -541,6 +543,15 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
                             .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
                     );
                 }
+                Inline::Channel { channel_id } => {
+                    out.push('#');
+                    out.push_str(
+                        names
+                            .channels
+                            .get(channel_id)
+                            .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
+                    );
+                }
                 Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
             }
         }
@@ -608,6 +619,15 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
                             .roles
                             .get(role_id)
                             .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
+                    );
+                }
+                Inline::Channel { channel_id } => {
+                    out.push('#');
+                    out.push_str(
+                        names
+                            .channels
+                            .get(channel_id)
+                            .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
                     );
                 }
                 Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
@@ -1382,6 +1402,8 @@ mod tests {
             notification_settings: Vec::new(),
         };
         let names = Names {
+            server_id: None,
+            channels: HashMap::new(),
             accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
             roles: HashMap::from([(role, "Leads".to_owned())]),
             departed: HashMap::new(),

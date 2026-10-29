@@ -258,7 +258,7 @@ pub(super) async fn send(
             .execute(&mut *connection)
             .await?;
         }
-        messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        messages::mentions(connection, &access, &place, id, &body.document, None, now).await?;
         if let Some((root, candidates, before)) = &followers {
             messages::threads::tell_new_followers(
                 connection,
@@ -359,8 +359,16 @@ pub async fn edit_message(
             Some(root) => messages::threads::following_among(connection, root, &named).await?,
             None => Vec::new(),
         };
-        let recipients =
-            messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        let recipients = messages::mentions(
+            connection,
+            &access,
+            &place,
+            id,
+            &body.document,
+            message.document.as_ref(),
+            now,
+        )
+        .await?;
         if let Some(root) = message.thread_root {
             messages::threads::tell_new_followers(
                 connection,

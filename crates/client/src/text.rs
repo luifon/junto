@@ -1880,8 +1880,8 @@ pub const DELETED_MESSAGE: &str = "This message was deleted.";
 pub const QUOTE_DELETED: &str = "Deleted message";
 pub const QUOTE_UNKNOWN: &str = "A message that is not loaded";
 pub const UNKNOWN_ROLE: &str = "unknown role";
-pub const MENTION_EVERYONE: &str = "@everyone";
-pub const EVERYONE: &str = "everyone";
+pub const MENTION_EVERYONE: &str = "@channel";
+pub const EVERYONE: &str = "channel";
 pub const EVERYONE_HELP: &str = "Everyone who can read this channel";
 pub const SOMEBODY: &str = "somebody";
 pub const REPLY: &str = "Reply";
@@ -3802,3 +3802,6 @@ pub const REACTION_PREVIOUS: &str = "Previous people";
 pub const REACTION_NEXT: &str = "Next people";
 
 pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
+
+pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
+pub const CHANNEL_REFERENCE: &str = "Channel";

@@ -159,7 +159,8 @@ fn inline(node: &Inline, names: &Names, out: &mut String) {
                 .map_or_else(|| role_id.to_string(), Clone::clone);
             let _ = write!(out, "<span class=\"mention\">@{}</span>", escape(&name));
         }
-        Inline::Everyone => out.push_str("<span class=\"mention\">@everyone</span>"),
+        Inline::Channel { .. } => out.push_str("<span class=\"mention\">#channel</span>"),
+        Inline::Everyone => out.push_str("<span class=\"mention\">@channel</span>"),
     }
 }
 
