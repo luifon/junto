@@ -3764,3 +3764,4 @@ mod tests {
         assert!(recording_request_failed("No.").ends_with(" No."));
     }
 }
+pub const COPY_TEXT: &str = "Copy text";

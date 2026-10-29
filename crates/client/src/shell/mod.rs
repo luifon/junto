@@ -12,6 +12,7 @@ mod camera;
 mod channels;
 mod composer;
 mod contacts;
+mod copying;
 mod decode;
 pub mod detached;
 mod direct;
@@ -379,6 +380,9 @@ pub struct Shell {
     pub(crate) viewer_reads: u64,
     /// The tokens of the code blocks that the window drew.
     pub(crate) code_tokens: feed::CodeTokens,
+    pub(crate) text_selection: crate::selectable::TextSelection,
+    pub(crate) copied_text: u64,
+    pub(crate) copied_shown: bool,
     pub(crate) composer: composer::Composer,
     /// The list and the composer of the thread of the side panel.
     pub(crate) thread_feed: feed::FeedList,
@@ -804,6 +808,9 @@ impl Shell {
             message_pictures: feed::MessagePictures::default(),
             viewer_reads: 0,
             code_tokens: feed::CodeTokens::default(),
+            text_selection: crate::selectable::TextSelection::default(),
+            copied_text: 0,
+            copied_shown: false,
             composer,
             thread_feed,
             thread_composer,
@@ -1555,8 +1562,24 @@ impl Render for Shell {
             self.take_state(window, cx);
         }
         self.derived_since_drawing = false;
+        self.selection_context();
+        self.text_selection
+            .focus(if matches!(self.layer, Layer::None) {
+                self.focus.clone()
+            } else {
+                self.layer_focus.clone()
+            });
         if self.detached {
-            return self.render_detached(window, cx);
+            let detached = self.render_detached(window, cx);
+            return crate::selectable::SelectableText::new(
+                div()
+                    .relative()
+                    .size_full()
+                    .child(detached)
+                    .children(self.render_copy_control(window, cx)),
+                self.text_selection.clone(),
+            )
+            .into_any_element();
         }
         let settings = self.state.read(cx).settings();
         let view: ShellView = match &self.view {
@@ -1567,6 +1590,7 @@ impl Render for Shell {
                 view
             }
         };
+        self.selection_context();
         #[cfg(feature = "test-support")]
         {
             self.drawn = Some(view.clone());
@@ -1656,7 +1680,10 @@ impl Render for Shell {
             ))
             .children(self.edge_drag_tracking(cx))
             .when(!matches!(self.layer, Layer::None), |body| {
-                body.child(self.render_layer(&view, window, cx))
+                body.child(crate::selectable::SelectableText::cover(
+                    self.render_layer(&view, window, cx),
+                    self.text_selection.clone(),
+                ))
             });
         // The cut of a chosen picture lies over the layer that chose the picture.
         let picture_crop = self.state.read(cx).picture_crop();
@@ -1668,7 +1695,7 @@ impl Render for Shell {
             Some(crop) => body.child(self.render_picture_crop(crop, window, cx)),
             None => body,
         };
-        div()
+        let shell = div()
             .id("shell")
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -1708,7 +1735,8 @@ impl Render for Shell {
                 window,
                 cx,
             ))
-            .into_any_element()
+            .children(self.render_copy_control(window, cx));
+        crate::selectable::SelectableText::new(shell, self.text_selection.clone()).into_any_element()
     }
 }
 

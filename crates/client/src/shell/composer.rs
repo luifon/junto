@@ -1878,7 +1878,7 @@ impl Shell {
                             .text_size(u(14.5))
                             .line_height(u(21.0))
                             .ink(colors.ink)
-                            .child(input),
+                            .child(crate::selectable::SelectableText::unobserved(input)),
                     )
                     .child(
                         div()

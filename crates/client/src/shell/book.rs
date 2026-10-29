@@ -550,7 +550,10 @@ impl Shell {
                 .font_weight(FontWeight::SEMIBOLD)
                 .ink(colors.ink)
                 .debug_selector(|| "version-build".to_owned())
-                .child(txt::this_build(version.build))
+                .child(crate::selectable::SelectableText::value(
+                    txt::this_build(version.build),
+                    version.build.to_string(),
+                ))
                 .into_any_element(),
             crate::ui::notice_slot("version-state-slot")
                 .child(sentence(
