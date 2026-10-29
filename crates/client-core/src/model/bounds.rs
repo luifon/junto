@@ -38,14 +38,14 @@ const NODE: usize = 64;
 const ITEM: usize = 24;
 
 fn inline(nodes: &[Inline]) -> usize {
-    nodes
-        .iter()
-        .map(|node| {
+    junto_protocol::message::inline_nodes(nodes)
+        .map(|(node, _)| {
             NODE + match node {
                 Inline::Text { text, marks } => text.len() + marks.len(),
                 Inline::Code { text } => text.len(),
                 Inline::Link { text, url } => text.len() + url.len(),
-                Inline::Channel { .. }
+                Inline::Spoiler { .. }
+                | Inline::Channel { .. }
                 | Inline::Account { .. }
                 | Inline::Role { .. }
                 | Inline::Everyone => 0,
@@ -61,7 +61,10 @@ fn document(document: &Document) -> usize {
         .map(|block| {
             NODE + match block {
                 Block::Forward { server, .. } => server.as_str().len() + 16,
-                Block::Paragraph { content } | Block::Quote { content } => inline(content),
+                Block::Heading { content, .. }
+                | Block::Small { content }
+                | Block::Paragraph { content }
+                | Block::Quote { content } => inline(content),
                 Block::Code { text, language } => {
                     text.len() + language.as_ref().map_or(0, String::len)
                 }
@@ -79,16 +82,7 @@ fn document(document: &Document) -> usize {
 
 /// The inline nodes of a document, as the server counts them.
 fn inline_nodes(document: &Document) -> usize {
-    document
-        .blocks
-        .iter()
-        .map(|block| match block {
-            Block::Paragraph { content } | Block::Quote { content } => content.len(),
-            Block::Code { .. } | Block::Forward { .. } => 0,
-            Block::List { items, .. } => items.iter().map(Vec::len).sum(),
-            Block::Checklist { items } => items.iter().map(|item| item.content.len()).sum(),
-        })
-        .sum()
+    document.inlines().take(MOST_INLINE_NODES + 1).count()
 }
 
 /// The items of the lists of a document.
@@ -99,7 +93,9 @@ fn list_items(document: &Document) -> usize {
         .map(|block| match block {
             Block::List { items, .. } => items.len(),
             Block::Checklist { items } => items.len(),
-            Block::Paragraph { .. }
+            Block::Heading { .. }
+            | Block::Small { .. }
+            | Block::Paragraph { .. }
             | Block::Quote { .. }
             | Block::Code { .. }
             | Block::Forward { .. } => 0,
@@ -143,6 +139,8 @@ pub fn fits(message: &Message) -> bool {
             document.blocks.len() <= MOST_BLOCKS
                 && inline_nodes(document) <= MOST_INLINE_NODES
                 && list_items(document) <= MOST_LIST_ITEMS
+                && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
+                && document.blocks.iter().all(|block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)))
         })
         && weight(message) <= MOST_MESSAGE_WEIGHT
 }

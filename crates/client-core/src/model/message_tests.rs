@@ -1128,3 +1128,47 @@ fn manual_unread_moves_the_boundary_back_and_marks_the_open_timeline() {
         Some(1)
     );
 }
+
+#[test]
+fn formatted_documents_bound_spoiler_depth_and_nested_node_count() {
+    let scene = scene();
+    let mut held = message(scene.text_place(), 1, AccountId::generate(), "text");
+    let leaf = Inline::Text {
+        text: "text".to_owned(),
+        marks: Vec::new(),
+    };
+    let nested = |depth| {
+        let mut node = leaf.clone();
+        for _ in 0..depth {
+            node = Inline::Spoiler {
+                content: vec![node],
+            };
+        }
+        Document {
+            blocks: vec![Block::Paragraph {
+                content: vec![node],
+            }],
+        }
+    };
+    held.document = Some(nested(8));
+    assert!(fits(&held));
+    held.document = Some(nested(9));
+    assert!(!fits(&held));
+    held.document = Some(Document {
+        blocks: vec![Block::Paragraph {
+            content: vec![Inline::Spoiler {
+                content: vec![leaf.clone(); 1000],
+            }],
+        }],
+    });
+    assert!(!fits(&held));
+    for level in [0, 4] {
+        held.document = Some(Document {
+            blocks: vec![Block::Heading {
+                level,
+                content: vec![leaf.clone()],
+            }],
+        });
+        assert!(!fits(&held));
+    }
+}

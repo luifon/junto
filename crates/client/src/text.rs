@@ -3805,3 +3805,9 @@ pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
 
 pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
 pub const CHANNEL_REFERENCE: &str = "Channel";
+
+pub const SPOILER: &str = "Spoiler";
+pub const REVEAL_SPOILER: &str = "Reveal spoiler";
+pub const SPOILER_KEYBOARD: &str = "Reveal the next spoiler with Enter or Space";
+pub const HEADING: &str = "Heading";
+pub const SMALL_TEXT: &str = "Small text";

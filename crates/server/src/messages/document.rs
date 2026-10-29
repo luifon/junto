@@ -30,7 +30,13 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
                     return Err(ApiError::invalid("invalid forward origin"));
                 }
             }
-            Block::Paragraph { content } | Block::Quote { content } => nodes.extend(content),
+            Block::Heading { level, .. } if !(1..=3).contains(level) => {
+                return Err(ApiError::invalid("heading level is between 1 and 3"));
+            }
+            Block::Heading { .. }
+            | Block::Small { .. }
+            | Block::Paragraph { .. }
+            | Block::Quote { .. } => {}
             Block::Code { text, language } => {
                 text_ok(text)?;
                 if language.as_ref().is_some_and(|language| {
@@ -42,17 +48,14 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
                     return Err(ApiError::invalid("invalid code language"));
                 }
             }
-            Block::List { items, .. } => {
-                for item in items {
-                    nodes.extend(item);
-                }
-            }
-            Block::Checklist { items } => {
-                for item in items {
-                    nodes.extend(&item.content);
-                }
-            }
+            Block::List { .. } | Block::Checklist { .. } => {}
         }
+    }
+    for (node, depth) in document.inlines().take(1001) {
+        if depth > junto_protocol::message::MAX_INLINE_DEPTH {
+            return Err(ApiError::invalid("spoiler nesting is too deep"));
+        }
+        nodes.push(node);
     }
     if nodes.len() > 1000 {
         return Err(ApiError::invalid("too many inline nodes"));
@@ -125,9 +128,10 @@ pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
         Block::Forward { .. } => true,
         Block::Code { text, .. } => !text.trim().is_empty(),
-        Block::Paragraph { content } | Block::Quote { content } => {
-            content.iter().any(inline_content)
-        }
+        Block::Heading { content, .. }
+        | Block::Small { content }
+        | Block::Paragraph { content }
+        | Block::Quote { content } => content.iter().any(inline_content),
         Block::List { items, .. } => items.iter().flatten().any(inline_content),
         Block::Checklist { items } => items
             .iter()
@@ -140,8 +144,53 @@ fn inline_content(node: &Inline) -> bool {
         Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
             !text.trim().is_empty()
         }
+        Inline::Spoiler { content } => content.iter().any(inline_content),
         _ => true,
     }
+}
+
+pub fn preview_text(document: &Document) -> String {
+    fn visible(content: &[Inline], parts: &mut Vec<String>) {
+        let mut hidden = None;
+        for (node, depth) in junto_protocol::message::inline_nodes(content) {
+            if hidden.is_some_and(|level| depth > level) {
+                continue;
+            }
+            hidden = None;
+            match node {
+                Inline::Spoiler { .. } => {
+                    parts.push("Spoiler".to_owned());
+                    hidden = Some(depth);
+                }
+                Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
+                    parts.push(text.clone())
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    for block in &document.blocks {
+        match block {
+            Block::Paragraph { content }
+            | Block::Quote { content }
+            | Block::Heading { content, .. }
+            | Block::Small { content } => visible(content, &mut parts),
+            Block::Code { text, .. } => parts.push(text.clone()),
+            Block::List { items, .. } => {
+                for item in items {
+                    visible(item, &mut parts);
+                }
+            }
+            Block::Checklist { items } => {
+                for item in items {
+                    visible(&item.content, &mut parts);
+                }
+            }
+            Block::Forward { .. } => {}
+        }
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]

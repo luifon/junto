@@ -14943,6 +14943,54 @@
           {
             "type": "object",
             "required": [
+              "level",
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "heading"
+                ]
+              },
+              "level": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "small"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "server",
               "message_id",
               "kind"
@@ -16877,6 +16925,27 @@
       },
       "Inline": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "spoiler"
+                ]
+              }
+            }
+          },
           {
             "type": "object",
             "required": [

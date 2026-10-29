@@ -3,7 +3,7 @@ use crate::{
     access::Access,
     error::{ApiError, ApiResult},
     extract::{ApiQuery, Bearer},
-    messages::Place,
+    messages::{self, Place},
     read,
     state::AppState,
 };
@@ -109,11 +109,11 @@ pub async fn search(
         }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
              line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
-             vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms
+             vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms,m.document as document
              from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
              not null and (m.readers is null or $3=any(m.readers)) union all select
              l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true,
-             null::bigint,null::uuid,l.start_ms from
+             null::bigint,null::uuid,l.start_ms,null::jsonb from
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
              reads_call(r.call_id,$3) ), hits as (select
@@ -144,6 +144,10 @@ pub async fn search(
             let rank: f32 = row.try_get("rank")?;
             next = Some(format!("{rank}:{id}:{line}"));
             let transcript: bool = row.try_get("transcript")?;
+            let document = row.try_get::<Option<sqlx::types::Json<junto_protocol::message::Document>>, _>("document")?;
+            let text = if let Some(document) = document.filter(|document| document.0.inlines().any(|(node, _)| matches!(node, junto_protocol::message::Inline::Spoiler { .. }))) {
+                messages::document::preview_text(&document.0)
+            } else { row.try_get("text")? };
             results.push(SearchHit {
                 message_id: (!transcript).then(|| MessageId::from_uuid(id)),
                 recording_id: transcript.then(|| RecordingId::from_uuid(id)),
@@ -152,7 +156,7 @@ pub async fn search(
                 workspace_id: row.try_get("workspace_id")?,
                 author_id: row.try_get("author_id")?,
                 created_at: row.try_get("created_at")?,
-                text: row.try_get("text")?,
+                text,
                 rank,
                 position: row
                     .try_get::<Option<i64>, _>("position")?

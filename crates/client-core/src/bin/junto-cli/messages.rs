@@ -173,6 +173,7 @@ fn inline_text(content: &[Inline]) -> String {
             Inline::Link { text, url } => format!("{text} <{url}>"),
             Inline::Account { account_id } => format!("@account:{account_id}"),
             Inline::Role { role_id } => format!("@role:{role_id}"),
+            Inline::Spoiler { content } => format!("||{}||", inline_text(content)),
             Inline::Channel { channel_id } => format!("#channel:{channel_id}"),
             Inline::Everyone => "@channel".to_owned(),
         })
@@ -184,7 +185,12 @@ fn document_lines(document: &Document) -> Vec<String> {
     let mut lines = Vec::new();
     for block in &document.blocks {
         match block {
-            Block::Paragraph { content } => lines.push(inline_text(content)),
+            Block::Forward { server, message_id } => {
+                lines.push(format!("> Forwarded message: {server} · {message_id}"))
+            }
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content } => lines.push(inline_text(content)),
             Block::Quote { content } => lines.push(format!("> {}", inline_text(content))),
             Block::Code { text, language } => {
                 lines.push(format!("```{}", language.as_deref().unwrap_or_default()));

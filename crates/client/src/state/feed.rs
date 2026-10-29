@@ -520,7 +520,7 @@ fn clock(at: OffsetDateTime) -> String {
 pub fn copy_text(document: &Document, names: &Names) -> String {
     let inline = |nodes: &[Inline]| {
         let mut out = String::new();
-        for node in nodes {
+        for (node, _) in junto_client_core::protocol::message::inline_nodes(nodes) {
             match node {
                 Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
                     out.push_str(text)
@@ -552,6 +552,7 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
                             .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
                     );
                 }
+                Inline::Spoiler { .. } => {}
                 Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
             }
         }
@@ -565,7 +566,10 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
                 "{}: {server} · {message_id}",
                 crate::text::FORWARDED_MESSAGE
             ),
-            Block::Paragraph { content } | Block::Quote { content } => inline(content),
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => inline(content),
             Block::Code { text, .. } => text.clone(),
             Block::List { ordered, items } => items
                 .iter()
@@ -630,6 +634,7 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
                             .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
                     );
                 }
+                Inline::Spoiler { .. } => out.push_str(crate::text::SPOILER),
                 Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
             }
         }
@@ -641,7 +646,10 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
         }
         match block {
             Block::Forward { .. } => text.push_str(crate::text::FORWARDED_MESSAGE),
-            Block::Paragraph { content } | Block::Quote { content } => {
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => {
                 inline(content, names, &mut text);
             }
             Block::Code { text: code, .. } => text.push_str(code),
@@ -678,12 +686,7 @@ fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) 
         Inline::Everyone => true,
         _ => false,
     };
-    document.blocks.iter().any(|block| match block {
-        Block::Paragraph { content } | Block::Quote { content } => content.iter().any(named),
-        Block::Code { .. } | Block::Forward { .. } => false,
-        Block::List { items, .. } => items.iter().flatten().any(named),
-        Block::Checklist { items } => items.iter().flat_map(|item| &item.content).any(named),
-    })
+    document.inlines().any(|(node, _)| named(node))
 }
 
 fn author_name(message: &Message, names: &Names) -> String {

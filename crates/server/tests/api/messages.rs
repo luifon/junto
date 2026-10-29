@@ -1419,3 +1419,57 @@ async fn channel_references_validate_the_authors_current_access() {
         .await
         .error(ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn formatted_marks_accept_bounded_headings_small_text_and_nested_spoilers() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let place = channel(&server, &owner, "text").await;
+    let route = format!("/api/v1/channels/{}/messages", place.id);
+    let body = json!({"document":{"blocks":[
+        {"kind":"heading","level":2,"content":[{"kind":"text","text":"Review"}]},
+        {"kind":"small","content":[{"kind":"text","text":"A note"}]},
+        {"kind":"paragraph","content":[{"kind":"spoiler","content":[{"kind":"text","text":"secret","marks":["bold"]},{"kind":"code","text":"run()"}]}]}
+    ]}});
+    let sent: Message = server
+        .post(&owner, &route, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(
+        serde_json::to_value(sent.document).unwrap()["blocks"][2]["content"][0]["kind"],
+        "spoiler"
+    );
+    let found: junto_protocol::discovery::SearchPage = server
+        .get(&owner, "/api/v1/search?q=secret")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(found.results.len(), 1);
+    assert!(found.results[0].text.contains("Spoiler"));
+    assert!(!found.results[0].text.contains("secret"));
+
+    let unsafe_link = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"spoiler","content":[{"kind":"link","text":"hidden link","url":"javascript:alert(1)"}]}]}]}});
+    server
+        .post(&owner, &route, &unsafe_link)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    for level in [0, 4, 255] {
+        let mut invalid = body.clone();
+        invalid["document"]["blocks"][0]["level"] = json!(level);
+        server
+            .post(&owner, &route, &invalid)
+            .await
+            .error(ErrorCode::InvalidRequest);
+    }
+    let mut nested = json!({"kind":"text","text":"too deep"});
+    for _ in 0..9 {
+        nested = json!({"kind":"spoiler","content":[nested]});
+    }
+    server
+        .post(
+            &owner,
+            &route,
+            &json!({"document":{"blocks":[{"kind":"paragraph","content":[nested]}]}}),
+        )
+        .await
+        .error(ErrorCode::InvalidRequest);
+}

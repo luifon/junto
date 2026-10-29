@@ -1010,6 +1010,20 @@ fn event_details(event: &Event) -> String {
             workspace_id,
             channel_id,
         } => format!("workspace={workspace_id} channel={channel_id}"),
+        Event::MessageMarkedUnread {
+            place,
+            thread_root,
+            position,
+            read_revision,
+        } => {
+            let thread = thread_root
+                .map(|root| format!(" thread={root}"))
+                .unwrap_or_default();
+            format!(
+                "{}{thread} position={position} read_revision={read_revision}",
+                message_place(place)
+            )
+        }
         Event::MessageRead { place, position } => {
             format!("{} position={position}", message_place(place))
         }

@@ -45,6 +45,7 @@ mod departures;
 mod event_alerts;
 mod files;
 mod flows;
+mod formatting_marks;
 mod forwarding;
 mod glossary;
 mod gpui_panics;

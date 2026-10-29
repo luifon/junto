@@ -33,6 +33,13 @@ pub struct Document {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
+    Heading {
+        level: u8,
+        content: Vec<Inline>,
+    },
+    Small {
+        content: Vec<Inline>,
+    },
     Forward {
         server: Origin,
         message_id: MessageId,
@@ -67,6 +74,10 @@ pub struct CheckItem {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Inline {
+    Spoiler {
+        #[cfg_attr(feature = "openapi", schema(no_recursion))]
+        content: Vec<Inline>,
+    },
     Text {
         text: String,
         #[serde(default)]
@@ -90,6 +101,54 @@ pub enum Inline {
     },
     Everyone,
 }
+pub const MAX_INLINE_DEPTH: usize = 8;
+
+pub struct InlineNodes<'a> {
+    stack: Vec<(std::slice::Iter<'a, Inline>, usize)>,
+}
+
+pub fn inline_nodes(content: &[Inline]) -> InlineNodes<'_> {
+    InlineNodes {
+        stack: vec![(content.iter(), 0)],
+    }
+}
+
+impl<'a> Iterator for InlineNodes<'a> {
+    type Item = (&'a Inline, usize);
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (nodes, depth) = self.stack.last_mut()?;
+            let depth = *depth;
+            if let Some(node) = nodes.next() {
+                if let Inline::Spoiler { content } = node {
+                    self.stack.push((content.iter(), depth + 1));
+                }
+                return Some((node, depth));
+            }
+            self.stack.pop();
+        }
+    }
+}
+
+impl Document {
+    pub fn inlines(&self) -> impl Iterator<Item = (&Inline, usize)> {
+        self.blocks.iter().flat_map(|block| {
+            let contents: Box<dyn Iterator<Item = &[Inline]>> = match block {
+                Block::Heading { content, .. }
+                | Block::Small { content }
+                | Block::Paragraph { content }
+                | Block::Quote { content } => Box::new(std::iter::once(content.as_slice())),
+                Block::List { items, .. } => Box::new(items.iter().map(Vec::as_slice)),
+                Block::Checklist { items } => {
+                    Box::new(items.iter().map(|item| item.content.as_slice()))
+                }
+                Block::Forward { .. } | Block::Code { .. } => Box::new(std::iter::empty()),
+            };
+            contents.flat_map(inline_nodes)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]

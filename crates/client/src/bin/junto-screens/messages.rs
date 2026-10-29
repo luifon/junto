@@ -456,6 +456,28 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let general_place = PlaceId::Channel(general_id());
 
     // View A of the design: a text channel with its messages.
+    for (name, scale, width, height) in [
+        ("messages-formatting-marks", 100, 1180.0, 800.0),
+        ("messages-formatting-marks-150", 150, 720.0, 600.0),
+    ] {
+        let mut marks = Made::new(GENERAL);
+        marks.message(
+            "Ana",
+            2,
+            "# Review
+## Scope
+### Details
+-# A small note with **emphasis**.
+The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
+\\||These marks are literal\\||.",
+        );
+        studio.draw(
+            Screen::new(name, with_timeline(marks.timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+        )?;
+    }
     let mut references = Made::new(GENERAL);
     let row = references.message(
         "Ana",

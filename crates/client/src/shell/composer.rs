@@ -1432,10 +1432,10 @@ impl Shell {
         });
         let tool = |id: &'static str, label: &'static str, mark: AnyElement| {
             div()
-                .id(id)
+                .id(pane.id(id))
                 .role(Role::Button)
                 .aria_label(label)
-                .debug_selector(move || id.to_owned())
+                .debug_selector(move || pane.id(id).to_owned())
                 .flex()
                 .flex_none()
                 .items_center()
@@ -1473,7 +1473,9 @@ impl Shell {
             .flex_none()
             .items_center()
             .gap(u(1.0))
-            .h(u(28.0))
+            .flex_wrap()
+            .min_h(u(28.0))
+            .py(u(3.0))
             .px(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
@@ -1542,6 +1544,38 @@ impl Shell {
                 tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(cx.listener(
                     move |this, _, window, cx| this.prefix_lines(pane, "> ", window, cx),
                 )),
+            )
+            .child(
+                tool(
+                    "format-heading",
+                    text::HEADING,
+                    letter("H", FontWeight::BOLD),
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.prefix_lines(pane, "# ", window, cx)
+                    }),
+                ),
+            )
+            .child(
+                tool(
+                    "format-small",
+                    text::SMALL_TEXT,
+                    letter("t", FontWeight::NORMAL),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.prefix_lines(pane, "-# ", window, cx)
+                })),
+            )
+            .child(
+                tool(
+                    "format-spoiler",
+                    text::SPOILER,
+                    letter("||", FontWeight::BOLD),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.wrap_selection(pane, "||", "||", window, cx)
+                })),
             )
             .child(divider())
             .child(if writing.attach {

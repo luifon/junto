@@ -3,7 +3,7 @@
 //! rows are added before and after it.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -482,23 +482,51 @@ struct Rich {
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
     channels: Vec<(Range<usize>, ChannelId)>,
+    spoilers: Vec<(Range<usize>, Vec<usize>)>,
     copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
 }
 
 impl Rich {
     fn of(content: &[Inline], names: &Names, theme: &Theme, drawings: &Drawings) -> Self {
-        let colors = theme.colors;
+        Self::shown(content, names, theme, drawings, &HashSet::new())
+    }
+
+    fn shown(
+        content: &[Inline],
+        names: &Names,
+        theme: &Theme,
+        drawings: &Drawings,
+        revealed: &HashSet<Vec<usize>>,
+    ) -> Self {
         let mut rich = Self {
             text: String::new(),
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
             channels: Vec::new(),
+            spoilers: Vec::new(),
             copy_targets: Vec::new(),
             replacements: Vec::new(),
         };
-        for node in content {
+        rich.append(content, names, theme, drawings, revealed, &[]);
+        rich
+    }
+
+    fn append(
+        &mut self,
+        content: &[Inline],
+        names: &Names,
+        theme: &Theme,
+        drawings: &Drawings,
+        revealed: &HashSet<Vec<usize>>,
+        prefix: &[usize],
+    ) {
+        let colors = theme.colors;
+        let rich = self;
+        for (index, node) in content.iter().enumerate() {
+            let mut path = prefix.to_vec();
+            path.push(index);
             let start = rich.text.len();
             match node {
                 Inline::Text { text, marks } => {
@@ -562,6 +590,34 @@ impl Rich {
                     rich.copy_targets.push((range.clone(), link.to_string()));
                     rich.links.push((range, link));
                 }
+                Inline::Spoiler { content } => {
+                    if revealed.contains(&path) {
+                        rich.append(content, names, theme, drawings, revealed, &path);
+                    } else {
+                        rich.text.push_str(text::SPOILER);
+                        let range = start..rich.text.len();
+                        rich.highlights.push((
+                            range.clone(),
+                            HighlightStyle {
+                                color: Some(colors.travertine_hi.into()),
+                                background_color: Some(colors.ink_3.into()),
+                                ..HighlightStyle::default()
+                            },
+                        ));
+                        rich.copy_targets.push((
+                            range.clone(),
+                            crate::state::feed::copy_text(
+                                &Document {
+                                    blocks: vec![Block::Paragraph {
+                                        content: content.clone(),
+                                    }],
+                                },
+                                names,
+                            ),
+                        ));
+                        rich.spoilers.push((range, path));
+                    }
+                }
                 Inline::Channel { channel_id } => {
                     rich.text.push('#');
                     let name = names.channels.get(channel_id);
@@ -620,7 +676,6 @@ impl Rich {
                 }
             }
         }
-        rich
     }
 
     /// Adds `text` as the window shows it (ADR 0758). Returns the ranges of the stand-ins
@@ -676,13 +731,22 @@ impl Rich {
 
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
-    fn element(self, id: usize, open_channel: Option<ChannelOpener>) -> AnyElement {
+    fn element(
+        self,
+        id: usize,
+        open_channel: Option<ChannelOpener>,
+        reveal: Option<SpoilerOpener>,
+    ) -> AnyElement {
         let links = self.links;
         let channels = self.channels;
+        let spoilers = self.spoilers;
         let styled = StyledText::new(self.text)
             .with_highlights(self.highlights)
             .with_font_family_overrides(self.families);
-        if links.is_empty() && (channels.is_empty() || open_channel.is_none()) {
+        if links.is_empty()
+            && (channels.is_empty() || open_channel.is_none())
+            && spoilers.is_empty()
+        {
             return crate::selectable::SelectableText::rich(
                 styled,
                 self.copy_targets,
@@ -695,8 +759,16 @@ impl Rich {
             ranges.extend(channels.iter().map(|(range, _)| range.clone()));
         }
         let external_count = links.len();
+        let channel_count = if open_channel.is_some() {
+            channels.len()
+        } else {
+            0
+        };
+        let spoiler_start = external_count + channel_count;
+        ranges.extend(spoilers.iter().map(|(range, _)| range.clone()));
         let targets = self.copy_targets;
         let hover = links.clone();
+        let spoiler_hover = spoilers.clone();
         crate::selectable::SelectableText::rich(
             InteractiveText::new(("rich", id), styled)
                 .on_click(ranges, move |index, _, cx| {
@@ -704,16 +776,30 @@ impl Rich {
                     // for it opens it.
                     if let Some((_, link)) = links.get(index) {
                         crate::opening::open_link(link, cx);
-                    } else if let Some(open) = &open_channel
+                    } else if index < spoiler_start
+                        && let Some(open) = &open_channel
                         && let Some((_, channel)) = index
                             .checked_sub(external_count)
                             .and_then(|index| channels.get(index))
                     {
                         open(*channel, cx);
                         cx.stop_propagation();
+                    } else if let Some(reveal) = &reveal
+                        && let Some((_, path)) = index
+                            .checked_sub(spoiler_start)
+                            .and_then(|index| spoilers.get(index))
+                    {
+                        reveal(path.clone(), cx);
+                        cx.stop_propagation();
                     }
                 })
                 .tooltip(move |index, window, cx| {
+                    if spoiler_hover
+                        .iter()
+                        .any(|(range, _)| range.contains(&index))
+                    {
+                        return Some(tooltip(text::REVEAL_SPOILER)(window, cx));
+                    }
                     hover
                         .iter()
                         .find(|(range, _)| range.contains(&index))
@@ -727,8 +813,88 @@ impl Rich {
 }
 
 type ChannelOpener = Rc<dyn Fn(ChannelId, &mut gpui::App)>;
+type SpoilerOpener = Rc<dyn Fn(Vec<usize>, &mut gpui::App)>;
 
-/// One block of a document in the list.
+struct SpoilerReveals {
+    content: Vec<Inline>,
+    owner: Option<junto_client_core::Owner>,
+    paths: HashSet<Vec<usize>>,
+}
+
+#[derive(IntoElement)]
+struct RichParagraph {
+    content: Vec<Inline>,
+    names: Names,
+    theme: Theme,
+    drawings: Drawings,
+    id: usize,
+    owner: Option<junto_client_core::Owner>,
+    open_channel: Option<ChannelOpener>,
+}
+
+impl gpui::RenderOnce for RichParagraph {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        if !junto_client_core::protocol::message::inline_nodes(&self.content)
+            .any(|(node, _)| matches!(node, Inline::Spoiler { .. }))
+        {
+            return Rich::of(&self.content, &self.names, &self.theme, &self.drawings).element(
+                self.id,
+                self.open_channel,
+                None,
+            );
+        }
+        let state = window.use_keyed_state(("spoiler-state", self.id), cx, |_, _| SpoilerReveals {
+            content: self.content.clone(),
+            owner: self.owner,
+            paths: HashSet::new(),
+        });
+        state.update(cx, |state, _| {
+            if state.content != self.content || state.owner != self.owner {
+                state.content = self.content.clone();
+                state.owner = self.owner;
+                state.paths.clear();
+            }
+        });
+        let rich = Rich::shown(
+            &self.content,
+            &self.names,
+            &self.theme,
+            &self.drawings,
+            &state.read(cx).paths,
+        );
+        let first = rich.spoilers.first().map(|(_, path)| path.clone());
+        let reveal: SpoilerOpener = Rc::new(move |path, cx| {
+            state.update(cx, |state, cx| {
+                state.paths.insert(path);
+                cx.notify();
+            })
+        });
+        let keyboard = reveal.clone();
+        let ring = focus_ring_inside(
+            self.theme.colors.terracotta_deep,
+            self.theme.metrics.focus_ring,
+        );
+        div()
+            .id(("spoiler-control", self.id))
+            .when_some(first, |frame, first| {
+                frame
+                    .role(Role::Button)
+                    .aria_label(text::SPOILER_KEYBOARD)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            keyboard(first.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    })
+            })
+            .child(rich.element(self.id, self.open_channel, Some(reveal)))
+            .into_any_element()
+    }
+}
+
 fn paragraph(
     content: &[Inline],
     names: &Names,
@@ -736,10 +902,34 @@ fn paragraph(
     drawings: &Drawings,
     id: usize,
     open_channel: &Option<ChannelOpener>,
+    owner: Option<junto_client_core::Owner>,
 ) -> AnyElement {
+    if !content
+        .iter()
+        .any(|node| matches!(node, Inline::Spoiler { .. }))
+    {
+        return div()
+            .id(("paragraph", id))
+            .min_w_0()
+            .child(Rich::of(content, names, theme, drawings).element(
+                id,
+                open_channel.clone(),
+                None,
+            ))
+            .into_any_element();
+    }
     div()
+        .id(("paragraph", id))
         .min_w_0()
-        .child(Rich::of(content, names, theme, drawings).element(id, open_channel.clone()))
+        .child(RichParagraph {
+            content: content.to_vec(),
+            names: names.clone(),
+            theme: theme.clone(),
+            drawings: drawings.clone(),
+            id,
+            owner,
+            open_channel: open_channel.clone(),
+        })
         .into_any_element()
 }
 
@@ -1794,6 +1984,9 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let drawings = Drawings::of(cx);
+        let spoiler_owner = names
+            .server_id
+            .and_then(|server_id| self.state.read(cx).owner(server_id));
         let open_channel: Option<ChannelOpener> = names.server_id.and_then(|server_id| {
             let owner = self.state.read(cx).owner(server_id)?;
             let state = self.state.clone();
@@ -1821,6 +2014,47 @@ impl Shell {
                 Block::Forward { server, message_id } => {
                     blocks.push(self.render_forward(server, *message_id, theme, window, cx))
                 }
+                Block::Heading { level, content } => {
+                    let (size, height) = match level {
+                        1 => (26.0, 32.0),
+                        2 => (22.0, 28.0),
+                        _ => (18.0, 24.0),
+                    };
+                    blocks.push(
+                        div()
+                            .text_size(u(size))
+                            .line_height(u(height))
+                            .font_weight(FontWeight::BOLD)
+                            .child(paragraph(
+                                content,
+                                names,
+                                theme,
+                                &drawings,
+                                next(),
+                                &open_channel,
+                                spoiler_owner,
+                            ))
+                            .into_any_element(),
+                    );
+                }
+                Block::Small { content } => {
+                    blocks.push(
+                        div()
+                            .text_size(u(12.0))
+                            .line_height(u(18.0))
+                            .ink(colors.ink_3)
+                            .child(paragraph(
+                                content,
+                                names,
+                                theme,
+                                &drawings,
+                                next(),
+                                &open_channel,
+                                spoiler_owner,
+                            ))
+                            .into_any_element(),
+                    );
+                }
                 Block::Paragraph { content } => {
                     blocks.push(paragraph(
                         content,
@@ -1829,6 +2063,7 @@ impl Shell {
                         &drawings,
                         next(),
                         &open_channel,
+                        spoiler_owner,
                     ));
                 }
                 Block::Quote { content } => blocks.push(
@@ -1845,6 +2080,7 @@ impl Shell {
                             &drawings,
                             next(),
                             &open_channel,
+                            spoiler_owner,
                         ))
                         .into_any_element(),
                 ),
@@ -1886,6 +2122,7 @@ impl Shell {
                                     &drawings,
                                     next(),
                                     &open_channel,
+                                    spoiler_owner,
                                 ))
                                 .into_any_element(),
                         );
@@ -1971,6 +2208,7 @@ impl Shell {
                                     &drawings,
                                     next(),
                                     &open_channel,
+                                    spoiler_owner,
                                 ))
                                 .into_any_element(),
                         );
