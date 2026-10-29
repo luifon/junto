@@ -9,11 +9,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, Context, Focusable, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point,
-    prelude::FluentBuilder, px,
+    ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement, StrikethroughStyle,
+    Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point, prelude::FluentBuilder,
+    px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
@@ -42,8 +42,8 @@ use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, Menu, MenuItem, Notice, StatePanel, StyleExt, focus_ring_inside,
-    icon, ledge, tooltip,
+    Avatar, Button, ButtonKind, ContextMenuExt, Menu, MenuItem, Notice, StatePanel, StyleExt,
+    focus_ring_inside, icon, ledge, tooltip,
 };
 
 /// The side of a picture of an author in the thread line of a message, in pixels of the
@@ -389,6 +389,14 @@ pub(crate) struct MessageMenuOpen {
     pub message_id: MessageId,
     /// The list that the message was drawn in.
     pub pane: Pane,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposerMenuOpen {
+    pub pane: Pane,
+    pub server_id: ServerId,
+    pub place: PlaceId,
+    pub owner: junto_client_core::Owner,
 }
 
 /// True when the server marked the file as a picture that a client can show (ADR 0408).
@@ -3067,25 +3075,6 @@ impl Shell {
             .when(open_menu, |frame| frame.bg(Hsla::from(colors.row_hover)))
             .when(!message.deleted && !bare, |frame| {
                 let has_actions = row.has_actions();
-                let (by_click, by_key) = (
-                    cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                        if has_actions {
-                            this.open_message_menu(pane, message_id, window, cx);
-                        }
-                    }),
-                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                        let keys = &event.keystroke;
-                        let opens = match keys.key.as_str() {
-                            "menu" | "enter" | "space" => true,
-                            "f10" => keys.modifiers.shift,
-                            _ => false,
-                        };
-                        if opens && has_actions {
-                            this.open_message_menu(pane, message_id, window, cx);
-                            cx.stop_propagation();
-                        }
-                    }),
-                );
                 frame
                     .focusable()
                     .tab_stop(true)
@@ -3093,8 +3082,21 @@ impl Shell {
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.message_hovered(pane, message_id, *hovered, cx);
                     }))
-                    .on_mouse_down(MouseButton::Right, by_click)
-                    .on_key_down(by_key)
+                    .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                        if has_actions {
+                            this.open_message_menu(pane, message_id, window, cx);
+                        }
+                    }))
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && has_actions
+                            {
+                                this.open_message_menu(pane, message_id, window, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
             })
             .children((message.pinned && !message.deleted && !bare).then(|| Self::pin_mark(&theme)))
             .children(
@@ -3381,7 +3383,7 @@ impl Shell {
         &mut self,
         row: &MessageRow,
         feed: &Feed,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let message_id = row.message.id;
@@ -3511,21 +3513,16 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        gpui::deferred(
-            gpui::anchored().child(
-                // The menu opens at the start of the text of its message, inside the list.
-                div().absolute().top(u(4.0)).left(u(44.0)).child(
-                    Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
-                        .selector("message-menu")
-                        .on_close(Self::handler(cx, |this, window, cx| {
-                            this.close_layer(window, cx);
-                        }))
-                        .children(items),
-                ),
-            ),
-        )
-        .with_priority(1)
-        .into_any_element()
+        Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
+            .selector("message-menu")
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx);
+            }))
+            .children(items)
+            .popup(point(
+                u(44.0).to_pixels(window.rem_size()),
+                u(4.0).to_pixels(window.rem_size()),
+            ))
     }
 
     /// The question before a message is deleted: the deletion cannot be undone
@@ -3818,5 +3815,143 @@ mod tests {
             .map(|(range, _)| &rich.text[range.clone()])
             .collect();
         assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
+    }
+}
+
+impl Shell {
+    pub(crate) fn open_composer_menu(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(feed) = self.pane_feed(pane) else {
+            return;
+        };
+        let (server_id, place) = (feed.server_id, feed.place);
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        else {
+            return;
+        };
+        self.focus_composer(pane, window, cx);
+        self.open_layer(
+            Layer::ComposerMenu(ComposerMenuOpen {
+                pane,
+                server_id,
+                place,
+                owner,
+            }),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn composer_menu_current(
+        &self,
+        open: ComposerMenuOpen,
+        view: &ShellView,
+        cx: &gpui::App,
+    ) -> bool {
+        let feed = match open.pane {
+            Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
+            Pane::Thread => view
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .and_then(|thread| thread.feed.as_ref()),
+        };
+        feed.is_some_and(|feed| feed.server_id == open.server_id && feed.place == open.place)
+            && self
+                .state
+                .read(cx)
+                .server(open.server_id)
+                .and_then(|server| server.owner())
+                == Some(open.owner)
+    }
+
+    pub(crate) fn render_composer_menu(
+        &self,
+        pane: Pane,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Layer::ComposerMenu(open) = self.layer else {
+            return None;
+        };
+        if open.pane != pane {
+            return None;
+        }
+        let input = self.pen(pane).input.read(cx);
+        let capabilities = input.context_menu_capabilities();
+        let copy = !capabilities.is_disabled() && capabilities.is_copyable();
+        let edit = capabilities.is_editable();
+        let select = !capabilities.is_disabled() && !input.value().is_empty();
+        let paste = edit && cx.read_from_clipboard().is_some();
+        let actions: [(&'static str, &'static str, Box<dyn gpui::Action>, bool); 4] = [
+            (
+                "composer-cut",
+                text::CUT,
+                Box::new(gpui_base::input::Cut),
+                copy && edit,
+            ),
+            (
+                "composer-copy",
+                text::COPY,
+                Box::new(gpui_base::input::Copy),
+                copy,
+            ),
+            (
+                "composer-paste",
+                text::PASTE,
+                Box::new(gpui_base::input::Paste),
+                paste,
+            ),
+            (
+                "composer-select-all",
+                text::SELECT_ALL,
+                Box::new(gpui_base::input::SelectAll),
+                select,
+            ),
+        ];
+        Some(
+            Menu::new("composer-menu", text::EDIT_TEXT, self.layer_focus())
+                .selector("composer-menu")
+                .on_close(Self::handler(cx, |this, window, cx| {
+                    this.close_layer(window, cx)
+                }))
+                .children(actions.into_iter().map(|(id, label, action, enabled)| {
+                    MenuItem::new(id, label)
+                        .selector(id)
+                        .disabled(!enabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let current = this
+                                .view
+                                .as_ref()
+                                .is_some_and(|view| this.composer_menu_current(open, view, cx));
+                            this.close_layer(window, cx);
+                            if !current {
+                                return;
+                            }
+                            this.focus_composer(pane, window, cx);
+                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
+                            let shell = cx.entity().downgrade();
+                            let action = action.boxed_clone();
+                            window.defer(cx, move |window, cx| {
+                                let current = shell.upgrade().is_some_and(|shell| {
+                                    let this = shell.read(cx);
+                                    this.view.as_ref().is_some_and(|view| {
+                                        this.composer_menu_current(open, view, cx)
+                                    })
+                                });
+                                if current {
+                                    focus.dispatch_action(action.as_ref(), window, cx);
+                                }
+                            });
+                        }))
+                }))
+                .popup(point(px(0.0), px(0.0))),
+        )
     }
 }

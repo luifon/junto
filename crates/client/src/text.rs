@@ -3785,3 +3785,8 @@ pub const LINKED_FILE: &str = "File";
 pub const COPY_FILE_NAME: &str = "Copy file name";
 
 pub const COPY_RECORDING_LINK: &str = "Copy recording link";
+pub const EDIT_TEXT: &str = "Edit text";
+pub const CUT: &str = "Cut";
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+pub const SELECT_ALL: &str = "Select all";

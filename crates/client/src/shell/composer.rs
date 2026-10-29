@@ -30,8 +30,8 @@ use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Field, FieldKind, ScrollArea, StyleExt, float_shadow,
-    focus_ring_inside, icon, ledge, tooltip,
+    Button, ButtonKind, ContextMenuExt, Dialog, Field, FieldKind, ScrollArea, StyleExt,
+    float_shadow, focus_ring_inside, icon, ledge, tooltip,
 };
 
 /// The rows of the text area: it grows with the text up to this number.
@@ -308,6 +308,7 @@ impl Composer {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let input = gpui::AppContext::new(cx, |cx| {
             TextareaState::new(window, cx)
+                .context_menu(false)
                 .auto_grow(1, MOST_ROWS)
                 .submit_on_enter(true)
         });
@@ -1878,7 +1879,12 @@ impl Shell {
                             .text_size(u(14.5))
                             .line_height(u(21.0))
                             .ink(colors.ink)
-                            .child(crate::selectable::SelectableText::unobserved(input)),
+                            .relative()
+                            .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                                this.open_composer_menu(pane, window, cx);
+                            }))
+                            .child(crate::selectable::SelectableText::unobserved(input))
+                            .children(self.render_composer_menu(pane, cx)),
                     )
                     .child(
                         div()
