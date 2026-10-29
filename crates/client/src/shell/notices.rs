@@ -682,7 +682,21 @@ impl Shell {
                 }))
                 .into_any_element(),
         ];
-        if row.jump.is_some() {
+        if let Some(jump) = row.jump {
+            let message_id = jump.message_id;
+            items.push(
+                MenuItem::new("notice-copy-link", text::COPY_TARGET_LINK)
+                    .icon(Icon::Link)
+                    .selector("notice-copy-link")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let link = this.state.read(cx).message_link(server_id, message_id);
+                        this.close_layer(window, cx);
+                        if let Some(link) = link {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                        }
+                    }))
+                    .into_any_element(),
+            );
             let held = row.clone();
             items.push(
                 MenuItem::new("notice-go-to", text::GO_TO_MESSAGE)
@@ -827,6 +841,19 @@ impl Shell {
                 }))
                 .into_any_element(),
         ];
+        items.push(
+            MenuItem::new("channel-copy-link", text::COPY_TARGET_LINK)
+                .icon(Icon::Link)
+                .selector("channel-copy-link")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let link = this.state.read(cx).channel_link(server_id, channel_id);
+                    this.close_layer(window, cx);
+                    if let Some(link) = link {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                    }
+                }))
+                .into_any_element(),
+        );
         if channel.allowed.manage {
             items.push(
                 MenuItem::new("channel-edit", text::EDIT_CHANNEL)
@@ -900,6 +927,23 @@ impl Shell {
                 .into_any_element(),
             menu_separator(cx).into_any_element(),
         ];
+        items.insert(
+            1,
+            MenuItem::new("direct-copy-link", text::COPY_TARGET_LINK)
+                .icon(Icon::Link)
+                .selector("direct-copy-link")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let link = this
+                        .state
+                        .read(cx)
+                        .conversation_link(server_id, conversation_id);
+                    this.close_layer(window, cx);
+                    if let Some(link) = link {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(link));
+                    }
+                }))
+                .into_any_element(),
+        );
         items.extend(
             self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
                 this.state.update(cx, |state, cx| {

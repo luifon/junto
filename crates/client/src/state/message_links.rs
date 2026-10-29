@@ -1,7 +1,7 @@
 use gpui::Context;
 use junto_client_core::address::ServerAddress;
 use junto_client_core::links::{self, AppLink};
-use junto_client_core::protocol::ids::{MessageId, ServerId};
+use junto_client_core::protocol::ids::{ChannelId, ConversationId, MessageId, ServerId};
 
 use super::{AppState, notices::Jump};
 use crate::text;
@@ -10,6 +10,22 @@ impl AppState {
     pub fn message_link(&self, server_id: ServerId, id: MessageId) -> Option<String> {
         let server = self.client.server(server_id)?;
         Some(links::format(&AppLink::Message {
+            server: server.entry().address,
+            id,
+        }))
+    }
+
+    pub fn channel_link(&self, server_id: ServerId, id: ChannelId) -> Option<String> {
+        let server = self.client.server(server_id)?;
+        Some(links::format(&AppLink::Channel {
+            server: server.entry().address,
+            id,
+        }))
+    }
+
+    pub fn conversation_link(&self, server_id: ServerId, id: ConversationId) -> Option<String> {
+        let server = self.client.server(server_id)?;
+        Some(links::format(&AppLink::Conversation {
             server: server.entry().address,
             id,
         }))

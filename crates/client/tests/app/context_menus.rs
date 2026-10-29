@@ -206,3 +206,79 @@ fn a_notice_menu_reads_one_notice_and_opens_another_notices_message(cx: &mut Tes
     });
     assert!(!window.shows("notice-menu"));
 }
+
+#[gpui::test]
+fn copy_target_links_from_channel_direct_and_notice_menus(cx: &mut TestAppContext) {
+    use junto_client_core::model::PlaceId;
+    use junto_client_core::protocol::message::SendMessage;
+
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let origin = window.handle().entry().address.as_str().to_owned();
+    let own = window.own_account();
+    let conversation = world
+        .run(admin.handle.api().open_conversation(own))
+        .unwrap();
+    let message = world
+        .run(admin.handle.api().send_message(
+            PlaceId::Direct(conversation.id),
+            &SendMessage {
+                document: document("A linked update"),
+                reply_to: None,
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until("the direct conversation is listed", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
+    });
+    window.right_click_named(format!("channel-row:{selected}"));
+    window.click("channel-copy-link");
+    assert_target_link(&mut window, "channel", selected, &origin);
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    window.click("direct-copy-link");
+    assert_target_link(&mut window, "conversation", conversation.id, &origin);
+    assert_eq!(window.selected_channel(), selected);
+    window.open_notices();
+    let notice = window.until_value("the direct notice has its message target", |window| {
+        window
+            .notices()?
+            .rows
+            .into_iter()
+            .find(|row| row.jump.is_some_and(|jump| jump.message_id == message.id))
+            .map(|row| row.id)
+    });
+    window.right_click_named(format!("notice:{notice}"));
+    window.click("notice-copy-link");
+    assert_target_link(&mut window, "message", message.id, &origin);
+    assert_eq!(window.selected_channel(), selected);
+}
+
+fn assert_target_link(
+    window: &mut crate::harness::Window,
+    kind: &str,
+    id: impl std::fmt::Display,
+    origin: &str,
+) {
+    let copied = window
+        .cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    let parsed = url::Url::parse(&copied).unwrap();
+    assert_eq!(parsed.scheme(), "junto");
+    assert_eq!(parsed.host_str(), Some(kind));
+    assert_eq!(
+        parsed.query_pairs().into_owned().collect::<Vec<_>>(),
+        [
+            ("server".to_owned(), origin.to_owned()),
+            ("id".to_owned(), id.to_string()),
+        ]
+    );
+}
