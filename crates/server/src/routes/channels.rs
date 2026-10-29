@@ -319,6 +319,35 @@ pub async fn visible_structure(
     })
 }
 
+/// One channel the caller can see, including an archived channel.
+#[utoipa::path(
+    get,
+    path = "/api/v1/channels/{channel_id}",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = Channel), ApiError)
+)]
+pub async fn get_channel(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+) -> ApiResult<Json<Channel>> {
+    let now = app.now();
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (record, scope) = access.channel(connection, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ViewChannel,
+        })?;
+        super::search::read_rate(&app, &access, &mut counted)?;
+        Ok(record.channel)
+    })
+    .map(Json)
+}
+
 /// The workspace permissions that the caller holds in one channel that it can see, an
 /// archived channel included (ADR 0310).
 #[utoipa::path(

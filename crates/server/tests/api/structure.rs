@@ -1585,3 +1585,51 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         .collect();
     assert_eq!(new_events, [x.id.to_string()]);
 }
+
+#[tokio::test]
+async fn a_channel_link_lookup_reads_active_and_archived_channels_under_the_callers_permissions() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Rin").await;
+    let workspace = server.default_workspace(&owner).await;
+    let channel = create_channel(&server, &owner, workspace.id, "planning").await;
+    let path = format!("/api/v1/channels/{}", channel.id);
+    let read: Channel = server.get(&member, &path).await.ok(StatusCode::OK);
+    assert_eq!(read, channel);
+    let everyone = everyone_role(&server, &owner, workspace.id).await;
+    set_override(
+        &server,
+        &owner,
+        channel.id,
+        everyone.id,
+        &[],
+        &[W::ViewChannel],
+    )
+    .await
+    .ok::<PermissionRule>(StatusCode::OK);
+    server.get(&member, &path).await.error(ErrorCode::NotFound);
+    server
+        .get(
+            &member,
+            &format!("/api/v1/channels/{}", ChannelId::generate()),
+        )
+        .await
+        .error(ErrorCode::NotFound);
+    let read: Channel = server.get(&owner, &path).await.ok(StatusCode::OK);
+    assert_eq!(read.id, channel.id);
+    set_override(
+        &server,
+        &owner,
+        channel.id,
+        everyone.id,
+        &[W::ViewChannel],
+        &[],
+    )
+    .await
+    .ok::<PermissionRule>(StatusCode::OK);
+    crate::archive::archive(&server, &owner, channel.id)
+        .await
+        .ok::<junto_protocol::structure::ArchivedChannel>(StatusCode::OK);
+    let read: Channel = server.get(&member, &path).await.ok(StatusCode::OK);
+    assert_eq!(read, channel);
+}

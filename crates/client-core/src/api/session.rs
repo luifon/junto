@@ -641,6 +641,11 @@ impl ServerApi {
             .await
     }
 
+    /// One readable channel by identity, including an archived channel.
+    pub async fn channel(&self, channel_id: ChannelId) -> Result<Channel, ApiError> {
+        self.get(format!("/channels/{channel_id}")).await
+    }
+
     pub async fn create_channel(
         &self,
         workspace_id: WorkspaceId,
