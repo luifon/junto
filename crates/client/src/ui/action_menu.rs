@@ -99,6 +99,7 @@ pub fn bind_action_menu(
         actions: Vec::new(),
         position: Point::default(),
         bounds: Rc::new(Cell::new(Bounds::default())),
+        placement: Default::default(),
     });
     let has_actions = !actions.is_empty();
     let bounds = popup.update(cx, |popup, cx| {
@@ -128,6 +129,7 @@ pub fn bind_action_menu(
                     } else {
                         window.mouse_position()
                     };
+                    popup.placement = Default::default();
                     popup.shown = true;
                     popup.focus.focus(window, cx);
                     cx.notify();
@@ -149,6 +151,7 @@ struct Popup {
     actions: Vec<RowAction>,
     position: Point<Pixels>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    placement: Rc<super::MenuPlacement>,
 }
 
 impl Popup {
@@ -195,7 +198,7 @@ impl Render for Popup {
             .selector("row-context-menu")
             .on_close(move |window, cx| close(&(), window, cx))
             .children(items)
-            .popup_at(self.position)
+            .popup_at_stable(self.position, self.placement.clone())
     }
 }
 

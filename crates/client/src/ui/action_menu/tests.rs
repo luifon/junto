@@ -113,3 +113,86 @@ fn a_keyboard_row_menu_preserves_disabled_actions_and_its_form(cx: &mut TestAppC
     assert!(cx.update(|window, _| focus.is_focused(window)));
     assert!(cx.debug_bounds("rename").is_some());
 }
+
+struct ChoiceHost {
+    on: bool,
+    choice: usize,
+    inspected: bool,
+}
+
+impl Render for ChoiceHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (row, actions) = collect_actions(|| {
+            div()
+                .id("choice-row")
+                .child(
+                    div()
+                        .debug_selector(|| "choice-label".to_owned())
+                        .child("Options"),
+                )
+                .child(
+                    crate::ui::Toggle::new("choice-toggle", "Enabled", self.on, ("On", "Off"))
+                        .selector("choice-toggle")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.on = !this.on;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    crate::ui::Segmented::new(
+                        "choice-policy",
+                        "Policy",
+                        ["Allow".into(), "Deny".into()],
+                    )
+                    .selected(Some(self.choice))
+                    .selector("choice-policy")
+                    .on_select({
+                        let select = cx.listener(|this, index: &usize, _, cx| {
+                            this.choice = *index;
+                            cx.notify();
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                )
+                .child(
+                    crate::ui::MenuItem::new("choice-inspect", "Inspect").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.inspected = true;
+                            cx.notify();
+                        },
+                    )),
+                )
+        });
+        bind_action_menu(row, "choice-menu", actions, window, cx)
+    }
+}
+
+#[gpui::test]
+fn choice_controls_and_menu_rows_expose_their_existing_actions(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, _| ChoiceHost {
+        on: false,
+        choice: 0,
+        inspected: false,
+    });
+    settle(cx);
+    click(cx, "choice-label", MouseButton::Right);
+    assert!(cx.debug_bounds("context-action:Enabled: On").is_some());
+    click(cx, "context-action:Enabled: On", MouseButton::Left);
+    assert!(host.read_with(cx, |host, _| host.on));
+    click(cx, "choice-label", MouseButton::Right);
+    click(cx, "context-action:Policy: Deny", MouseButton::Left);
+    assert_eq!(host.read_with(cx, |host, _| host.choice), 1);
+    click(cx, "choice-label", MouseButton::Right);
+    click(cx, "context-action:Inspect", MouseButton::Left);
+    assert!(host.read_with(cx, |host, _| host.inspected));
+    click(cx, "choice-toggle", MouseButton::Right);
+    click(cx, "context-action:Enabled: Off", MouseButton::Left);
+    assert!(!host.read_with(cx, |host, _| host.on));
+    click(cx, "choice-policy-1", MouseButton::Right);
+    click(cx, "context-action:Policy: Allow", MouseButton::Left);
+    assert_eq!(host.read_with(cx, |host, _| host.choice), 0);
+}

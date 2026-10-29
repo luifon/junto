@@ -14,7 +14,7 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type CloseHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
-type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type ClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The pointer and keyboard triggers of a target's context menu.
 pub trait ContextMenuExt: InteractiveElement {
@@ -312,7 +312,6 @@ impl RenderOnce for Menu {
 }
 
 /// One action of a menu on stone.
-#[derive(IntoElement)]
 pub struct MenuItem {
     id: ElementId,
     title: SharedString,
@@ -395,8 +394,27 @@ impl MenuItem {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
+    }
+}
+
+impl IntoElement for MenuItem {
+    type Element = gpui::ViewElement<Self>;
+    fn into_element(self) -> Self::Element {
+        super::action_menu::record(|| {
+            if self.on_click.is_none() && !self.disabled {
+                return None;
+            }
+            Some(super::RowAction {
+                label: self.title.clone(),
+                icon: self.icon,
+                disabled: self.disabled,
+                detail: self.detail.clone(),
+                handler: self.on_click.clone(),
+            })
+        });
+        gpui::ViewElement::new(self)
     }
 }
 
