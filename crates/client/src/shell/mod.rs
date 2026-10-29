@@ -36,6 +36,7 @@ mod pictures;
 mod placement;
 mod prepared;
 mod presence;
+mod profile;
 mod rail;
 mod recorded;
 pub mod room;
@@ -84,6 +85,7 @@ pub(crate) enum Layer {
     Join(join::Join),
     ServerMenu,
     Presence(junto_client_core::Owner),
+    Profile,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
     /// The list of the input or of the output devices, in the sound settings of a call.
@@ -241,6 +243,7 @@ pub struct Shell {
     layer_focus: FocusHandle,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
+    profile: profile::ProfileUi,
     /// The message under the pointer. Only its row carries the bar of actions, so the
     /// other rows build, lay out and hit-test no hidden buttons at each frame (ADR 0914).
     pub(crate) hovered_message: Option<(Pane, junto_client_core::protocol::ids::MessageId)>,
@@ -532,6 +535,7 @@ impl Shell {
             cx.on_release(move |this: &mut Self, cx| {
                 this.state.update(cx, |state, cx| {
                     state.close_switcher(own_entity, cx);
+                    state.close_profile(own_entity, cx);
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
                 });
@@ -737,6 +741,7 @@ impl Shell {
             layer_focus: cx.focus_handle(),
             layer: Layer::None,
             switcher,
+            profile: profile::ProfileUi::default(),
             return_focus: None,
             address,
             adding: None,
@@ -1267,7 +1272,7 @@ impl Shell {
 
     /// True while the keyboard focus is inside the open layer.
     pub fn layer_holds_focus(&self, window: &Window, cx: &gpui::App) -> bool {
-        !matches!(self.layer, Layer::None) && self.layer_focus.contains_focused(window, cx)
+        !matches!(self.layer, Layer::None) && self.active_layer_focus().contains_focused(window, cx)
     }
 
     /// True while the member list is open.
@@ -1341,6 +1346,9 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::Profile) {
+            self.close_profile(window, cx);
+        }
         if matches!(self.layer, Layer::QuickSwitcher) {
             self.close_switcher(window, cx);
         }
@@ -1361,6 +1369,10 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::Profile) {
+            self.close_profile(window, cx);
+            return;
+        }
         if matches!(self.layer, Layer::QuickSwitcher) {
             self.close_switcher(window, cx);
             return;
@@ -1404,8 +1416,10 @@ impl Shell {
     /// while its action runs. The focus then returns to the open layer, so that Escape and
     /// Tab still reach it.
     fn keep_focus_in_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.layer, Layer::None) && !self.layer_focus.contains_focused(window, cx) {
-            self.layer_focus.focus(window, cx);
+        if !matches!(self.layer, Layer::None)
+            && !self.active_layer_focus().contains_focused(window, cx)
+        {
+            self.active_layer_focus().focus(window, cx);
         }
     }
 
@@ -1441,6 +1455,14 @@ impl Shell {
     ) -> impl Fn(&mut Window, &mut App) + 'static {
         let listener = cx.listener(move |this, _: &(), window, cx| run(this, window, cx));
         move |window, cx| listener(&(), window, cx)
+    }
+
+    fn active_layer_focus(&self) -> &FocusHandle {
+        if matches!(self.layer, Layer::Profile) {
+            self.profile.focus.as_ref().unwrap_or(&self.layer_focus)
+        } else {
+            &self.layer_focus
+        }
     }
 
     pub(crate) fn layer_focus(&self) -> &FocusHandle {
@@ -1750,6 +1772,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> E {
         element
+            .on_action(
+                cx.listener(|this, target: &crate::ui::OpenProfile, window, cx| {
+                    this.show_profile(*target, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_action(cx.listener(|this, _: &crate::menus::ZoomIn, window, cx| {
                 this.perform_key_action(junto_client_core::keybinds::KeyAction::ZoomIn, window, cx);
             }))
@@ -1927,6 +1955,7 @@ impl Shell {
                 .call
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
+            Layer::Profile => self.state.read(cx).profile_view(cx.entity_id()).is_none(),
             Layer::Presence(owner) => {
                 self.state.read(cx).owner(owner.entry.server_id) != Some(*owner)
             }
@@ -1949,6 +1978,20 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if matches!(self.layer, Layer::Profile) {
+            let parent = self.profile.previous.take().map(|parent| {
+                self.layer = parent;
+                let shown = self.render_layer(view, window, cx);
+                self.profile.previous = Some(std::mem::replace(&mut self.layer, Layer::Profile));
+                shown
+            });
+            return gpui::div()
+                .absolute()
+                .inset_0()
+                .children(parent)
+                .child(self.render_profile(cx))
+                .into_any_element();
+        }
         match &self.layer {
             // The list of devices is drawn at its box, in the panel of the call, and the
             // menu of a person at the row of the person.
@@ -1988,6 +2031,7 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
+            Layer::Profile => self.render_profile(cx),
             Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),

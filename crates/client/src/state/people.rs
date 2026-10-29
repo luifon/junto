@@ -115,6 +115,7 @@ pub struct Face {
 /// The pictures of the people of one server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerFaces {
+    server_id: Option<ServerId>,
     /// The account of the session. Its avatar is the one that the state of the server
     /// tells, and not one of a profile that was read.
     own: Option<(AccountId, Option<Face>)>,
@@ -123,6 +124,9 @@ pub struct ServerFaces {
 }
 
 impl ServerFaces {
+    pub fn server_id(&self) -> Option<ServerId> {
+        self.server_id
+    }
     pub fn presence(&self, account: AccountId) -> junto_client_core::protocol::presence::Presence {
         self.presence.get(&account).copied().unwrap_or_default()
     }
@@ -159,7 +163,9 @@ impl Faces {
     /// The pictures of one server. A render function takes them once and asks for each
     /// person by the account.
     pub fn of(&self, server_id: ServerId) -> ServerFaces {
-        self.servers.get(&server_id).cloned().unwrap_or_default()
+        let mut faces = self.servers.get(&server_id).cloned().unwrap_or_default();
+        faces.server_id = Some(server_id);
+        faces
     }
 
     pub fn face(&self, server_id: ServerId, account_id: AccountId) -> Option<&Face> {
@@ -920,6 +926,7 @@ pub(super) fn faces(servers: &[ServerSnapshot], people: &People) -> Faces {
                 Some((
                     server.id,
                     ServerFaces {
+                        server_id: Some(server.id),
                         own: Some((account.id, own)),
                         others: people.faces(server.id),
                         presence: Arc::default(),
@@ -966,7 +973,15 @@ fn panel_people(view: &ShellView, people: &mut Vec<AccountId>) {
         workspace.transcript.as_ref().map(|panel| &panel.state)
     {
         let mut speakers: Vec<AccountId> = Vec::new();
+        if let junto_client_core::model::Loadable::Loaded(transcript) = &open.transcript {
+            people.extend(transcript.speakers.iter().flat_map(|speaker| {
+                [Some(speaker.account_id), speaker.renamed_by]
+                    .into_iter()
+                    .flatten()
+            }));
+        }
         for line in open.lines.lines.iter() {
+            people.extend(line.corrected_by);
             if !speakers.contains(&line.account_id) {
                 speakers.push(line.account_id);
             }
@@ -978,6 +993,14 @@ fn panel_people(view: &ShellView, people: &mut Vec<AccountId>) {
 /// The people whose microphone the shown lines of the card of a recording hold.
 fn card_people(card: &RecordingCard, people: &mut Vec<AccountId>) {
     if let CardState::Shown(detail) = &card.state {
+        people.push(detail.starter);
+        people.extend(
+            detail
+                .transcript
+                .lines
+                .iter()
+                .filter_map(|line| line.changed.as_ref().and_then(|changed| changed.account)),
+        );
         people.extend(detail.transcript.lines.iter().map(|line| line.account_id));
     }
 }
@@ -1061,6 +1084,10 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
         }
         if let Some(call) = lists.and_then(|lists| lists.call.as_ref()) {
             people.extend(call.people.iter().map(|person| person.account_id));
+            if let Some(meeting) = call.room().and_then(|room| room.meeting.as_ref()) {
+                people.push(meeting.presenter_id);
+                people.extend(meeting.waiting.iter().map(|(id, _)| *id));
+            }
             people.extend(
                 call.stage
                     .iter()
@@ -1254,10 +1281,36 @@ fn own_wanted(account: &OwnAccount) -> (AccountId, Option<PictureHash>) {
 }
 
 /// The accounts that a page of the administration lists.
+fn rule_people(rules: &super::admin::view::overrides::RuleList) -> Vec<AccountId> {
+    use junto_client_core::protocol::structure::RuleSubject;
+    rules
+        .subjects
+        .iter()
+        .map(|line| line.subject)
+        .chain(rules.candidates.iter().map(|line| line.subject))
+        .filter_map(|subject| match subject {
+            RuleSubject::Person { account_id } => Some(account_id),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(super) fn admin_people(view: &AdminView) -> Vec<AccountId> {
     let Scope::Server { page, .. } = &view.scope else {
         return match &view.scope {
             Scope::Person(person) => vec![person.account_id],
+            Scope::Category(category) => category
+                .page
+                .rules
+                .loaded()
+                .map(rule_people)
+                .unwrap_or_default(),
+            Scope::Channel(channel) => match &channel.page {
+                super::admin::view::ChannelPageView::Permissions(page) => {
+                    page.rules.loaded().map(rule_people).unwrap_or_default()
+                }
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         };
     };
@@ -1281,6 +1334,17 @@ pub(super) fn admin_people(view: &AdminView) -> Vec<AccountId> {
                 .chain(addable.iter().map(|account| account.account_id))
                 .collect()
         }
+        ServerPage::Invites(page) => page
+            .invites
+            .loaded()
+            .map(|rows| rows.iter().map(|row| row.created_by).collect())
+            .unwrap_or_default(),
+        ServerPage::Tokens(page) => page
+            .tokens
+            .loaded()
+            .map(|rows| rows.iter().map(|row| row.created_by).collect())
+            .unwrap_or_default(),
+        ServerPage::Recordings(page) => page.rows.iter().map(|row| row.starter).collect(),
         ServerPage::AuditLog(page) => page
             .rows
             .iter()
@@ -1423,7 +1487,7 @@ impl AppState {
 
     /// Gives the cache the people that the window shows, in the order of
     /// [`followed_people`].
-    fn want_people(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn want_people(&mut self, cx: &mut Context<Self>) {
         let wanted = self.followed_accounts();
         self.follow_presence(&wanted, cx);
         self.known.people.want_all(&wanted);
@@ -1435,12 +1499,20 @@ impl AppState {
             let listed: HashSet<AccountId> = admin_people(&admin).into_iter().collect();
             (admin.server_id, listed)
         });
-        followed_people(
+        let mut wanted = followed_people(
             &self.people_followed,
             admin
                 .as_ref()
                 .map(|(server_id, listed)| (*server_id, listed)),
-        )
+        );
+        for (server, account) in self.profile_people() {
+            wanted
+                .entry(server)
+                .or_default()
+                .accounts
+                .insert(0, account);
+        }
+        wanted
     }
 
     /// Starts the requests that the cache names. Each answer starts the next ones.

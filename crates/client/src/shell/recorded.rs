@@ -406,6 +406,7 @@ impl Shell {
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
         presence: junto_client_core::protocol::presence::Presence,
+        server: ServerId,
         wide: bool,
         marked: bool,
         theme: &Theme,
@@ -428,7 +429,7 @@ impl Shell {
             .child(SharedString::from(row.text.clone()))
             .into_any_element();
         Self::line_frame(
-            row, picture, presence, wide, marked, theme, corrected, spoken, None,
+            row, picture, presence, server, wide, marked, theme, corrected, spoken, None,
         )
     }
 
@@ -440,6 +441,7 @@ impl Shell {
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
         presence: junto_client_core::protocol::presence::Presence,
+        server: ServerId,
         wide: bool,
         marked: bool,
         theme: &Theme,
@@ -458,6 +460,10 @@ impl Shell {
                 .radius(2.0)
                 .image(picture)
                 .presence(presence)
+                .profile(crate::ui::OpenProfile {
+                    server,
+                    account: row.account_id,
+                })
                 .into_any_element(),
             LineFrom::Shared { .. } => div()
                 .flex()
@@ -490,10 +496,18 @@ impl Shell {
                     .font_weight(FontWeight::BOLD)
                     .ink(colors.ink)
                     .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(row.name.clone())),
+                        div().min_w_0().truncate().child(match row.source {
+                            LineFrom::Microphone => crate::ui::ProfileName::new(
+                                "transcript-speaker",
+                                row.name.clone(),
+                                crate::ui::OpenProfile {
+                                    server,
+                                    account: row.account_id,
+                                },
+                            )
+                            .into_any_element(),
+                            _ => SharedString::from(row.name.clone()).into_any_element(),
+                        }),
                     )
                     .when_some(row.was.clone(), |name, was| {
                         name.child(Chip::new(text::was_speaker(&was)))
@@ -511,7 +525,18 @@ impl Shell {
                     .when(matches!(row.source, LineFrom::Shared { .. }), |source| {
                         source.child(crate::ui::PresenceMark::new(presence, 9.))
                     })
-                    .child(source),
+                    .child(match row.source {
+                        LineFrom::Shared { .. } => crate::ui::ProfileName::new(
+                            "transcript-source",
+                            source,
+                            crate::ui::OpenProfile {
+                                server,
+                                account: row.account_id,
+                            },
+                        )
+                        .into_any_element(),
+                        _ => source.into_any_element(),
+                    }),
             );
         let time = div()
             .flex_none()
@@ -629,6 +654,7 @@ impl Shell {
                 row,
                 picture,
                 faces.presence(row.account_id),
+                server_id,
                 true,
                 false,
                 theme,
@@ -1237,7 +1263,28 @@ impl Shell {
                                 &detail.day,
                             ))),
                     )
-                    .child(line(text::recording_span(detail)))
+                    .child(match &detail.started_by {
+                        Some(_) => div()
+                            .flex()
+                            .items_center()
+                            .gap(u(4.))
+                            .min_w_0()
+                            .child(crate::ui::PresenceMark::new(
+                                self.faces(card.server_id).presence(detail.starter),
+                                10.,
+                            ))
+                            .child(crate::ui::ProfileAccess::new(
+                                "recording-starter",
+                                crate::ui::OpenProfile {
+                                    server: card.server_id,
+                                    account: detail.starter,
+                                },
+                                text::profile::OPEN,
+                                line(text::recording_span(detail)),
+                            ))
+                            .into_any_element(),
+                        None => line(text::recording_span(detail)).into_any_element(),
+                    })
                     .child(line(text::recording_files(detail)))
                     .children(job)
                     .children(detail.files.iter().filter_map(|file| {
@@ -1383,6 +1430,7 @@ impl Shell {
             row,
             picture,
             self.faces(server_id).presence(row.account_id),
+            server_id,
             false,
             marked,
             theme,

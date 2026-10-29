@@ -1811,7 +1811,16 @@ impl Shell {
                                 .text_size(u(14.0))
                                 .font_weight(FontWeight::BOLD)
                                 .ink(colors.ink)
-                                .child(SharedString::from(candidate.name.clone())),
+                                .child(match person {
+                                    Some(account) => super::people::person_name(
+                                        &faces,
+                                        account,
+                                        candidate.name.clone(),
+                                        "mention-candidate-name",
+                                    ),
+                                    None => SharedString::from(candidate.name.clone())
+                                        .into_any_element(),
+                                }),
                         )
                         .child(div().flex_1())
                         .child(

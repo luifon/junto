@@ -29,6 +29,7 @@ mod permissions;
 pub mod person_drop;
 pub mod picture_crop;
 pub mod presence;
+pub mod profile;
 mod progress;
 pub mod receipts;
 pub mod recorded;
@@ -535,6 +536,7 @@ pub struct AppState {
     contacts: contacts::ContactSearch,
     switchers: switcher::SwitchSearches,
     presence: presence::PresenceState,
+    profiles: profile::Profiles,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -1023,6 +1025,7 @@ impl AppState {
             contacts: contacts::ContactSearch::default(),
             switchers: switcher::SwitchSearches::default(),
             presence: presence::PresenceState::default(),
+            profiles: profile::Profiles::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -2009,6 +2012,7 @@ impl AppState {
     /// can have missed that: every message can have changed meanwhile.
     fn reloaded(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         self.presence_invalidated(server_id, true, cx);
+        self.invalidate_profiles(server_id, cx);
         self.invalidate_switcher(server_id, cx);
         *self.reloads.entry(server_id).or_default() += 1;
         self.forget_quotes(server_id, None, cx);
@@ -2061,6 +2065,19 @@ impl AppState {
         ) {
             self.invalidate_switcher(server_id, cx);
             self.presence_invalidated(server_id, true, cx);
+            self.invalidate_profiles(server_id, cx);
+        }
+        if matches!(
+            event.as_ref(),
+            Event::WorkspaceUpdated { .. }
+                | Event::WorkspaceMemberRolesChanged { .. }
+                | Event::WorkspaceRoleCreated { .. }
+                | Event::WorkspaceRoleUpdated { .. }
+                | Event::WorkspaceRoleDeleted { .. }
+                | Event::WorkspaceRolePositionsShifted { .. }
+                | Event::ServerRolePositionsShifted { .. }
+        ) {
+            self.invalidate_profiles(server_id, cx);
         }
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
@@ -2613,6 +2630,7 @@ impl AppState {
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.keep_profiles();
         self.refresh_switchers(cx);
         self.reconcile_direct(cx);
         self.play_call_sounds();

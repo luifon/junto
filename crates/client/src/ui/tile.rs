@@ -81,6 +81,7 @@ pub struct PersonTile {
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
+    profile: Option<super::OpenProfile>,
     speaking: bool,
     marks: Vec<TileMark>,
     label: SharedString,
@@ -107,6 +108,7 @@ impl PersonTile {
             seed,
             picture: None,
             presence: None,
+            profile: None,
             speaking: false,
             marks: Vec::new(),
             label: label.into(),
@@ -149,6 +151,11 @@ impl PersonTile {
     }
 
     /// The image of the avatar of the person, when the window holds it.
+    pub fn profile(mut self, target: super::OpenProfile) -> Self {
+        self.profile = Some(target);
+        self
+    }
+
     pub fn presence(mut self, presence: junto_client_core::protocol::presence::Presence) -> Self {
         self.presence = Some(presence);
         self
@@ -247,9 +254,11 @@ impl RenderOnce for PersonTile {
                 }
             })
             .child(
-                div()
-                    .mb(u(16.0))
-                    .child(Avatar::new(self.seed, avatar).image(self.picture)),
+                div().mb(u(16.0)).child(
+                    Avatar::new(self.seed, avatar)
+                        .image(self.picture)
+                        .when_some(self.profile, |avatar, target| avatar.profile(target)),
+                ),
             )
             .when_some(self.camera_picture, |tile, picture| {
                 tile.child(div().absolute().size_full().child(picture.element()))
@@ -275,7 +284,17 @@ impl RenderOnce for PersonTile {
                     .children(self.presence.map(|presence| {
                         super::PresenceMark::new(presence, 9.).background(colors.plate)
                     }))
-                    .child(div().min_w_0().truncate().child(self.name)),
+                    .child(match self.profile {
+                        Some(target) => div()
+                            .debug_selector(move || format!("tile-profile-name:{}", self.seed))
+                            .child(super::ProfileName::new("person-name", self.name, target))
+                            .into_any_element(),
+                        None => div()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.name)
+                            .into_any_element(),
+                    }),
             )
     }
 }

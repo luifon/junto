@@ -627,6 +627,12 @@ impl Shell {
                     .focused(focused)
                     .picture(faces.image(occupant.account_id))
                     .presence(faces.presence(occupant.account_id))
+                    .when_some(faces.server_id(), |tile, server| {
+                        tile.profile(crate::ui::OpenProfile {
+                            server,
+                            account: occupant.account_id,
+                        })
+                    })
                     .camera_view(self.camera_request(occupant, cx))
                     .camera_picture(self.camera_image(occupant))
                     .speaking(matches!(
@@ -750,7 +756,13 @@ impl Shell {
                                 div()
                                     .debug_selector(|| "direct-call-ringing".to_owned())
                                     .mt(u(14.0))
-                                    .child(note(text::calling(direct.name.as_deref()))),
+                                    .child(super::people::person_element(
+                                        &faces,
+                                        direct.other,
+                                        direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+                                        "ringing-person",
+                                        note(text::calling(direct.name.as_deref())),
+                                    )),
                             )
                         })
                         .when(ringing.is_none() && people.len() < 2, |viewport| {
@@ -1156,40 +1168,46 @@ impl Shell {
                         .child(super::people::avatar(&faces, account_id, 30.0)),
                 )
         };
-        let name_line = |name: SharedString, is_self: bool, camera: Option<AccountId>| {
-            div()
-                .flex()
-                .items_center()
-                .gap(u(7.0))
-                .line_height(u(19.0))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .typeface(theme.types.name, &theme)
-                        .line_height(u(19.0))
-                        .ink(colors.ink)
-                        .child(name),
-                )
-                .when_some(camera, |line, account| {
-                    line.child(
+        let name_line =
+            |name: SharedString, account: AccountId, is_self: bool, camera: Option<AccountId>| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(7.0))
+                    .line_height(u(19.0))
+                    .child(
                         div()
-                            .id(format!("member-camera:{account}"))
-                            .debug_selector(move || format!("member-camera:{account}"))
-                            .tooltip(tooltip(text::CAMERA_ON))
-                            .child(icon(Icon::Camera, 14.0, colors.ink_2)),
+                            .min_w_0()
+                            .truncate()
+                            .typeface(theme.types.name, &theme)
+                            .line_height(u(19.0))
+                            .ink(colors.ink)
+                            .child(super::people::person_name(
+                                &faces,
+                                account,
+                                name,
+                                "call-person-name",
+                            )),
                     )
-                })
-                .when(is_self, |line| {
-                    line.child(
-                        div()
-                            .flex_none()
-                            .typeface(theme.types.small, &theme)
-                            .ink(colors.ink_2)
-                            .child(text::YOU),
-                    )
-                })
-        };
+                    .when_some(camera, |line, account| {
+                        line.child(
+                            div()
+                                .id(format!("member-camera:{account}"))
+                                .debug_selector(move || format!("member-camera:{account}"))
+                                .tooltip(tooltip(text::CAMERA_ON))
+                                .child(icon(Icon::Camera, 14.0, colors.ink_2)),
+                        )
+                    })
+                    .when(is_self, |line| {
+                        line.child(
+                            div()
+                                .flex_none()
+                                .typeface(theme.types.small, &theme)
+                                .ink(colors.ink_2)
+                                .child(text::YOU),
+                        )
+                    })
+            };
         if index == 0 {
             return SectionLabel::new(text::IN_THE_CALL)
                 .count(people.len())
@@ -1250,7 +1268,7 @@ impl Shell {
                         .flex_1()
                         .min_w_0()
                         .child(
-                            name_line(name, occupant.is_self, camera)
+                            name_line(name, occupant.account_id, occupant.is_self, camera)
                                 .child(div().flex_1())
                                 .child(div().flex().flex_none().items_center().child(mark)),
                         )
@@ -1278,7 +1296,7 @@ impl Shell {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(name_line(name.clone(), false, None))
+                        .child(name_line(name.clone(), *account_id, false, None))
                         .when_some(state.clone(), |column, state| {
                             column.child(state_line(vec![state]))
                         }),

@@ -49,6 +49,18 @@ Picture of the profile preset:
 - For each server whose state of the preset is `refused`, the settings name the server in one line.
 - The file dialog is opened by one function, and a second function takes the chosen path. A test calls the second one.
 
+## Profile cards
+
+A press on an account picture or name opens a profile card above the current page. This includes message and reply authors, thread pictures, account mentions and system-message identities; conversation, contact, switcher and member rows; call tiles, participants, invitations, meeting identities and share owners; recording starters, transcript speakers, capture owners and correction authors; notice and search excerpts; the own-account strip and picture; and account identities in administration, audit rows, permissions, invitations, tokens and recordings. A historical name without an account identifier stays plain text. A control whose name describes its action keeps that action.
+
+The card reads `GET /api/v1/accounts/{account_id}/card` under ADR 0119. It shows the picture, name, presence, server role names and role names grouped by visible workspace. Message opens the direct conversation, and Call starts its direct call. Both actions are disabled on the own card and until the account has been read. Reading the card itself neither navigates nor starts a call. A missing, departed, banned or hidden account has the same unavailable notice; other read failures offer Try again. Large role lists show 100 roles at a time and a control reveals the next 100.
+
+Each window keeps one card, bound to its server entry generation, authenticated account, target account and request number. Opening a replacement, closing, removing a server or changing its account cancels the earlier read. A late answer cannot populate another card. Received profile, role, workspace and permission changes clear the card and read it again under the present permissions. While a card is open its shown account is also read every 30 seconds, keeping the shown data during the read. Server-role events retain their administrative audience, so this read updates public role names and memberships that the viewer does not receive as events. Closing the last card stops the timer. The card holds no persistent profile data and uses the existing avatar and presence readers for its target.
+
+Account controls retain the complete server and account identity in their element identifier. Replacing an identity beneath an unfinished pointer press cancels that press. Name and picture controls have a keyboard focus ring and open with Enter or Space. Embedded account mentions and system identities share a text control: Left and Right choose a person, the focused name is underlined, and Enter or Space opens that profile. Link ranges keep their existing URL action. Styled ranges remain ordered, disjoint and on UTF-8 boundaries.
+
+The card uses a separate focus handle and element scope. A dialog beneath it remains drawn, preserving its input, scroll position and account controls while the card cover blocks pointer input. Escape or Close restores the originating focus when that control remains available, otherwise the enclosing dialog or page takes focus. Main and detached call windows have independent cards. Message and Call use the server of the card even when another server is selected.
+
 ## Consequences
 
 - A person sees the avatar of another account after one request for the profile and one for the image. A workspace with 200 members costs up to 200 profile requests when its member list is shown, four at a time. A page of the administration costs one request for each account of the rows that its list lays out.

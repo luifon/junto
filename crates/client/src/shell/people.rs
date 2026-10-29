@@ -25,6 +25,65 @@ pub(crate) fn avatar(faces: &ServerFaces, account_id: AccountId, size: f32) -> A
     Avatar::new(account_id.as_uuid().as_u128(), size)
         .image(faces.image(account_id))
         .presence(faces.presence(account_id))
+        .when_some(faces.server_id(), |avatar, server| {
+            avatar.profile(crate::ui::OpenProfile {
+                server,
+                account: account_id,
+            })
+        })
+}
+
+pub(crate) fn person_name(
+    faces: &ServerFaces,
+    account: AccountId,
+    name: impl Into<SharedString>,
+    id: &'static str,
+) -> AnyElement {
+    let name = name.into();
+    match faces.server_id() {
+        Some(server) => crate::ui::ProfileName::new(
+            (id, account.as_uuid().as_u128() as u64),
+            name,
+            crate::ui::OpenProfile { server, account },
+        )
+        .into_any_element(),
+        None => name.into_any_element(),
+    }
+}
+
+pub(crate) fn person_element(
+    faces: &ServerFaces,
+    account: AccountId,
+    name: &str,
+    id: &'static str,
+    element: impl IntoElement,
+) -> AnyElement {
+    match faces.server_id() {
+        Some(server) => crate::ui::ProfileAccess::new(
+            (id, account.as_uuid().as_u128() as u64),
+            crate::ui::OpenProfile { server, account },
+            crate::text::profile::open_for(name),
+            element,
+        )
+        .into_any_element(),
+        None => element.into_any_element(),
+    }
+}
+
+pub(crate) fn person_label(
+    faces: &ServerFaces,
+    account: AccountId,
+    label: impl Into<SharedString>,
+    id: &'static str,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(u(4.))
+        .min_w_0()
+        .child(crate::ui::PresenceMark::new(faces.presence(account), 10.))
+        .child(person_name(faces, account, label, id))
+        .into_any_element()
 }
 
 /// The avatar of an account in a list of people, with the readable alternative of its

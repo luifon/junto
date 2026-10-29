@@ -93,6 +93,30 @@ pub struct AccountProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ProfileRole {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub position: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceProfileRoles {
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub roles: Vec<ProfileRole>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AccountCard {
+    pub profile: AccountProfile,
+    pub server_roles: Vec<ProfileRole>,
+    pub workspaces: Vec<WorkspaceProfileRoles>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateProfile {
     pub name: String,
 }

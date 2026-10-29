@@ -395,6 +395,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
         let colors = theme.colors;
+        let faces = self.faces(server_id);
         let line = row.line;
         let key = (recording_id, TranscriptChange::Line(line));
         let editing = self
@@ -437,10 +438,19 @@ impl Shell {
                             div()
                                 .debug_selector(move || format!("line-changed:{line}"))
                                 .ink(colors.ink_3)
-                                .child(SharedString::from(txt::changed_by(
-                                    &changed.by,
-                                    &changed.at,
-                                ))),
+                                .child(match changed.account {
+                                    Some(account) => super::people::person_label(
+                                        &faces,
+                                        account,
+                                        txt::changed_by(&changed.by, &changed.at),
+                                        "transcript-corrector",
+                                    ),
+                                    None => SharedString::from(txt::changed_by(
+                                        &changed.by,
+                                        &changed.at,
+                                    ))
+                                    .into_any_element(),
+                                }),
                         )
                     })
             });
@@ -520,6 +530,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.faces(server_id);
         let number = voice.number;
         let key = (recording_id, TranscriptChange::Speaker(number));
         let editing = self
@@ -549,22 +560,33 @@ impl Shell {
                                     voice.name.clone().unwrap_or_else(|| voice.label.clone()),
                                 )),
                         )
-                        .child(
-                            div()
-                                .text_size(u(12.5))
-                                .ink(colors.ink_2)
-                                .child(SharedString::from(txt::voice_of(&voice.label, &voice.of))),
-                        )
+                        .child(div().text_size(u(12.5)).ink(colors.ink_2).child(
+                            super::people::person_label(
+                                &faces,
+                                voice.account_id,
+                                txt::voice_of(&voice.label, &voice.of),
+                                "voice-source",
+                            ),
+                        ))
                         .when_some(voice.changed.clone(), |column, changed| {
                             column.child(
                                 div()
                                     .debug_selector(move || format!("voice-changed:{number}"))
                                     .text_size(u(12.5))
                                     .ink(colors.ink_3)
-                                    .child(SharedString::from(txt::named_by(
-                                        &changed.by,
-                                        &changed.at,
-                                    ))),
+                                    .child(match changed.account {
+                                        Some(account) => super::people::person_label(
+                                            &faces,
+                                            account,
+                                            txt::named_by(&changed.by, &changed.at),
+                                            "voice-renamed-by",
+                                        ),
+                                        None => SharedString::from(txt::named_by(
+                                            &changed.by,
+                                            &changed.at,
+                                        ))
+                                        .into_any_element(),
+                                    }),
                             )
                         }),
                 )

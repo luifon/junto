@@ -54,6 +54,7 @@ mod permissions_migration;
 mod person_standing;
 mod presence;
 mod processing;
+mod profile_cards;
 mod profiles;
 mod recordings;
 mod recordings_control;

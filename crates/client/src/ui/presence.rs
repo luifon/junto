@@ -41,7 +41,15 @@ impl RenderOnce for PresenceMark {
         let theme = theme(cx);
         let colors = theme.colors;
         let background = self.background.unwrap_or(colors.travertine);
-        let color = Self::color(self.presence, &theme);
+        let color = if self.background == Some(colors.plate) {
+            match self.presence {
+                Presence::Online => colors.olive_bright,
+                Presence::Offline | Presence::Invisible => colors.call_text,
+                _ => Self::color(self.presence, &theme),
+            }
+        } else {
+            Self::color(self.presence, &theme)
+        };
         let off = matches!(self.presence, Presence::Offline | Presence::Invisible);
         div()
             .id("presence-mark")

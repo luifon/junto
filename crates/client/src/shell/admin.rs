@@ -292,6 +292,44 @@ pub(crate) fn line_text(
         })
 }
 
+pub(crate) fn line_identity(
+    name: impl IntoElement,
+    detail: Option<SharedString>,
+    theme: &Theme,
+) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .child(
+            div()
+                .typeface(theme.types.control_strong, theme)
+                .ink(theme.colors.ink)
+                .child(name),
+        )
+        .when_some(detail, |column, detail| {
+            column.child(
+                div()
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_2)
+                    .truncate()
+                    .child(crate::ui::paint_text(detail, None)),
+            )
+        })
+}
+pub(crate) fn line_person(
+    faces: &crate::state::people::ServerFaces,
+    account: junto_client_core::protocol::ids::AccountId,
+    name: impl Into<SharedString>,
+    detail: Option<SharedString>,
+    theme: &Theme,
+) -> gpui::Div {
+    line_identity(
+        crate::shell::people::person_name(faces, account, name, "admin-person-name"),
+        detail,
+        theme,
+    )
+}
+
 /// The second line of a row with one action: why the action cannot be used now, and
 /// otherwise what it does. A disabled control states its reason without a pointer.
 pub(crate) fn detail_or(held: Option<&'static str>, help: &'static str) -> Option<SharedString> {
@@ -1039,7 +1077,7 @@ impl Shell {
     /// of the administration that opened them.
     fn settings_nav_head(
         &mut self,
-        title: String,
+        title: impl IntoElement,
         back: AdminPage,
         selector: &'static str,
         theme: &Theme,
@@ -1107,7 +1145,12 @@ impl Shell {
         let account_id = settings.account_id;
         let mut column = self
             .settings_nav_head(
-                settings.name.clone(),
+                crate::shell::people::person_name(
+                    &self.faces(server),
+                    account_id,
+                    settings.name.clone(),
+                    "person-settings-name",
+                ),
                 settings.listed_on(),
                 "person-nav-back",
                 theme,

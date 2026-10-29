@@ -17,6 +17,12 @@ Profile:
 - `PUT /api/v1/account/avatar` stores the avatar, and `DELETE` on the same path removes it.
 - `GET /api/v1/accounts/{account_id}/profile` returns the name and the description of the avatar. `GET /api/v1/accounts/{account_id}/avatar` returns the image.
 
+Profile cards:
+
+- `GET /api/v1/accounts/{account_id}/card` uses the same `ViewAccount` decision as the profile route, and additionally requires an active target account. It returns its profile and assigned role names and positions, without permission sets or person rules.
+- Server role names are public metadata of an account whose profile the caller may read. Workspace roles are returned only for workspaces of the target that the caller may view under `ViewWorkspace`; a hidden workspace exposes neither its name nor its roles. Everyone is omitted. The server reads workspace memberships and assigned roles in batches.
+- A banned, inactive, deleted, missing or unseen target returns `not_found`, including to an administrator. Historical profiles remain available through the existing profile route under the departure rules below. The client card is described in ADR 0783.
+
 Who may see a profile:
 
 - An account may see its own profile, the profile of an account that is a member of a workspace that it is a member of, the profile of an active account that is the server owner or holds the administrator permission, and every profile when it holds `ban_members`, which also lists the accounts.

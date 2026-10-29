@@ -326,7 +326,19 @@ impl Shell {
         };
         let summary = text::admin::overrides::summary(subject.allowed(), subject.denied());
         let mut row = line(theme)
-            .child(line_text(name.clone(), Some(summary.into()), theme))
+            .child(match key {
+                RuleSubject::Person { account_id } => super::line_identity(
+                    crate::shell::people::person_label(
+                        &self.faces(server_id),
+                        account_id,
+                        name.clone(),
+                        "rule-person",
+                    ),
+                    Some(summary.into()),
+                    theme,
+                ),
+                _ => line_text(name.clone(), Some(summary.into()), theme),
+            })
             .child(Chip::new(text::admin::overrides::kind(subject.kind)));
         let locked = subject.locked.map(text::admin::overrides::locked);
         // The removal of a rule removes its denies: the grant ceiling decides it.
@@ -496,7 +508,19 @@ impl Shell {
             let number = subject_id(subject).as_u128() as u64;
             column = column.child(
                 line(theme)
-                    .child(line_text(candidate.name.clone(), None, theme))
+                    .child(match subject {
+                        RuleSubject::Person { account_id } => super::line_identity(
+                            crate::shell::people::person_label(
+                                &self.shown_faces(),
+                                account_id,
+                                candidate.name.clone(),
+                                "rule-candidate",
+                            ),
+                            None,
+                            theme,
+                        ),
+                        _ => line_text(candidate.name.clone(), None, theme),
+                    })
                     .child(Chip::new(text::admin::overrides::kind(kind)))
                     .child(named(
                         format!("rules-add-{}", subject_name(subject)),

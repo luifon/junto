@@ -273,9 +273,15 @@ impl Shell {
                                     .debug_selector(move || format!("meeting-hand:{account_id}"))
                                     .min_w_0()
                                     .truncate()
-                                    .child(strong(
-                                        format!("{name}{}", text::RAISED_A_HAND),
-                                        name.len(),
+                                    .child(super::people::person_element(
+                                        &faces,
+                                        account_id,
+                                        &name,
+                                        "meeting-hand-person",
+                                        strong(
+                                            format!("{name}{}", text::RAISED_A_HAND),
+                                            name.len(),
+                                        ),
                                     )),
                             )
                             .when(more > 0, |request| {
@@ -313,7 +319,8 @@ impl Shell {
                             .into_any_element(),
                     )
                 }
-                (None, Some(name)) => {
+                (None, Some((account_id, name))) => {
+                    let account_id = *account_id;
                     let name = name
                         .clone()
                         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned());
@@ -321,9 +328,12 @@ impl Shell {
                         request
                             .id("meeting-allowed")
                             .debug_selector(|| "meeting-allowed".to_owned())
-                            .child(strong(
-                                format!("{name}{}", text::MAY_SPEAK_NOT_OPEN),
-                                name.len(),
+                            .child(super::people::person_element(
+                                &faces,
+                                account_id,
+                                &name,
+                                "meeting-allowed-person",
+                                strong(format!("{name}{}", text::MAY_SPEAK_NOT_OPEN), name.len()),
                             ))
                             .into_any_element(),
                     )
@@ -383,11 +393,17 @@ impl Shell {
             .ink(colors.call_text)
             .whitespace_nowrap()
             .child(icon(Icon::Hand, 17.0, colors.call_text))
-            .child(
-                div()
-                    .flex_none()
-                    .child(strong(line, text::MEETING_IS_ON.len())),
-            )
+            .child(div().flex_none().child(if meeting.by_self {
+                strong(line, text::MEETING_IS_ON.len()).into_any_element()
+            } else {
+                super::people::person_element(
+                    &faces,
+                    meeting.presenter_id,
+                    meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+                    "meeting-presenter",
+                    strong(line, text::MEETING_IS_ON.len()),
+                )
+            }))
             .child(
                 div()
                     .flex_1()
@@ -705,7 +721,12 @@ impl Shell {
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .line_height(u(18.0))
                                     .ink(colors.ink)
-                                    .child(member.name.clone()),
+                                    .child(super::people::person_name(
+                                        &faces,
+                                        member.account_id,
+                                        member.name.clone(),
+                                        "invite-member-name",
+                                    )),
                             )
                             .when_some(member.place.as_ref(), |column, place| {
                                 column.child(
@@ -1022,7 +1043,12 @@ impl Shell {
                             .line_height(u(18.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .ink(colors.ink)
-                            .child(name.clone()),
+                            .child(super::people::person_name(
+                                &self.faces(menu.server_id),
+                                account_id,
+                                name.clone(),
+                                "person-menu-name",
+                            )),
                     )
                     .child(
                         div()

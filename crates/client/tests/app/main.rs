@@ -71,6 +71,7 @@ mod people;
 mod permissions;
 mod pictures;
 mod presence;
+mod profile_cards;
 mod recordings;
 mod recovery;
 mod system_lines;

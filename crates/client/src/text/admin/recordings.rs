@@ -179,6 +179,7 @@ mod tests {
             failure: None,
             failed_segments: 0,
             segments: 3,
+            starter: junto_client_core::protocol::ids::AccountId::generate(),
             started_by: Some("Ana".to_owned()),
             transcript: TranscriptState::None,
             transcript_lines: 0,

@@ -123,6 +123,28 @@ pub(super) struct PresenceState {
 }
 
 impl AppState {
+    #[cfg(feature = "test-support")]
+    pub fn show_presence_fixture(
+        &mut self,
+        owner: Owner,
+        values: HashMap<AccountId, Presence>,
+        cx: &mut Context<Self>,
+    ) {
+        self.known.presence.servers.insert(
+            owner.entry.server_id,
+            ServerPresence {
+                owner,
+                choice: None,
+                connected: true,
+                changing: false,
+                failed: None,
+                read_failed: None,
+                reading: false,
+                values: Arc::new(values),
+            },
+        );
+        cx.notify();
+    }
     pub fn presence(&self, server: ServerId, account: AccountId) -> Presence {
         self.known.presence.get(server, account)
     }
@@ -209,6 +231,10 @@ impl AppState {
         wanted: &HashMap<ServerId, Wanted>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(feature = "test-support")]
+        if self.fixture.is_some() {
+            return;
+        }
         for server in self.client.servers() {
             server.live().presence_notifications(true);
         }

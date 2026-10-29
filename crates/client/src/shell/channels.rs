@@ -551,6 +551,12 @@ impl Shell {
                     )
                     .picture(faces.image(account_id))
                     .presence(faces.presence(account_id))
+                    .when_some(faces.server_id(), |row, server| {
+                        row.profile(crate::ui::OpenProfile {
+                            server,
+                            account: account_id,
+                        })
+                    })
                     .marks(occupant_marks(occupant))
                     .selector(format!("occupant:{account_id}"))
                     .open(menu.is_some());
@@ -663,6 +669,12 @@ impl Shell {
             let row = ChannelRow::new(("direct", index), Icon::Person, name)
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .presence(faces.presence(direct.account_id))
+                .when_some(faces.server_id(), |row, server| {
+                    row.profile(crate::ui::OpenProfile {
+                        server,
+                        account: direct.account_id,
+                    })
+                })
                 .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
                 .unread(direct_sign(direct.unread))
@@ -758,13 +770,16 @@ impl Shell {
             .bg(Hsla::from(colors.limestone_lo))
             .border_t_1()
             .border_color(Hsla::from(colors.rule))
-            .child(
-                Avatar::new(seed, 30.0)
-                    .image(picture)
-                    .when_some(view.person.account_id, |avatar, account| {
-                        avatar.presence(self.shown_faces().presence(account))
-                    }),
-            )
+            .child(Avatar::new(seed, 30.0).image(picture).when_some(
+                view.person.account_id,
+                |avatar, account| {
+                    avatar
+                        .presence(self.shown_faces().presence(account))
+                        .when_some(self.shown_faces().server_id(), |avatar, server| {
+                            avatar.profile(crate::ui::OpenProfile { server, account })
+                        })
+                },
+            ))
             .child(
                 div()
                     .id("profile-name")
@@ -775,7 +790,15 @@ impl Shell {
                     .typeface(theme.types.name, theme)
                     .ink(colors.ink)
                     .truncate()
-                    .child(name)
+                    .child(match view.person.account_id {
+                        Some(account) => super::people::person_name(
+                            &self.shown_faces(),
+                            account,
+                            name,
+                            "own-profile-name",
+                        ),
+                        None => name.into_any_element(),
+                    })
                     .when_some(
                         view.selected
                             .as_ref()

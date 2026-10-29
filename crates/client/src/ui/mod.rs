@@ -23,7 +23,9 @@ mod pattern;
 mod picture;
 mod placed;
 mod presence;
+mod profile;
 mod reveal;
+pub(crate) use reveal::report as report_focus;
 mod rows;
 mod scroll;
 mod segmented;
@@ -63,6 +65,7 @@ pub use placed::{Placed, outside};
 #[cfg(feature = "test-support")]
 pub use placed::{record_controls, take_controls};
 pub use presence::PresenceMark;
+pub use profile::{OpenProfile, ProfileAccess, ProfileName};
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };

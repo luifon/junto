@@ -11,9 +11,9 @@ use std::sync::Arc;
 use gpui::{
     AnyElement, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement, RenderImage, Role, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point,
-    prelude::FluentBuilder, px,
+    MouseButton, ParentElement, RenderImage, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window,
+    canvas, div, list, point, prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
@@ -474,6 +474,7 @@ struct Rich {
     families: Vec<(Range<usize>, SharedString)>,
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
+    profiles: Vec<(Range<usize>, crate::ui::OpenProfile, String)>,
 }
 
 impl Rich {
@@ -494,6 +495,7 @@ impl Rich {
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
+            profiles: Vec::new(),
         };
         for node in content {
             let start = rich.text.len();
@@ -589,6 +591,24 @@ impl Rich {
                         _ => rich.text.push_str(text::MENTION_EVERYONE),
                     }
                     rich.text.push('\u{2009}');
+                    if let Inline::Account { account_id } = node
+                        && let Some(server) =
+                            presence.and_then(crate::state::people::ServerFaces::server_id)
+                    {
+                        rich.profiles.push((
+                            start..rich.text.len(),
+                            crate::ui::OpenProfile {
+                                server,
+                                account: *account_id,
+                            },
+                            text::profile::open_for(
+                                names
+                                    .accounts
+                                    .get(account_id)
+                                    .map_or(text::UNKNOWN_PERSON, String::as_str),
+                            ),
+                        ));
+                    }
                     rich.highlights.push((
                         start..status_mark.map_or(rich.text.len(), |(start, _)| start),
                         HighlightStyle {
@@ -656,30 +676,195 @@ impl Rich {
 
     /// The element of the text. `id` is the name of the element among the texts of its
     /// row.
+    fn fingerprint(&self, id: usize) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut identity);
+        self.text.hash(&mut identity);
+        for (range, link) in &self.links {
+            range.hash(&mut identity);
+            link.to_string().hash(&mut identity);
+        }
+        for (range, target, _) in &self.profiles {
+            range.hash(&mut identity);
+            target.hash(&mut identity);
+        }
+        identity.finish()
+    }
     fn element(self, id: usize) -> AnyElement {
-        let links = self.links;
-        let styled = StyledText::new(self.text)
-            .with_highlights(self.highlights)
-            .with_font_family_overrides(self.families);
-        if links.is_empty() {
+        RichElement { rich: self, id }.into_any_element()
+    }
+}
+
+#[derive(IntoElement)]
+struct RichElement {
+    rich: Rich,
+    id: usize,
+}
+#[derive(Clone)]
+enum TextTarget {
+    Link(Link),
+    Profile(crate::ui::OpenProfile, String),
+}
+
+fn focused_highlights(
+    length: usize,
+    highlights: &[(Range<usize>, HighlightStyle)],
+    selected: Range<usize>,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut points = vec![0, length, selected.start, selected.end];
+    for (range, _) in highlights {
+        points.extend([range.start, range.end]);
+    }
+    points.sort_unstable();
+    points.dedup();
+    points
+        .windows(2)
+        .filter(|ends| ends[0] < ends[1])
+        .map(|ends| {
+            let range = ends[0]..ends[1];
+            let mut style = highlights
+                .iter()
+                .find(|(held, _)| held.start <= range.start && held.end >= range.end)
+                .map(|(_, style)| *style)
+                .unwrap_or_default();
+            if range.start >= selected.start && range.end <= selected.end {
+                style.underline = Some(UnderlineStyle {
+                    thickness: px(1.5),
+                    color: None,
+                    wavy: false,
+                });
+            }
+            (range, style)
+        })
+        .collect()
+}
+type ProfileTextFocus = (gpui::FocusHandle, Rc<Cell<Option<crate::ui::OpenProfile>>>);
+
+impl RenderOnce for RichElement {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let click_id = ("rich-click", self.rich.fingerprint(self.id));
+        let Rich {
+            text,
+            mut highlights,
+            families,
+            links,
+            profiles,
+        } = self.rich;
+        let wrapper_id: gpui::ElementId = ("profile-text", self.id).into();
+        let mut unique = std::collections::HashSet::new();
+        let keyboard: Vec<_> = profiles
+            .iter()
+            .filter(|(_, target, _)| unique.insert(*target))
+            .cloned()
+            .collect();
+        let focus_state = (!keyboard.is_empty()).then(|| {
+            window.with_global_id(wrapper_id.clone(), |global, window| {
+                window.with_element_state(global, |state: Option<ProfileTextFocus>, _| {
+                    let state = state.unwrap_or_else(|| {
+                        (cx.focus_handle().tab_stop(true), Rc::new(Cell::new(None)))
+                    });
+                    (state.clone(), state)
+                })
+            })
+        });
+        let selected = focus_state
+            .as_ref()
+            .and_then(|(_, selected)| selected.get());
+        let chosen = keyboard
+            .iter()
+            .find(|(_, target, _)| Some(*target) == selected)
+            .or_else(|| keyboard.first());
+        if let Some((focus, selected)) = &focus_state {
+            selected.set(chosen.map(|(_, target, _)| *target));
+            if focus.is_focused(window)
+                && let Some((range, _, _)) = chosen
+            {
+                highlights = focused_highlights(text.len(), &highlights, range.clone());
+            }
+        }
+        let label =
+            chosen.map(|(_, _, label)| format!("{label}. {}", text::profile::KEYBOARD_HINT));
+        let styled = StyledText::new(text)
+            .with_highlights(highlights)
+            .with_font_family_overrides(families);
+        let mut targets: Vec<_> = links
+            .into_iter()
+            .map(|(range, link)| (range, TextTarget::Link(link)))
+            .chain(
+                profiles
+                    .into_iter()
+                    .map(|(range, target, label)| (range, TextTarget::Profile(target, label))),
+            )
+            .collect();
+        targets.sort_by_key(|(range, _)| range.start);
+        if targets.is_empty() {
             return styled.into_any_element();
         }
-        let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
-        let hover = links.clone();
-        InteractiveText::new(("rich", id), styled)
-            .on_click(ranges, move |index, _, cx| {
-                // The address is HTTP, HTTPS or mailto: the application of the system
-                // for it opens it.
-                if let Some((_, link)) = links.get(index) {
-                    crate::opening::open_link(link, cx);
+        let ranges = targets.iter().map(|(range, _)| range.clone()).collect();
+        let hover = targets.clone();
+        let text = InteractiveText::new(click_id, styled)
+            .on_click(ranges, move |index, window, cx| {
+                if let Some((_, target)) = targets.get(index) {
+                    match target {
+                        TextTarget::Link(link) => crate::opening::open_link(link, cx),
+                        TextTarget::Profile(target, _) => {
+                            window.dispatch_action(Box::new(*target), cx);
+                            cx.stop_propagation();
+                        }
+                    }
                 }
             })
             .tooltip(move |index, window, cx| {
                 hover
                     .iter()
                     .find(|(range, _)| range.contains(&index))
-                    .map(|(_, link)| tooltip(link.to_string())(window, cx))
+                    .map(|(_, target)| {
+                        let label = match target {
+                            TextTarget::Link(link) => link.to_string(),
+                            TextTarget::Profile(_, label) => label.clone(),
+                        };
+                        tooltip(label)(window, cx)
+                    })
+            });
+        let Some((focus, selected)) = focus_state else {
+            return text.into_any_element();
+        };
+        let theme = theme(cx);
+        let ring = focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        div()
+            .id(wrapper_id)
+            .debug_selector(|| "profile-text".to_owned())
+            .children(crate::ui::report_focus(&focus, window))
+            .role(Role::Group)
+            .aria_label(label.unwrap_or_default())
+            .track_focus(&focus)
+            .min_w_0()
+            .focus_visible(move |style| style.shadow(ring))
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                let current = keyboard
+                    .iter()
+                    .position(|(_, target, _)| Some(*target) == selected.get())
+                    .unwrap_or(0);
+                match event.keystroke.key.as_str() {
+                    "left" | "right" => {
+                        let next = if event.keystroke.key == "right" {
+                            (current + 1) % keyboard.len()
+                        } else {
+                            (current + keyboard.len() - 1) % keyboard.len()
+                        };
+                        selected.set(Some(keyboard[next].1));
+                        window.refresh();
+                        cx.stop_propagation();
+                    }
+                    "enter" | "space" => {
+                        window.dispatch_action(Box::new(keyboard[current].1), cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
             })
+            .child(text)
             .into_any_element()
     }
 }
@@ -1662,7 +1847,12 @@ impl Shell {
                         .flex_none()
                         .font_weight(FontWeight::BOLD)
                         .ink(colors.ink)
-                        .child(author),
+                        .child(match quote.author_id {
+                            Some(account) => {
+                                super::people::person_name(faces, account, author, "reply-author")
+                            }
+                            None => author.into_any_element(),
+                        }),
                 )
             })
             .child(
@@ -2840,7 +3030,11 @@ impl Shell {
                                         Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
                                             .radius(2.0)
                                             .image(faces.image(*author))
-                                            .presence(faces.presence(*author)),
+                                            .presence(faces.presence(*author))
+                                            .profile(crate::ui::OpenProfile {
+                                                server: feed.server_id,
+                                                account: *author,
+                                            }),
                                     ),
                                 );
                             }
@@ -2858,7 +3052,12 @@ impl Shell {
                                         .radius(2.0)
                                         .image(picture)
                                         .when_some(last.author_id, |avatar, id| {
-                                            avatar.presence(faces.presence(id))
+                                            avatar.presence(faces.presence(id)).profile(
+                                                crate::ui::OpenProfile {
+                                                    server: feed.server_id,
+                                                    account: id,
+                                                },
+                                            )
                                         }),
                                 )
                             },
@@ -2987,7 +3186,15 @@ impl Shell {
                         .truncate()
                         .font_weight(FontWeight::BOLD)
                         .text_size(u(14.5))
-                        .child(SharedString::from(row.author.clone())),
+                        .child(match message.author_id {
+                            Some(account) => super::people::person_name(
+                                &faces,
+                                account,
+                                row.author.clone(),
+                                "message-author",
+                            ),
+                            None => SharedString::from(row.author.clone()).into_any_element(),
+                        }),
                 )
                 .child(
                     div()
@@ -3102,13 +3309,17 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(
-                                Avatar::new(seed, 34.0)
-                                    .image(picture)
-                                    .when_some(message.author_id, |avatar, id| {
-                                        avatar.presence(faces.presence(id))
-                                    }),
-                            )
+                            .child(Avatar::new(seed, 34.0).image(picture).when_some(
+                                message.author_id,
+                                |avatar, id| {
+                                    avatar.presence(faces.presence(id)).profile(
+                                        crate::ui::OpenProfile {
+                                            server: feed.server_id,
+                                            account: id,
+                                        },
+                                    )
+                                },
+                            ))
                             .into_any_element()
                     })
                     .child(
@@ -3212,13 +3423,17 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(
-                                Avatar::new(own, 34.0)
-                                    .image(picture)
-                                    .when_some(person, |avatar, id| {
-                                        avatar.presence(faces.presence(id))
-                                    }),
-                            )
+                            .child(Avatar::new(own, 34.0).image(picture).when_some(
+                                person,
+                                |avatar, id| {
+                                    avatar.presence(faces.presence(id)).profile(
+                                        crate::ui::OpenProfile {
+                                            server: feed.server_id,
+                                            account: id,
+                                        },
+                                    )
+                                },
+                            ))
                             .into_any_element()
                     })
                     .child(
@@ -3239,7 +3454,16 @@ impl Shell {
                                             div()
                                                 .font_weight(FontWeight::BOLD)
                                                 .ink(colors.ink)
-                                                .child(SharedString::from(row.author.clone())),
+                                                .child(match person {
+                                                    Some(account) => super::people::person_name(
+                                                        &faces,
+                                                        account,
+                                                        row.author.clone(),
+                                                        "waiting-author",
+                                                    ),
+                                                    None => SharedString::from(row.author.clone())
+                                                        .into_any_element(),
+                                                }),
                                         )
                                         .child(
                                             div()
@@ -3595,6 +3819,7 @@ fn system_line(
     };
     let mut line = String::new();
     let mut strong = Vec::new();
+    let mut profiles = Vec::new();
     for part in &row.parts {
         let start = line.len();
         line.push_str(&part.text);
@@ -3621,8 +3846,16 @@ fn system_line(
                 },
             ));
         }
+        if let Some((account, server)) = part.account.zip(faces.server_id()) {
+            profiles.push((
+                start..line.len(),
+                crate::ui::OpenProfile { server, account },
+                text::profile::open_for(&part.text),
+            ));
+        }
     }
     div()
+        .id(("system-message", message_id.as_uuid().as_u128() as u64))
         .debug_selector(move || format!("system:{message_id}"))
         .flex()
         .items_start()
@@ -3654,7 +3887,16 @@ fn system_line(
                     div()
                         .debug_selector(move || format!("system-text:{message_id}"))
                         .min_w_0()
-                        .child(StyledText::new(line).with_highlights(strong)),
+                        .child(
+                            Rich {
+                                text: line,
+                                highlights: strong,
+                                families: Vec::new(),
+                                links: Vec::new(),
+                                profiles,
+                            }
+                            .element(0),
+                        ),
                 ),
         )
         .into_any_element()
@@ -3850,5 +4092,57 @@ mod tests {
             );
             end = range.end;
         }
+    }
+    #[test]
+    fn embedded_profile_targets_keep_identity_and_focus_styles_do_not_overlap() {
+        let theme = Theme::stone();
+        let first = junto_client_core::protocol::ids::AccountId::generate();
+        let second = junto_client_core::protocol::ids::AccountId::generate();
+        let faces = crate::state::people::Faces::default().of(ServerId::generate());
+        let names = Names {
+            accounts: [(first, "Mira".to_owned()), (second, "Mira".to_owned())].into(),
+            ..Names::default()
+        };
+        let content = |account| {
+            [
+                Inline::Text {
+                    text: "é ".to_owned(),
+                    marks: vec![Mark::Bold],
+                },
+                Inline::Account {
+                    account_id: account,
+                },
+            ]
+        };
+        let a = Rich::with_presence(
+            &content(first),
+            &names,
+            &theme,
+            &Drawings::default(),
+            Some(&faces),
+        );
+        let b = Rich::with_presence(
+            &content(second),
+            &names,
+            &theme,
+            &Drawings::default(),
+            Some(&faces),
+        );
+        assert_eq!(a.text, b.text);
+        assert_ne!(a.fingerprint(1), b.fingerprint(1));
+        assert_eq!(a.profiles[0].1.account, first);
+        let range = a.profiles[0].0.clone();
+        let focused = focused_highlights(a.text.len(), &a.highlights, range.clone());
+        let mut end = 0;
+        for (held, style) in focused {
+            assert!(held.start >= end && held.end > held.start);
+            assert!(a.text.is_char_boundary(held.start) && a.text.is_char_boundary(held.end));
+            assert_eq!(
+                style.underline.is_some(),
+                held.start >= range.start && held.end <= range.end
+            );
+            end = held.end;
+        }
+        assert_eq!(end, a.text.len());
     }
 }

@@ -306,6 +306,7 @@ pub struct ChannelRow {
     avatar: Option<u128>,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
+    profile: Option<super::OpenProfile>,
     nested: bool,
     muted: bool,
     /// Why the row cannot be used.
@@ -330,6 +331,7 @@ impl ChannelRow {
             avatar: None,
             picture: None,
             presence: None,
+            profile: None,
             nested: false,
             muted: false,
             unavailable: None,
@@ -374,6 +376,11 @@ impl ChannelRow {
     }
 
     /// The image of the avatar of the person of the row, when the window holds it.
+    pub fn profile(mut self, target: super::OpenProfile) -> Self {
+        self.profile = Some(target);
+        self
+    }
+
     pub fn presence(mut self, presence: junto_client_core::protocol::presence::Presence) -> Self {
         self.presence = Some(presence);
         self
@@ -565,6 +572,7 @@ impl RenderOnce for ChannelRow {
                     .radius(2.0)
                     .image(self.picture)
                     .when_some(self.presence, |avatar, presence| avatar.presence(presence))
+                    .when_some(self.profile, |avatar, profile| avatar.profile(profile))
                     .into_any_element(),
                 None => icon(
                     self.icon,
@@ -583,7 +591,11 @@ impl RenderOnce for ChannelRow {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(div().truncate().child(self.name))
+                    .child(match self.profile {
+                        Some(target) => super::ProfileName::new("person-name", self.name, target)
+                            .into_any_element(),
+                        None => div().truncate().child(self.name).into_any_element(),
+                    })
                     .children(self.detail.map(|detail| {
                         div()
                             .typeface(theme.types.small, &theme)
@@ -647,6 +659,7 @@ pub struct OccupantRow {
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
     presence: Option<junto_client_core::protocol::presence::Presence>,
+    profile: Option<super::OpenProfile>,
     marks: Vec<OccupantMark>,
     selector: Option<SharedString>,
     /// The menu of the person is open.
@@ -662,6 +675,7 @@ impl OccupantRow {
             seed,
             picture: None,
             presence: None,
+            profile: None,
             marks: Vec::new(),
             selector: None,
             open: false,
@@ -672,6 +686,11 @@ impl OccupantRow {
     /// The image of the avatar of the person, when the window holds it.
     pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
         self.picture = picture;
+        self
+    }
+
+    pub fn profile(mut self, target: super::OpenProfile) -> Self {
+        self.profile = Some(target);
         self
     }
 
@@ -793,9 +812,15 @@ impl RenderOnce for OccupantRow {
                 Avatar::new(self.seed, 20.0)
                     .radius(2.0)
                     .image(self.picture)
-                    .when_some(self.presence, |avatar, presence| avatar.presence(presence)),
+                    .when_some(self.presence, |avatar, presence| avatar.presence(presence))
+                    .when_some(self.profile, |avatar, profile| avatar.profile(profile)),
             )
-            .child(div().flex_1().min_w_0().truncate().child(self.name))
+            .child(div().flex_1().min_w_0().child(match self.profile {
+                Some(target) => {
+                    super::ProfileName::new("person-name", self.name, target).into_any_element()
+                }
+                None => div().truncate().child(self.name).into_any_element(),
+            }))
             .child(
                 div()
                     .flex()

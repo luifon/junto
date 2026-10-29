@@ -210,6 +210,7 @@ fn audit_row(
     theme: &Theme,
     cycle: junto_client_core::clock::HourCycle,
     presence: Option<junto_client_core::protocol::presence::Presence>,
+    profile: Option<crate::ui::OpenProfile>,
 ) -> AnyElement {
     let id = row.id;
     let content = line(theme).child(
@@ -224,7 +225,16 @@ fn audit_row(
                     .items_center()
                     .gap(u(6.))
                     .children(presence.map(|presence| crate::ui::PresenceMark::new(presence, 10.)))
-                    .child(txt::audit_head(row, cycle)),
+                    .child(match profile {
+                        Some(target) => crate::ui::ProfileAccess::new(
+                            "audit-person",
+                            target,
+                            text::profile::OPEN,
+                            txt::audit_head(row, cycle),
+                        )
+                        .into_any_element(),
+                        None => txt::audit_head(row, cycle).into_any_element(),
+                    }),
             )
             .child(
                 div()
@@ -668,15 +678,22 @@ impl Shell {
         let server_id = view.server_id;
         let token_id = row.id;
         let what = AskKind::RevokeToken(token_id);
-        let mut content = line(theme).child(lines(
-            row.name.clone(),
-            vec![
-                txt::token_actions(&row.actions),
+        let mut content = line(theme).child(
+            lines(
+                row.name.clone(),
+                vec![
+                    txt::token_actions(&row.actions),
+                    txt::token_identifier(token_id),
+                ],
+                theme,
+            )
+            .child(crate::shell::people::person_label(
+                &self.faces(server_id),
+                row.created_by,
                 txt::token_detail(row, self.state.read(cx).hour_cycle()),
-                txt::token_identifier(token_id),
-            ],
-            theme,
-        ));
+                "token-creator",
+            )),
+        );
         if row.expired {
             content = content.child(Chip::new(txt::EXPIRED));
         }
@@ -1774,6 +1791,15 @@ impl Shell {
             match row.actor {
                 crate::state::admin::view::records::Actor::Account { id, .. } => {
                     Some(self.state.read(cx).presence(server_id, id))
+                }
+                _ => None,
+            },
+            match row.actor {
+                crate::state::admin::view::records::Actor::Account { id, .. } => {
+                    Some(crate::ui::OpenProfile {
+                        server: server_id,
+                        account: id,
+                    })
                 }
                 _ => None,
             },

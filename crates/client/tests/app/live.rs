@@ -42,6 +42,7 @@ mod lines;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;
 mod permissions;
+mod profile_cards;
 mod rules;
 mod sound_help;
 mod tones;

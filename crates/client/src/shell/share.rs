@@ -1534,7 +1534,12 @@ impl Shell {
                                         super::people::avatar(&faces, share.account_id, 16.0)
                                             .radius(2.0),
                                     )
-                                    .child(title),
+                                    .child(super::people::person_name(
+                                        &faces,
+                                        share.account_id,
+                                        title,
+                                        "share-person-name",
+                                    )),
                             )
                             .child(
                                 div()
@@ -1659,17 +1664,19 @@ impl Shell {
                 .ink(colors.bone)
                 .whitespace_nowrap()
                 .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .child(StyledText::new(line).with_highlights([(
-                            strong,
-                            gpui::HighlightStyle {
-                                font_weight: Some(gpui::FontWeight::BOLD),
-                                ..gpui::HighlightStyle::default()
-                            },
-                        )])),
-                )
+                .child(div().flex_none().child(super::people::person_element(
+                    &faces,
+                    share.account_id,
+                    &name,
+                    "share-owner",
+                    StyledText::new(line).with_highlights([(
+                        strong,
+                        gpui::HighlightStyle {
+                            font_weight: Some(gpui::FontWeight::BOLD),
+                            ..gpui::HighlightStyle::default()
+                        },
+                    )]),
+                )))
                 .when_some(sound, |header, (sentence, heard)| {
                     let ink = if heard {
                         colors.olive_bright
@@ -1826,6 +1833,13 @@ impl Shell {
                         label,
                     )
                     .picture(faces.image(occupant.account_id))
+                    .presence(faces.presence(occupant.account_id))
+                    .when_some(faces.server_id(), |tile, server| {
+                        tile.profile(crate::ui::OpenProfile {
+                            server,
+                            account: occupant.account_id,
+                        })
+                    })
                     .in_strip()
                     .sidebar(self.detached)
                     .camera_view(self.camera_request(occupant, cx))

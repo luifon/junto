@@ -115,6 +115,8 @@ mod messages;
 mod people;
 #[path = "junto-screens/permissions.rs"]
 mod permissions;
+#[path = "junto-screens/profiles.rs"]
+mod profiles;
 #[path = "junto-screens/recorded.rs"]
 mod recorded;
 #[path = "junto-screens/roles.rs"]
@@ -3285,6 +3287,8 @@ fn run(out: &Path) -> Result<(), String> {
         Some("gif-frames") => messages::measure_animation(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
+        Some("profiles") => profiles::draw(&mut studio),
+        Some("profiles-share") => profiles::draw_share(&mut studio),
         Some("rule-pages") => rule_pages::draw(&mut studio),
         Some("roles") => roles::draw(&mut studio),
         Some("account") => account::draw(&mut studio),
@@ -3305,6 +3309,8 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| recorded::draw(&mut studio))
             .and_then(|()| admin::draw(&mut studio))
             .and_then(|()| people::draw(&mut studio))
+            .and_then(|()| profiles::draw(&mut studio))
+            .and_then(|()| profiles::draw_share(&mut studio))
             .and_then(|()| rule_pages::draw(&mut studio))
             .and_then(|()| roles::draw(&mut studio))
             .and_then(|()| account::draw(&mut studio))

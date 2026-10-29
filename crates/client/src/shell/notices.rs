@@ -62,6 +62,7 @@ pub(crate) struct Excerpt {
     /// The picture of the author, when the window holds it (ADR 0783).
     pub picture: Option<std::sync::Arc<gpui::RenderImage>>,
     pub presence: Option<junto_client_core::protocol::presence::Presence>,
+    pub profile: Option<crate::ui::OpenProfile>,
     pub author: SharedString,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
@@ -169,7 +170,8 @@ impl Excerpt {
                                 .image(self.picture)
                                 .when_some(self.presence, |avatar, presence| {
                                     avatar.presence(presence)
-                                }),
+                                })
+                                .when_some(self.profile, |avatar, target| avatar.profile(target)),
                         ),
                     )
                     .child(
@@ -189,7 +191,15 @@ impl Excerpt {
                                             .font_weight(FontWeight::BOLD)
                                             .text_size(u(14.5))
                                             .ink(colors.ink)
-                                            .child(self.author),
+                                            .child(match self.profile {
+                                                Some(target) => crate::ui::ProfileName::new(
+                                                    "excerpt-author",
+                                                    self.author,
+                                                    target,
+                                                )
+                                                .into_any_element(),
+                                                None => self.author.into_any_element(),
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -610,6 +620,10 @@ impl Shell {
             seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
             picture: row.author_id.and_then(|id| faces.image(id)),
             presence: row.author_id.map(|id| faces.presence(id)),
+            profile: row.author_id.map(|account| crate::ui::OpenProfile {
+                server: server_id,
+                account,
+            }),
             author: row.author.clone().into(),
             time: row.time.clone().into(),
             tag: row.jump.map(|_| text::notice_kind(row.kind).into()),

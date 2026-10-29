@@ -291,6 +291,13 @@ impl ServerApi {
         self.act(Method::Delete, "/account/avatar".to_owned()).await
     }
 
+    pub async fn profile_card(
+        &self,
+        account_id: AccountId,
+    ) -> Result<junto_protocol::account::AccountCard, ApiError> {
+        self.get(format!("/accounts/{account_id}/card")).await
+    }
+
     /// The name and the description of the avatar of an account that this account may see.
     pub async fn profile(&self, account_id: AccountId) -> Result<AccountProfile, ApiError> {
         self.get(format!("/accounts/{account_id}/profile")).await

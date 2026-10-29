@@ -1160,6 +1160,58 @@
         ]
       }
     },
+    "/api/v1/accounts/{account_id}/card": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "operationId": "get_card",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountCard"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/accounts/{account_id}/profile": {
       "get": {
         "tags": [
@@ -12506,6 +12558,31 @@
           }
         }
       },
+      "AccountCard": {
+        "type": "object",
+        "required": [
+          "profile",
+          "server_roles",
+          "workspaces"
+        ],
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/AccountProfile"
+          },
+          "server_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileRole"
+            }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceProfileRoles"
+            }
+          }
+        }
+      },
       "AccountId": {
         "type": "string",
         "format": "uuid"
@@ -18150,6 +18227,27 @@
           }
         }
       },
+      "ProfileRole": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "Proof": {
         "type": "object",
         "description": "The answer to a challenge. The challenge names the device key that must have signed it.",
@@ -21336,6 +21434,28 @@
           "set_call_user_limit",
           "set_voice_channel_status"
         ]
+      },
+      "WorkspaceProfileRoles": {
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "name",
+          "roles"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileRole"
+            }
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
       },
       "WorkspaceRole": {
         "type": "object",

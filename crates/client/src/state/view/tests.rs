@@ -2653,9 +2653,10 @@ pub(super) mod calls {
             room.meeting,
             Some(MeetingView {
                 by_self: true,
+                presenter_id: own,
                 presenter: Some("Luca".to_owned()),
                 hands: vec![(ana, Some("Ana".to_owned()))],
-                waiting: vec![Some("Ben".to_owned())],
+                waiting: vec![(ben, Some("Ben".to_owned()))],
                 may_speak: false,
             })
         );

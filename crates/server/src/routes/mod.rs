@@ -22,6 +22,7 @@ use crate::state::AppState;
 
 pub mod access_tokens;
 pub mod account;
+mod account_cards;
 pub mod archive;
 pub mod attachments;
 pub mod audit_log;
@@ -232,6 +233,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(account::set_avatar, account::remove_avatar)
     });
     add(&mut router, || routes!(account::get_profile));
+    add(&mut router, || routes!(account_cards::get_card));
     add(&mut router, || routes!(presence::read_presence));
     add(&mut router, || routes!(presence::set_presence));
     add(&mut router, || routes!(account::get_avatar));

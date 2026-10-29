@@ -23,6 +23,7 @@ pub struct Avatar {
     image: Option<Arc<RenderImage>>,
     described: Option<(ElementId, SharedString)>,
     presence: Option<Presence>,
+    profile: Option<super::OpenProfile>,
 }
 
 impl Avatar {
@@ -36,7 +37,13 @@ impl Avatar {
             image: None,
             described: None,
             presence: None,
+            profile: None,
         }
+    }
+
+    pub fn profile(mut self, target: super::OpenProfile) -> Self {
+        self.profile = Some(target);
+        self
     }
 
     pub fn presence(mut self, presence: Presence) -> Self {
@@ -98,7 +105,7 @@ impl RenderOnce for Avatar {
                 .into_any_element(),
             None => picture,
         };
-        if let Some(presence) = self.presence {
+        let picture = if let Some(presence) = self.presence {
             let size = if self.size < 24. {
                 6.
             } else if self.size <= 40. {
@@ -123,6 +130,16 @@ impl RenderOnce for Avatar {
                 .into_any_element()
         } else {
             picture
+        };
+        match self.profile {
+            Some(target) => super::ProfileAccess::new(
+                SharedString::from(format!("profile-avatar-{seed}")),
+                target,
+                crate::text::profile::OPEN,
+                picture,
+            )
+            .into_any_element(),
+            None => picture,
         }
     }
 }

@@ -762,7 +762,7 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(meeting.hands.is_empty());
-    assert_eq!(meeting.waiting, [Some("Ada".to_owned())]);
+    assert_eq!(meeting.waiting, [(ada, Some("Ada".to_owned()))]);
     // The presenter turns meeting mode off.
     scene.window.click("meeting-toggle");
     scene.window.until("the meeting has ended", |window| {

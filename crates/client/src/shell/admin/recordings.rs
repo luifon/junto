@@ -73,7 +73,12 @@ impl Shell {
                     .ink(colors.ink)
                     .child(txt::state(row)),
             )
-            .child(detail(txt::started_by(row)))
+            .child(crate::shell::people::person_label(
+                &self.faces(server_id),
+                row.starter,
+                txt::started_by(row),
+                "recording-starter",
+            ))
             .child(detail(txt::transcript(
                 row.transcript,
                 row.transcript_lines,

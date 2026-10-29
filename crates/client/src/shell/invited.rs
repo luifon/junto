@@ -271,7 +271,13 @@ impl Shell {
                                     .typeface(theme.types.body, &theme)
                                     .line_height(u(20.0))
                                     .ink(colors.ink)
-                                    .child(sentence),
+                                    .child(super::people::person_element(
+                                        &self.faces(invited.target.server_id),
+                                        invited.caller,
+                                        by,
+                                        "invitation-caller",
+                                        sentence,
+                                    )),
                             ),
                     ),
             )

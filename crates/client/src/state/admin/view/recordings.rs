@@ -59,6 +59,7 @@ pub struct RecordingLine {
     pub failed_segments: u32,
     pub segments: u32,
     /// The name of the account that started it. Absent: the state does not hold it.
+    pub starter: junto_client_core::protocol::ids::AccountId,
     pub started_by: Option<String>,
     pub transcript: TranscriptState,
     pub transcript_lines: u32,
@@ -99,6 +100,7 @@ fn line(recording: &Recording, names: &Names<'_>) -> RecordingLine {
         failure: recording.failure,
         failed_segments: recording.failed_segments,
         segments: recording.segments,
+        starter: recording.started_by,
         started_by: names.account(recording.started_by),
         transcript: recording.transcript,
         transcript_lines: recording.transcript_lines,

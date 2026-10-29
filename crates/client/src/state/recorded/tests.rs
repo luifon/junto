@@ -561,6 +561,7 @@ fn a_corrected_line_and_a_named_voice_state_who_changed_them_and_when() {
     assert_eq!(
         row.changed,
         Some(Changed {
+            account: Some(scene.carla),
             by: "Carla".to_owned(),
             at: format!("{} 09:46", text::TODAY),
         })
@@ -584,11 +585,13 @@ fn a_corrected_line_and_a_named_voice_state_who_changed_them_and_when() {
     assert_eq!(
         shown.voices[0],
         VoiceRow {
+            account_id: scene.carla,
             number: 1,
             label: "Speaker 1".to_owned(),
             name: Some("Noor".to_owned()),
             of: "Carla".to_owned(),
             changed: Some(Changed {
+                account: Some(scene.ana),
                 by: "Ana".to_owned(),
                 at: format!("{} 09:41", text::TODAY),
             }),

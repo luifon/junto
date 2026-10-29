@@ -93,6 +93,7 @@ impl When {
 /// Who made a change of a transcript, and when (ADR 0603).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changed {
+    pub account: Option<AccountId>,
     pub by: String,
     pub at: String,
 }
@@ -103,10 +104,12 @@ fn changed(
     names: &HashMap<AccountId, String>,
     when: When,
 ) -> Option<Changed> {
+    let account = by;
     let by = by.map(|by| name_of(by, names));
     match (by, at) {
         (None, None) => None,
         (by, at) => Some(Changed {
+            account,
             by: by.unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
             at: at.map(|at| when.shown(at)).unwrap_or_default(),
         }),
@@ -151,6 +154,7 @@ pub struct LineRow {
 /// One voice in the shared sound of a person (ADR 0614).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceRow {
+    pub account_id: AccountId,
     pub number: u32,
     /// `Speaker N`.
     pub label: String,
@@ -239,6 +243,7 @@ pub struct CardDetail {
     /// The times of day at which the recording started and ended.
     pub span: Option<(String, String)>,
     pub length: Option<Duration>,
+    pub starter: AccountId,
     pub started_by: Option<String>,
     /// The size of the picture of the video.
     pub picture: Option<(u32, u32)>,
@@ -477,6 +482,7 @@ fn voices(
         .speakers
         .iter()
         .map(|speaker| VoiceRow {
+            account_id: speaker.account_id,
             number: speaker.number,
             label: text::speaker_label(speaker.number),
             name: speaker.name.clone(),
@@ -681,6 +687,7 @@ fn shown(source: &CardSource<'_>, open: &OpenRecording, detail: &RecordingDetail
         day: text::day_or_today(local(began).date(), source.today),
         span: ended.map(|ended| (clock(began), clock(ended))),
         length: ended.and_then(|ended| Duration::try_from(ended - began).ok()),
+        starter: recording.started_by,
         started_by: names.get(&recording.started_by).cloned(),
         picture,
         microphones: count(FileKind::Microphone),

@@ -470,7 +470,15 @@ impl Shell {
                                     )),
                             )
                         })
-                        .child(div().min_w_0().truncate().child(name)),
+                        .child(match conversation {
+                            Some(person) => super::people::person_name(
+                                &self.shown_faces(),
+                                person.account_id,
+                                name,
+                                "conversation-name",
+                            ),
+                            None => div().min_w_0().truncate().child(name).into_any_element(),
+                        }),
                 )
             })
             .children(after)
@@ -1617,7 +1625,12 @@ impl Shell {
                                     .typeface(theme.types.name, &theme)
                                     .line_height(u(19.0))
                                     .ink(colors.ink)
-                                    .child(member.name.clone()),
+                                    .child(super::people::person_name(
+                                        &faces,
+                                        account_id,
+                                        member.name.clone(),
+                                        "member-name",
+                                    )),
                             )
                             .when(member.is_self, |line| {
                                 line.child(

@@ -900,7 +900,9 @@ impl Shell {
                         )
                         .radius(2.0),
                     )
-                    .child(line_text(
+                    .child(super::line_person(
+                        &self.faces(server_id),
+                        account_id,
                         row.name.clone(),
                         Some(txt::account_detail(&row.roles, row.created).into()),
                         theme,
@@ -1383,7 +1385,13 @@ impl Shell {
                 )
                 .radius(2.0),
             )
-            .child(line_text(row.name.clone(), roles, &theme));
+            .child(super::line_person(
+                &faces,
+                account_id,
+                row.name.clone(),
+                roles,
+                &theme,
+            ));
         if row.is_self {
             content = content.child(Chip::new(txt::YOU));
         }
@@ -1482,7 +1490,13 @@ impl Shell {
                 crate::shell::people::avatar_of(&faces, account_id, &row.name, false, 26.0)
                     .radius(2.0),
             )
-            .child(line_text(row.name.clone(), None, &theme))
+            .child(super::line_person(
+                &faces,
+                account_id,
+                row.name.clone(),
+                None,
+                &theme,
+            ))
             .child(row_action(
                 ("member-add", account_id.as_uuid().as_u128() as u64),
                 txt::ADD,
@@ -1913,8 +1927,13 @@ impl Shell {
         let invite_id = row.id;
         let what = AskKind::RevokeInvite(invite_id);
         let mut content = line(theme).child(
-            line_text(
-                txt::invite_creator(row.creator.as_deref()),
+            super::line_identity(
+                crate::shell::people::person_label(
+                    &self.faces(server_id),
+                    row.created_by,
+                    txt::invite_creator(row.creator.as_deref()),
+                    "invite-creator",
+                ),
                 Some(
                     txt::invite_times(row.created, row.expires, self.state.read(cx).hour_cycle())
                         .into(),

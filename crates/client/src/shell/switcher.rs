@@ -47,6 +47,9 @@ impl Switcher {
 
 impl Shell {
     pub(crate) fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::Profile) {
+            self.close_profile(window, cx);
+        }
         if !matches!(self.layer, Layer::QuickSwitcher) {
             self.close_hover_menu(cx);
             self.switcher.previous = Some(std::mem::replace(&mut self.layer, Layer::QuickSwitcher));
@@ -148,6 +151,14 @@ impl Shell {
         if !matches!(self.layer, Layer::QuickSwitcher) || keys.modifiers.modified() {
             return false;
         }
+        if matches!(keys.key.as_str(), "enter" | "space")
+            && window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("ProfileAccount"))
+        {
+            return false;
+        }
         let forward = match keys.key.as_str() {
             "down" => true,
             "up" => false,
@@ -220,6 +231,10 @@ impl Shell {
                 choice = choice
                     .avatar(account.as_uuid().as_u128())
                     .presence(self.faces(destination.server()).presence(account))
+                    .profile(crate::ui::OpenProfile {
+                        server: destination.server(),
+                        account,
+                    })
                     .picture(self.faces(destination.server()).image(account));
             }
             list = list.child(

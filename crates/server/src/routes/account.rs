@@ -265,7 +265,7 @@ pub async fn get_profile(
 }
 
 /// An account that the caller may not see is answered like an account that does not exist.
-async fn require_sight(
+pub(super) async fn require_sight(
     connection: &mut sqlx::PgConnection,
     access: &Access,
     account_id: AccountId,
