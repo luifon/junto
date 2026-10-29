@@ -122,6 +122,8 @@ The images that the jobs pull (`tools/ci/pins.sh`) keep the name of their regist
 
 The Windows setup enables the Task Scheduler operational event log before any installation, and a refusal ends setup with a failure. The script and tests use the same setup function, including its error handler; tests replace the event-log command and installer operations without changing system state. That log preserves scheduling failures for diagnosis; enabling it does not change the sixty-second startup deadline or establish the cause of a past timeout.
 
+The Linux desktop checks also run `tools/check_window_placement.py` under the isolated X11 display: main and detached-window move/resize, normal and maximized restart, restore size, fullscreen and removed-display fallback inside a smaller work area. The detached case builds the opt-in `native_placement` target and opens its production Shell with synthetic devices. The check uses a private profile and reaps every process it starts (ADR 0730).
+
 ## Consequences
 
 - An error that exists only with PostgreSQL on macOS or Windows is found by CI only when a window test reaches it; the other tests that need PostgreSQL run on Linux only.

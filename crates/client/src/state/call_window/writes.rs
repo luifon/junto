@@ -1,17 +1,17 @@
-use junto_client_core::call_window::CallWindowSettings;
+use junto_client_core::window_placement::WindowPlacement;
 
 #[derive(Default)]
 pub(crate) struct Writes {
-    pending: Option<CallWindowSettings>,
+    pending: Option<WindowPlacement>,
     running: bool,
 }
 
 impl Writes {
-    pub(crate) fn push(&mut self, settings: CallWindowSettings) -> bool {
+    pub(crate) fn push(&mut self, settings: WindowPlacement) -> bool {
         self.pending = Some(settings);
         !std::mem::replace(&mut self.running, true)
     }
-    pub(crate) fn take(&mut self) -> Option<CallWindowSettings> {
+    pub(crate) fn take(&mut self) -> Option<WindowPlacement> {
         let pending = self.pending.take();
         if pending.is_none() {
             self.running = false;
@@ -26,7 +26,7 @@ mod tests {
     #[test]
     fn moving_a_window_coalesces_placements_and_keeps_the_last_write() {
         let mut writes = Writes::default();
-        let settings = |x| CallWindowSettings {
+        let settings = |x| WindowPlacement {
             x: Some(x),
             y: Some(40),
             ..Default::default()

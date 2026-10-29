@@ -1,6 +1,7 @@
 use super::*;
 mod writes;
-use junto_client_core::call_window::{CallWindowSettings, CallWindowStore};
+use junto_client_core::call_window::CallWindowSettings;
+use junto_client_core::window_placement::{WindowPlacement, WindowStore};
 pub(super) use writes::Writes;
 impl AppState {
     /// The key of push-to-talk is held in a window or released. A press and a release in
@@ -85,10 +86,40 @@ impl AppState {
         }
         self.call_window_closed(cx);
     }
+    pub fn main_window_settings(&self) -> WindowPlacement {
+        self.main_window_settings
+    }
+    pub fn save_main_window(&mut self, settings: WindowPlacement, cx: &mut Context<Self>) {
+        if self.main_window_settings == settings {
+            return;
+        }
+        self.main_window_settings = settings;
+        self.save_window_placement(true, settings, cx);
+    }
     pub fn save_call_window(&mut self, settings: CallWindowSettings, cx: &mut Context<Self>) {
+        if self.call_window_settings == settings {
+            return;
+        }
         self.call_window_settings = settings;
-        let store = CallWindowStore::new(self.client.data_dir().clone());
-        let writes = self.call_window_writes.clone();
+        self.save_window_placement(false, settings, cx);
+    }
+    fn save_window_placement(
+        &mut self,
+        main: bool,
+        settings: CallWindowSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self.client.data_dir().clone();
+        let store = if main {
+            WindowStore::main_window(directory)
+        } else {
+            WindowStore::new(directory)
+        };
+        let writes = if main {
+            self.main_window_writes.clone()
+        } else {
+            self.call_window_writes.clone()
+        };
         if !writes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -114,9 +145,9 @@ impl AppState {
                     }
                 }
             },
-            |_, result, _| {
+            move |_, result, _| {
                 if let Err(error) = result {
-                    tracing::warn!(%error, "the call window settings were not stored");
+                    tracing::warn!(%error, main_window = main, "the window placement was not stored");
                 }
             },
         );

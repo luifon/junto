@@ -92,5 +92,6 @@ mod transcripts;
 mod tray;
 mod unread;
 mod window_frame;
+mod window_placement;
 
 mod updates;

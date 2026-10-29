@@ -193,7 +193,7 @@ Echo cancellation, noise suppression, automatic gain and push-to-talk are in the
 
 The camera button starts and stops the chosen camera. The Settings tab of a voice call chooses the camera and stores the choice for calls. Permission is requested only after the person starts a camera. Refused permission, a restricted system, a disconnected device and interrupted capture have separate notices. The local preview is mirrored; pictures sent to other people are not. Clicking a camera tile focuses it, and the view setting can hide people without video.
 
-Detach opens the current call in another window. Return or closing that window puts it back; Leave ends the call. Pin stores the always-on-top choice, and Fullscreen changes the call window. Its windowed position and size are stored in `call-window.json`. Native always-on-top behavior on Linux requires the platform integration described in ADR 0772.
+Detach opens the current call in another window. Return or closing that window puts it back; Leave ends the call. Pin stores the always-on-top choice, and Fullscreen changes the call window. Its normal position and size and its maximized state are stored in `call-window.json`; the main window keeps its own placement in `main-window.json`. Both are checked against the available displays and work area when reopened. Native always-on-top behavior on Linux requires the platform integration described in ADR 0772.
 
 The generated camera tests check received frame colors, capture shutdown, reconnect and independence from microphone blocks. The detached-window tests exercise controls and shared call ownership on the test platform. These tests do not open a camera or verify native window stacking or a permission dialog.
 

@@ -1,3 +1,4 @@
+// Modified: enumerate physical RandR monitors for window placement.
 use anyhow::{Context as _, anyhow};
 use ashpd::WindowIdentifier;
 use calloop::{
@@ -1034,19 +1035,9 @@ impl X11Client {
                 }
             }
             Event::ConfigureNotify(event) => {
-                let bounds = Bounds {
-                    origin: Point {
-                        x: event.x.into(),
-                        y: event.y.into(),
-                    },
-                    size: Size {
-                        width: event.width.into(),
-                        height: event.height.into(),
-                    },
-                };
                 let window = self.get_window(event.window)?;
                 window
-                    .set_bounds(bounds)
+                    .set_bounds()
                     .context("X11: Failed to set window bounds")
                     .log_err();
             }
@@ -1649,10 +1640,12 @@ impl X11Client {
             .roots
             .iter()
             .enumerate()
-            .filter_map(|(root_id, _)| {
-                Some(Rc::new(
-                    X11Display::new(&state.xcb_connection, state.scale_factor, root_id).ok()?,
-                ) as Rc<dyn PlatformDisplay>)
+            // Modified: a screen can contain several independently positioned monitors.
+            .flat_map(|(root_id, _)| {
+                X11Display::all(&state.xcb_connection, state.scale_factor, root_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
             })
             .collect()
     }

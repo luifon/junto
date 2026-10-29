@@ -1,8 +1,8 @@
 //! Starting the application: the fonts, the theme, the keys, and the main window.
 
 use gpui::{
-    App, AppContext as _, Bounds, Entity, KeyBinding, Menu, MenuItem, TitlebarOptions,
-    WindowBounds, WindowHandle, WindowOptions, actions, point, px, size,
+    App, AppContext as _, Entity, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
+    WindowHandle, WindowOptions, actions, point, px,
 };
 use gpui_base::Root;
 use junto_client_core::Client;
@@ -66,9 +66,7 @@ pub(crate) fn restore_main_window(cx: &mut App) {
     }
 }
 
-/// The size of a new main window and its smallest size, in pixels at 100 %. The smallest size
-/// follows the interface scale at the start (ADR 0731).
-const WINDOW_SIZE: (f32, f32) = (1440.0, 900.0);
+/// The minimum main-window size at 100 %, scaled at startup (ADR 0731).
 const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 
 /// The identifier of the application for the desktop: the window class on Linux and the
@@ -214,11 +212,23 @@ pub fn open_main_window(
         items: vec![MenuItem::action(text::QUIT, Quit)],
         disabled: false,
     }]);
-    let bounds = Bounds::centered(None, size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)), cx);
     let scale = state.read(cx).settings().scale_percent;
+    let saved = state.read(cx).main_window_settings();
+    let restored = crate::window_placement::restore(
+        saved,
+        theme::scaled_size(WINDOW_MIN_SIZE, scale),
+        &cx.displays(),
+        cx.primary_display().map(|display| display.id()),
+    );
+    let bounds = restored.bounds;
     let window = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(if saved.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            }),
+            display_id: restored.display,
             titlebar: Some(TitlebarOptions {
                 title: Some(text::APP_NAME.into()),
                 // The server book reaches the top edge of the window; macOS draws the
@@ -234,7 +244,7 @@ pub fn open_main_window(
             show: true,
             app_id: Some(APP_ID.to_owned()),
             icon: crate::window_icon::icon(),
-            window_min_size: Some(theme::scaled_size(WINDOW_MIN_SIZE, scale)),
+            window_min_size: Some(restored.minimum),
             ..WindowOptions::default()
         },
         move |window, cx| {
@@ -252,7 +262,11 @@ pub fn open_main_window(
                 let _ = window;
                 true
             });
-            let shell = cx.new(|cx| Shell::new(state, window, cx));
+            let shell = cx.new(|cx| {
+                let mut shell = Shell::new(state, window, cx);
+                shell.observe_placement(false, window, cx);
+                shell
+            });
             cx.new(|cx| Root::new(shell, window, cx))
         },
     )?;

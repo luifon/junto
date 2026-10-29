@@ -463,6 +463,8 @@ pub struct AppState {
     /// the main window (ADR 0772).
     call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
+    main_window_settings: junto_client_core::window_placement::WindowPlacement,
+    main_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
     ringer: junto_media::audio::ring::RingPlayer,
@@ -942,6 +944,14 @@ impl AppState {
             junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
                 .load()
                 .unwrap_or_default();
+        let main_window_settings = junto_client_core::window_placement::WindowStore::main_window(
+            client.data_dir().clone(),
+        )
+        .load()
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "the main window placement was not read");
+            junto_client_core::window_placement::WindowPlacement::main_window()
+        });
         let saved_exports = client.saved_exports().load().unwrap_or_else(|error| {
             tracing::warn!(%error, "the saved exports were not read");
             junto_client_core::saved_exports::SavedExports::default()
@@ -962,6 +972,8 @@ impl AppState {
             call_window: None,
             call_window_closing: None,
             call_window_settings,
+            main_window_settings,
+            main_window_writes: Default::default(),
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
             ringer,

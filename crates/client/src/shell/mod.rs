@@ -33,6 +33,7 @@ mod permissions;
 mod person_drag;
 mod picture_crop;
 mod pictures;
+mod placement;
 mod prepared;
 mod rail;
 mod recorded;

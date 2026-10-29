@@ -255,7 +255,9 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
 
 #[gpui::test]
 #[ignore = "needs PostgreSQL and LiveKit"]
-fn closing_the_main_window_also_closes_its_detached_call(cx: &mut TestAppContext) {
+fn closing_the_main_window_closes_its_detached_call_when_background_is_off(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server_with_media("Main window close");
     let admin = world.owner(&server);
@@ -281,6 +283,9 @@ fn closing_the_main_window_also_closes_its_detached_call(cx: &mut TestAppContext
             )
         })
         .unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_keep_running_after_close(false, cx);
+    });
     let mut main = window.window_of(handle.into());
     window.simulate(|cx| cx.update(|window, _| window.remove_window()));
     drop(window);

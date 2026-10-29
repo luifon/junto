@@ -64,6 +64,9 @@ run tools/linux-container.sh tools/linux/display.sh x11 sh -c 'JUNTO_TEST_NATIVE
 run tools/linux-container.sh tools/linux/display.sh wayland sh -c 'JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked -p junto-client --test native_panics'
 step "One desktop process per profile and restoration of its main window"
 run tools/linux-container.sh tools/linux/display.sh x11 python3 tools/check_single_instance.py /target/debug/junto
+step "Window placement across restart and maximization"
+run tools/linux-container.sh tools/linux/display.sh x11 python3 tools/check_window_placement.py /target/debug/junto
+run tools/linux-container.sh sh -c 'cargo test --no-fail-fast --locked -p junto-client --test native_placement --no-run --message-format=json-render-diagnostics > /tmp/junto-placement-build.json && tools/linux/display.sh x11 python3 tools/check_window_placement.py --call-target /tmp/junto-placement-build.json'
 # The keys of a call in every application: the reader of the keyboard of X11 against the X
 # server of the run, whose keys xdotool presses (ADR 0776).
 step "Keys of a call read from the X server"

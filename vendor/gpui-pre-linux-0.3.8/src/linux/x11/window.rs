@@ -1,3 +1,4 @@
+// Modified: preserve initial placement and state through the window manager.
 use anyhow::{Context as _, anyhow};
 use x11rb::connection::RequestConnection;
 
@@ -19,7 +20,7 @@ use x11rb::{
     connection::Connection,
     cookie::{Cookie, VoidCookie},
     errors::ConnectionError,
-    properties::{WmHints, WmSizeHints},
+    properties::{WmHints, WmSizeHints, WmSizeHintsSpecification},
     protocol::{
         sync,
         xinput::{self, ConnectionExt as _},
@@ -276,6 +277,8 @@ pub struct X11WindowState {
     input_handler: Option<PlatformInputHandler>,
     appearance: WindowAppearance,
     background_appearance: WindowBackgroundAppearance,
+    // Modified: state changes before mapping use the initial property, not a WM message.
+    mapping_requested: bool,
     maximized_vertical: bool,
     maximized_horizontal: bool,
     hidden: bool,
@@ -357,7 +360,7 @@ impl rwh::HasDisplayHandle for X11Window {
         };
         let screen_id = {
             let state = self.0.state.borrow();
-            u64::from(state.display.id()) as i32
+            state.x_screen_index as i32
         };
         let handle = rwh::XcbDisplayHandle::new(Some(non_zero), screen_id);
         Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
@@ -482,7 +485,7 @@ impl X11WindowState {
 
         let x_screen_index = params
             .display_id
-            .map_or(x_main_screen_index, |did| u64::from(did) as usize);
+            .map_or(x_main_screen_index, |did| (u64::from(did) >> 32) as usize);
 
         let visual_set = find_visuals(xcb, x_screen_index);
 
@@ -785,6 +788,13 @@ impl X11WindowState {
             // This prevents the window from being resized larger than what the GPU can render.
             let max_texture_size = renderer.max_texture_size();
             let mut size_hints = WmSizeHints::new();
+            // Modified: a saved position must bypass automatic window placement.
+            size_hints.position = Some((
+                WmSizeHintsSpecification::UserSpecified,
+                bounds.origin.x.0,
+                bounds.origin.y.0,
+            ));
+            size_hints.win_gravity = Some(xproto::Gravity::STATIC);
             if let Some(size) = params.window_min_size {
                 size_hints.min_size =
                     Some((f32::from(size.width) as i32, f32::from(size.height) as i32));
@@ -823,7 +833,12 @@ impl X11WindowState {
                 )?;
             }
 
-            let display = Rc::new(X11Display::new(xcb, scale_factor, x_screen_index)?);
+            let display = Rc::new(X11Display::at(
+                xcb,
+                scale_factor,
+                x_screen_index,
+                bounds.to_pixels(scale_factor).center(),
+            )?);
 
             Ok(Self {
                 parent,
@@ -845,6 +860,7 @@ impl X11WindowState {
                 hovered: false,
                 force_render_after_recovery: false,
                 fullscreen: false,
+                mapping_requested: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
                 hidden: false,
@@ -974,6 +990,41 @@ impl X11Window {
         prop2: u32,
     ) -> anyhow::Result<()> {
         let state = self.0.state.borrow();
+        // Modified: the window manager ignores messages about an unmapped new window.
+        if !state.mapping_requested {
+            let reply = self
+                .0
+                .xcb
+                .get_property(
+                    false,
+                    self.0.x_window,
+                    state.atoms._NET_WM_STATE,
+                    xproto::AtomEnum::ATOM,
+                    0,
+                    u32::MAX,
+                )?
+                .reply()?;
+            let mut atoms: Vec<u32> = reply.value32().into_iter().flatten().collect();
+            for property in [prop1, prop2].into_iter().filter(|atom| *atom != 0) {
+                if atoms.contains(&property) {
+                    atoms.retain(|atom| *atom != property);
+                } else {
+                    atoms.push(property);
+                }
+            }
+            check_reply(
+                failure_context,
+                self.0.xcb.change_property32(
+                    xproto::PropMode::REPLACE,
+                    self.0.x_window,
+                    state.atoms._NET_WM_STATE,
+                    xproto::AtomEnum::ATOM,
+                    &atoms,
+                ),
+            )?;
+            xcb_flush(&self.0.xcb);
+            return Ok(());
+        }
         let message = ClientMessageEvent::new(
             32,
             self.0.x_window,
@@ -1063,7 +1114,24 @@ impl X11WindowStatePtr {
     pub fn property_notify(&self, event: xproto::PropertyNotifyEvent) -> anyhow::Result<()> {
         let state = self.state.borrow_mut();
         if event.atom == state.atoms._NET_WM_STATE {
+            // Modified: state-only changes also notify bounds observers.
+            let previous = (
+                state.maximized_vertical,
+                state.maximized_horizontal,
+                state.fullscreen,
+            );
             self.set_wm_properties(state)?;
+            let current = {
+                let state = self.state.borrow();
+                (
+                    state.maximized_vertical,
+                    state.maximized_horizontal,
+                    state.fullscreen,
+                )
+            };
+            if previous != current {
+                self.set_bounds()?;
+            }
         } else if event.atom == state.atoms._GTK_EDGE_CONSTRAINTS {
             self.set_edge_constraints(state)?;
         }
@@ -1290,7 +1358,20 @@ impl X11WindowStatePtr {
         bounds.map(|b| b.scale(scale_factor))
     }
 
-    pub fn set_bounds(&self, bounds: Bounds<i32>) -> anyhow::Result<()> {
+    pub fn set_bounds(&self) -> anyhow::Result<()> {
+        // Modified: read current state and absolute geometry; queued events can describe
+        // an older state or coordinates relative to a window-manager frame.
+        let geometry = self.xcb.get_geometry(self.x_window)?.reply()?;
+        let root = self.state.borrow().x_root_window;
+        let origin = self
+            .xcb
+            .translate_coordinates(self.x_window, root, 0, 0)?
+            .reply()?;
+        let bounds = Bounds::new(
+            Point::new(i32::from(origin.dst_x), i32::from(origin.dst_y)),
+            Size::new(i32::from(geometry.width), i32::from(geometry.height)),
+        );
+        self.set_wm_properties(self.state.borrow_mut())?;
         let (is_resize, content_size, scale_factor) = {
             let mut state = self.state.borrow_mut();
             let bounds = bounds.map(|f| px(f as f32 / state.scale_factor));
@@ -1298,14 +1379,18 @@ impl X11WindowStatePtr {
             let is_resize = bounds.size.width != state.bounds.size.width
                 || bounds.size.height != state.bounds.size.height;
 
-            // If it's a resize event (only width/height changed), we ignore `bounds.origin`
-            // because it contains wrong values.
-            if is_resize {
-                state.bounds.size = bounds.size;
-            } else {
-                state.bounds = bounds;
-            }
+            // Modified: the queried origin is absolute even for resize events.
+            state.bounds = bounds;
 
+            // Modified: moves and display changes update the monitor saved by the app.
+            if let Ok(display) = X11Display::at(
+                &self.xcb,
+                state.scale_factor,
+                state.x_screen_index,
+                state.bounds.center(),
+            ) {
+                state.display = Rc::new(display);
+            }
             let gpu_size = query_render_extent(&self.xcb, self.x_window)?;
             if let Some(renderer) = &mut state.renderer {
                 renderer.update_drawable_size(gpu_size);
@@ -1398,7 +1483,10 @@ impl PlatformWindow for X11Window {
 
     fn window_bounds(&self) -> WindowBounds {
         let state = self.0.state.borrow();
-        if self.is_maximized() {
+        // Modified: fullscreen and minimization must not replace normal restore bounds.
+        if state.fullscreen {
+            WindowBounds::Fullscreen(state.bounds)
+        } else if state.maximized_vertical && state.maximized_horizontal {
             WindowBounds::Maximized(state.bounds)
         } else {
             WindowBounds::Windowed(state.bounds)
@@ -1615,6 +1703,8 @@ impl PlatformWindow for X11Window {
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
+        // Modified: subsequent changes target the managed window.
+        self.0.state.borrow_mut().mapping_requested = true;
         check_reply(
             || "X11 MapWindow failed.",
             self.0.xcb.map_window(self.0.x_window),

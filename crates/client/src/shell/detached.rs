@@ -7,12 +7,10 @@ use crate::{
     ui::{Button, ButtonKind},
 };
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Styled, Window, WindowBounds, WindowKind, WindowOptions, div, point,
-    prelude::FluentBuilder, px, size,
+    App, AppContext as _, Context, Entity, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Styled, Window, WindowBounds, WindowKind, WindowOptions, div, prelude::FluentBuilder,
 };
 use gpui_base::Root;
-use junto_client_core::call_window::CallWindowSettings;
 use junto_client_core::settings::Panel;
 
 /// On Linux the window manager takes the request to keep a window above the windows of
@@ -49,48 +47,27 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         return;
     }
     let saved = state.read(cx).call_window_settings();
-    let displays = cx.displays();
-    let origin = saved
-        .x
-        .zip(saved.y)
-        .map(|(x, y)| point(px(x as f32), px(y as f32)));
-    let display = displays
-        .iter()
-        .find(|display| saved.display.is_some() && display.uuid().ok() == saved.display)
-        .or_else(|| displays.first());
-    let mut bounds = Bounds::centered(
-        display.map(|display| display.id()),
-        size(px(saved.width as f32), px(saved.height as f32)),
-        cx,
+    let restored = crate::window_placement::restore(
+        saved,
+        crate::theme::scaled_size(
+            CALL_WINDOW_MIN_SIZE,
+            state.read(cx).settings().scale_percent,
+        ),
+        &cx.displays(),
+        cx.primary_display().map(|display| display.id()),
     );
-    if let Some(display) = display {
-        let screen = display.bounds();
-        bounds.size.width = bounds.size.width.min(screen.size.width);
-        bounds.size.height = bounds.size.height.min(screen.size.height);
-        if let Some(origin) =
-            origin.filter(|_| display.uuid().ok() == saved.display && saved.display.is_some())
-        {
-            bounds.origin = origin;
-        }
-        bounds.origin.x = bounds.origin.x.clamp(
-            screen.origin.x,
-            screen.origin.x + screen.size.width - bounds.size.width,
-        );
-        bounds.origin.y = bounds.origin.y.clamp(
-            screen.origin.y,
-            screen.origin.y + screen.size.height - bounds.size.height,
-        );
-    }
+    let bounds = restored.bounds;
     let held = state.clone();
     let title = state.read(cx).call_view().call_title();
     let result = cx.open_window(
         WindowOptions {
-            display_id: display.map(|display| display.id()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(crate::theme::scaled_size(
-                CALL_WINDOW_MIN_SIZE,
-                state.read(cx).settings().scale_percent,
-            )),
+            display_id: restored.display,
+            window_bounds: Some(if saved.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            }),
+            window_min_size: Some(restored.minimum),
             kind: if saved.keep_on_top && !ASKS_WINDOW_MANAGER {
                 WindowKind::Floating
             } else {
@@ -117,24 +94,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
             }
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new_window(held, true, window, cx);
-                shell._subscriptions.push(cx.observe_window_bounds(
-                    window,
-                    move |this, window, cx| {
-                        if let WindowBounds::Windowed(bounds) = window.window_bounds() {
-                            let settings = CallWindowSettings {
-                                display: window.display(cx).and_then(|display| display.uuid().ok()),
-                                x: Some(f32::from(bounds.origin.x) as i32),
-                                y: Some(f32::from(bounds.origin.y) as i32),
-                                width: f32::from(bounds.size.width) as u32,
-                                height: f32::from(bounds.size.height) as u32,
-                                // The choice can change while this window is open.
-                                keep_on_top: this.state.read(cx).call_window_settings().keep_on_top,
-                            };
-                            this.state
-                                .update(cx, |state, cx| state.save_call_window(settings, cx));
-                        }
-                    },
-                ));
+                shell.observe_placement(true, window, cx);
                 shell
             });
             cx.new(|cx| Root::new(shell, window, cx))
