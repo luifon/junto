@@ -1064,19 +1064,28 @@ fn code_block(
                 .flex()
                 .items_center()
                 .justify_between()
+                .gap(u(6.0))
                 .mb(u(4.0))
                 .text_size(u(12.0))
                 .ink(colors.bone_3)
-                .child(SharedString::from(language.unwrap_or_default().to_owned()))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(language.unwrap_or_default().to_owned())),
+                )
+                .child(
+                    div()
+                        .flex_none()
                         .debug_selector(move || match message_id {
                             Some(id) => format!("copy-code:{id}:{block_index}"),
                             None => format!("copy-code:{block_index}"),
                         })
                         .child(
                             Button::new(("copy-code", block_index))
-                                .label(text::COPY_TEXT)
+                                .label(text::COPY)
+                                .tooltip(text::COPY_TEXT)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.copy_text(copy.clone(), cx)
                                 })),
@@ -1367,7 +1376,7 @@ impl Shell {
         pane: Pane,
         shown: &PaneShown<'_>,
         mut notices: Vec<AnyElement>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1512,9 +1521,12 @@ impl Shell {
                     None => self.render_composer(
                         pane,
                         shown.draft,
-                        compact,
-                        shown.permanent,
-                        shown.writing,
+                        super::composer::Mode {
+                            compact,
+                            permanent: shown.permanent,
+                            writing: shown.writing,
+                        },
+                        window,
                         cx,
                     ),
                 },

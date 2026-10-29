@@ -625,6 +625,18 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "Not sent yet", window, cx);
     });
+    call.click("composer-view-1");
+    assert!(call.shows("composer-preview"));
+    assert!(
+        call.in_shell(|shell, _, _| shell.painted_readonly_text())
+            .iter()
+            .any(|text| text.contains("Not sent yet"))
+    );
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet"
+    );
+    call.click("composer-view-0");
     call.click("return-call");
     window.until("the call is back in the main window", |window| {
         !window

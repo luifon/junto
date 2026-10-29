@@ -180,6 +180,8 @@ impl Pane {
             (Self::Thread, "go-to-end") => "thread-go-to-end",
             (Self::Thread, "composer") => "thread-composer",
             (Self::Thread, "composer-input") => "thread-composer-input",
+            (Self::Thread, "composer-view") => "thread-composer-view",
+            (Self::Thread, "composer-preview") => "thread-composer-preview",
             (Self::Thread, "format-heading") => "thread-format-heading",
             (Self::Thread, "format-small") => "thread-format-small",
             (Self::Thread, "format-spoiler") => "thread-format-spoiler",

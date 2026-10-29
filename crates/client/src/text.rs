@@ -3815,3 +3815,9 @@ pub const SMALL_TEXT: &str = "Small text";
 pub const FORWARD_FILE_FAILED: &str = "The files could not be copied to this destination.";
 
 pub const FORWARD_ORIGIN_UNAVAILABLE: &str = "You cannot open the original message.";
+
+pub const COMPOSER_VIEW: &str = "Composer view";
+pub const WRITE: &str = "Write";
+pub const PREVIEW: &str = "Preview";
+pub const PREVIEW_EMPTY: &str = "Nothing to preview yet.";
+pub const PREVIEW_FIX: &str = "Fix the message to preview it.";

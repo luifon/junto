@@ -36,6 +36,7 @@ mod channel_calls;
 mod channel_history;
 mod channel_references;
 mod channel_use;
+mod composer_preview;
 mod composing;
 mod contacts;
 mod context_menus;

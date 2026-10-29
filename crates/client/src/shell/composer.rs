@@ -6,8 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PathPromptOptions, Role, ScrollHandle, SharedString,
+    AnyElement, Context, Entity, ExternalPaths, FocusHandle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_base::input::{
@@ -30,7 +30,7 @@ use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, ContextMenuExt, Dialog, Field, FieldKind, ScrollArea, StyleExt,
+    Button, ButtonKind, ContextMenuExt, Dialog, Field, FieldKind, ScrollArea, Segmented, StyleExt,
     float_shadow, focus_ring_inside, icon, ledge, tooltip,
 };
 
@@ -112,6 +112,9 @@ pub(crate) struct Composer {
     drafts: HashMap<Desk, Draft>,
     /// Why the message was not sent as it is.
     pub(crate) problem: Option<String>,
+    preview: bool,
+    preview_focus: FocusHandle,
+    preview_scroll: ScrollHandle,
     /// Files whose sizes are read on a background thread, in the order in which they were
     /// attached. They go into the draft in that order, and a new message of their place
     /// is not sent before they are in it.
@@ -124,6 +127,12 @@ pub(crate) struct Composer {
     /// The measurement of the emoji when the picker opened: the grid of an open picker
     /// does not change when a measurement arrives (ADR 0758).
     emoji_drawings: Drawings,
+}
+
+pub(crate) struct Mode {
+    pub compact: bool,
+    pub permanent: bool,
+    pub writing: Writing,
 }
 
 fn token_id(target: MentionTarget) -> String {
@@ -326,6 +335,9 @@ impl Composer {
             editing: None,
             drafts: HashMap::new(),
             problem: None,
+            preview: false,
+            preview_focus: cx.focus_handle(),
+            preview_scroll: ScrollHandle::new(),
             attaching: VecDeque::new(),
             next_attaching: 0,
             mention: None,
@@ -591,6 +603,8 @@ impl Shell {
             input.set_placeholder(placeholder, window, cx);
         });
         pen.place = shown;
+        pen.preview = false;
+        pen.preview_scroll = ScrollHandle::new();
         pen.reply_to = reply_to;
         pen.editing = editing;
         if !first {
@@ -1018,6 +1032,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).reply_to = Some(message_id);
         self.pen_mut(pane).editing = None;
         self.pen_mut(pane)
@@ -1106,6 +1121,7 @@ impl Shell {
                 content = with;
             }
         }
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = Some(Editing {
             message_id,
             original: Arc::new((document.clone(), shown)),
@@ -1133,6 +1149,35 @@ impl Shell {
         cx.notify();
     }
 
+    fn composer_document(&self, pane: Pane, cx: &Context<Self>) -> Document {
+        let content = self.pen(pane).input.read(cx).content();
+        match &self.pen(pane).editing {
+            Some(editing) => {
+                let (original, shown) = editing.original.as_ref();
+                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
+            }
+            None => compose::parse(content.text(), &mentions_of(&content)),
+        }
+    }
+
+    pub fn show_composer_preview(
+        &mut self,
+        pane: Pane,
+        preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen = self.pen_mut(pane);
+        pen.preview = preview;
+        pen.mention = None;
+        if preview {
+            pen.preview_focus.focus(window, cx);
+        } else {
+            pen.input.update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     /// Sends what the composer holds: a new message, or the new text of the message that
     /// is edited. A text that the server would refuse is not sent, and the reason is told.
     pub fn submit_message(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
@@ -1149,16 +1194,12 @@ impl Shell {
         let Some((server_id, place)) = self.composer_place(pane) else {
             return;
         };
-        let content = self.pen_mut(pane).input.read(cx).content();
-        let editing = self.pen_mut(pane).editing.clone();
-        let document = match &editing {
-            Some(editing) => {
-                let (original, shown) = editing.original.as_ref();
-                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
-            }
-            None => compose::parse(content.text(), &mentions_of(&content)),
-        };
-        let editing = editing.map(|editing| editing.message_id);
+        let document = self.composer_document(pane, cx);
+        let editing = self
+            .pen(pane)
+            .editing
+            .as_ref()
+            .map(|editing| editing.message_id);
         if editing.is_none() && self.attaching_here(pane) {
             self.pen_mut(pane).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
             cx.notify();
@@ -1211,12 +1252,17 @@ impl Shell {
             cx.notify();
             return;
         }
+        let was_preview = self.pen(pane).preview;
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = None;
         self.pen_mut(pane).reply_to = None;
         self.pen_mut(pane).problem = None;
-        self.pen_mut(pane)
-            .input
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.pen_mut(pane).input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            if was_preview {
+                input.focus(window, cx);
+            }
+        });
         // The person sent a message: the list shows its end.
         if editing.is_none() {
             self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
@@ -1408,11 +1454,16 @@ impl Shell {
         &mut self,
         pane: Pane,
         draft: &[DraftFile],
-        compact: bool,
-        permanent: bool,
-        writing: Writing,
+        mode: Mode,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Mode {
+            compact,
+            permanent,
+            writing,
+        } = mode;
+        let preview = self.pen(pane).preview;
         let theme = theme(cx);
         let faces = self.shown_faces();
         let colors = theme.colors;
@@ -1479,136 +1530,170 @@ impl Shell {
             .px(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
-            .child(
-                tool(
-                    "format-bold",
-                    text::BOLD,
-                    letter("B", FontWeight::EXTRA_BOLD),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "**", "**", window, cx)
-                })),
-            )
-            .child(
-                tool(
-                    "format-italic",
-                    text::ITALIC,
-                    div()
-                        .italic()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("I")
-                        .into_any_element(),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "*", "*", window, cx)
-                })),
-            )
-            .child(
-                tool(
-                    "format-strike",
-                    text::STRIKETHROUGH,
-                    div().line_through().child("S").into_any_element(),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "~~", "~~", window, cx)
-                })),
-            )
-            .child(divider())
-            .child(
-                tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(cx.listener(
-                    move |this, _, window, cx| this.wrap_selection(pane, "`", "`", window, cx),
-                )),
-            )
-            .child(
-                tool(
-                    "format-code-block",
-                    text::CODE_BLOCK,
-                    shown(Icon::CodeBlock),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "```\n", "\n```", window, cx);
-                })),
-            )
-            .child(divider())
-            .child(
-                tool("format-link", text::LINK, shown(Icon::Link)).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.wrap_selection(pane, "[", "](https://)", window, cx);
-                    },
-                )),
-            )
-            .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
-                cx.listener(move |this, _, window, cx| this.prefix_lines(pane, "- ", window, cx)),
-            ))
-            .child(
-                tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(cx.listener(
-                    move |this, _, window, cx| this.prefix_lines(pane, "> ", window, cx),
-                )),
-            )
-            .child(
-                tool(
-                    "format-heading",
-                    text::HEADING,
-                    letter("H", FontWeight::BOLD),
-                )
-                .on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.prefix_lines(pane, "# ", window, cx)
-                    }),
-                ),
-            )
-            .child(
-                tool(
-                    "format-small",
-                    text::SMALL_TEXT,
-                    letter("t", FontWeight::NORMAL),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.prefix_lines(pane, "-# ", window, cx)
-                })),
-            )
-            .child(
-                tool(
-                    "format-spoiler",
-                    text::SPOILER,
-                    letter("||", FontWeight::BOLD),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "||", "||", window, cx)
-                })),
-            )
-            .child(divider())
-            .child(if writing.attach {
-                tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
-                    .on_click(cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)))
-                    .into_any_element()
-            } else {
-                // Not available: the control states why (ADR 0790).
-                let refused = text::not_permitted(WorkspacePermission::AttachFiles);
-                div()
-                    .id("attach-file-refused")
-                    .role(Role::Button)
-                    .aria_label(text::ATTACH_FILE)
-                    .aria_description(refused)
-                    .debug_selector(|| "attach-file-refused".to_owned())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .w(u(26.0))
-                    .h(u(22.0))
-                    .rounded(u(radius_small))
-                    .cursor_not_allowed()
-                    .tooltip(tooltip(refused))
-                    .child(icon(Icon::Clip, 15.0, colors.ink_3))
-                    .into_any_element()
+            .when(!preview, |tools| {
+                tools
+                    .child(
+                        tool(
+                            "format-bold",
+                            text::BOLD,
+                            letter("B", FontWeight::EXTRA_BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "**", "**", window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-italic",
+                            text::ITALIC,
+                            div()
+                                .italic()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("I")
+                                .into_any_element(),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "*", "*", window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-strike",
+                            text::STRIKETHROUGH,
+                            div().line_through().child("S").into_any_element(),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "~~", "~~", window, cx)
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(
+                        tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.wrap_selection(pane, "`", "`", window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        tool(
+                            "format-code-block",
+                            text::CODE_BLOCK,
+                            shown(Icon::CodeBlock),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "```\n", "\n```", window, cx);
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(tool("format-link", text::LINK, shown(Icon::Link)).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.wrap_selection(pane, "[", "](https://)", window, cx);
+                        }),
+                    ))
+                    .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.prefix_lines(pane, "- ", window, cx)
+                        }),
+                    ))
+                    .child(
+                        tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.prefix_lines(pane, "> ", window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        tool(
+                            "format-heading",
+                            text::HEADING,
+                            letter("H", FontWeight::BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.prefix_lines(pane, "# ", window, cx),
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-small",
+                            text::SMALL_TEXT,
+                            letter("t", FontWeight::NORMAL),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.prefix_lines(pane, "-# ", window, cx),
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-spoiler",
+                            text::SPOILER,
+                            letter("||", FontWeight::BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "||", "||", window, cx)
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(if writing.attach {
+                        tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)),
+                            )
+                            .into_any_element()
+                    } else {
+                        // Not available: the control states why (ADR 0790).
+                        let refused = text::not_permitted(WorkspacePermission::AttachFiles);
+                        div()
+                            .id("attach-file-refused")
+                            .role(Role::Button)
+                            .aria_label(text::ATTACH_FILE)
+                            .aria_description(refused)
+                            .debug_selector(|| "attach-file-refused".to_owned())
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .w(u(26.0))
+                            .h(u(22.0))
+                            .rounded(u(radius_small))
+                            .cursor_not_allowed()
+                            .tooltip(tooltip(refused))
+                            .child(icon(Icon::Clip, 15.0, colors.ink_3))
+                            .into_any_element()
+                    })
+                    .child(
+                        tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
+                            }),
+                        ),
+                    )
             })
             .child(
-                tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
-                    },
-                )),
+                div().flex_none().ml_auto().w(u(150.0)).child(
+                    Segmented::new(
+                        pane.id("composer-view"),
+                        text::COMPOSER_VIEW,
+                        [text::WRITE.into(), text::PREVIEW.into()],
+                    )
+                    .selector(pane.id("composer-view"))
+                    .selected(Some(usize::from(preview)))
+                    .on_select({
+                        let select = cx.listener(move |this, selected: &usize, window, cx| {
+                            this.show_composer_preview(pane, *selected == 1, window, cx)
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                ),
             );
 
         // The state above the box: a reply or an edit, with the control that ends it.
@@ -1784,10 +1869,23 @@ impl Shell {
                 }))
         });
 
+        let preview_document = preview.then(|| self.composer_document(pane, cx));
+        let preview_problem = preview_document.as_ref().and_then(|document| {
+            let has_files = !draft.is_empty()
+                || self.pen(pane).editing.as_ref().is_some_and(|edit| {
+                    self.held_message(pane, edit.message_id)
+                        .is_some_and(|message| !message.attachments.is_empty())
+                });
+            compose::check(document, has_files)
+                .err()
+                .filter(|problem| *problem != compose::Problem::Empty)
+                .map(text::compose_problem)
+        });
         let problem = self
             .pen(pane)
             .problem
             .clone()
+            .or(preview_problem.clone())
             .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
                 let sentence = SharedString::from(sentence);
@@ -1837,74 +1935,75 @@ impl Shell {
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
-        let picker = (self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
-            div()
-                .id("mention-picker")
-                .role(Role::ListBox)
-                .aria_label(text::MENTION_SOMEONE)
-                .debug_selector(|| "mention-picker".to_owned())
-                .absolute()
-                .bottom_full()
-                .left_0()
-                .mb(u(4.0))
-                .w(u(280.0))
-                .py(u(4.0))
-                .rounded(u(theme.metrics.radius_menu))
-                .border_1()
-                .border_color(Hsla::from(colors.rule))
-                .bg(Hsla::from(colors.travertine_hi))
-                .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
-                .occlude()
-                .children(found.iter().enumerate().map(|(index, candidate)| {
-                    let taken = candidate.clone();
-                    let person = match candidate.target {
-                        MentionTarget::Account(account_id) => Some(account_id),
-                        _ => None,
-                    };
-                    div()
-                        .id(("candidate", index))
-                        .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(candidate.name.clone()))
-                        .aria_selected(index == chosen)
-                        .debug_selector(move || format!("candidate:{index}"))
-                        .flex()
-                        .items_center()
-                        .gap(u(8.0))
-                        .h(u(30.0))
-                        .px(u(10.0))
-                        .cursor_pointer()
-                        .when(index == chosen, |row| {
-                            row.bg(Hsla::from(colors.limestone_lo))
-                        })
-                        .hover(move |style| style.bg(Hsla::from(colors.plaster)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.take_candidate(pane, &taken, window, cx);
-                        }))
-                        .child(match person {
-                            Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
-                                .radius(2.0)
-                                .into_any_element(),
-                            None => icon(Icon::People, 15.0, colors.ink_2).into_any_element(),
-                        })
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(u(14.0))
-                                .font_weight(FontWeight::BOLD)
-                                .ink(colors.ink)
-                                .child(SharedString::from(candidate.name.clone())),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(u(12.5))
-                                .ink(colors.ink_3)
-                                .child(candidate.detail),
-                        )
-                }))
-        });
+        let picker =
+            (!preview && self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
+                div()
+                    .id("mention-picker")
+                    .role(Role::ListBox)
+                    .aria_label(text::MENTION_SOMEONE)
+                    .debug_selector(|| "mention-picker".to_owned())
+                    .absolute()
+                    .bottom_full()
+                    .left_0()
+                    .mb(u(4.0))
+                    .w(u(280.0))
+                    .py(u(4.0))
+                    .rounded(u(theme.metrics.radius_menu))
+                    .border_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .bg(Hsla::from(colors.travertine_hi))
+                    .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
+                    .occlude()
+                    .children(found.iter().enumerate().map(|(index, candidate)| {
+                        let taken = candidate.clone();
+                        let person = match candidate.target {
+                            MentionTarget::Account(account_id) => Some(account_id),
+                            _ => None,
+                        };
+                        div()
+                            .id(("candidate", index))
+                            .role(Role::ListBoxOption)
+                            .aria_label(SharedString::from(candidate.name.clone()))
+                            .aria_selected(index == chosen)
+                            .debug_selector(move || format!("candidate:{index}"))
+                            .flex()
+                            .items_center()
+                            .gap(u(8.0))
+                            .h(u(30.0))
+                            .px(u(10.0))
+                            .cursor_pointer()
+                            .when(index == chosen, |row| {
+                                row.bg(Hsla::from(colors.limestone_lo))
+                            })
+                            .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.take_candidate(pane, &taken, window, cx);
+                            }))
+                            .child(match person {
+                                Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
+                                    .radius(2.0)
+                                    .into_any_element(),
+                                None => icon(Icon::People, 15.0, colors.ink_2).into_any_element(),
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(u(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .ink(colors.ink)
+                                    .child(SharedString::from(candidate.name.clone())),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(u(12.5))
+                                    .ink(colors.ink_3)
+                                    .child(candidate.detail),
+                            )
+                    }))
+            });
 
         // A side panel has no room for the statement in its toolbar.
         let permanence = (permanent && compact).then(|| {
@@ -1929,6 +2028,61 @@ impl Shell {
                 .font_weight(FontWeight::BOLD)
                 .child(context.token().label().clone())
         });
+        let preview_body = preview_document.map(|document| {
+            let names = self
+                .composer_feed(pane)
+                .map(|feed| feed.names.clone())
+                .unwrap_or_default();
+            let blocks = if preview_problem.is_some() {
+                vec![
+                    div()
+                        .ink(colors.ink_3)
+                        .child(text::PREVIEW_FIX)
+                        .into_any_element(),
+                ]
+            } else if document.blocks.is_empty() {
+                vec![
+                    div()
+                        .ink(colors.ink_3)
+                        .child(text::PREVIEW_EMPTY)
+                        .into_any_element(),
+                ]
+            } else {
+                self.document(&document, None, &names, &theme, window, cx)
+            };
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .id(pane.id("composer-preview"))
+                        .debug_selector(move || pane.id("composer-preview").to_owned())
+                        .role(Role::Group)
+                        .aria_label(text::PREVIEW)
+                        .text_size(u(14.5))
+                        .line_height(u(21.0))
+                        .ink(colors.ink)
+                        .track_focus(&self.pen(pane).preview_focus)
+                        .min_w_0()
+                        .min_h(u(32.0))
+                        .max_h(
+                            u(210.0)
+                                .to_pixels(window.rem_size())
+                                .min(window.viewport_size().height * 0.3),
+                        )
+                        .overflow_y_scroll()
+                        .track_scroll(&self.pen(pane).preview_scroll)
+                        .pr(u(12.0))
+                        .children(blocks),
+                )
+                .child(crate::ui::scroll_bar(
+                    &self.pen(pane).preview_scroll,
+                    false,
+                    cx,
+                ))
+                .into_any_element()
+        });
         let frame = div()
             .relative()
             .rounded(u(theme.metrics.radius))
@@ -1946,8 +2100,9 @@ impl Shell {
                     .pl(u(11.0))
                     .pr(u(6.0))
                     .py(u(6.0))
-                    .child(
-                        div()
+                    .child(match preview_body {
+                        Some(body) => body,
+                        None => div()
                             .id(pane.id("composer-input"))
                             .role(Role::TextInput)
                             .aria_label(match pane {
@@ -1965,8 +2120,9 @@ impl Shell {
                                 this.open_composer_menu(pane, window, cx);
                             }))
                             .child(crate::selectable::SelectableText::unobserved(input))
-                            .children(self.render_composer_menu(pane, cx)),
-                    )
+                            .children(self.render_composer_menu(pane, cx))
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .id(pane.id("send-message"))
