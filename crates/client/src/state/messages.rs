@@ -647,6 +647,9 @@ impl AppState {
         add: bool,
         cx: &mut Context<Self>,
     ) {
+        if add {
+            self.remember_emoji(&emoji, cx);
+        }
         self.ask_messages(server_id, cx, move |api| async move {
             if add {
                 api.add_reaction(message_id, &emoji).await

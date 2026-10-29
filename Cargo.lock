@@ -3871,6 +3871,7 @@ dependencies = [
  "block2 0.6.2",
  "bytes",
  "ed25519-dalek",
+ "emojis",
  "futures-executor",
  "futures-util",
  "getrandom 0.4.3",

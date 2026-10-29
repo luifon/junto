@@ -6,6 +6,8 @@
 //! the data directory with a key of the fonts; the next start that finds the same key
 //! measures only the key. Until the results arrive every emoji counts as drawn.
 
+pub(crate) mod completion;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

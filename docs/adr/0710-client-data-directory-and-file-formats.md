@@ -94,3 +94,5 @@ Unreadable files:
 - A corrupted book needs a decision of the user. Without the book the addresses are lost and the keys remain.
 - A stop of the process between the write of the book and the deletion of a key leaves a key file without an entry. The key file names the address that it was created for (ADR 0711): the client uses it again when the same server is added at that address, and at no other address.
 - A client that holds an older view of the book gets "not saved" for a server that another client removed and added again, until it starts again.
+
+Recent emoji choices use `emoji-history.json`, format 1, through the private versioned file store. At most 24 canonical emoji are retained; unknown values are ignored, duplicates removed, and reads are bounded at 8 KiB. Writes take the data-directory lock on the application’s ordered background-write queue and are drained at shutdown (ADR 0740).

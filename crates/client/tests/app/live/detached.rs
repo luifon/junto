@@ -625,6 +625,17 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "Not sent yet", window, cx);
     });
+    call.click("composer-input");
+    call.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "Not sent yet :tada", window, cx)
+    });
+    assert!(call.shows("emoji-completion"));
+    call.press("enter");
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet 🎉 "
+    );
+    call.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "Not sent yet", window, cx));
     call.click("composer-view-1");
     assert!(call.shows("composer-preview"));
     assert!(

@@ -3026,6 +3026,54 @@ impl Shell {
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
         let channel_id = crate::state::feed::channel_of(feed.place);
+        let owner = self.state.read(cx).owner(server_id);
+        let drawings = Drawings::of(cx);
+        let recent: Vec<_> = self
+            .state
+            .read(cx)
+            .recent_emoji()
+            .iter()
+            .filter_map(|value| emojis::get(value))
+            .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
+            .take(3)
+            .collect();
+        let quick: Vec<_> = if row.can_react && !row.react_refused {
+            recent
+                .into_iter()
+                .enumerate()
+                .map(|(index, emoji)| {
+                    let sign = emoji.as_str();
+                    div()
+                        .flex_none()
+                        .debug_selector(move || format!("quick-emoji:{message_id}:{sign}"))
+                        .child(
+                            Button::new(("quick-emoji", index))
+                                .kind(ButtonKind::Ghost)
+                                .label(sign)
+                                .tooltip(emoji.name())
+                                .h(u(22.0))
+                                .w(u(26.0))
+                                .px(u(1.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.state.read(cx).owner(server_id) == owner {
+                                        this.state.update(cx, |state, cx| {
+                                            state.react(
+                                                server_id,
+                                                message_id,
+                                                sign.to_owned(),
+                                                true,
+                                                cx,
+                                            )
+                                        });
+                                    }
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let action = |id: &'static str, shown: Icon, label: &'static str| {
             div()
                 .id(id)
@@ -3066,6 +3114,9 @@ impl Shell {
             .top(u(-10.0))
             .right(u(18.0))
             .flex()
+            .flex_wrap()
+            .max_w_full()
+            .justify_end()
             .items_center()
             .gap(u(1.0))
             .px(u(3.0))
@@ -3109,6 +3160,7 @@ impl Shell {
                     )),
                 )
             })
+            .children(quick)
             .when(row.can_reply, |bar| {
                 bar.child(
                     action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
@@ -3963,6 +4015,47 @@ impl Shell {
                     .into_any_element(),
             );
         } else if row.can_react {
+            let drawings = Drawings::of(cx);
+            let recent: Vec<_> = self
+                .state
+                .read(cx)
+                .recent_emoji()
+                .iter()
+                .filter_map(|value| emojis::get(value))
+                .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
+                .take(3)
+                .collect();
+            let owner = self.state.read(cx).owner(server_id);
+            for (index, emoji) in recent.into_iter().enumerate() {
+                items.push(
+                    MenuItem::new(
+                        ("message-quick-emoji", index),
+                        format!("{} {}", emoji.as_str(), emoji.name()),
+                    )
+                    .selector(
+                        [
+                            "message-quick-emoji-0",
+                            "message-quick-emoji-1",
+                            "message-quick-emoji-2",
+                        ][index],
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        if this.state.read(cx).owner(server_id) == owner {
+                            this.state.update(cx, |state, cx| {
+                                state.react(
+                                    server_id,
+                                    message_id,
+                                    emoji.as_str().to_owned(),
+                                    true,
+                                    cx,
+                                )
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+                );
+            }
             items.push(
                 MenuItem::new("message-react", text::REACT)
                     .icon(Icon::SmilePlus)

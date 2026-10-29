@@ -258,6 +258,11 @@ impl Client {
         SettingsStore::new(self.inner.core.data_dir.clone())
     }
 
+    /// Recent emoji choices of this installation (ADR 0740).
+    pub fn emoji_history(&self) -> crate::emoji_history::EmojiHistoryStore {
+        crate::emoji_history::EmojiHistoryStore::new(self.inner.core.data_dir.clone())
+    }
+
     /// The sound settings of this installation (ADR 0710).
     pub fn voice(&self) -> VoiceStore {
         VoiceStore::new(self.inner.core.data_dir.clone())

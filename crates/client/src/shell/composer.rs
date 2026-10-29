@@ -59,6 +59,13 @@ pub(crate) struct MentionPicker {
     chosen: usize,
 }
 
+struct EmojiCompletion {
+    query: crate::emoji::completion::Query,
+    chosen: usize,
+    drawings: Drawings,
+    closed_ready: bool,
+}
+
 /// A key of the text area that the composer can take before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -121,6 +128,7 @@ pub(crate) struct Composer {
     attaching: VecDeque<Attaching>,
     next_attaching: u64,
     pub(crate) mention: Option<MentionPicker>,
+    emoji_completion: Option<EmojiCompletion>,
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
     emoji_scroll: ScrollHandle,
@@ -341,6 +349,7 @@ impl Composer {
             attaching: VecDeque::new(),
             next_attaching: 0,
             mention: None,
+            emoji_completion: None,
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
             emoji_scroll: ScrollHandle::new(),
@@ -610,18 +619,44 @@ impl Shell {
         if !first {
             pen.problem = None;
             pen.mention = None;
+            pen.emoji_completion = None;
         }
     }
 
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
     pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let drawings = Drawings::current(cx);
         let pen = self.pen_mut(pane);
         pen.problem = None;
         let (value, cursor) = {
             let input = pen.input.read(cx);
             (input.value(), input.cursor())
         };
+        let previous = pen.emoji_completion.take();
+        let emoji_query = crate::emoji::completion::query(&value, cursor).filter(|query| {
+            !pen.input.read(cx).content().tokens().iter().any(|span| {
+                let range = span.range();
+                query.start < range.end && cursor > range.start
+            })
+        });
+        pen.emoji_completion = emoji_query.map(|query| {
+            let matching = previous
+                .as_ref()
+                .filter(|before| before.query.start == query.start);
+            let closed_ready = query.closed
+                && matching
+                    .is_some_and(|before| !before.query.closed && before.query.text == query.text);
+            EmojiCompletion {
+                chosen: matching
+                    .filter(|before| before.query.text == query.text)
+                    .map_or(0, |before| before.chosen),
+                drawings: matching
+                    .map_or_else(|| drawings.clone(), |before| before.drawings.clone()),
+                query,
+                closed_ready,
+            }
+        });
         let query = mention_query(&value, cursor);
         let open = pen.mention.take();
         pen.mention = query.map(|(start, query)| MentionPicker {
@@ -634,6 +669,68 @@ impl Shell {
             query,
         });
         cx.notify();
+    }
+
+    fn emoji_candidates(&self, pane: Pane, cx: &gpui::App) -> Vec<&'static emojis::Emoji> {
+        self.pen(pane)
+            .emoji_completion
+            .as_ref()
+            .map_or_else(Vec::new, |open| {
+                crate::emoji::completion::candidates(
+                    &open.query.text,
+                    self.state.read(cx).recent_emoji(),
+                    &open.drawings,
+                )
+            })
+    }
+
+    fn take_emoji_completion(
+        &mut self,
+        pane: Pane,
+        emoji: &'static emojis::Emoji,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.pen_mut(pane).emoji_completion.take() else {
+            return;
+        };
+        let input = self.pen(pane).input.read(cx);
+        if crate::emoji::completion::query(&input.value(), input.cursor()).as_ref()
+            != Some(&open.query)
+        {
+            self.composer_changed(pane, cx);
+            return;
+        }
+        self.pen_mut(pane).input.update(cx, |input, cx| {
+            let end = input.cursor();
+            input.set_selected_range(open.query.start..end, cx);
+            input.replace(
+                format!(
+                    "{}{}",
+                    emoji.as_str(),
+                    if open.query.closed { "" } else { " " }
+                ),
+                window,
+                cx,
+            );
+            input.focus(window, cx);
+        });
+        self.composer_changed(pane, cx);
+        self.state
+            .update(cx, |state, cx| state.remember_emoji(emoji.as_str(), cx));
+        cx.notify();
+    }
+
+    fn complete_closed_emoji(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let emoji = self
+            .pen(pane)
+            .emoji_completion
+            .as_ref()
+            .filter(|open| open.closed_ready)
+            .and_then(|open| crate::emoji::completion::exact(&open.query.text));
+        if let Some(emoji) = emoji {
+            self.take_emoji_completion(pane, emoji, window, cx);
+        }
     }
 
     /// The entries of the mention picker of a pane. A message of a channel mentions the
@@ -739,6 +836,27 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.pen(pane).emoji_completion.is_some() {
+            let found = self.emoji_candidates(pane, cx);
+            if let Some(open) = &mut self.pen_mut(pane).emoji_completion {
+                match step {
+                    Step::Down if !found.is_empty() => {
+                        open.chosen = (open.chosen + 1) % found.len()
+                    }
+                    Step::Up if !found.is_empty() => {
+                        open.chosen = (open.chosen + found.len() - 1) % found.len()
+                    }
+                    Step::Tab if !found.is_empty() => {
+                        let emoji = found[open.chosen.min(found.len() - 1)];
+                        self.take_emoji_completion(pane, emoji, window, cx);
+                    }
+                    Step::Escape => self.pen_mut(pane).emoji_completion = None,
+                    _ => return false,
+                }
+                cx.notify();
+                return true;
+            }
+        }
         if self.pen_mut(pane).mention.is_some() {
             let found = self.mention_candidates(pane);
             if !found.is_empty() {
@@ -1170,6 +1288,7 @@ impl Shell {
         let pen = self.pen_mut(pane);
         pen.preview = preview;
         pen.mention = None;
+        pen.emoji_completion = None;
         if preview {
             pen.preview_focus.focus(window, cx);
         } else {
@@ -1181,6 +1300,13 @@ impl Shell {
     /// Sends what the composer holds: a new message, or the new text of the message that
     /// is edited. A text that the server would refuse is not sent, and the reason is told.
     pub fn submit_message(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(open) = &self.pen(pane).emoji_completion {
+            let found = self.emoji_candidates(pane, cx);
+            if let Some(emoji) = found.get(open.chosen.min(found.len().saturating_sub(1))) {
+                self.take_emoji_completion(pane, emoji, window, cx);
+                return;
+            }
+        }
         if self.pen_mut(pane).mention.is_some() {
             let found = self.mention_candidates(pane);
             if let Some(open) = &self.pen_mut(pane).mention
@@ -1239,6 +1365,7 @@ impl Shell {
             cx.notify();
             return;
         }
+        let used_emoji = crate::emoji::completion::used(&document);
         let reply_to = self.pen_mut(pane).reply_to;
         let sent = self.state.update(cx, |state, cx| match editing {
             Some(message_id) => {
@@ -1252,6 +1379,9 @@ impl Shell {
             cx.notify();
             return;
         }
+        self.state.update(cx, |state, cx| {
+            state.remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
+        });
         let was_preview = self.pen(pane).preview;
         self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = None;
@@ -1281,6 +1411,8 @@ impl Shell {
             .emoji_find
             .update(cx, |find, cx| find.set_value("", window, cx));
         self.composer.emoji_drawings = Drawings::of(cx);
+        self.composer.emoji_group = 0;
+        self.composer.emoji_scroll = ScrollHandle::new();
         self.open_layer(Layer::Emoji(target), window, cx);
         self.focus_field(&self.composer.emoji_find.clone(), window, cx);
     }
@@ -1303,6 +1435,8 @@ impl Shell {
             }
             (EmojiTarget::React(_), None) => {}
             (EmojiTarget::Compose(pane), _) => {
+                self.state
+                    .update(cx, |state, cx| state.remember_emoji(emoji, cx));
                 self.pen_mut(pane).input.update(cx, |input, cx| {
                     input.insert(emoji, window, cx);
                     input.focus(window, cx);
@@ -1334,6 +1468,21 @@ impl Shell {
             Some(group) => emoji_shown(group, &find, &drawings),
             None => Vec::new(),
         };
+        let recent: Vec<_> = if !searching && self.composer.emoji_group == 0 {
+            self.state
+                .read(cx)
+                .recent_emoji()
+                .iter()
+                .filter_map(|value| emojis::get(value))
+                .filter(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let shown: Vec<_> = shown
+            .into_iter()
+            .filter(|emoji| !recent.iter().any(|held| held.as_str() == emoji.as_str()))
+            .collect();
         let ring_width = theme.metrics.focus_ring;
         let radius = theme.metrics.radius;
         let groups: Vec<_> = offered
@@ -1387,6 +1536,40 @@ impl Shell {
                     .child(sign)
             })
             .collect();
+        let recent_cells: Vec<_> = recent
+            .iter()
+            .enumerate()
+            .map(|(index, emoji)| {
+                let emoji = *emoji;
+                let sign = emoji.as_str();
+                div()
+                    .id(("recent-emoji", index))
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(emoji.name()))
+                    .debug_selector(move || format!("recent-emoji:{sign}"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(u(34.0))
+                    .rounded(u(radius))
+                    .text_size(u(21.0))
+                    .line_height(u(26.0))
+                    .cursor_pointer()
+                    .focusable()
+                    .tab_stop(true)
+                    .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                    .focus_visible(move |style| {
+                        style.shadow(focus_ring_inside(colors.terracotta_deep, ring_width))
+                    })
+                    .tooltip(tooltip(emoji.name()))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.take_emoji(sign, window, cx)),
+                    )
+                    .child(sign)
+                    .into_any_element()
+            })
+            .collect();
         Dialog::new(text::EMOJI, self.layer_focus())
             .selector("emoji-picker")
             .on_close(Self::handler(cx, |this, window, cx| {
@@ -1412,7 +1595,9 @@ impl Shell {
                     .ink(colors.ink_2)
                     .debug_selector(|| "emoji-group-name".to_owned())
                     .child(crate::ui::paint_text(
-                        if searching {
+                        if !recent.is_empty() {
+                            text::RECENT_EMOJI
+                        } else if searching {
                             text::EMOJI_FOUND
                         } else {
                             open.and_then(|index| emojis::Group::iter().nth(index))
@@ -1422,28 +1607,52 @@ impl Shell {
                         None,
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .mt(u(4.0))
-                    .h(u(260.0))
-                    .child(if shown.is_empty() {
-                        div()
-                            .typeface(theme.types.small, &theme)
-                            .ink(colors.ink_2)
-                            .child(if none_drawn {
-                                text::NO_EMOJI_FONT
-                            } else {
-                                text::NO_EMOJI_FOUND
-                            })
-                            .into_any_element()
-                    } else {
-                        ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
-                            .child(div().flex().flex_wrap().gap(u(2.0)).children(cells))
-                            .into_any_element()
-                    }),
-            )
+            .child(div().flex().flex_col().mt(u(4.0)).h(u(260.0)).child(
+                if shown.is_empty() && recent.is_empty() {
+                    div()
+                        .typeface(theme.types.small, &theme)
+                        .ink(colors.ink_2)
+                        .child(if none_drawn {
+                            text::NO_EMOJI_FONT
+                        } else {
+                            text::NO_EMOJI_FOUND
+                        })
+                        .into_any_element()
+                } else {
+                    ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .children((!recent.is_empty()).then(|| {
+                                    div()
+                                        .id("emoji-recents")
+                                        .debug_selector(|| "emoji-recents".to_owned())
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .gap(u(2.0))
+                                                .children(recent_cells),
+                                        )
+                                        .child(
+                                            div()
+                                                .py(u(6.0))
+                                                .text_size(u(12.5))
+                                                .ink(colors.ink_2)
+                                                .child(
+                                                    open.and_then(|index| {
+                                                        emojis::Group::iter().nth(index)
+                                                    })
+                                                    .map_or("", |group| group_tab(group).0),
+                                                ),
+                                        )
+                                }))
+                                .child(div().flex().flex_wrap().gap(u(2.0)).children(cells)),
+                        )
+                        .into_any_element()
+                },
+            ))
             .into_any_element()
     }
 
@@ -2005,6 +2214,72 @@ impl Shell {
                     }))
             });
 
+        let emoji_found = self.emoji_candidates(pane, cx);
+        let emoji_chosen = self.pen(pane).emoji_completion.as_ref().map_or(0, |open| {
+            open.chosen.min(emoji_found.len().saturating_sub(1))
+        });
+        let emoji_picker = (!preview
+            && self.pen(pane).emoji_completion.is_some()
+            && !emoji_found.is_empty())
+        .then(|| {
+            div()
+                .id(pane.id("emoji-completion"))
+                .debug_selector(move || pane.id("emoji-completion").to_owned())
+                .role(Role::ListBox)
+                .aria_label(text::EMOJI_COMPLETION)
+                .absolute()
+                .bottom_full()
+                .left_0()
+                .mb(u(4.0))
+                .w(u(280.0))
+                .max_w_full()
+                .py(u(4.0))
+                .rounded(u(theme.metrics.radius_menu))
+                .border_1()
+                .border_color(colors.rule)
+                .bg(colors.travertine_hi)
+                .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
+                .occlude()
+                .children(emoji_found.iter().enumerate().map(|(index, emoji)| {
+                    let emoji = *emoji;
+                    div()
+                        .id(("emoji-candidate", index))
+                        .role(Role::ListBoxOption)
+                        .aria_label(SharedString::from(emoji.name()))
+                        .aria_selected(index == emoji_chosen)
+                        .debug_selector(move || format!("{}:{index}", pane.id("emoji-candidate")))
+                        .flex()
+                        .items_center()
+                        .gap(u(8.0))
+                        .h(u(32.0))
+                        .px(u(10.0))
+                        .cursor_pointer()
+                        .when(index == emoji_chosen, |row| row.bg(colors.limestone_lo))
+                        .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.take_emoji_completion(pane, emoji, window, cx)
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(u(24.0))
+                                .text_size(u(20.0))
+                                .child(emoji.as_str()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(u(13.0))
+                                .child(SharedString::from(format!(
+                                    ":{}:",
+                                    crate::emoji::completion::label(emoji)
+                                ))),
+                        )
+                }))
+        });
+
         // A side panel has no room for the statement in its toolbar.
         let permanence = (permanent && compact).then(|| {
             div()
@@ -2158,7 +2433,8 @@ impl Shell {
                             )),
                     ),
             )
-            .children(picker);
+            .children(picker)
+            .children(emoji_picker);
 
         div()
             .id(pane.id("composer"))
@@ -2233,7 +2509,10 @@ impl Shell {
             input,
             window,
             move |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this.composer_changed(pane, cx),
+                InputEvent::Change => {
+                    this.composer_changed(pane, cx);
+                    this.complete_closed_emoji(pane, window, cx);
+                }
                 InputEvent::PressEnter { shift: false, .. } => {
                     this.submit_message(pane, window, cx)
                 }

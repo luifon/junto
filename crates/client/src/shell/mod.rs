@@ -182,6 +182,8 @@ impl Pane {
             (Self::Thread, "composer-input") => "thread-composer-input",
             (Self::Thread, "composer-view") => "thread-composer-view",
             (Self::Thread, "composer-preview") => "thread-composer-preview",
+            (Self::Thread, "emoji-completion") => "thread-emoji-completion",
+            (Self::Thread, "emoji-candidate") => "thread-emoji-candidate",
             (Self::Thread, "format-heading") => "thread-format-heading",
             (Self::Thread, "format-small") => "thread-format-small",
             (Self::Thread, "format-spoiler") => "thread-format-spoiler",

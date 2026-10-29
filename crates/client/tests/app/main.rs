@@ -43,6 +43,7 @@ mod context_menus;
 mod copying;
 mod data_directory;
 mod departures;
+mod emoji_completion;
 mod event_alerts;
 mod files;
 mod flows;

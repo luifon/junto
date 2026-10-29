@@ -491,6 +491,33 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
             |shell, window, cx| shell.show_composer_preview(Pane::Main, true, window, cx),
         )?;
     }
+    studio.draw_answered(
+        Screen::new(
+            "messages-emoji-completion",
+            with_timeline(general().timeline()),
+        ),
+        |shell, _, cx| prepare(shell, none(), cx),
+        |shell, window, cx| shell.type_message(Pane::Main, "Thanks :thumb", window, cx),
+    )?;
+    for (name, scale, width, height) in [
+        ("messages-emoji-recents", 100, 1180.0, 800.0),
+        ("messages-emoji-recents-150", 150, 720.0, 600.0),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+            |shell, window, cx| {
+                shell.state().clone().update(cx, |state, cx| {
+                    for emoji in ["👍", "🎉", "✅", "❤️"] {
+                        state.remember_emoji(emoji, cx);
+                    }
+                });
+                shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+            },
+        )?;
+    }
     let mut forwarded = Made::new(GENERAL);
     let copy = forwarded.message("Ana", 2, "## Delivery plan\nA copied **work item** remains readable when its origin is unavailable.\n```rust\nfn ship() {\n    ready();\n}\n```");
     if let Some(document) = &mut copy.document {

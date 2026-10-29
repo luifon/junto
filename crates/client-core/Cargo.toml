@@ -28,6 +28,7 @@ junto-protocol = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"
 ed25519-dalek = { workspace = true }
+emojis = "0.8"
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 # The 0.12 line with the trust store of the operating system (ADR 0714).

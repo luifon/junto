@@ -9,6 +9,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 mod call_keys;
+mod emoji;
 mod history;
 pub use call_keys::KeybindChange;
 mod call_sounds;
@@ -502,6 +503,9 @@ pub struct AppState {
     media_fixture: Option<MediaSnapshot>,
     timing: Timing,
     settings: InterfaceSettings,
+    recent_emoji: Vec<String>,
+    recent_emoji_error: Option<String>,
+    recent_emoji_writes: u64,
     /// The interface scale of this start, from a start argument. It is not stored.
     scale_of_this_start: Option<u32>,
     /// The result of the last change of the profile name, until the window has taken it.
@@ -780,6 +784,13 @@ impl AppState {
                 InterfaceSettings::default()
             }
         };
+        let (recent_emoji, recent_emoji_error) = match client.emoji_history().load() {
+            Ok(recent) => (recent, None),
+            Err(error) => (
+                Vec::new(),
+                Some(text::flow_error(&FlowError::Storage(error.to_string()))),
+            ),
+        };
         theme::apply(settings.theme, cx);
         let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
             tracing::warn!(%error, "the key bindings were not read");
@@ -985,6 +996,9 @@ impl AppState {
             media_fixture: None,
             timing,
             settings,
+            recent_emoji,
+            recent_emoji_error,
+            recent_emoji_writes: 0,
             scale_of_this_start: None,
             name_result: None,
             settings_failed: HashMap::new(),
@@ -2447,6 +2461,7 @@ impl AppState {
             .iter()
             .find_map(|setting| self.settings_failed.get(setting))
             .map(String::as_str)
+            .or(self.recent_emoji_error.as_deref())
     }
 
     /// Runs `work` on a background thread after every write that was asked for before,
