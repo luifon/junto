@@ -85,3 +85,9 @@ HTTP library:
 - The workspace holds two reqwest lines: 0.13 for the tests of the server and 0.12 for the client.
 - After a session ends, the memory of the client holds no copy of its token in a buffer that this crate owns. Copies inside the HTTP library can remain until their memory is used again.
 - TLS verification depends on the trust store of the operating system. A server with a certificate from a private authority works when the user's system trusts that authority.
+
+## Application addresses
+
+`junto-client-core::links` is the shared parser and formatter for application addresses. A message address is `junto://message?server=<percent-encoded canonical origin>&id=<message UUID>`. An origin has the scheme, lower-case host and nondefault port, without a path or trailing slash. The parser rejects credentials, paths, fragments, malformed percent escapes, repeated or unknown parameters and addresses above 4096 bytes. Target kinds share the origin validation and parameter encoding; each kind adds an enum variant and parse/format arms. Unit tests cover canonical round trips and malformed or ambiguous inputs.
+
+`AppState::open_message_link` accepts an origin and message ID. An unknown origin returns false for the scheme router to open add-server with that address. A saved origin reads through its current account with `api_for`, checks the returned ID and deletion state, then uses the existing channel/direct/thread jump, including older history. Responses after a new link request, navigation, account change or removal of the saved entry are discarded. Missing, deleted and inaccessible messages share one refusal, exposed through `message_link_refusal`. The scheme router and window presentation are separate from this entry point.
