@@ -7,6 +7,7 @@ pub(crate) mod error;
 mod messages;
 mod moderation;
 mod notices;
+mod presence;
 pub(crate) mod proof;
 mod recordings;
 mod retry;

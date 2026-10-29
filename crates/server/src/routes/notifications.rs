@@ -125,8 +125,10 @@ pub async fn set_settings(
         return Err(ApiError::invalid("do not disturb is an account setting"));
     }
     let mut counted = false;
-    transact!(app, |connection| {
+    let mut account_id = None;
+    let result = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
+        account_id = Some(access.account_id);
         let channel = scope(connection, &access, id).await?;
         if !channel
             && (body.mute
@@ -183,8 +185,14 @@ pub async fn set_settings(
             .await?;
         }
         Ok(compatible_settings(body, extended))
-    })
-    .map(Json)
+    });
+    if result.is_ok()
+        && id.is_nil()
+        && let Some(account_id) = account_id
+    {
+        app.streams.presence_changed_for(account_id);
+    }
+    result.map(Json)
 }
 
 /// The notification default of a workspace. `level` is absent when none is set.

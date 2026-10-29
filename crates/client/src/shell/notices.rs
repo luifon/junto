@@ -61,6 +61,7 @@ pub(crate) struct Excerpt {
     pub seed: u128,
     /// The picture of the author, when the window holds it (ADR 0783).
     pub picture: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub presence: Option<junto_client_core::protocol::presence::Presence>,
     pub author: SharedString,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
@@ -163,10 +164,13 @@ impl Excerpt {
                     .flex()
                     .gap(u(10.0))
                     .child(
-                        div()
-                            .flex_none()
-                            .mt(u(2.0))
-                            .child(Avatar::new(self.seed, 30.0).image(self.picture)),
+                        div().flex_none().mt(u(2.0)).child(
+                            Avatar::new(self.seed, 30.0)
+                                .image(self.picture)
+                                .when_some(self.presence, |avatar, presence| {
+                                    avatar.presence(presence)
+                                }),
+                        ),
                     )
                     .child(
                         div()
@@ -605,6 +609,7 @@ impl Shell {
             action: row.jump.map(|_| text::GO_TO_MESSAGE.into()),
             seed: row.author_id.map_or(0, |id| id.as_uuid().as_u128()),
             picture: row.author_id.and_then(|id| faces.image(id)),
+            presence: row.author_id.map(|id| faces.presence(id)),
             author: row.author.clone().into(),
             time: row.time.clone().into(),
             tag: row.jump.map(|_| text::notice_kind(row.kind).into()),

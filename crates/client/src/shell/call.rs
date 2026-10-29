@@ -626,6 +626,7 @@ impl Shell {
                     })
                     .focused(focused)
                     .picture(faces.image(occupant.account_id))
+                    .presence(faces.presence(occupant.account_id))
                     .camera_view(self.camera_request(occupant, cx))
                     .camera_picture(self.camera_image(occupant))
                     .speaking(matches!(

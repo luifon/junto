@@ -550,6 +550,7 @@ impl Shell {
                         account_id.as_uuid().as_u128(),
                     )
                     .picture(faces.image(account_id))
+                    .presence(faces.presence(account_id))
                     .marks(occupant_marks(occupant))
                     .selector(format!("occupant:{account_id}"))
                     .open(menu.is_some());
@@ -661,6 +662,7 @@ impl Shell {
                 .into();
             let row = ChannelRow::new(("direct", index), Icon::Person, name)
                 .avatar(direct.account_id.as_uuid().as_u128())
+                .presence(faces.presence(direct.account_id))
                 .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
                 .unread(direct_sign(direct.unread))
@@ -756,7 +758,13 @@ impl Shell {
             .bg(Hsla::from(colors.limestone_lo))
             .border_t_1()
             .border_color(Hsla::from(colors.rule))
-            .child(Avatar::new(seed, 30.0).image(picture))
+            .child(
+                Avatar::new(seed, 30.0)
+                    .image(picture)
+                    .when_some(view.person.account_id, |avatar, account| {
+                        avatar.presence(self.shown_faces().presence(account))
+                    }),
+            )
             .child(
                 div()
                     .id("profile-name")
@@ -767,7 +775,36 @@ impl Shell {
                     .typeface(theme.types.name, theme)
                     .ink(colors.ink)
                     .truncate()
-                    .child(name),
+                    .child(name)
+                    .when_some(
+                        view.selected
+                            .as_ref()
+                            .and_then(|server| self.state.read(cx).owner(server.id))
+                            .filter(|owner| {
+                                self.state
+                                    .read(cx)
+                                    .presence_server(owner.entry.server_id)
+                                    .is_some()
+                            }),
+                        |name, owner| {
+                            name.child(
+                                Button::new("presence-open")
+                                    .kind(ButtonKind::Ghost)
+                                    .label(text::presence::label(
+                                        self.state
+                                            .read(cx)
+                                            .presence(owner.entry.server_id, owner.account_id),
+                                    ))
+                                    .tooltip(text::presence::TITLE)
+                                    .selector("presence-open")
+                                    .h(u(19.))
+                                    .px(u(0.))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_layer(super::Layer::Presence(owner), window, cx)
+                                    })),
+                            )
+                        },
+                    ),
             )
             .child(
                 div()

@@ -52,6 +52,7 @@ mod moderation;
 mod permission_rules;
 mod permissions_migration;
 mod person_standing;
+mod presence;
 mod processing;
 mod profiles;
 mod recordings;

@@ -50,12 +50,14 @@ uuid = { workspace = true }
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs", "process", "stdio", "termios"] }
+rustix = { version = "1", features = ["fs", "process", "stdio", "termios", "event", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The keys of a call in every application (ADR 0776): the keyboard of an X11 session, and
 # the global shortcuts portal of a Wayland desktop. The client uses the same versions.
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["screensaver"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -89,6 +91,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
@@ -160,7 +163,8 @@ rustix = { version = "1", features = ["pty"] }
 # its parent, sets the taskbar properties of a window (ADR 0755), shows the icon of the
 # notification area of Windows and the status item of the macOS menu bar (ADR 0759), and the
 # tool turns the echo of the console off (ADR 0711). The macOS startup module calls
-# ServiceManagement to read and change the login item (ADR 0730).
+# ServiceManagement to read and change the login item (ADR 0730). The activity modules
+# read session inactivity through CoreGraphics and GetLastInputInfo (ADR 0401).
 [lints.rust]
 unsafe_code = "deny"
 

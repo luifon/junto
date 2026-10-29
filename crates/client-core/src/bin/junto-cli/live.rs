@@ -1085,6 +1085,7 @@ fn notice_line(notice: &Notice) -> String {
             let line = format!("event {id} {} {}", event.name(), event_details(event));
             line.trim_end().to_owned()
         }
+        Notice::PresenceChanged => "presence_changed".to_owned(),
         Notice::Reloaded { cursor } => format!("reloaded {}", cursor.position),
         Notice::Ended { reason, .. } => format!("ended {}", word(reason)),
     }

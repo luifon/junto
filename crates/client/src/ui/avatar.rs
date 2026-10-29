@@ -12,6 +12,7 @@ use gpui::{
 
 use super::{Mosaic, MosaicKind};
 use crate::theme::u;
+use junto_client_core::protocol::presence::Presence;
 
 #[derive(IntoElement)]
 pub struct Avatar {
@@ -21,6 +22,7 @@ pub struct Avatar {
     kind: MosaicKind,
     image: Option<Arc<RenderImage>>,
     described: Option<(ElementId, SharedString)>,
+    presence: Option<Presence>,
 }
 
 impl Avatar {
@@ -33,7 +35,13 @@ impl Avatar {
             kind: MosaicKind::Large,
             image: None,
             described: None,
+            presence: None,
         }
+    }
+
+    pub fn presence(mut self, presence: Presence) -> Self {
+        self.presence = Some(presence);
+        self
     }
 
     pub fn radius(mut self, radius: f32) -> Self {
@@ -80,7 +88,7 @@ impl RenderOnce for Avatar {
                 .radius(self.radius)
                 .into_any_element(),
         };
-        match self.described {
+        let picture = match self.described {
             Some((id, label)) => div()
                 .id(id)
                 .role(Role::Image)
@@ -89,6 +97,32 @@ impl RenderOnce for Avatar {
                 .child(picture)
                 .into_any_element(),
             None => picture,
+        };
+        if let Some(presence) = self.presence {
+            let size = if self.size < 24. {
+                6.
+            } else if self.size <= 40. {
+                9.
+            } else {
+                12.
+            };
+            div()
+                .id(SharedString::from(format!("presence-avatar-{seed}")))
+                .relative()
+                .flex_none()
+                .size(u(self.size))
+                .child(picture)
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .bottom_0()
+                        .debug_selector(move || format!("presence:{seed}"))
+                        .child(super::PresenceMark::new(presence, size)),
+                )
+                .into_any_element()
+        } else {
+            picture
         }
     }
 }

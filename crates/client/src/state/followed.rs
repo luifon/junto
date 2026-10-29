@@ -1015,7 +1015,7 @@ impl AppState {
                 _ => followed.event(server_id, None),
             },
             Notice::Reloaded { .. } => followed.missed(server_id),
-            Notice::Ended { .. } => false,
+            Notice::Ended { .. } | Notice::PresenceChanged => false,
         };
         if changed {
             self.followed_changed(cx);

@@ -93,6 +93,8 @@ pub enum Notice {
     /// The state was replaced by a snapshot. Changes between the state before and this
     /// one were not told as events.
     Reloaded { cursor: Cursor },
+    /// Ephemeral presence invalidation. It moves no durable cursor.
+    PresenceChanged,
     /// The server ended the session of the connection (ADR 0208).
     Ended {
         reason: EndReason,
@@ -117,6 +119,7 @@ pub enum LoadError {
 }
 
 pub(crate) enum Command {
+    PresenceNotifications,
     Refresh {
         reply: oneshot::Sender<Result<Cursor, LoadError>>,
     },
@@ -190,6 +193,7 @@ pub(crate) enum Command {
 
 /// What the stream client of one server and its readers share.
 pub(crate) struct Shared {
+    pub(crate) presence: std::sync::atomic::AtomicBool,
     view: watch::Sender<LiveView>,
     notices: broadcast::Sender<Notice>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
@@ -204,6 +208,7 @@ pub(crate) struct Shared {
 impl Shared {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
+            presence: std::sync::atomic::AtomicBool::new(false),
             view: watch::Sender::new(LiveView::default()),
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
@@ -256,6 +261,18 @@ pub struct LiveServer {
 }
 
 impl LiveServer {
+    /// Opts a reader into ephemeral presence invalidations; off for non-UI clients.
+    pub fn presence_notifications(&self, enabled: bool) {
+        if self
+            .shared
+            .presence
+            .swap(enabled, std::sync::atomic::Ordering::SeqCst)
+            != enabled
+        {
+            self.shared.send(Command::PresenceNotifications);
+        }
+    }
+
     /// The status and the state now. The call copies two words and two pointers.
     pub fn view(&self) -> LiveView {
         self.shared.view.borrow().clone()

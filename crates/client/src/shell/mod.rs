@@ -35,6 +35,7 @@ mod picture_crop;
 mod pictures;
 mod placement;
 mod prepared;
+mod presence;
 mod rail;
 mod recorded;
 pub mod room;
@@ -82,6 +83,7 @@ pub(crate) enum Layer {
     Settings,
     Join(join::Join),
     ServerMenu,
+    Presence(junto_client_core::Owner),
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
     /// The list of the input or of the output devices, in the sound settings of a call.
@@ -1925,6 +1927,9 @@ impl Shell {
                 .call
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
+            Layer::Presence(owner) => {
+                self.state.read(cx).owner(owner.entry.server_id) != Some(*owner)
+            }
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::None
@@ -1983,6 +1988,7 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
+            Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),

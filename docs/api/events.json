@@ -2815,6 +2815,10 @@
               "level": {
                 "$ref": "#/components/schemas/Level"
               },
+              "presence": {
+                "description": "Opt in to ephemeral presence invalidations (revision 3).",
+                "type": "boolean"
+              },
               "type": {
                 "enum": [
                   "subscribe"
@@ -6171,6 +6175,21 @@
             },
             "required": [
               "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A known identity's presence may have changed. Read the visible identities again;\nthe message carries no identities and changes no durable event cursor. Opt-in only.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "presence_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
               "type"
             ],
             "type": "object"

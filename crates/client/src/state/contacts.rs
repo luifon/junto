@@ -186,6 +186,7 @@ impl AppState {
 
     pub fn close_contacts(&mut self, cx: &mut Context<Self>) {
         self.contacts.close();
+        self.follow_presence_current(cx);
         cx.notify();
     }
 
@@ -247,6 +248,7 @@ impl AppState {
                 this.contacts.answered(session, read, answer);
                 // A part that was typed during the read is read now.
                 this.read_contacts(cx);
+                this.follow_presence_current(cx);
                 cx.notify();
             });
         })

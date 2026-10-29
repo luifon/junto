@@ -101,6 +101,7 @@ impl Shell {
                 row.name.clone(),
             )
             .avatar(account_id.as_uuid().as_u128())
+            .presence(faces.presence(account_id))
             .picture(faces.image(account_id))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.state

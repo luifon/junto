@@ -111,7 +111,7 @@ impl Peer {
             .await
             .expect("the client closed the connection");
         match serde_json::from_str(&text).unwrap() {
-            ClientMessage::Subscribe { level, cursor } => (level, cursor.unwrap()),
+            ClientMessage::Subscribe { level, cursor, .. } => (level, cursor.unwrap()),
         }
     }
 
@@ -2235,4 +2235,51 @@ async fn refresh_acknowledges_a_snapshot_requested_after_the_call() {
     assert_eq!(rig.model().cursor, cursor);
     assert_eq!(rig.model().account.name, "Changed");
     assert_eq!(rig.http.count("/snapshot"), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_cursor() {
+    for (enabled, revision) in [(false, 3), (true, 2), (true, 3)] {
+        let mut rig = rig();
+        rig.live.presence_notifications(enabled);
+        let mut notices = rig.live.notices();
+        rig.want(ConnectionLevel::Selected, "jst_one");
+        let mut peer = rig.peer().await;
+        peer.hello_of(rig.epoch(), "0.1.0", revision).await;
+        let frame = soon("the presence subscription", peer.from_client.recv())
+            .await
+            .unwrap();
+        let ClientMessage::Subscribe {
+            level,
+            cursor,
+            presence,
+        } = serde_json::from_str(&frame).unwrap();
+        assert_eq!(presence, enabled && revision >= 3);
+        let cursor = cursor.unwrap();
+        peer.send(&ServerMessage::Subscribed { level, cursor })
+            .await;
+        rig.when("the stream is live", |view| {
+            view.status == StreamStatus::Live
+        })
+        .await;
+        assert!(matches!(
+            soon("the loaded snapshot", notices.next()).await,
+            Some(Ok(Notice::Reloaded { .. }))
+        ));
+        peer.send(&ServerMessage::PresenceChanged {}).await;
+        if presence {
+            assert!(matches!(
+                soon("a presence invalidation", notices.next()).await,
+                Some(Ok(Notice::PresenceChanged))
+            ));
+        } else {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), notices.next())
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(rig.live.view().model.unwrap().cursor, cursor);
+        assert_eq!(rig.http.count("/snapshot"), 1);
+    }
 }

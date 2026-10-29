@@ -2662,7 +2662,7 @@ impl Session {
                     moving.reloaded = true;
                 }
             }
-            Notice::Ended { .. } => {}
+            Notice::Ended { .. } | Notice::PresenceChanged => {}
         }
         self.review = true;
     }

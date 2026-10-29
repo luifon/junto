@@ -477,7 +477,17 @@ struct Rich {
 }
 
 impl Rich {
+    #[cfg(test)]
     fn of(content: &[Inline], names: &Names, theme: &Theme, drawings: &Drawings) -> Self {
+        Self::with_presence(content, names, theme, drawings, None)
+    }
+    fn with_presence(
+        content: &[Inline],
+        names: &Names,
+        theme: &Theme,
+        drawings: &Drawings,
+        presence: Option<&crate::state::people::ServerFaces>,
+    ) -> Self {
         let colors = theme.colors;
         let mut rich = Self {
             text: String::new(),
@@ -548,6 +558,7 @@ impl Rich {
                     rich.links.push((range, link));
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
+                    let mut status_mark = None;
                     rich.text.push('\u{2009}');
                     match node {
                         Inline::Account { account_id } => {
@@ -558,6 +569,13 @@ impl Rich {
                                     .get(account_id)
                                     .map_or(text::UNKNOWN_PERSON, String::as_str),
                             );
+                            if let Some(presence) = presence {
+                                let presence = presence.presence(*account_id);
+                                rich.text.push(' ');
+                                let start = rich.text.len();
+                                rich.text.push_str(text::presence::mark(presence));
+                                status_mark = Some((start, presence));
+                            }
                         }
                         Inline::Role { role_id } => {
                             rich.text.push('@');
@@ -572,7 +590,7 @@ impl Rich {
                     }
                     rich.text.push('\u{2009}');
                     rich.highlights.push((
-                        start..rich.text.len(),
+                        start..status_mark.map_or(rich.text.len(), |(start, _)| start),
                         HighlightStyle {
                             color: Some(colors.terracotta_deep.into()),
                             background_color: Some(colors.terracotta_wash.into()),
@@ -580,6 +598,17 @@ impl Rich {
                             ..HighlightStyle::default()
                         },
                     ));
+                    if let Some((start, presence)) = status_mark {
+                        rich.highlights.push((
+                            start..rich.text.len(),
+                            HighlightStyle {
+                                color: Some(crate::ui::PresenceMark::color(presence, theme).into()),
+                                background_color: Some(colors.terracotta_wash.into()),
+                                font_weight: Some(FontWeight::BOLD),
+                                ..HighlightStyle::default()
+                            },
+                        ));
+                    }
                 }
             }
         }
@@ -661,11 +690,12 @@ fn paragraph(
     names: &Names,
     theme: &Theme,
     drawings: &Drawings,
+    presence: &crate::state::people::ServerFaces,
     id: usize,
 ) -> AnyElement {
     div()
         .min_w_0()
-        .child(Rich::of(content, names, theme, drawings).element(id))
+        .child(Rich::with_presence(content, names, theme, drawings, Some(presence)).element(id))
         .into_any_element()
 }
 
@@ -1571,7 +1601,7 @@ impl Shell {
                         .child(text::NEW_MESSAGES),
                 )
                 .into_any_element(),
-            FeedRow::System(row) => system_line(row, &theme),
+            FeedRow::System(row) => system_line(row, &self.faces(feed.server_id), &theme),
             FeedRow::Recording(row) => self.render_recording_card(index, row, cx),
             FeedRow::Message(row) => {
                 let shape = if compact {
@@ -1657,6 +1687,7 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let drawings = Drawings::of(cx);
+        let presence = self.shown_faces();
         let mut blocks = Vec::new();
         let mut texts = 0;
         let mut next = || {
@@ -1666,7 +1697,14 @@ impl Shell {
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
                 Block::Paragraph { content } => {
-                    blocks.push(paragraph(content, names, theme, &drawings, next()));
+                    blocks.push(paragraph(
+                        content,
+                        names,
+                        theme,
+                        &drawings,
+                        &presence,
+                        next(),
+                    ));
                 }
                 Block::Quote { content } => blocks.push(
                     div()
@@ -1675,7 +1713,14 @@ impl Shell {
                         .border_l_3()
                         .border_color(Hsla::from(colors.rule))
                         .ink(colors.ink_2)
-                        .child(paragraph(content, names, theme, &drawings, next()))
+                        .child(paragraph(
+                            content,
+                            names,
+                            theme,
+                            &drawings,
+                            &presence,
+                            next(),
+                        ))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
@@ -1701,7 +1746,7 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, &drawings, next()))
+                                .child(paragraph(item, names, theme, &drawings, &presence, next()))
                                 .into_any_element(),
                         );
                     }
@@ -1779,7 +1824,14 @@ impl Shell {
                                 .py(u(1.0))
                                 .when(checked, |row| row.ink(colors.ink_3))
                                 .child(check)
-                                .child(paragraph(&item.content, names, theme, &drawings, next()))
+                                .child(paragraph(
+                                    &item.content,
+                                    names,
+                                    theme,
+                                    &drawings,
+                                    &presence,
+                                    next(),
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -2787,7 +2839,8 @@ impl Shell {
                                     div().absolute().top_0().left(u(step * place as f32)).child(
                                         Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
                                             .radius(2.0)
-                                            .image(faces.image(*author)),
+                                            .image(faces.image(*author))
+                                            .presence(faces.presence(*author)),
                                     ),
                                 );
                             }
@@ -2800,7 +2853,14 @@ impl Shell {
                                     .author_id
                                     .map_or(0, |author| author.as_uuid().as_u128());
                                 let picture = last.author_id.and_then(|author| faces.image(author));
-                                chip.child(Avatar::new(seed, 18.0).radius(2.0).image(picture))
+                                chip.child(
+                                    Avatar::new(seed, 18.0)
+                                        .radius(2.0)
+                                        .image(picture)
+                                        .when_some(last.author_id, |avatar, id| {
+                                            avatar.presence(faces.presence(id))
+                                        }),
+                                )
                             },
                         )
                         .child(
@@ -3042,7 +3102,13 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(seed, 34.0).image(picture))
+                            .child(
+                                Avatar::new(seed, 34.0)
+                                    .image(picture)
+                                    .when_some(message.author_id, |avatar, id| {
+                                        avatar.presence(faces.presence(id))
+                                    }),
+                            )
                             .into_any_element()
                     })
                     .child(
@@ -3146,7 +3212,13 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(own, 34.0).image(picture))
+                            .child(
+                                Avatar::new(own, 34.0)
+                                    .image(picture)
+                                    .when_some(person, |avatar, id| {
+                                        avatar.presence(faces.presence(id))
+                                    }),
+                            )
                             .into_any_element()
                     })
                     .child(
@@ -3509,7 +3581,11 @@ fn day_marks(theme: &Theme) -> impl IntoElement + use<> {
 }
 
 /// A line that states what happened in a channel, with its time.
-fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
+fn system_line(
+    row: &SystemRow,
+    faces: &crate::state::people::ServerFaces,
+    theme: &Theme,
+) -> AnyElement {
     let colors = theme.colors;
     let message_id = row.message.id;
     let mark = match row.kind {
@@ -3528,6 +3604,19 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
                 HighlightStyle {
                     font_weight: Some(FontWeight::BOLD),
                     color: Some(colors.ink.into()),
+                    ..HighlightStyle::default()
+                },
+            ));
+        }
+        if let Some(account) = part.account {
+            let presence = faces.presence(account);
+            line.push(' ');
+            let start = line.len();
+            line.push_str(text::presence::mark(presence));
+            strong.push((
+                start..line.len(),
+                HighlightStyle {
+                    color: Some(crate::ui::PresenceMark::color(presence, theme).into()),
                     ..HighlightStyle::default()
                 },
             ));
@@ -3723,5 +3812,43 @@ mod tests {
             .map(|(range, _)| &rich.text[range.clone()])
             .collect();
         assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
+    }
+    #[test]
+    fn account_mentions_show_status_with_ordered_utf8_highlights() {
+        let theme = Theme::stone();
+        let account = junto_client_core::protocol::ids::AccountId::generate();
+        let names = Names {
+            accounts: [(account, "Mira".to_owned())].into(),
+            ..Names::default()
+        };
+        let content = [
+            Inline::Text {
+                text: "é ".to_owned(),
+                marks: Vec::new(),
+            },
+            Inline::Account {
+                account_id: account,
+            },
+            Inline::Link {
+                text: " link".to_owned(),
+                url: "https://example.com".to_owned(),
+            },
+        ];
+        let rich = Rich::with_presence(
+            &content,
+            &names,
+            &theme,
+            &Drawings::default(),
+            Some(&crate::state::people::ServerFaces::default()),
+        );
+        assert!(rich.text.contains("@Mira ○"));
+        let mut end = 0;
+        for (range, _) in &rich.highlights {
+            assert!(range.start >= end && range.end > range.start);
+            assert!(
+                rich.text.is_char_boundary(range.start) && rich.text.is_char_boundary(range.end)
+            );
+            end = range.end;
+        }
     }
 }

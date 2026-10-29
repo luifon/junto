@@ -69,6 +69,12 @@ pub(super) struct SwitchSearches {
     windows: HashMap<EntityId, Search>,
 }
 
+impl SwitchSearches {
+    pub(super) fn window_ids(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.windows.keys().copied()
+    }
+}
+
 fn matches(part: &str, row: &SwitchRow) -> bool {
     let text = format!("{} {}", row.name, row.context).to_lowercase();
     part.split_whitespace()
@@ -103,6 +109,7 @@ impl AppState {
 
     pub fn close_switcher(&mut self, window: EntityId, cx: &mut Context<Self>) {
         self.switchers.windows.remove(&window);
+        self.follow_presence_current(cx);
         cx.notify();
     }
 
@@ -222,6 +229,7 @@ impl AppState {
                         contacts.answered(contact_session, read, answer);
                         search.tasks.remove(&server_id);
                         this.read_switcher(window, cx);
+                        this.follow_presence_current(cx);
                         cx.notify();
                     }
                 });

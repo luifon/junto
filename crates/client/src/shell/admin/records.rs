@@ -209,6 +209,7 @@ fn audit_row(
     action: Option<AnyElement>,
     theme: &Theme,
     cycle: junto_client_core::clock::HourCycle,
+    presence: Option<junto_client_core::protocol::presence::Presence>,
 ) -> AnyElement {
     let id = row.id;
     let content = line(theme).child(
@@ -219,6 +220,10 @@ fn audit_row(
                 div()
                     .typeface(theme.types.small, theme)
                     .ink(theme.colors.ink_2)
+                    .flex()
+                    .items_center()
+                    .gap(u(6.))
+                    .children(presence.map(|presence| crate::ui::PresenceMark::new(presence, 10.)))
                     .child(txt::audit_head(row, cycle)),
             )
             .child(
@@ -1761,7 +1766,18 @@ impl Shell {
             )
             .into_any_element()
         });
-        audit_row(row, action, theme, self.state.read(cx).hour_cycle())
+        audit_row(
+            row,
+            action,
+            theme,
+            self.state.read(cx).hour_cycle(),
+            match row.actor {
+                crate::state::admin::view::records::Actor::Account { id, .. } => {
+                    Some(self.state.read(cx).presence(server_id, id))
+                }
+                _ => None,
+            },
+        )
     }
 
     fn render_audit_footer(

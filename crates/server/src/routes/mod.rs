@@ -43,6 +43,7 @@ pub mod moderation_notices;
 pub mod notifications;
 pub mod person_permissions;
 pub mod pins;
+pub mod presence;
 pub mod recordings;
 pub mod retention;
 pub mod rules;
@@ -231,6 +232,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(account::set_avatar, account::remove_avatar)
     });
     add(&mut router, || routes!(account::get_profile));
+    add(&mut router, || routes!(presence::read_presence));
+    add(&mut router, || routes!(presence::set_presence));
     add(&mut router, || routes!(account::get_avatar));
     add(&mut router, || routes!(account::list_devices));
     add(&mut router, || {

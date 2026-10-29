@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(any(windows, target_os = "macos")), forbid(unsafe_code))]
 
+pub mod activity;
 pub mod address;
 pub mod api;
 pub mod app_badge;

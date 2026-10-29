@@ -31,7 +31,7 @@ pub async fn open_event_stream(
     mut request: Request,
 ) -> ApiResult<Response> {
     let now = app.now();
-    let (who, epoch) = read!(app, |connection| {
+    let (who, epoch, visible) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Permission::OwnAccount)?;
         let who = Opened {
@@ -40,15 +40,24 @@ pub async fn open_event_stream(
             device_id: access.device_id,
             session_id: access.session_id,
         };
-        Ok((who, log::state(connection).await?.epoch))
+        let visible: bool =
+            sqlx::query_scalar("select presence_mode <> 'invisible' from accounts where id=$1")
+                .bind(access.account_id)
+                .fetch_one(&mut *connection)
+                .await?;
+        Ok((who, log::state(connection).await?.epoch, visible))
     })?;
     let upgrade = Upgrade::of(&mut request).ok_or_else(|| {
         ApiError::invalid("the event stream is opened with a WebSocket upgrade request")
     })?;
     proof::limit(&app.stream_opens, who.account_id, now)?;
-    let registration = app
-        .streams
-        .open(who.account_id, who.device_id, who.session_id, now)?;
+    let registration = app.streams.open_with_presence(
+        who.account_id,
+        who.device_id,
+        who.session_id,
+        now,
+        visible,
+    )?;
 
     let link = registration.link().clone();
     let response = upgrade.response();

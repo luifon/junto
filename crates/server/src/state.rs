@@ -46,6 +46,8 @@ pub struct Shared {
     pub message_reads: RateLimiter<AccountId>,
     pub message_writes: RateLimiter<AccountId>,
     pub stream_opens: RateLimiter<AccountId>,
+    pub presence_reads: RateLimiter<AccountId>,
+    pub presence_changes: RateLimiter<AccountId>,
     pub streams: Arc<Streams>,
     pub calls: Calls,
     pub recordings: Recordings,
@@ -148,6 +150,20 @@ impl AppState {
             ),
             message_writes,
             stream_opens,
+            presence_reads: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 600,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
+            presence_changes: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 60,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
             streams,
             calls,
             recordings,

@@ -82,6 +82,9 @@ pub enum ClientMessage {
         level: Level,
         #[serde(default)]
         cursor: Option<Cursor>,
+        /// Opt in to ephemeral presence invalidations (revision 3).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        presence: bool,
     },
 }
 
@@ -165,6 +168,9 @@ pub enum ServerMessage {
         /// Present with the reason `recovered`.
         recovery: Option<RecoveryNotice>,
     },
+    /// A known identity's presence may have changed. Read the visible identities again;
+    /// the message carries no identities and changes no durable event cursor. Opt-in only.
+    PresenceChanged {},
 }
 
 /// One event of a `change`.
@@ -188,6 +194,7 @@ impl ServerMessage {
         "checkpoint",
         "resync",
         "ended",
+        "presence_changed",
     ];
 }
 
@@ -257,7 +264,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 2;
+pub const EVENT_REVISION: u32 = 3;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -1649,6 +1656,7 @@ mod tests {
                 reason: EndReason::Banned,
                 recovery: None,
             },
+            ServerMessage::PresenceChanged {},
         ];
         let mut names = Vec::new();
         for message in messages {
@@ -1680,6 +1688,7 @@ mod tests {
         assert_eq!(
             message,
             ClientMessage::Subscribe {
+                presence: false,
                 level: Level::Full,
                 cursor: None
             }

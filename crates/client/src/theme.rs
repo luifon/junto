@@ -149,7 +149,7 @@ pub struct Colors {
     pub olive_bright: Rgba,
     pub bronze: Rgba,
     pub ochre: Rgba,
-    /// Red: recording, leaving a call and errors only.
+    /// Red: recording, leaving a call, errors and do not disturb.
     pub cinnabar: Rgba,
     pub cinnabar_wash: Rgba,
     pub cinnabar_wash_rule: Rgba,

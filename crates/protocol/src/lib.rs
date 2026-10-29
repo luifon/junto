@@ -22,6 +22,7 @@ pub mod invite;
 pub mod keys;
 pub mod message;
 pub mod origin;
+pub mod presence;
 pub mod recording;
 pub mod roles;
 pub mod secret;

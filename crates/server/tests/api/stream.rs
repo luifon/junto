@@ -597,6 +597,7 @@ async fn beyond_the_replay_bound_the_client_is_told_to_load_a_snapshot() {
     let last = server.category(&owner, workspace.id, "f", 5).await;
     reconnected
         .send(&junto_protocol::events::ClientMessage::Subscribe {
+            presence: false,
             level: Level::Full,
             cursor: Some(start),
         })
@@ -667,6 +668,7 @@ async fn a_cursor_that_the_log_does_not_know_needs_a_snapshot() {
     ] {
         stream
             .send(&junto_protocol::events::ClientMessage::Subscribe {
+                presence: false,
                 level: Level::Full,
                 cursor: Some(cursor),
             })
@@ -713,6 +715,7 @@ async fn the_log_keeps_a_bounded_number_of_positions_and_older_cursors_need_a_sn
     let mut stream = server.stream(&owner).await;
     stream
         .send(&junto_protocol::events::ClientMessage::Subscribe {
+            presence: false,
             level: Level::Full,
             cursor: Some(start),
         })

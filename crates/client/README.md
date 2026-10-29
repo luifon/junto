@@ -417,3 +417,10 @@ Application tests and the screenshot tool retain the in-memory notifier and the 
 
 See [the macOS installation instructions](../../docs/client-macos.md) and [release tooling](../../packaging/README.md). A configured bundle checks the build-time release source, verifies signed metadata and downloads, and installs only a newer bundle with the same code-signing identity. The update notice and Version settings offer the explicit install action; after success, quit and reopen Junto. Without a source, Version states that none is configured. Recovery verifies and restores the retained archive; the documented standalone command works even when the new executable cannot start. `--rollback-update` invokes the same checks from a working application and exits without a window.
 
+
+Presence follows the signed-in account of each server (ADR 0401). Open the status under
+your name in the profile strip to choose Online, Idle, Do not disturb or Invisible.
+Online uses desktop-session input to become Idle after five minutes. A desktop without
+a supported inactivity source explains this in the status dialog; manual Idle still works.
+Invisible appears offline to other people. Do not disturb uses the account's existing
+notification setting, including suppression of incoming-call sounds.

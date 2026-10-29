@@ -354,7 +354,12 @@ impl Stream {
 
     /// Sends a subscribe and returns the cursor that the server started from.
     pub async fn subscribe(&mut self, level: Level, cursor: Option<Cursor>) -> Cursor {
-        self.send(&ClientMessage::Subscribe { level, cursor }).await;
+        self.send(&ClientMessage::Subscribe {
+            presence: false,
+            level,
+            cursor,
+        })
+        .await;
         match self.next().await {
             Frame::Message(ServerMessage::Subscribed {
                 level: started,

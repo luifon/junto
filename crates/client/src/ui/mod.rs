@@ -22,6 +22,7 @@ mod panel;
 mod pattern;
 mod picture;
 mod placed;
+mod presence;
 mod reveal;
 mod rows;
 mod scroll;
@@ -61,6 +62,7 @@ pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_pai
 pub use placed::{Placed, outside};
 #[cfg(feature = "test-support")]
 pub use placed::{record_controls, take_controls};
+pub use presence::PresenceMark;
 pub use rows::{
     CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
 };

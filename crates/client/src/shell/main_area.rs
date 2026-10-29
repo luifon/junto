@@ -460,6 +460,16 @@ impl Shell {
                         .typeface(theme.types.title, theme)
                         .ink(colors.ink)
                         .child(icon(shown, 17.0, colors.terracotta_deep))
+                        .when_some(conversation.zip(server_id), |title, (person, server)| {
+                            title.child(
+                                div()
+                                    .debug_selector(|| "direct-header-presence".to_owned())
+                                    .child(crate::ui::PresenceMark::new(
+                                        self.faces(server).presence(person.account_id),
+                                        12.,
+                                    )),
+                            )
+                        })
                         .child(div().min_w_0().truncate().child(name)),
                 )
             })

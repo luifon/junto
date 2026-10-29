@@ -181,6 +181,7 @@ pub enum SystemKind {
 pub struct Part {
     pub text: String,
     pub strong: bool,
+    pub account: Option<AccountId>,
 }
 
 /// How many authors of replies the thread line of a message shows.
@@ -738,14 +739,16 @@ pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<P
 
 /// The names of several people as one text: "Ada and Ben", "Ada, Ben and Cy", "Ada, Ben,
 /// Cy and 2 others", as parts with the names drawn bold.
-fn people_parts(people: &[String]) -> Vec<Part> {
-    let strong = |text: &str| Part {
+fn people_parts(people: &[(AccountId, String)]) -> Vec<Part> {
+    let strong = |(account, text): &(AccountId, String)| Part {
         text: text.to_owned(),
         strong: true,
+        account: Some(*account),
     };
     let plain = |text: String| Part {
         text,
         strong: false,
+        account: None,
     };
     let shown = people.len().min(3);
     let others = people.len() - shown;
@@ -787,48 +790,60 @@ fn system_parts_of(
     let subject = name(system.subject_id);
     let (kind, sentence) = crate::text::system_line(&system.action);
     let mut parts = Vec::new();
-    let mut push = |text: &str, strong: bool| {
+    let mut push = |text: &str, strong: bool, account: Option<AccountId>| {
         if !text.is_empty() {
             parts.push(Part {
                 text: text.to_owned(),
                 strong,
+                account,
             });
         }
     };
     // The sentence names the actor as `{actor}` and the subject as `{subject}`.
     let mut rest = sentence;
     while let Some(at) = rest.find('{') {
-        push(&rest[..at], false);
+        push(&rest[..at], false, None);
         let end = rest[at..].find('}').map_or(rest.len(), |end| at + end + 1);
         match &rest[at..end] {
             "{actor}" if people.len() > 1 => {
-                let named: Vec<String> = people.iter().filter_map(|id| name(Some(*id))).collect();
+                let named: Vec<_> = people
+                    .iter()
+                    .filter_map(|id| name(Some(*id)).map(|name| (*id, name)))
+                    .collect();
                 for part in people_parts(&named) {
-                    push(&part.text, part.strong);
+                    push(&part.text, part.strong, part.account);
                 }
             }
             "{actor}" => push(
                 actor.as_deref().unwrap_or(crate::text::SOMEBODY),
                 actor.is_some(),
+                system.actor_id,
             ),
             "{subject}" => push(
                 subject.as_deref().unwrap_or(crate::text::SOMEBODY),
                 subject.is_some(),
+                system.subject_id,
             ),
-            "{duration}" => push(&crate::text::call_length(system.duration_seconds), false),
+            "{duration}" => push(
+                &crate::text::call_length(system.duration_seconds),
+                false,
+                None,
+            ),
             "{name}" => push(
                 &crate::text::label(system.name.as_deref().unwrap_or_default()),
                 true,
+                None,
             ),
             "{previous_name}" => push(
                 &crate::text::label(system.previous_name.as_deref().unwrap_or_default()),
                 true,
+                None,
             ),
-            other => push(other, false),
+            other => push(other, false, None),
         }
         rest = &rest[end..];
     }
-    push(rest, false);
+    push(rest, false, None);
     (kind, parts)
 }
 
@@ -2301,5 +2316,40 @@ mod tests {
         assert_eq!(ended(Some(3_725)), "The call ended after 1 hour 2 minutes");
         // A server that states no length.
         assert_eq!(ended(None), "The call ended");
+    }
+    #[test]
+    fn system_names_keep_actor_subject_and_grouped_account_ids() {
+        let scene = scene();
+        let system = SystemMessage {
+            action: "entry_accepted".to_owned(),
+            actor_id: Some(scene.own),
+            subject_id: Some(scene.ana),
+            ..SystemMessage::default()
+        };
+        let (_, parts) = system_parts(&system, &scene.names);
+        assert_eq!(
+            parts
+                .iter()
+                .filter_map(|part| part.account)
+                .collect::<Vec<_>>(),
+            [scene.own, scene.ana]
+        );
+        let named = [
+            (scene.own, "Mira".to_owned()),
+            (scene.ana, "Neri".to_owned()),
+        ];
+        let parts = people_parts(&named);
+        assert_eq!(
+            parts
+                .iter()
+                .filter_map(|part| part.account)
+                .collect::<Vec<_>>(),
+            [scene.own, scene.ana]
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|part| !part.strong && part.account.is_none())
+        );
     }
 }

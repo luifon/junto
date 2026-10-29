@@ -405,6 +405,7 @@ impl Shell {
     fn transcript_line(
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
+        presence: junto_client_core::protocol::presence::Presence,
         wide: bool,
         marked: bool,
         theme: &Theme,
@@ -426,7 +427,9 @@ impl Shell {
             .ink(theme.colors.ink)
             .child(SharedString::from(row.text.clone()))
             .into_any_element();
-        Self::line_frame(row, picture, wide, marked, theme, corrected, spoken, None)
+        Self::line_frame(
+            row, picture, presence, wide, marked, theme, corrected, spoken, None,
+        )
     }
 
     /// A line of a transcript with the parts that the card or the side panel give it: the
@@ -436,6 +439,7 @@ impl Shell {
     fn line_frame(
         row: &LineRow,
         picture: Option<Arc<RenderImage>>,
+        presence: junto_client_core::protocol::presence::Presence,
         wide: bool,
         marked: bool,
         theme: &Theme,
@@ -453,6 +457,7 @@ impl Shell {
             LineFrom::Microphone => Avatar::new(row.account_id.as_uuid().as_u128(), 22.0)
                 .radius(2.0)
                 .image(picture)
+                .presence(presence)
                 .into_any_element(),
             LineFrom::Shared { .. } => div()
                 .flex()
@@ -500,6 +505,12 @@ impl Shell {
                     .text_size(u(12.5))
                     .line_height(u(16.0))
                     .ink(colors.ink_2)
+                    .flex()
+                    .items_center()
+                    .gap(u(4.))
+                    .when(matches!(row.source, LineFrom::Shared { .. }), |source| {
+                        source.child(crate::ui::PresenceMark::new(presence, 9.))
+                    })
                     .child(source),
             );
         let time = div()
@@ -614,7 +625,14 @@ impl Shell {
         let faces = self.faces(server_id);
         for row in transcript.lines.iter().take(SHOWN_LINES) {
             let picture = faces.image(row.account_id);
-            parts.push(Self::transcript_line(row, picture, true, false, theme));
+            parts.push(Self::transcript_line(
+                row,
+                picture,
+                faces.presence(row.account_id),
+                true,
+                false,
+                theme,
+            ));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
         parts.push(
@@ -1361,7 +1379,17 @@ impl Shell {
         let key = (recording_id, TranscriptChange::Line(row.line));
         let open = self.transcript_edit.open.map(|(_, open)| open);
         let picture = self.faces(server_id).image(row.account_id);
-        let line = Self::line_frame(row, picture, false, marked, theme, corrected, body, control);
+        let line = Self::line_frame(
+            row,
+            picture,
+            self.faces(server_id).presence(row.account_id),
+            false,
+            marked,
+            theme,
+            corrected,
+            body,
+            control,
+        );
         self.transcript_edit
             .space
             .row(open, &[key], line)

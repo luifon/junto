@@ -28,6 +28,7 @@ pub mod people;
 mod permissions;
 pub mod person_drop;
 pub mod picture_crop;
+pub mod presence;
 mod progress;
 pub mod receipts;
 pub mod recorded;
@@ -533,6 +534,7 @@ pub struct AppState {
     /// The chooser of a new direct conversation (ADR 0307).
     contacts: contacts::ContactSearch,
     switchers: switcher::SwitchSearches,
+    presence: presence::PresenceState,
     /// The role and the flow of the link on all servers (ADR 0782).
     linking: linking::LinkingState,
     /// What the person did with the update notice, and a move of a server that failed
@@ -1020,6 +1022,7 @@ impl AppState {
             account: account::AccountState::default(),
             contacts: contacts::ContactSearch::default(),
             switchers: switcher::SwitchSearches::default(),
+            presence: presence::PresenceState::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
             update_install: update_install::InstallState::new(),
@@ -1108,6 +1111,7 @@ impl AppState {
             state.pending.call_told = Some(text::SOUND_SETTINGS_NOT_READ.to_owned());
         }
         state.admin.exports.saved = saved_exports;
+        state.start_presence(cx);
         state.load_preset_picture(cx);
         state.changed(cx);
         state
@@ -2004,6 +2008,7 @@ impl AppState {
     /// The state of a server was replaced, or the reader of its changes fell behind and
     /// can have missed that: every message can have changed meanwhile.
     fn reloaded(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.presence_invalidated(server_id, true, cx);
         self.invalidate_switcher(server_id, cx);
         *self.reloads.entry(server_id).or_default() += 1;
         self.forget_quotes(server_id, None, cx);
@@ -2032,6 +2037,10 @@ impl AppState {
                 self.reloaded(server_id, cx);
                 return;
             }
+            Notice::PresenceChanged => {
+                self.presence_invalidated(server_id, false, cx);
+                return;
+            }
             Notice::Ended { .. } => return,
         };
         if matches!(
@@ -2051,6 +2060,7 @@ impl AppState {
                 | Event::ServerRoleDeleted { .. }
         ) {
             self.invalidate_switcher(server_id, cx);
+            self.presence_invalidated(server_id, true, cx);
         }
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);

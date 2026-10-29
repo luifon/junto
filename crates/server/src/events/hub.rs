@@ -31,6 +31,8 @@ pub struct Link {
     session_id: Uuid,
     started_at: OffsetDateTime,
     level: AtomicU8,
+    idle: AtomicBool,
+    visible: AtomicBool,
     news: Notify,
     attention: Notify,
     replaced: AtomicBool,
@@ -186,12 +188,19 @@ pub enum Lane {
     Session,
 }
 
+pub struct PresenceLink {
+    pub account_id: AccountId,
+    pub session_id: Uuid,
+    pub idle: bool,
+}
+
 pub struct Streams {
     limits: Mutex<Arc<StreamLimits>>,
     registry: Mutex<Registry>,
     event_reads: Arc<Semaphore>,
     session_reads: Arc<Semaphore>,
     held: watch::Sender<bool>,
+    presence: watch::Sender<()>,
     calls: CallRegistry,
 }
 
@@ -207,8 +216,79 @@ impl Streams {
             event_reads: Arc::new(Semaphore::new(limits.concurrent_deliveries.max(1))),
             session_reads: Arc::new(Semaphore::new(limits.concurrent_session_checks.max(1))),
             held: watch::Sender::new(false),
+            presence: watch::Sender::new(()),
             calls: CallRegistry::default(),
         }
+    }
+
+    pub fn presence_watch(&self) -> watch::Receiver<()> {
+        self.presence.subscribe()
+    }
+
+    pub fn presence_changed(&self) {
+        self.presence.send_replace(());
+    }
+
+    pub fn set_visible(&self, account: AccountId, visible: bool) {
+        let registry = lock(&self.registry);
+        let mut changed = false;
+        for link in registry.by_account.get(&account).into_iter().flatten() {
+            changed |= link.visible.swap(visible, Ordering::SeqCst) != visible;
+        }
+        drop(registry);
+        if changed {
+            self.presence_changed();
+        }
+    }
+
+    pub fn presence_changed_for(&self, account: AccountId) {
+        let public = lock(&self.registry)
+            .by_account
+            .get(&account)
+            .into_iter()
+            .flatten()
+            .any(|link| link.visible.load(Ordering::SeqCst));
+        if public {
+            self.presence_changed();
+        }
+    }
+
+    pub fn idle_differs(&self, account: AccountId, session: Uuid, idle: bool) -> bool {
+        lock(&self.registry)
+            .by_account
+            .get(&account)
+            .into_iter()
+            .flatten()
+            .any(|link| link.session_id == session && link.idle.load(Ordering::SeqCst) != idle)
+    }
+
+    pub fn set_idle(&self, account: AccountId, session: Uuid, idle: bool) {
+        let registry = lock(&self.registry);
+        let mut changed = false;
+        for link in registry.by_account.get(&account).into_iter().flatten() {
+            if link.session_id == session {
+                let was = link.idle.swap(idle, Ordering::SeqCst);
+                changed |= was != idle && link.visible.load(Ordering::SeqCst);
+            }
+        }
+        drop(registry);
+        if changed {
+            self.presence_changed();
+        }
+    }
+
+    pub fn presence_links(&self, accounts: &[AccountId]) -> Vec<PresenceLink> {
+        let registry = lock(&self.registry);
+        accounts
+            .iter()
+            .flat_map(|account| registry.by_account.get(account).into_iter().flatten())
+            .filter(|link| !link.is_replaced() && !link.is_stopping())
+            .map(|link| PresenceLink {
+                account_id: link.account_id,
+                session_id: link.session_id,
+                idle: link.idle.load(Ordering::SeqCst),
+            })
+            .collect()
     }
 
     pub fn calls(&self) -> &CallRegistry {
@@ -237,6 +317,17 @@ impl Streams {
         device_id: DeviceId,
         session_id: Uuid,
         started_at: OffsetDateTime,
+    ) -> Result<Registration, ApiError> {
+        self.open_with_presence(account_id, device_id, session_id, started_at, true)
+    }
+
+    pub fn open_with_presence(
+        self: &Arc<Self>,
+        account_id: AccountId,
+        device_id: DeviceId,
+        session_id: Uuid,
+        started_at: OffsetDateTime,
+        visible: bool,
     ) -> Result<Registration, ApiError> {
         let limits = self.limits();
         let mut registry = lock(&self.registry);
@@ -268,6 +359,8 @@ impl Streams {
             session_id,
             started_at,
             level: AtomicU8::new(NOT_SUBSCRIBED),
+            idle: AtomicBool::new(false),
+            visible: AtomicBool::new(visible),
             news: Notify::new(),
             attention: Notify::new(),
             replaced: AtomicBool::new(false),
@@ -279,6 +372,10 @@ impl Streams {
             .entry(account_id)
             .or_default()
             .push(link.clone());
+        drop(registry);
+        if visible {
+            self.presence_changed();
+        }
         Ok(Registration {
             streams: self.clone(),
             link,
@@ -313,6 +410,10 @@ impl Streams {
             if connections.is_empty() {
                 registry.by_account.remove(&link.account_id);
             }
+        }
+        drop(registry);
+        if link.visible.load(Ordering::SeqCst) {
+            self.presence_changed();
         }
     }
 

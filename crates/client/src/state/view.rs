@@ -168,6 +168,7 @@ pub struct MediaSnapshot {
 pub struct Known {
     /// The names and the avatars of accounts, as their profiles gave them (ADR 0783).
     pub people: People,
+    pub presence: super::presence::KnownPresence,
     pub members_failed: Vec<(ServerId, WorkspaceId)>,
     /// The name of the profile preset.
     pub preset_name: String,
@@ -4148,7 +4149,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .and_then(|call| call.share_ended.clone()),
     };
     view.call = call_strip(servers, known, view.shown());
-    view.faces = people::faces(servers, &known.people);
+    view.faces = people::faces(servers, &known.people).with_presence(&known.presence);
     view.wanted_people = people::wanted(servers, &view);
     view
 }

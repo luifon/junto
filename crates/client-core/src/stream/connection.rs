@@ -684,6 +684,11 @@ impl Client {
         }
         link.send_at = None;
         let message = ClientMessage::Subscribe {
+            presence: self
+                .shared
+                .presence
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && self.server_events.is_some_and(|revision| revision >= 3),
             level,
             cursor: Some(cursor),
         };
@@ -964,6 +969,17 @@ impl Client {
                     self.move_cursor(cursor.position);
                 } else {
                     self.server_reload();
+                }
+            }
+            ServerMessage::PresenceChanged {} => {
+                if self
+                    .shared
+                    .presence
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    && self.server_events.is_some_and(|revision| revision >= 3)
+                    && matches!(link.subscription, Subscription::Live { .. })
+                {
+                    self.untold.push(Notice::PresenceChanged);
                 }
             }
             ServerMessage::Resync { reason } => {
@@ -1491,6 +1507,11 @@ impl Client {
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::PresenceNotifications => {
+                if let Some(link) = &mut self.link {
+                    link.subscription = Subscription::None;
+                }
+            }
             Command::Refresh { reply } => {
                 if self.target.is_none() || self.halted {
                     let _ = reply.send(Err(LoadError::Off));

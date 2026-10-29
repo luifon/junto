@@ -219,6 +219,7 @@ impl Shell {
             if let Some(account) = row.account_id {
                 choice = choice
                     .avatar(account.as_uuid().as_u128())
+                    .presence(self.faces(destination.server()).presence(account))
                     .picture(self.faces(destination.server()).image(account));
             }
             list = list.child(

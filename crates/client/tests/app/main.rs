@@ -70,6 +70,7 @@ mod panics;
 mod people;
 mod permissions;
 mod pictures;
+mod presence;
 mod recordings;
 mod recovery;
 mod system_lines;

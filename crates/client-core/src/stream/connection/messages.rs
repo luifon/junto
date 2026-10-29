@@ -1169,7 +1169,8 @@ impl Client {
                     self.read(Part::MoreNotices(last));
                 }
             }
-            Command::Refresh { .. }
+            Command::PresenceNotifications
+            | Command::Refresh { .. }
             | Command::LoginUnanswered
             | Command::LoadMembers { .. }
             | Command::ReleaseMembers(_)

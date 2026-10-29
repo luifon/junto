@@ -348,6 +348,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
     use junto_protocol::export::{ExportFailure, ExportRemoval, ExportState};
     use junto_protocol::invite::{InviteRevocation, JoinRequestState};
     use junto_protocol::message::{Block, Inline, Mark, MessagePlace};
+    use junto_protocol::presence::{Presence, PresenceChoice};
     use junto_protocol::recording::{
         FileCheck, FileProblem, RecordingFailure, RecordingState, RecordingStopReason,
         SegmentFailure, SegmentSource, SegmentState,
@@ -426,6 +427,8 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         NotificationKind,
         NotificationLevel,
         OverrideState,
+        Presence,
+        PresenceChoice,
         RecordingFailure,
         RecordingState,
         RecordingStopReason,

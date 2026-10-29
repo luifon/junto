@@ -305,6 +305,7 @@ pub struct ChannelRow {
     /// The seed of the avatar that stands in place of the icon.
     avatar: Option<u128>,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
+    presence: Option<junto_client_core::protocol::presence::Presence>,
     nested: bool,
     muted: bool,
     /// Why the row cannot be used.
@@ -328,6 +329,7 @@ impl ChannelRow {
             on_click: None,
             avatar: None,
             picture: None,
+            presence: None,
             nested: false,
             muted: false,
             unavailable: None,
@@ -372,6 +374,11 @@ impl ChannelRow {
     }
 
     /// The image of the avatar of the person of the row, when the window holds it.
+    pub fn presence(mut self, presence: junto_client_core::protocol::presence::Presence) -> Self {
+        self.presence = Some(presence);
+        self
+    }
+
     pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
         self.picture = picture;
         self
@@ -557,6 +564,7 @@ impl RenderOnce for ChannelRow {
                     .small_pattern()
                     .radius(2.0)
                     .image(self.picture)
+                    .when_some(self.presence, |avatar, presence| avatar.presence(presence))
                     .into_any_element(),
                 None => icon(
                     self.icon,
@@ -638,6 +646,7 @@ pub struct OccupantRow {
     name: SharedString,
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
+    presence: Option<junto_client_core::protocol::presence::Presence>,
     marks: Vec<OccupantMark>,
     selector: Option<SharedString>,
     /// The menu of the person is open.
@@ -652,6 +661,7 @@ impl OccupantRow {
             name: name.into(),
             seed,
             picture: None,
+            presence: None,
             marks: Vec::new(),
             selector: None,
             open: false,
@@ -662,6 +672,11 @@ impl OccupantRow {
     /// The image of the avatar of the person, when the window holds it.
     pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
         self.picture = picture;
+        self
+    }
+
+    pub fn presence(mut self, presence: junto_client_core::protocol::presence::Presence) -> Self {
+        self.presence = Some(presence);
         self
     }
 
@@ -774,7 +789,12 @@ impl RenderOnce for OccupantRow {
                         }
                     })
             })
-            .child(Avatar::new(self.seed, 20.0).radius(2.0).image(self.picture))
+            .child(
+                Avatar::new(self.seed, 20.0)
+                    .radius(2.0)
+                    .image(self.picture)
+                    .when_some(self.presence, |avatar, presence| avatar.presence(presence)),
+            )
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .child(
                 div()

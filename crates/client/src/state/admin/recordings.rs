@@ -192,7 +192,7 @@ pub(crate) fn concerns(notice: Option<&Notice>, workspace_id: WorkspaceId) -> Co
     };
     match notice {
         None | Some(Notice::Reloaded { .. }) => Concern::Withdrawn,
-        Some(Notice::Ended { .. }) => Concern::None,
+        Some(Notice::Ended { .. } | Notice::PresenceChanged) => Concern::None,
         Some(Notice::Event { event, .. }) => match event.as_ref() {
             Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
                 of(recording.workspace_id == workspace_id)

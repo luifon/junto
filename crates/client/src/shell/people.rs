@@ -22,7 +22,9 @@ const PRESET_PICTURE_SIZE: f32 = 56.0;
 /// The avatar of an account at a size in design pixels: its image when the window holds
 /// it, and the generated avatar otherwise.
 pub(crate) fn avatar(faces: &ServerFaces, account_id: AccountId, size: f32) -> Avatar {
-    Avatar::new(account_id.as_uuid().as_u128(), size).image(faces.image(account_id))
+    Avatar::new(account_id.as_uuid().as_u128(), size)
+        .image(faces.image(account_id))
+        .presence(faces.presence(account_id))
 }
 
 /// The avatar of an account in a list of people, with the readable alternative of its

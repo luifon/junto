@@ -130,6 +130,8 @@ struct Connection<S> {
     failed_session_checks: u32,
     /// The log can hold events that the connection has not read.
     pending: bool,
+    presence_enabled: bool,
+    presence_dirty: bool,
     unsubscribed_since: Instant,
 }
 
@@ -175,6 +177,8 @@ pub async fn run<S>(
         pace: Pace::new(limits.batch, limits.most_failed_attempts),
         failed_session_checks: 0,
         pending: false,
+        presence_enabled: false,
+        presence_dirty: false,
         unsubscribed_since: Instant::now(),
         app,
     };
@@ -208,6 +212,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         let mut beats = tokio::time::interval_at(Instant::now() + heartbeat, heartbeat);
         beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut held = app.streams.held();
+        let mut presence = app.streams.presence_watch();
         let mut last_heard = Instant::now();
         let mut check_session = true;
         let mut not_before = Instant::now();
@@ -277,6 +282,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 () = std::future::ready(()), if continues => {}
                 () = tokio::time::sleep_until(not_before), if waits_for_retry => {}
                 () = link.news() => self.pending = true,
+                changed = presence.changed(), if self.presence_enabled => {
+                    if changed.is_err() { return End::Close(CloseCode::Stopping); }
+                    self.presence_dirty = true;
+                }
                 changed = held.changed() => {
                     if changed.is_err() {
                         return End::Close(CloseCode::Stopping);
@@ -312,6 +321,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 false => Step::Interrupted,
             });
         }
+        if self.presence_dirty && self.presence_enabled && self.subscription.is_some() {
+            self.presence_dirty = false;
+            self.control.push_back(Control {
+                message: ServerMessage::PresenceChanged {},
+                starts: None,
+            });
+            return Ok(Step::Again);
+        }
         if self.pending && self.subscription.is_some() && !held {
             return self.deliver().await;
         }
@@ -328,6 +345,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             self.subscription = Some(subscription);
             self.told = subscription.position;
             self.link.set_level(Some(subscription.level));
+            self.presence_dirty = self.presence_enabled;
             self.pending = true;
         } else if self.subscription.is_none() {
             self.unsubscribed_since = Instant::now();
@@ -630,13 +648,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             }
             Some(Ok(Message::Text(text))) => text,
         };
-        let Ok(ClientMessage::Subscribe { level, cursor }) = serde_json::from_str(&message) else {
+        let Ok(ClientMessage::Subscribe {
+            level,
+            cursor,
+            presence,
+        }) = serde_json::from_str(&message)
+        else {
             return Err(End::Close(CloseCode::InvalidMessage));
         };
         self.unsubscribe();
         for control in &mut self.control {
             control.starts = None;
         }
+        self.presence_enabled = presence;
         self.asked = Some((level, cursor));
         Ok(())
     }

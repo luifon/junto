@@ -855,7 +855,7 @@ impl Shell {
             Scope::Person(settings) => (
                 text::admin::overrides::PERSON_SETTINGS,
                 settings.name.clone(),
-                self.render_person_nav(settings, &theme, cx),
+                self.render_person_nav(view.server_id, settings, &theme, cx),
                 self.render_person_page(&view, settings, window, cx),
             ),
         };
@@ -1099,18 +1099,24 @@ impl Shell {
 
     fn render_person_nav(
         &mut self,
+        server: junto_client_core::protocol::ids::ServerId,
         settings: &PersonSettings,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let account_id = settings.account_id;
-        let mut column = self.settings_nav_head(
-            settings.name.clone(),
-            settings.listed_on(),
-            "person-nav-back",
-            theme,
-            cx,
-        );
+        let mut column = self
+            .settings_nav_head(
+                settings.name.clone(),
+                settings.listed_on(),
+                "person-nav-back",
+                theme,
+                cx,
+            )
+            .child(crate::ui::PresenceMark::new(
+                self.state.read(cx).presence(server, account_id),
+                12.,
+            ));
         for page in settings.pages.iter().copied() {
             let name = text::admin::overrides::person_page_name(page);
             column = column.child(

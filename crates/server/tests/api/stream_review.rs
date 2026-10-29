@@ -261,6 +261,7 @@ async fn the_replay_decision_counts_only_the_events_that_the_account_may_receive
     server.category(&owner, workspace.id, "seen 3", 3).await;
     let mut full = server.stream(&plain).await;
     full.send(&ClientMessage::Subscribe {
+        presence: false,
         level: Level::Full,
         cursor: Some(start),
     })
@@ -337,6 +338,7 @@ async fn a_read_that_takes_too_long_is_given_up_and_the_connection_stays_respons
 
     stream
         .send(&ClientMessage::Subscribe {
+            presence: false,
             level: Level::Background,
             cursor: None,
         })
@@ -812,6 +814,7 @@ async fn a_control_message_survives_a_check_of_the_session() {
 
     let subscribe = |cursor| {
         let message = ClientMessage::Subscribe {
+            presence: false,
             level: Level::Full,
             cursor,
         };
@@ -1005,6 +1008,7 @@ async fn a_new_epoch_makes_every_older_cursor_unknown() {
     assert_eq!(stream.epoch, after.epoch);
     stream
         .send(&ClientMessage::Subscribe {
+            presence: false,
             level: Level::Full,
             cursor: Some(before),
         })

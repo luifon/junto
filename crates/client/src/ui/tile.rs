@@ -80,6 +80,7 @@ pub struct PersonTile {
     name: SharedString,
     seed: u128,
     picture: Option<std::sync::Arc<gpui::RenderImage>>,
+    presence: Option<junto_client_core::protocol::presence::Presence>,
     speaking: bool,
     marks: Vec<TileMark>,
     label: SharedString,
@@ -105,6 +106,7 @@ impl PersonTile {
             name: name.into(),
             seed,
             picture: None,
+            presence: None,
             speaking: false,
             marks: Vec::new(),
             label: label.into(),
@@ -147,6 +149,11 @@ impl PersonTile {
     }
 
     /// The image of the avatar of the person, when the window holds it.
+    pub fn presence(mut self, presence: junto_client_core::protocol::presence::Presence) -> Self {
+        self.presence = Some(presence);
+        self
+    }
+
     pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
         self.picture = picture;
         self
@@ -265,6 +272,9 @@ impl RenderOnce for PersonTile {
                     .ink(colors.bone)
                     .whitespace_nowrap()
                     .children(marks)
+                    .children(self.presence.map(|presence| {
+                        super::PresenceMark::new(presence, 9.).background(colors.plate)
+                    }))
                     .child(div().min_w_0().truncate().child(self.name)),
             )
     }

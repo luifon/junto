@@ -29,6 +29,7 @@ pub mod followed;
 pub mod menus;
 pub mod people;
 pub mod permissions;
+pub mod presence;
 pub mod switcher;
 pub mod transcripts;
 pub mod tray;
