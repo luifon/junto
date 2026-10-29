@@ -779,7 +779,14 @@ pub(crate) fn element<V: ListHost>(
     let laid_out = Rc::clone(&frame);
     let render = cx.processor(move |this: &mut V, index: usize, window, cx| {
         laid_out.laid_out.set(laid_out.laid_out.get() + 1);
-        let content = render(this, index, window, cx);
+        let (content, actions) = if rows
+            .get(index)
+            .is_some_and(|entry| entry.position.is_some())
+        {
+            crate::ui::collect_actions(|| render(this, index, window, cx))
+        } else {
+            (render(this, index, window, cx), Vec::new())
+        };
         let Some(entry) = rows.get(index) else {
             return content;
         };
@@ -791,7 +798,7 @@ pub(crate) fn element<V: ListHost>(
             }
         }
         let key = entry.key.clone();
-        div()
+        let frame = div()
             .id(ElementId::Name(key.clone()))
             .track_focus(&entry.focus)
             .debug_selector({
@@ -835,7 +842,8 @@ pub(crate) fn element<V: ListHost>(
                     .id(ElementId::Name(format!("{key}-end").into()))
                     .track_focus(&entry.end)
                     .size_0(),
-            )
+            );
+        crate::ui::bind_action_menu(frame, ElementId::Name(key), actions, window, cx)
             .into_any_element()
     });
 

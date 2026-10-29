@@ -282,3 +282,97 @@ fn assert_target_link(
         ]
     );
 }
+
+#[gpui::test]
+fn an_administration_workspace_menu_renames_its_workspace(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    window.click("server-menu-button");
+    window.click("menu-administration");
+    crate::admin_pages::open_page(&mut window, "admin-nav-workspaces", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Server {
+                page: junto_client::state::admin::view::ServerPage::Workspaces(_),
+                ..
+            })
+        )
+    });
+    window.until("the workspace row is drawn", |window| {
+        window.shows_named(format!("workspace-row-{workspace}"))
+    });
+    window.right_click_named(format!("workspace-row-{workspace}"));
+    window.click_named("context-action:Rename".to_owned());
+    window.until("the workspace name form is open", |window| {
+        window.shows("workspace-name")
+    });
+    window.in_shell(|shell, window, cx| shell.type_admin_name("Renamed workspace", window, cx));
+    window.click("admin-form-send");
+    window.until("the workspace has its new name", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.name == "Renamed workspace")
+            && !window.shows("workspace-name")
+    });
+    assert!(
+        world
+            .run(owner.api().workspaces())
+            .unwrap()
+            .iter()
+            .any(|row| row.id == workspace && row.name == "Renamed workspace")
+    );
+}
+
+#[gpui::test]
+fn a_role_context_menu_preserves_the_delete_confirmation(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    let role = world
+        .run(owner.api().create_workspace_role(
+            workspace,
+            &junto_client_core::protocol::roles::CreateWorkspaceRole {
+                name: "Planning".to_owned(),
+                permissions: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.click("server-menu-button");
+    window.click("menu-administration");
+    crate::admin_pages::open_page(&mut window, "admin-nav-roles", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Server {
+                page: junto_client::state::admin::view::ServerPage::Roles(_),
+                ..
+            })
+        )
+    });
+    window.until("the role row is drawn", |window| {
+        window.shows_named(format!("role-row-{}", role.id))
+    });
+    window.right_click_named(format!("role-row-{}", role.id));
+    window.click_named("context-action:Delete".to_owned());
+    window.until("the deletion still requires confirmation", |window| {
+        window.shows("role-confirm")
+    });
+    assert!(
+        world
+            .run(owner.api().workspace_roles(workspace))
+            .unwrap()
+            .iter()
+            .any(|row| row.id == role.id)
+    );
+    window.click("role-confirm");
+    window.until("the confirmed deletion removes the role", |_| {
+        !world
+            .run(owner.api().workspace_roles(workspace))
+            .unwrap()
+            .iter()
+            .any(|row| row.id == role.id)
+    });
+}
