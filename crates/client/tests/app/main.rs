@@ -37,6 +37,7 @@ mod channel_history;
 mod channel_use;
 mod composing;
 mod contacts;
+mod context_menus;
 mod data_directory;
 mod departures;
 mod event_alerts;

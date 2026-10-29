@@ -10,13 +10,14 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, Context, Entity, FollowMode, FontWeight, HighlightStyle, Hsla, InteractiveElement,
     IntoElement, ListAlignment, ListState, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Window, deferred, div, list,
-    prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, StyledText, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_base::input::InputState;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
-use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, ServerId};
+use junto_client_core::protocol::ids::{
+    AccountId, ChannelId, ConversationId, ServerId, WorkspaceId,
+};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::settings::Panel;
 
@@ -760,16 +761,48 @@ impl Shell {
         items
     }
 
-    /// The menu of a channel, drawn at its row: its notification settings and its mute.
+    /// The actions of a channel, at its row.
     pub(crate) fn render_channel_menu(
         &mut self,
         server_id: ServerId,
-        channel_id: ChannelId,
-        name: &str,
-        mute: &Mute,
+        workspace_id: WorkspaceId,
+        channel: &crate::state::view::ChannelRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let channel_id = channel.id;
         let mut items = vec![
+            MenuItem::new("channel-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("channel-mark-read")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, _| {
+                        state.mark_place_as_read(
+                            server_id,
+                            junto_client_core::model::PlaceId::Channel(channel_id),
+                        );
+                    });
+                }))
+                .into_any_element(),
+        ];
+        if channel.allowed.manage {
+            items.push(
+                MenuItem::new("channel-edit", text::EDIT_CHANNEL)
+                    .icon(Icon::Gear)
+                    .selector("channel-edit")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_channel_settings(
+                            workspace_id,
+                            channel_id,
+                            crate::state::admin::ChannelPage::Overview,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
+        items.push(
             MenuItem::new("channel-notify-settings", text::NOTIFICATION_SETTINGS_ITEM)
                 .icon(Icon::Bell)
                 .selector("channel-notify-settings")
@@ -782,10 +815,10 @@ impl Shell {
                     );
                 }))
                 .into_any_element(),
-            menu_separator(cx).into_any_element(),
-        ];
+        );
+        items.push(menu_separator(cx).into_any_element());
         items.extend(
-            self.mute_items(mute, "channel", cx, move |this, length, cx| {
+            self.mute_items(&channel.mute, "channel", cx, move |this, length, cx| {
                 this.state.update(cx, |state, cx| {
                     state.set_channel_mute(server_id, channel_id, length, cx);
                 });
@@ -793,7 +826,7 @@ impl Shell {
         );
         self.row_menu(
             "channel-menu",
-            format!("{}: {name}", text::CHANNEL_MENU),
+            format!("{}: {}", text::CHANNEL_MENU, channel.name),
             items,
             cx,
         )
@@ -832,7 +865,7 @@ impl Shell {
             .absolute()
             .left(u(40.0))
             .top(u(26.0))
-            .child(deferred(
+            .child(
                 Menu::new(selector, label, self.layer_focus())
                     .selector(selector)
                     .width(232.0)
@@ -840,8 +873,9 @@ impl Shell {
                         this.close_layer(window, cx);
                     }))
                     .children(items)
-                    .child(div().h(u(4.0))),
-            ))
+                    .child(div().h(u(4.0)))
+                    .popup(gpui::Point::default()),
+            )
             .into_any_element()
     }
 

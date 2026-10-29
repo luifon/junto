@@ -1874,6 +1874,7 @@ pub const READING_LATER: &str = "Reading later messages…";
 pub const GO_TO_END: &str = "Go to the newest messages";
 pub const NEW_MESSAGES: &str = "New";
 pub const MARK_AS_READ: &str = "Mark as read";
+pub const EDIT_CHANNEL: &str = "Edit channel";
 pub const MARK_AS_READ_HELP: &str = "Mark every message of this channel as read";
 pub const EDITED: &str = "edited";
 pub const DELETED_MESSAGE: &str = "This message was deleted.";

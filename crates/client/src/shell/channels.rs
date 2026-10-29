@@ -427,13 +427,7 @@ impl Shell {
                     server_id
                         .filter(|_| channel_menu == Some(channel_id))
                         .map(|server_id| {
-                            self.render_channel_menu(
-                                server_id,
-                                channel_id,
-                                &channel.name,
-                                &channel.mute,
-                                cx,
-                            )
+                            self.render_channel_menu(server_id, workspace_id, channel, cx)
                         });
                 let held = self.state.clone();
                 let hover = self.state.clone();
