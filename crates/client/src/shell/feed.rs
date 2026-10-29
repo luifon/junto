@@ -669,23 +669,33 @@ impl Rich {
         let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
         let targets = self.copy_targets;
         let hover = links.clone();
-        crate::selectable::SelectableText::rich(
-            InteractiveText::new(("rich", id), styled)
-                .on_click(ranges, move |index, _, cx| {
-                    // The address is HTTP, HTTPS or mailto: the application of the system
-                    // for it opens it.
-                    if let Some((_, link)) = links.get(index) {
-                        crate::opening::open_link(link, cx);
-                    }
-                })
-                .tooltip(move |index, window, cx| {
-                    hover
-                        .iter()
-                        .find(|(range, _)| range.contains(&index))
-                        .map(|(_, link)| tooltip(link.to_string())(window, cx))
-                }),
-            targets,
-            self.replacements,
+        let layout = styled.layout().clone();
+        let context_links = links.clone();
+        crate::ui::LinkMenu::text(
+            ("rich-links", id),
+            layout,
+            context_links,
+            crate::selectable::SelectableText::rich(
+                InteractiveText::new(("rich", id), styled)
+                    .on_click(ranges, move |index, window, cx| {
+                        // The address is HTTP, HTTPS or mailto: the application of the system
+                        // for it opens it.
+                        if let Some((_, link)) = links.get(index) {
+                            window.dispatch_action(
+                                Box::new(crate::ui::OpenLink { link: link.clone() }),
+                                cx,
+                            );
+                        }
+                    })
+                    .tooltip(move |index, window, cx| {
+                        hover
+                            .iter()
+                            .find(|(range, _)| range.contains(&index))
+                            .map(|(_, link)| tooltip(link.to_string())(window, cx))
+                    }),
+                targets,
+                self.replacements,
+            ),
         )
         .into_any_element()
     }

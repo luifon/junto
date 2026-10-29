@@ -610,3 +610,34 @@ fn a_composer_menu_ends_when_navigation_changes_its_place(cx: &mut TestAppContex
         "keep this draft"
     );
 }
+
+#[gpui::test]
+fn a_rendered_link_has_its_own_menu_and_shared_copy_confirmation(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    window.write("[the guide](https://example.test/guide)");
+    let message = window.until_message("the guide");
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!(
+            "message:{}",
+            message.message.id
+        )))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("link-menu"));
+    assert!(!window.shows("message-menu"));
+    assert_eq!(window.cx.opened_url(), None);
+    window.click_named("link-copy:0".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "https://example.test/guide"
+    );
+    assert!(window.shows("copied-confirmation"));
+}

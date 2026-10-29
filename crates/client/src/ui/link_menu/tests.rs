@@ -1,4 +1,4 @@
-use super::{CopyToClipboard, LinkMenu};
+use super::{CopyToClipboard, LinkMenu, OpenLink};
 use gpui::{
     Context, Entity, FocusHandle, InteractiveElement, InteractiveText, IntoElement, Modifiers,
     MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, StyledText,
@@ -34,7 +34,7 @@ impl Render for Host {
         let ranges = links.iter().map(|(range, _)| range.clone()).collect();
         let clicked = links.clone();
         let text = InteractiveText::new("text", styled).on_click(ranges, move |index, _, cx| {
-            crate::opening::open_link(&clicked[index].1, cx)
+            cx.open_url(clicked[index].1.as_str())
         });
         div()
             .id("host")
@@ -49,6 +49,9 @@ impl Render for Host {
             )
             .on_action(cx.listener(|_, action: &CopyToClipboard, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(action.text.clone()))
+            }))
+            .on_action(cx.listener(|_, action: &OpenLink, _, cx| {
+                cx.open_url(action.link.as_str());
             }))
             .child(LinkMenu::text("links", layout, links, text).focus(&self.source))
             .child(LinkMenu::control(
@@ -148,13 +151,23 @@ fn a_keyboard_link_menu_lists_each_target_and_restores_the_text_focus(cx: &mut T
     settle(cx);
     cx.simulate_keystrokes("shift-f10");
     settle(cx);
-    let item = cx.debug_bounds("link-copy:1").unwrap().center();
-    press(cx, item, MouseButton::Left);
+    for _ in 0..4 {
+        cx.simulate_keystrokes("down");
+        settle(cx);
+    }
+    cx.simulate_keystrokes("enter");
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+    });
+    settle(cx);
     assert_eq!(
         cx.read_from_clipboard().unwrap().text().unwrap(),
         "https://example.test/terms"
     );
     assert!(cx.update(|window, _| source.is_focused(window)));
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(cx.debug_bounds("link-menu").is_some());
 }
 
 #[gpui::test]

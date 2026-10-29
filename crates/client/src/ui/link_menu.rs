@@ -15,6 +15,12 @@ pub struct CopyToClipboard {
     pub text: String,
 }
 
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = ui, no_json, no_register)]
+pub struct OpenLink {
+    pub link: Link,
+}
+
 #[derive(IntoElement)]
 pub struct LinkMenu {
     id: ElementId,
@@ -79,6 +85,7 @@ impl RenderOnce for LinkMenu {
         let text = self.layout.is_some();
         let (mouse_layout, key_layout) = (self.layout.clone(), self.layout);
         let (mouse_links, key_links) = (self.links.clone(), self.links);
+        let key_source = source.clone();
         let look = crate::theme::theme(cx);
         let ring = super::focus_ring_inside(look.colors.terracotta_deep, look.metrics.focus_ring);
         div()
@@ -114,7 +121,10 @@ impl RenderOnce for LinkMenu {
                 }
             })
             .on_key_down(move |event, window, cx| {
-                if !super::menu::context_menu_key(&event.keystroke) {
+                let activates = text
+                    && key_source.is_focused(window)
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space");
+                if !super::menu::context_menu_key(&event.keystroke) && !activates {
                     return;
                 }
                 cx.stop_propagation();
@@ -193,7 +203,12 @@ impl Render for Popup {
                         MenuItem::new(("link-open", index), text::OPEN_LINK).on_click(cx.listener(
                             move |this, _, window, cx| {
                                 if this.choose(&opened, window, cx) {
-                                    crate::opening::open_link(&opened, cx);
+                                    window.dispatch_action(
+                                        Box::new(OpenLink {
+                                            link: opened.clone(),
+                                        }),
+                                        cx,
+                                    );
                                 }
                             },
                         )),

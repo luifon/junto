@@ -51,7 +51,7 @@ pub use form_space::{FormSpace, NewRow};
 pub use held::take_unsettled;
 pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use input_menu::InputMenu;
-pub use link_menu::{CopyToClipboard, LinkMenu};
+pub use link_menu::{CopyToClipboard, LinkMenu, OpenLink};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{ContextMenuExt, Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
