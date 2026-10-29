@@ -8,8 +8,8 @@ use gpui::{
 };
 
 use super::{
-    Avatar, Badge, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt, focus_ring_inside, icon,
-    selection_mark, tooltip, unread_dot,
+    Avatar, Badge, ContextMenuExt, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt,
+    focus_ring_inside, icon, selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
 use crate::theme::{theme, u};
@@ -162,22 +162,7 @@ impl RenderOnce for WorkspaceRow {
                 row.bg(Hsla::from(colors.basalt_3))
             })
             .when_some(self.on_menu, |row, open| {
-                let (by_click, by_key) = (open.clone(), open);
-                row.on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
-                    by_click(window, cx);
-                })
-                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                    let keys = &event.keystroke;
-                    let opens = match keys.key.as_str() {
-                        "menu" => true,
-                        "f10" => keys.modifiers.shift,
-                        _ => false,
-                    };
-                    if opens {
-                        by_key(window, cx);
-                        cx.stop_propagation();
-                    }
-                })
+                row.on_context_menu(move |window, cx| open(window, cx))
             })
             .when(!self.in_menu, |row| {
                 // The branch of the tree line that joins the row to its server.
@@ -522,22 +507,7 @@ impl RenderOnce for ChannelRow {
                 row.bg(Hsla::from(colors.limestone_hover))
             })
             .when_some(self.on_menu, |row, open| {
-                let (by_click, by_key) = (open.clone(), open);
-                row.on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
-                    by_click(window, cx);
-                })
-                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                    let keys = &event.keystroke;
-                    let opens = match keys.key.as_str() {
-                        "menu" => true,
-                        "f10" => keys.modifiers.shift,
-                        _ => false,
-                    };
-                    if opens {
-                        by_key(window, cx);
-                        cx.stop_propagation();
-                    }
-                })
+                row.on_context_menu(move |window, cx| open(window, cx))
             })
             .child(match self.avatar {
                 Some(seed) => Avatar::new(seed, 16.0)
@@ -733,14 +703,11 @@ impl RenderOnce for OccupantRow {
                 row.track_focus(&focus)
                     .children(super::reveal::report(&focus, window))
                     .focus_visible(move |style| style.shadow(ring))
-                    .on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
-                        by_click(window, cx);
-                    })
+                    .on_context_menu(move |window, cx| by_click(window, cx))
                     .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                         let keys = &event.keystroke;
                         let opens = match keys.key.as_str() {
-                            "menu" | "enter" | "space" => true,
-                            "f10" => keys.modifiers.shift,
+                            "enter" | "space" => true,
                             _ => false,
                         };
                         if opens {
