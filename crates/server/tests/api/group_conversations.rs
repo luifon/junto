@@ -845,3 +845,87 @@ async fn group_call_arrival_reads_an_indexed_transition_beside_large_unrelated_h
         "one participant transition must not scan unrelated history: {plan}"
     );
 }
+
+#[tokio::test]
+async fn a_finished_group_export_keeps_former_member_names_and_is_revoked_after_leaving() {
+    use junto_protocol::{
+        export::{Export, ExportState},
+        ids::CallId,
+    };
+    let attachments = crate::support::Scratch::new();
+    let exports = crate::support::Scratch::new();
+    let server = TestServer::start_with(|config| {
+        config.attachments_directory = Some(attachments.0.clone());
+        config.exports_directory = Some(exports.0.clone());
+    })
+    .await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let former = server.join(&owner, "Former").await;
+    let (id, _) = create(&server, &writer, &[&reader, &former], "Project").await;
+    server.post(&writer, &format!("/api/v1/conversations/{id}/messages"),
+        &json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"account","account_id":former.account_id}]}]}}))
+        .await.ok::<Message>(StatusCode::CREATED);
+    let mut tx = server.db.begin().await.unwrap();
+    junto_server::messages::groups::call_line(
+        &mut tx,
+        server.state.now(),
+        id,
+        CallId::generate(),
+        "person_joined",
+        Some(former.account_id),
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    server
+        .delete(&former, &format!("{GROUPS}/{id}/membership"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server
+        .delete(&former, "/api/v1/account")
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let export: Export = server
+        .post(
+            &writer,
+            &format!("/api/v1/conversations/{id}/exports"),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    junto_server::exports::run_once(&server.state)
+        .await
+        .unwrap();
+    let route = format!("/api/v1/exports/{}", export.id);
+    let finished: Export = server.get(&writer, &route).await.ok(StatusCode::OK);
+    assert_eq!(finished.state, ExportState::Ready);
+    let file = format!("{route}/file");
+    let reply = server.get(&writer, &file).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let entries = junto_server::exports::zip::read(reply.bytes()).unwrap();
+    let page = String::from_utf8(
+        entries
+            .iter()
+            .find(|entry| entry.name == "messages.html")
+            .unwrap()
+            .content
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        page.contains("@Former"),
+        "mention attribution must survive departure and deletion: {page}"
+    );
+    assert!(
+        page.contains("person joined by Former"),
+        "call attribution must survive departure and deletion: {page}"
+    );
+    server
+        .delete(&writer, &format!("{GROUPS}/{id}/membership"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.get(&writer, &file).await.error(ErrorCode::NotFound);
+}

@@ -914,13 +914,11 @@ impl Job {
                 names.roles = found.into_iter().collect();
             }
             MessagePlace::Group { conversation_id } => {
-                let group = crate::messages::groups::load(connection, conversation_id).await?;
-                let found: Vec<(AccountId, String)> =
-                    sqlx::query_as("select id,name from accounts where id=any($1) and id=any($2)")
-                        .bind(&group.account_ids)
-                        .bind(&accounts)
-                        .fetch_all(&mut *connection)
-                        .await?;
+                let found: Vec<(AccountId, String)> = sqlx::query_as(
+                    "select a.id,a.name from accounts a where a.id=any($1) and (
+                        exists(select 1 from conversation_members m where m.conversation_id=$2 and m.account_id=a.id)
+                        or exists(select 1 from conversation_former_members m where m.conversation_id=$2 and m.account_id=a.id))"
+                ).bind(&accounts).bind(conversation_id).fetch_all(&mut *connection).await?;
                 names.accounts = found.into_iter().collect();
             }
             MessagePlace::Direct {
