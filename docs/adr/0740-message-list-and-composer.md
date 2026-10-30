@@ -238,3 +238,9 @@ concealed subtree. Explicit whole-message copy continues to include the full
 body. The 90-message window regression drags backwards over several screens,
 checks partial Unicode endpoints and every intervening row, then copies again
 with neither endpoint painted.
+
+The unread-reminder restart window check waits for the selected server to show
+its channel lists before looking up that channel's counters. Opening a client
+returns before its asynchronous snapshot is applied; the absence of a row during
+that loading phase is not a read-position result. The persisted boundary and
+cross-device assertions run after this explicit readiness condition.

@@ -14,6 +14,7 @@ use crate::support::TestServer;
 
 impl Window {
     /// The unread messages and mentions of the row of a channel.
+    #[track_caller]
     fn unread_of(&mut self, channel_id: ChannelId) -> (u64, u64) {
         self.channels()
             .into_iter()
@@ -223,6 +224,7 @@ fn manual_unread_stays_unread_in_active_windows_and_on_the_other_device(
     }
     first.close();
     let mut first = crate::harness::open(cx, directory.path());
+    first.until_ready();
     first.until("the unread reminder survives a restart", |window| {
         window.unread_of(channel) == (2, 0)
     });
