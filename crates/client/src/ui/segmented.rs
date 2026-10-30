@@ -10,7 +10,6 @@ use crate::theme::{theme, u};
 
 type SelectHandler = std::rc::Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
-#[derive(IntoElement)]
 pub struct Segmented {
     id: ElementId,
     label: SharedString,
@@ -53,8 +52,44 @@ impl Segmented {
     }
 }
 
+impl Segmented {
+    fn context_actions(&self) -> Vec<super::RowAction> {
+        let Some(handler) = &self.on_select else {
+            return Vec::new();
+        };
+        self.options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                let handler = handler.clone();
+                super::RowAction {
+                    label: format!("{}: {option}", self.label).into(),
+                    icon: None,
+                    disabled: self.selected == Some(index),
+                    detail: None,
+                    handler: Some(std::rc::Rc::new(move |_, window, cx| {
+                        handler(index, window, cx)
+                    })),
+                }
+            })
+            .collect()
+    }
+}
+
+impl IntoElement for Segmented {
+    type Element = gpui::ViewElement<Self>;
+    fn into_element(self) -> Self::Element {
+        for action in self.context_actions() {
+            action.register();
+        }
+        gpui::ViewElement::new(self)
+    }
+}
+
 impl RenderOnce for Segmented {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let actions = self.context_actions();
+        let id = self.id.clone();
         let theme = theme(cx);
         let colors = theme.colors;
         let selector = self.selector;
@@ -119,8 +154,9 @@ impl RenderOnce for Segmented {
                 })
                 .child(crate::selectable::SelectableText::unobserved(option))
         });
-        div()
+        let frame = div()
             .id(self.id)
+            .relative()
             .role(Role::RadioGroup)
             .aria_label(self.label)
             .flex()
@@ -130,6 +166,7 @@ impl RenderOnce for Segmented {
             .border_1()
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
-            .children(segments)
+            .children(segments);
+        super::bind_action_menu(frame, id, actions, window, cx)
     }
 }

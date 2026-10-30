@@ -218,9 +218,15 @@ impl RenderOnce for Field {
                 )))
             })
             .child(div().flex_1().min_w_0().px(u(look.padding)).child(
-                crate::selectable::SelectableText::unobserved(Input::new(&self.state)),
+                crate::selectable::SelectableText::unobserved(super::InputMenu::new(
+                    &self.state,
+                    Input::new(&self.state),
+                )),
             ))
             .children(self.trailing)
             .children(super::reveal::report(&focus, window))
     }
 }
+
+#[cfg(test)]
+mod tests;

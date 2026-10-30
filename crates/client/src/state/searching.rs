@@ -4,7 +4,7 @@
 use gpui::Context;
 use junto_client_core::api::{ApiError, ErrorCategory, SearchQuery};
 use junto_client_core::flow::FlowError;
-use junto_client_core::model::Timeline;
+use junto_client_core::model::{PlaceId, Timeline};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{MessageId, ServerId};
 use time::OffsetDateTime;
@@ -45,18 +45,80 @@ impl AppState {
     /// panel shows the search in place of a thread, the pinned messages and the notices.
     pub fn search(&mut self, server_id: ServerId, text: &str, cx: &mut Context<Self>) {
         let text = text.trim().to_owned();
-        if text.is_empty() {
-            self.close_search(cx);
-            return;
-        }
         let filters = self
             .known
             .search
             .as_ref()
             .filter(|search| search.server_id == server_id)
-            .map(|search| search.filters)
+            .map(|search| {
+                if search.files {
+                    Filters::default()
+                } else {
+                    search.filters
+                }
+            })
             .unwrap_or_default();
-        self.start_search(server_id, text, filters, cx);
+        self.start_search(server_id, text, filters, false, cx);
+    }
+
+    pub fn show_place_files(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(model) = self
+            .client
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+        else {
+            return;
+        };
+        let mut filters = Filters {
+            has_file: true,
+            ..Filters::default()
+        };
+        match place {
+            PlaceId::Channel(id) | PlaceId::Thread { channel_id: id, .. } => {
+                let Some(channel) = model.readable_channel(id) else {
+                    return;
+                };
+                self.selection
+                    .workspaces
+                    .insert(server_id, channel.workspace_id);
+                self.selection
+                    .channels
+                    .insert((server_id, channel.workspace_id), id);
+                self.selection.conversations.remove(&server_id);
+                filters.channel = Some(id);
+            }
+            PlaceId::Direct(id) => {
+                if model.place(PlaceId::Direct(id)).is_none() {
+                    return;
+                }
+                self.selection.conversations.insert(server_id, id);
+                self.known.conversation_refused = None;
+                filters.conversation = Some(id);
+            }
+        }
+        self.end_jump();
+        self.navigations += 1;
+        self.selection.server = Some(server_id);
+        self.start_search(server_id, String::new(), filters, true, cx);
+    }
+
+    pub fn previous_files(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = &mut self.known.search else {
+            return;
+        };
+        if !search.files || search.reading_more || search.file_pages.is_empty() {
+            return;
+        }
+        search.file_pages.pop();
+        search.go_failed = None;
+        search.reading_more = true;
+        self.ask_search(false, cx);
+        self.changed(cx);
     }
 
     /// Changes the filters of the search and runs it again.
@@ -65,16 +127,20 @@ impl AppState {
             return;
         };
         let (server_id, text) = (search.server_id, search.text.clone());
-        self.start_search(server_id, text, filters, cx);
+        self.start_search(server_id, text, filters, false, cx);
     }
 
-    /// Runs the search of the window again from its first page, after a failure.
+    /// Runs the search of the window again after a failure.
     pub fn search_again(&mut self, cx: &mut Context<Self>) {
         let Some(search) = &self.known.search else {
             return;
         };
+        if search.files {
+            self.read_search_again(cx);
+            return;
+        }
         let (server_id, text, filters) = (search.server_id, search.text.clone(), search.filters);
-        self.start_search(server_id, text, filters, cx);
+        self.start_search(server_id, text, filters, false, cx);
     }
 
     fn start_search(
@@ -82,6 +148,7 @@ impl AppState {
         server_id: ServerId,
         text: String,
         filters: Filters,
+        files: bool,
         cx: &mut Context<Self>,
     ) {
         self.selection.thread = None;
@@ -92,16 +159,21 @@ impl AppState {
         self.known.fork = None;
         // The results of the same text stay on screen while its next answer is on its
         // way; another text starts with an empty panel.
-        let held = self
-            .known
-            .search
-            .take()
-            .filter(|search| search.server_id == server_id && search.text == text);
+        let held = self.known.search.take().filter(|search| {
+            !files
+                && search.server_id == server_id
+                && search.text == text
+                && search.filters == filters
+                && search.files == files
+        });
         self.known.search = Some(Search {
+            files,
+            capabilities: None,
             server_id,
             text,
             filters,
             progress: Progress::Searching,
+            file_pages: Vec::new(),
             hits: held.map(|search| search.hits).unwrap_or_default(),
             more: false,
             reading_more: false,
@@ -136,11 +208,18 @@ impl AppState {
             return;
         };
         if !search.more
-            || search.hits.len() >= MOST_HITS
+            || (!search.files && search.hits.len() >= MOST_HITS)
             || search.reading_more
             || search.progress != Progress::Done
         {
             return;
+        }
+        if search.files {
+            let Some(cursor) = self.search_next.clone() else {
+                return;
+            };
+            search.file_pages.push(cursor);
+            search.go_failed = None;
         }
         search.reading_more = true;
         self.ask_search(true, cx);
@@ -165,20 +244,43 @@ impl AppState {
             return;
         };
         let query = SearchQuery {
+            files: search.files,
             text: search.text.clone(),
             channel_id: search.filters.channel,
+            conversation_id: search.filters.conversation,
             author_id: search.filters.author,
             from: search
                 .filters
                 .date
                 .from(OffsetDateTime::now_utc(), self.known.zone),
-            until: None,
+            until: search.filters.date.until(self.known.zone),
+            has_file: search.filters.has_file,
+            has_link: search.filters.has_link,
+            has_picture: search.filters.has_picture,
+            mentions_me: search.filters.mentions_me,
+            direct: search.filters.direct,
             limit: None,
-            cursor: if more { self.search_next.clone() } else { None },
+            cursor: if search.files {
+                search.file_pages.last().cloned()
+            } else if more {
+                self.search_next.clone()
+            } else {
+                None
+            },
         };
         let api = server.api();
+        let empty = query.text.is_empty() && search.filters == Filters::default() && !search.files;
         cx.spawn(async move |this, cx| {
-            let answered = api.search(&query).await;
+            let capabilities = api.search_capabilities().await;
+            let reported = capabilities.as_ref().ok().copied();
+            let answered = match capabilities {
+                Ok(_) if empty => Ok(junto_client_core::protocol::discovery::SearchPage {
+                    results: Vec::new(),
+                    next: None,
+                }),
+                Ok(_) => api.search(&query).await,
+                Err(error) => Err(error),
+            };
             let _ = this.update(cx, |this, cx| {
                 #[cfg(feature = "test-support")]
                 {
@@ -191,9 +293,10 @@ impl AppState {
                     return;
                 };
                 search.reading_more = false;
+                search.capabilities = reported;
                 match answered {
                     Ok(page) => {
-                        if !more {
+                        if !more || search.files {
                             search.hits.clear();
                         }
                         let number = search.hits.last().map_or(0, |last| last.page + 1);
@@ -215,6 +318,9 @@ impl AppState {
                     Err(error) => {
                         // A further page that failed leaves the read pages.
                         if more {
+                            if search.files {
+                                search.file_pages.pop();
+                            }
                             search.go_failed = Some(text::flow_error(&FlowError::from(&error)));
                         } else {
                             search.hits.clear();
@@ -260,6 +366,25 @@ impl AppState {
         }
     }
 
+    pub(super) fn end_files_of_other_place(&mut self, shown: Shown) {
+        let changed = self.known.search.as_ref().is_some_and(|search| {
+            if !search.files {
+                return false;
+            }
+            let scope = search
+                .filters
+                .channel
+                .map(PlaceId::Channel)
+                .or_else(|| search.filters.conversation.map(PlaceId::Direct));
+            Some(search.server_id) != shown.server || scope != shown.place()
+        });
+        if changed {
+            self.known.search = None;
+            self.search_asks += 1;
+            self.search_next = None;
+        }
+    }
+
     /// The state of a server was replaced: the first page of its search is read again,
     /// because each page is decided by what the account can read at the time of its
     /// request (ADR 0409). A search that the side panel does not show sends no request:
@@ -277,6 +402,9 @@ impl AppState {
             return;
         }
         if search.open {
+            if search.files || search.filters.has_file || search.filters.has_picture {
+                search.hits.clear();
+            }
             self.read_search_again(cx);
         } else {
             search.hits.clear();
@@ -312,6 +440,45 @@ impl AppState {
         self.search_after_reload(server_id, cx);
     }
 
+    pub(super) fn search_after_message_change(
+        &mut self,
+        server_id: ServerId,
+        place: &junto_client_core::protocol::message::MessagePlace,
+        message_id: MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(search) = self.known.search.as_mut().filter(|search| {
+            search.server_id == server_id
+                && search.open
+                && (search.files || search.filters.has_file || search.filters.has_picture)
+        }) else {
+            return;
+        };
+        let matches = match PlaceId::of(place) {
+            PlaceId::Channel(channel)
+            | PlaceId::Thread {
+                channel_id: channel,
+                ..
+            } => {
+                search.filters.conversation.is_none()
+                    && search.filters.channel.is_none_or(|id| id == channel)
+            }
+            PlaceId::Direct(conversation) => {
+                search.filters.channel.is_none()
+                    && search
+                        .filters
+                        .conversation
+                        .is_none_or(|id| id == conversation)
+            }
+        };
+        if !matches {
+            return;
+        }
+        search.hits.retain(|hit| hit.message_id != Some(message_id));
+        self.read_search_again(cx);
+        self.changed(cx);
+    }
+
     /// The channel of the filter left the state of its server: the filter is taken
     /// away, and the search is read again without it.
     pub(super) fn drop_lost_search_filter(
@@ -322,6 +489,19 @@ impl AppState {
         let Some(search) = &mut self.known.search else {
             return;
         };
+        if search.files
+            && let Some(id) = search.filters.conversation
+        {
+            let held = servers
+                .iter()
+                .find(|server| server.id == search.server_id)
+                .and_then(shown_model)
+                .is_none_or(|model| model.place(PlaceId::Direct(id)).is_some());
+            if !held {
+                self.close_search(cx);
+            }
+            return;
+        }
         let Some(channel_id) = search.filters.channel else {
             return;
         };
@@ -329,8 +509,15 @@ impl AppState {
             .iter()
             .find(|server| server.id == search.server_id)
             .and_then(shown_model)
-            .is_none_or(|model| model.channel(channel_id).is_some());
+            .is_none_or(|model| {
+                model.channel(channel_id).is_some()
+                    || (search.files && model.readable_channel(channel_id).is_some())
+            });
         if held {
+            return;
+        }
+        if search.files {
+            self.close_search(cx);
             return;
         }
         search.filters.channel = None;

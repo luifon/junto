@@ -258,7 +258,11 @@ fn a_member_corrects_a_line_names_a_voice_and_reads_who_changed_them(cx: &mut Te
 
     // The person corrects the second line. A text that the server would refuse is not
     // sent.
-    window.click_named("correct-line:1".to_owned());
+    window.right_click_named("transcript-line:1".to_owned());
+    window.click_named(format!(
+        "context-action:{}",
+        text::transcripts::CORRECT_LINE
+    ));
     assert!(window.shows("transcript-form-field"));
     window.type_transcript("   ");
     window.click("transcript-form-send");
@@ -522,6 +526,11 @@ fn the_parts_of_a_recording_saved_in_part_state_their_time_ranges(cx: &mut TestA
     for index in 0..detail.parts.len() {
         assert!(window.shows_named(format!("recording-part:{index}")));
     }
+    window.right_click_named("recording-part:0".to_owned());
+    window.click("context-action:Copy text");
+    assert!(window.shows("recording-parts-list"));
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(copied.contains(&detail.parts[0].title) && copied.contains(&detail.parts[0].state));
     // Each part states the range that the recorder reported for it, in the time of day of
     // the person: the seconds between its start and its end are those of the server.
     let held = world
@@ -1222,4 +1231,223 @@ fn a_long_transcript_line_wraps_inside_the_panel(cx: &mut TestAppContext) {
             "at a width of {width}, the line {line:?} is not higher than {one_row:?}"
         );
     }
+}
+
+#[gpui::test]
+fn recording_links_open_the_recording_under_history_permissions_and_support_archives(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        workspace_id,
+        _directory,
+        ..
+    } = scene(cx);
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
+    window.click_channel("general");
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_recording_link(&origin, id, cx)
+    }));
+    window.until(
+        "the linked recording is in its transcript panel",
+        |window| {
+            window.selected_channel() == voice
+                && window
+                    .panel()
+                    .is_some_and(|(_, open, _, _)| open.id == id && open.lines.lines.len() == 1)
+        },
+    );
+    window.click_channel("general");
+    let general = window.selected_channel();
+    let everyone = crate::channel_use::everyone(&world, &admin, workspace_id);
+    world
+        .run(admin.handle.api().set_channel_rule(
+            voice,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::ReadMessageHistory],
+            },
+        ))
+        .unwrap();
+    for target in [id, RecordingId::generate()] {
+        assert!(window.state.update(&mut window.cx, |state, cx| {
+            state.open_recording_link(&origin, target, cx)
+        }));
+        window.until("the recording is refused", |window| {
+            window.shows("message-link-refusal")
+        });
+        assert_eq!(window.selected_channel(), general);
+        assert_eq!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.message_link_refusal()),
+            Some(text::MESSAGE_LINK_UNAVAILABLE)
+        );
+        window.click("dismiss-message-link-refusal");
+    }
+    world
+        .run(admin.handle.api().set_channel_rule(
+            voice,
+            RuleSubject::Role { role_id: everyone },
+            &SetChannelOverride {
+                allow: vec![WorkspacePermission::ReadMessageHistory],
+                deny: Vec::new(),
+            },
+        ))
+        .unwrap();
+    world
+        .run(admin.handle.api().archive_channel(voice))
+        .unwrap();
+    window.until("the voice channel is archived", |window| {
+        !window.channels().iter().any(|row| row.id == voice)
+    });
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_recording_link(&origin, id, cx)
+    }));
+    window.until("the linked archived recording is open", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.archived.is_some())
+            && window.panel().is_some_and(|(_, open, _, _)| open.id == id)
+    });
+}
+
+#[gpui::test]
+fn a_recording_context_menu_copies_its_link_and_opens_its_transcript(cx: &mut TestAppContext) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::links::{self, AppLink};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
+    window.click_channel("Daily");
+    window.until("the recording is ready", |window| {
+        window
+            .card_detail(id)
+            .is_some_and(|detail| detail.transcript.held == 1)
+    });
+    window.right_click_named(format!("recording:{id}"));
+    window.click_named("context-action:Copy link".to_owned());
+    assert_eq!(
+        links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
+        Some(AppLink::Recording {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id
+        })
+    );
+    assert!(window.shows("copied-confirmation"));
+    window.right_click_named(format!("recording:{id}"));
+    window.click_named("context-action:Show all".to_owned());
+    window.until("the recording menu opened its transcript", |window| {
+        window
+            .panel()
+            .is_some_and(|(_, open, _, _)| open.id == id && open.lines.lines.len() == 1)
+    });
+}
+
+#[gpui::test]
+fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::links::{self, AppLink};
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    let said = "Café planning 世界";
+    world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, said)]));
+    window.click_channel("Daily");
+    window.until("the transcript preview is ready", |window| {
+        window
+            .card_detail(id)
+            .is_some_and(|detail| detail.transcript.held == 1)
+    });
+    window.right_click_named("transcript-line:0".to_owned());
+    window.click_named("context-action:Copy text".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        said
+    );
+    assert!(window.shows("copied-confirmation"));
+    window.right_click_named("transcript-line:0".to_owned());
+    window.click_named("context-action:Open transcript".to_owned());
+    window.until("the transcript opens at its selected line", |window| {
+        window.shows_named("marked-line:0".to_owned())
+    });
+    window.right_click_named(format!("transcript-context:panel:{id}:0"));
+    window.click_named("context-action:Copy recording link".to_owned());
+    assert_eq!(
+        links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
+        Some(AppLink::Recording {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id
+        })
+    );
+    assert!(window.shows("copied-confirmation"));
+    assert!(window.panel().is_some_and(|(_, open, _, _)| open.id == id));
+}
+
+#[gpui::test]
+fn externally_delivered_recording_opens_its_transcript(cx: &mut TestAppContext) {
+    use junto_client_core::address::ServerAddress;
+    use junto_client_core::links::AppLink;
+    let Scene {
+        world,
+        server,
+        admin,
+        window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let recording = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(
+        recording,
+        &[spoken(ada, None, 100, "The external recording")],
+    ));
+    let mut window = crate::links::registered_main_window(cx, window);
+    crate::links::deliver_from_outside(
+        &mut window,
+        AppLink::Recording {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: recording,
+        },
+    );
+    window.until("the external recording transcript is loaded", |window| {
+        window
+            .panel()
+            .is_some_and(|(_, open, _, _)| open.id == recording && open.lines.lines.len() == 1)
+    });
 }

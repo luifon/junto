@@ -225,6 +225,7 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
         .create_channel(
             workspaces[0].id,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,
@@ -239,6 +240,7 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
         .create_channel(
             workspaces[0].id,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,
@@ -1693,6 +1695,7 @@ fn an_executor_without_tokio_polls_the_futures_of_network_operations() {
         let api = handle.api();
         assert_eq!(api.own_account().await.unwrap().id, account_id);
         let created = CreateChannel {
+            topic: String::new(),
             name: "plans".to_owned(),
             kind: ChannelKind::Text,
             category_id: None,

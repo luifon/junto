@@ -14,7 +14,7 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type CloseHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
-type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type ClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The pointer and keyboard triggers of a target's context menu.
 pub trait ContextMenuExt: InteractiveElement {
@@ -27,7 +27,7 @@ pub trait ContextMenuExt: InteractiveElement {
         })
         .on_key_down(move |event, window, cx| {
             let keys = &event.keystroke;
-            if keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift) {
+            if context_menu_key(keys) {
                 cx.stop_propagation();
                 handler(window, cx);
             }
@@ -35,7 +35,66 @@ pub trait ContextMenuExt: InteractiveElement {
     }
 }
 
+pub(super) fn context_menu_key(keys: &gpui::Keystroke) -> bool {
+    keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift)
+}
+
 impl<T: InteractiveElement> ContextMenuExt for T {}
+
+#[derive(Default)]
+struct PaintedMenus(Vec<(gpui::WindowId, gpui::WeakFocusHandle, gpui::Bounds<Pixels>)>);
+impl gpui::Global for PaintedMenus {}
+
+fn over_child_menu(parent: &FocusHandle, at: Point<Pixels>, window: &Window, cx: &App) -> bool {
+    cx.try_global::<PaintedMenus>().is_some_and(|menus| {
+        menus.0.iter().any(|(id, focus, bounds)| {
+            *id == window.window_handle().window_id()
+                && bounds.contains(&at)
+                && focus.upgrade().is_some_and(|focus| {
+                    focus != *parent
+                        && parent.contains(&focus, window)
+                        && focus.contains_focused(window, cx)
+                })
+        })
+    })
+}
+
+#[derive(Default)]
+pub struct MenuPlacement(std::cell::Cell<Option<(Point<Pixels>, gpui::Size<Pixels>)>>);
+
+#[derive(IntoElement)]
+struct StableMenu {
+    menu: Menu,
+    anchor: Point<Pixels>,
+    absolute: bool,
+    placement: std::rc::Rc<MenuPlacement>,
+}
+
+impl RenderOnce for StableMenu {
+    fn render(mut self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        let origin = self
+            .placement
+            .0
+            .get()
+            .filter(|(_, size)| *size == viewport)
+            .map(|(origin, _)| origin);
+        if origin.is_none() {
+            self.placement.0.set(None);
+        }
+        self.menu.placement = Some(self.placement);
+        match origin {
+            Some(origin) => {
+                let margin = u(8.0).to_pixels(window.rem_size());
+                self.menu.height_limit =
+                    Some((viewport.height - origin.y - margin).max(gpui::px(0.0)));
+                self.menu.popup_at(origin)
+            }
+            None if self.absolute => self.menu.popup_at(self.anchor),
+            None => self.menu.popup(self.anchor),
+        }
+    }
+}
 
 #[derive(IntoElement)]
 pub struct Menu {
@@ -48,6 +107,8 @@ pub struct Menu {
     header: Option<AnyElement>,
     selector: Option<&'static str>,
     on_close: Option<CloseHandler>,
+    placement: Option<std::rc::Rc<MenuPlacement>>,
+    height_limit: Option<Pixels>,
 }
 
 impl Menu {
@@ -68,6 +129,8 @@ impl Menu {
             header: None,
             selector: None,
             on_close: None,
+            placement: None,
+            height_limit: None,
         }
     }
 
@@ -95,14 +158,48 @@ impl Menu {
 
     /// Floats beside its target, within the window, above scrolled content.
     pub fn popup(self, offset: Point<Pixels>) -> AnyElement {
-        gpui::deferred(
-            gpui::anchored()
-                .offset(offset)
-                .snap_to_window_with_margin(gpui::px(8.0))
-                .child(self),
-        )
-        .with_priority(1)
+        self.floating(gpui::anchored().offset(offset))
+    }
+
+    /// Floats at a position in window coordinates, such as an input's caret.
+    pub fn popup_at(self, position: Point<Pixels>) -> AnyElement {
+        self.floating(gpui::anchored().position(position))
+    }
+
+    /// Keeps the first painted origin while contents change. Supply a fresh placement for each opening.
+    pub fn popup_stable(
+        self,
+        offset: Point<Pixels>,
+        placement: std::rc::Rc<MenuPlacement>,
+    ) -> AnyElement {
+        StableMenu {
+            menu: self,
+            anchor: offset,
+            absolute: false,
+            placement,
+        }
         .into_any_element()
+    }
+
+    /// Keeps the first painted origin of a menu opened at window coordinates.
+    pub fn popup_at_stable(
+        self,
+        position: Point<Pixels>,
+        placement: std::rc::Rc<MenuPlacement>,
+    ) -> AnyElement {
+        StableMenu {
+            menu: self,
+            anchor: position,
+            absolute: true,
+            placement,
+        }
+        .into_any_element()
+    }
+
+    fn floating(self, anchor: gpui::Anchored) -> AnyElement {
+        gpui::deferred(anchor.snap_to_window_with_margin(gpui::px(8.0)).child(self))
+            .with_priority(1)
+            .into_any_element()
     }
 
     /// Runs when Escape is pressed in the menu and when a click lands outside it.
@@ -124,10 +221,12 @@ impl RenderOnce for Menu {
         let colors = theme.colors;
         let metrics = theme.metrics;
         let close = self.on_close.map(std::rc::Rc::new);
-        let (escape, outside) = (close.clone(), close);
+        let (escape, outside, wheel) = (close.clone(), close.clone(), close);
         let items =
             super::reveal::inner_handle(&self.id, &"menu-items".into(), window, cx).tab_stop(false);
         let layer = items.clone();
+        let outside_focus = self.focus.clone();
+        let painted_focus = self.focus.clone();
         let margin = u(8.0).to_pixels(window.rem_size());
         let available = window.viewport_size();
         let scroll = window
@@ -140,6 +239,12 @@ impl RenderOnce for Menu {
             })
             .read(cx)
             .clone();
+        let scrolling = scroll.clone();
+        let max_height = (available.height - margin * 2.0).max(gpui::px(0.0));
+        let max_height = self
+            .height_limit
+            .map_or(max_height, |limit| limit.min(max_height));
+        let placement = self.placement;
         let frame = div()
             .id(self.id)
             .role(Role::Menu)
@@ -159,7 +264,7 @@ impl RenderOnce for Menu {
                 metrics.menu_width
             })))
             .max_w((available.width - margin * 2.0).max(gpui::px(0.0)))
-            .max_h((available.height - margin * 2.0).max(gpui::px(0.0)))
+            .max_h(max_height)
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .border_1()
@@ -178,7 +283,9 @@ impl RenderOnce for Menu {
                 cx.stop_propagation();
             })
             .on_mouse_down_out(move |_, window, cx| {
-                if let Some(close) = &outside {
+                if !over_child_menu(&outside_focus, window.mouse_position(), window, cx)
+                    && let Some(close) = &outside
+                {
                     close(window, cx);
                 }
             })
@@ -201,6 +308,47 @@ impl RenderOnce for Menu {
                 .ink(colors.ink)
         };
         frame
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, cx| {
+                        let id = window.window_handle().window_id();
+                        let menus = cx.default_global::<PaintedMenus>();
+                        menus.0.retain(|(_, focus, _)| focus.upgrade().is_some());
+                        if let Some((_, _, bounds)) = menus.0.iter_mut().find(|(held, focus, _)| {
+                            *held == id && focus.upgrade().as_ref() == Some(&painted_focus)
+                        }) {
+                            *bounds = scrolling.bounds();
+                        } else {
+                            menus
+                                .0
+                                .push((id, painted_focus.downgrade(), scrolling.bounds()));
+                        }
+                        if let Some(placement) = &placement
+                            && placement.0.get().is_none()
+                        {
+                            placement
+                                .0
+                                .set(Some((scrolling.bounds().origin, window.viewport_size())));
+                        }
+                        let (wheel, scrolling) = (wheel.clone(), scrolling.clone());
+                        let parent = painted_focus.clone();
+                        window.on_mouse_event(
+                            move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                                if phase == gpui::DispatchPhase::Capture
+                                    && !scrolling.bounds().contains(&event.position)
+                                    && !over_child_menu(&parent, event.position, window, cx)
+                                    && let Some(close) = &wheel
+                                {
+                                    close(window, cx);
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_0(),
+            )
             .child(super::reveal::start())
             .children(self.header.map(|header| div().flex_none().child(header)))
             .child(
@@ -218,7 +366,6 @@ impl RenderOnce for Menu {
 }
 
 /// One action of a menu on stone.
-#[derive(IntoElement)]
 pub struct MenuItem {
     id: ElementId,
     title: SharedString,
@@ -301,8 +448,27 @@ impl MenuItem {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
+    }
+}
+
+impl IntoElement for MenuItem {
+    type Element = gpui::ViewElement<Self>;
+    fn into_element(self) -> Self::Element {
+        super::action_menu::record(|| {
+            if self.on_click.is_none() && !self.disabled {
+                return None;
+            }
+            Some(super::RowAction {
+                label: self.title.clone(),
+                icon: self.icon,
+                disabled: self.disabled,
+                detail: self.detail.clone(),
+                handler: self.on_click.clone(),
+            })
+        });
+        gpui::ViewElement::new(self)
     }
 }
 
@@ -413,7 +579,8 @@ impl RenderOnce for MenuItem {
 }
 
 /// A label above a group of items of a menu.
-pub fn menu_label(text: &'static str, dark: bool, cx: &App) -> impl IntoElement + use<> {
+pub fn menu_label(text: impl Into<SharedString>, dark: bool, cx: &App) -> gpui::Div {
+    let text: SharedString = text.into();
     let theme = theme(cx);
     div()
         .flex_none()
@@ -426,7 +593,8 @@ pub fn menu_label(text: &'static str, dark: bool, cx: &App) -> impl IntoElement 
         } else {
             theme.colors.bronze
         })
-        .child(text)
+        .min_w_0()
+        .child(div().truncate().child(text))
 }
 
 /// A line between two groups of items of a menu.

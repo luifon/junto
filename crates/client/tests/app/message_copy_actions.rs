@@ -66,6 +66,19 @@ fn a_thread_root_offers_the_read_actions_of_its_original(cx: &mut TestAppContext
         window.shows_named(format!("shown-message:{}", root.id))
     });
     read_actions(&mut window, root.id, "thread source");
+    window.right_click_named("thread-replies".to_owned());
+    for action in [
+        "context-action:Copy text",
+        "context-action:Copy link",
+        "context-action:Go to message",
+    ] {
+        assert!(window.shows(action));
+    }
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "thread source"
+    );
 }
 
 #[gpui::test]
@@ -84,4 +97,12 @@ fn a_pinned_copy_offers_the_read_actions_of_its_original(cx: &mut TestAppContext
         window.shows_named(format!("shown-message:{}", message.id))
     });
     read_actions(&mut window, message.id, "pinned source");
+    window.right_click_named("go-to-pin".to_owned());
+    assert!(window.shows("context-action:Copy text"));
+    assert!(window.shows("context-action:Go to message"));
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "pinned source"
+    );
 }

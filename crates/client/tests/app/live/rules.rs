@@ -608,6 +608,9 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(!meeting.by_self && !meeting.may_speak);
     assert_eq!(meeting.presenter.as_deref(), Some("Ada"));
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(!scene.window.shows("call-menu-allow-speak"));
+    scene.window.press("escape");
     assert_eq!(
         scene.window.view().controls.microphone,
         MicrophoneButton::Held
@@ -679,6 +682,7 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
         .until("the microphone is closed again", |window| {
             window.view().controls.microphone == MicrophoneButton::Held
         });
+    scene.window.hover_named("call-hand".to_owned());
     scene.world.run(api.end_meeting(voice)).unwrap();
     scene.window.until("the open microphone is told", |window| {
         window.shows("call-told") && window.view().controls.microphone == MicrophoneButton::Open
@@ -743,6 +747,10 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
         })
     });
     assert!(!scene.window.shows("meeting-allow"));
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    assert!(scene.window.shows("menu-allow-speak"));
+    assert!(!scene.window.shows("menu-mute"));
+    scene.window.press("escape");
     // Ada raises a hand, and the person allows her to speak.
     scene.world.run(api.raise_hand()).unwrap();
     scene.window.until("the hand of Ada is shown", |window| {
@@ -791,6 +799,37 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(meeting.hands.is_empty());
     assert_eq!(meeting.waiting, [(ada, Some("Ada".to_owned()))]);
+    scene.window.click("meeting-toggle");
+    scene.window.until("the first meeting has ended", |window| {
+        room_view(window).is_some_and(|room| room.meeting.is_none())
+    });
+    scene
+        .world
+        .run(scene.window.handle().api().start_meeting(voice))
+        .unwrap();
+    scene.window.until("the next meeting blocks Ada", |window| {
+        room_view(window)
+            .and_then(|room| room.meeting)
+            .is_some_and(|meeting| meeting.by_self)
+            && calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_some())
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-allow-speak"));
+    scene.window.click("call-menu-allow-speak");
+    scene
+        .window
+        .until("the tile menu allows Ada to speak", |_| {
+            calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_none())
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(!scene.window.shows("call-menu-allow-speak"));
+    scene.window.press("escape");
     // The presenter turns meeting mode off.
     scene.window.click("meeting-toggle");
     scene.window.until("the meeting has ended", |window| {
@@ -918,8 +957,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .in_shell(|shell, _, _| shell.member_picker_is_open())
     );
 
-    // The menu of a person. A member without a permission of moderation gets the volume
-    // only; the person of this device has no menu.
+    // A member without moderation gets volume and identity actions. The own row has
+    // identity actions without the moderation menu.
     scene.window.right_click_named(ada_row());
     assert!(scene.window.shows("person-menu") && scene.window.shows("menu-volume"));
     for absent in ["menu-invite", "menu-move", "menu-mute", "menu-disconnect"] {
@@ -2461,4 +2500,701 @@ fn the_events_of_a_call_are_system_notifications_while_no_window_is_active(
         told(window, "Ada moved you to Second")
     });
     scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let (ada, own) = (scene.ada, scene.luca);
+    scene.window.until("the other person is listed", |window| {
+        occupants(window)
+            .iter()
+            .any(|person| person.account_id == ada && person.name.as_deref() == Some("Ada"))
+    });
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-copy-name");
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Ada"
+    );
+    assert!(scene.window.shows("copied-confirmation"));
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-copy-id");
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    scene.window.right_click_named(format!("occupant:{own}"));
+    assert!(scene.window.shows("account-menu"));
+    assert!(!scene.window.shows_named(format!("account-message:{own}")));
+    scene.window.click_named(format!("account-copy-id:{own}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        own.to_string()
+    );
+    scene.window.right_click_named(format!("occupant:{ada}"));
+    scene.window.click("person-message");
+    scene
+        .window
+        .until("the person's direct conversation is open", |window| {
+            window.view().lists().is_some_and(|lists| {
+                lists
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|conversation| conversation.account_id == ada)
+            })
+        });
+    assert!(connected(&mut scene.window));
+    scene.window.click_channel(ROOM);
+    scene.window.click("leave-call");
+    scene.window.until("the window left its call", |window| {
+        window.view().call.is_none()
+    });
+    scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn call_tiles_offer_account_actions_in_both_windows_and_close_with_their_source(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let (ada, own) = (scene.ada, scene.luca);
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("account-menu"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    assert!(scene.window.shows("copied-confirmation"));
+    scene.window.right_click_named(format!("call-tile:{own}"));
+    assert!(!scene.window.shows_named(format!("account-message:{own}")));
+    scene.window.click_named(format!("account-copy-name:{own}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Luca"
+    );
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    scene.window.click_named(format!("account-message:{ada}"));
+    scene
+        .window
+        .until("the direct conversation is shown", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.conversation.as_ref())
+                .is_some_and(|conversation| conversation.account_id == ada)
+        });
+    assert!(connected(&mut scene.window));
+    scene.window.click_channel(ROOM);
+    let main = scene.window.cx.update(|window, _| window.window_handle());
+    scene.window.click("detach-call");
+    scene.window.until("the call is detached", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find(|handle| *handle != main)
+        .unwrap();
+    let mut detached = scene.window.window_of(handle);
+    detached.until("the detached tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    detached.right_click_named(format!("call-tile:{ada}"));
+    detached.click_named(format!("account-copy-name:{ada}"));
+    assert_eq!(
+        detached.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Ada"
+    );
+    detached.right_click_named(format!("call-tile:{ada}"));
+    scene.world.run(scene.caller.calls.leave());
+    detached.until("the departing target closes its menu", |window| {
+        !window.shows("account-menu")
+    });
+    drop(detached);
+    scene.window.click("return-call");
+    scene.window.until("the call is returned", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    scene.window.right_click_named(format!("call-tile:{own}"));
+    scene
+        .window
+        .cx
+        .write_to_clipboard(gpui::ClipboardItem::new_string("Unchanged".to_owned()));
+    let calls = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.calls().clone());
+    let old_seat = calls.view().call.unwrap().seat();
+    scene.world.run(async {
+        calls.leave().await;
+        calls.join(scene.target).await.unwrap();
+        let mut watch = calls.watch();
+        tokio::time::timeout(PATIENCE, async {
+            while !watch
+                .borrow_and_update()
+                .call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected)
+            {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the replacement call did not connect");
+    });
+    assert_ne!(calls.view().call.unwrap().seat(), old_seat);
+    scene
+        .window
+        .press_as_drawn(crate::harness::selector(format!("account-copy-name:{own}")));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Unchanged"
+    );
+    scene
+        .window
+        .until("the previous seat closes its menu", |window| {
+            !window.shows("account-menu")
+        });
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| state.leave_call(cx));
+    scene
+        .window
+        .until("the window left the new call", |window| {
+            window.view().call.is_none()
+        });
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_volume_menu_changes_and_keeps_its_value_but_rejects_the_previous_seat(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    scene.window.press("down");
+    scene.window.press("left");
+    scene
+        .window
+        .until("the volume was changed from the menu", |window| {
+            occupants(window)
+                .iter()
+                .any(|person| person.account_id == ada && person.volume == 90)
+        });
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    let calls = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.calls().clone());
+    let old_seat = calls.view().call.unwrap().seat();
+    scene.world.run(async {
+        calls.leave().await;
+        calls.join(scene.target).await.unwrap();
+        let mut watch = calls.watch();
+        tokio::time::timeout(PATIENCE, async {
+            while !watch
+                .borrow_and_update()
+                .call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected)
+            {
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the replacement call did not connect");
+    });
+    assert_ne!(calls.view().call.unwrap().seat(), old_seat);
+    scene.window.press_as_drawn("call-menu-volume");
+    scene
+        .window
+        .until("the previous seat volume menu closes", |window| {
+            !window.shows("account-menu")
+        });
+    assert_eq!(
+        scene
+            .window
+            .state
+            .read_with(&scene.window.cx, |state, _| state
+                .voice()
+                .volume(scene.target.server_id, ada)),
+        90
+    );
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| state.leave_call(cx));
+    scene
+        .window
+        .until("the new call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_own_tile_menu_controls_media_and_hand_and_respects_camera_permissions(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    let own_id = scene.luca;
+    let show = |window: &mut Window| window.right_click_named(format!("call-tile:{own_id}"));
+    show(&mut scene.window);
+    assert!(scene.window.shows("call-menu-microphone"));
+    assert!(!scene.window.shows("call-menu-volume"));
+    scene.window.click("call-menu-microphone");
+    scene
+        .window
+        .until("the menu muted the microphone", |window| {
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().muted)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-microphone");
+    scene
+        .window
+        .until("the menu unmuted the microphone", |window| {
+            !window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().muted)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-sound");
+    scene.window.until("the menu turned sound off", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().deafened)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-sound");
+    scene.window.until("the menu turned sound on", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().deafened)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-hand");
+    scene
+        .window
+        .until("the menu raised the own hand", |window| {
+            own(window).is_some_and(|person| person.hand_raised)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-hand");
+    scene
+        .window
+        .until("the menu lowered the own hand", |window| {
+            own(window).is_some_and(|person| !person.hand_raised)
+        });
+    scene
+        .world
+        .run(scene.admin.handle.api().set_channel_rule(
+            scene.voice,
+            RuleSubject::Person { account_id: own_id },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![WorkspacePermission::Video],
+            },
+        ))
+        .unwrap();
+    scene.window.until("camera publishing is denied", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .calls()
+                .view()
+                .call
+                .is_some_and(|call| call.withheld.camera)
+        })
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-camera");
+    assert!(scene.window.shows("account-menu"));
+    assert_eq!(
+        scene
+            .window
+            .state
+            .read_with(&scene.window.cx, |state, _| state
+                .calls()
+                .view()
+                .call
+                .unwrap()
+                .camera),
+        junto_media::camera::CameraState::Off
+    );
+    scene.window.click("call-menu-leave");
+    scene.window.until("the own menu left the call", |window| {
+        window.view().call.is_none()
+    });
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_menu_uses_live_moderation_permissions_and_existing_actions(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    let show = |window: &mut Window| window.right_click_named(format!("call-tile:{ada}"));
+    scene.window.until("the other tile is drawn", |window| {
+        window.shows_named(format!("call-tile:{ada}"))
+    });
+    show(&mut scene.window);
+    for id in [
+        "call-menu-block-microphone",
+        "call-menu-block-sound",
+        "call-menu-disconnect",
+    ] {
+        assert!(!scene.window.shows(id));
+    }
+    scene.window.press("escape");
+    scene.allow_everyone(&[
+        WorkspacePermission::MuteMembers,
+        WorkspacePermission::DeafenMembers,
+        WorkspacePermission::DisconnectMembers,
+    ]);
+    scene.window.until("the member may moderate", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.allowed.mute && workspace.allowed.deafen && workspace.allowed.disconnect
+        })
+    });
+    show(&mut scene.window);
+    assert!(scene.window.shows("call-menu-block-microphone"));
+    scene.window.click("call-menu-block-microphone");
+    scene
+        .window
+        .until("the tile action blocked the microphone", |_| {
+            scene
+                .caller
+                .calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_some())
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-microphone");
+    scene
+        .window
+        .until("the tile action unblocked the microphone", |_| {
+            scene
+                .caller
+                .calls
+                .view()
+                .call
+                .is_some_and(|call| call.microphone_block.is_none())
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-sound");
+    scene.window.until("the tile action blocked sound", |_| {
+        scene
+            .caller
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.sound_block.is_some())
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-block-sound");
+    scene.window.until("the tile action unblocked sound", |_| {
+        scene
+            .caller
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.sound_block.is_none())
+    });
+    scene
+        .world
+        .run(scene.admin.handle.api().raise_hand())
+        .unwrap();
+    scene.window.until("the other hand is raised", |window| {
+        occupants(window)
+            .iter()
+            .any(|person| person.account_id == ada && person.hand_raised)
+    });
+    show(&mut scene.window);
+    scene.window.click("call-menu-lower-hand");
+    scene
+        .window
+        .until("the tile action lowered the hand", |window| {
+            occupants(window)
+                .iter()
+                .any(|person| person.account_id == ada && !person.hand_raised)
+        });
+    show(&mut scene.window);
+    scene.window.click("call-menu-disconnect");
+    scene
+        .window
+        .until("the tile action disconnected the target", |_| {
+            scene.caller.calls.view().call.is_none()
+        });
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .world
+        .run(scene.admin.handle.api().set_channel_rule(
+            scene.voice,
+            RuleSubject::Person {
+                account_id: scene.luca,
+            },
+            &SetChannelOverride {
+                allow: Vec::new(),
+                deny: vec![
+                    WorkspacePermission::MuteMembers,
+                    WorkspacePermission::DeafenMembers,
+                    WorkspacePermission::DisconnectMembers,
+                ],
+            },
+        ))
+        .unwrap();
+    scene
+        .window
+        .until("moderation permission was revoked", |window| {
+            window.view().workspace().is_some_and(|workspace| {
+                !workspace.allowed.mute
+                    && !workspace.allowed.deafen
+                    && !workspace.allowed.disconnect
+            })
+        });
+    show(&mut scene.window);
+    for id in [
+        "call-menu-block-microphone",
+        "call-menu-block-sound",
+        "call-menu-disconnect",
+    ] {
+        assert!(!scene.window.shows(id));
+    }
+    scene.window.press("escape");
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the own call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_call_tile_move_menu_returns_to_its_account_menu_and_moves_the_target_only(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let other = second_room(&scene.world, &scene.admin, &mut scene.window, "side room");
+    let destination = other.place.channel_id().unwrap();
+    scene.join_in_the_window();
+    enter(&scene.world, &scene.caller, scene.target);
+    let ada = scene.ada;
+    scene.allow_everyone(&[WorkspacePermission::MoveMembers]);
+    scene
+        .window
+        .until("the move permission is shown", |window| {
+            window
+                .view()
+                .workspace()
+                .is_some_and(|workspace| workspace.allowed.move_members)
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    assert!(scene.window.shows("call-menu-move"));
+    scene.window.click("call-menu-move");
+    assert!(scene.window.shows("person-menu") && scene.window.shows("menu-back"));
+    assert!(!scene.window.shows("account-menu"));
+    scene.window.click("menu-back");
+    assert!(scene.window.shows("account-menu") && scene.window.shows("call-menu-volume"));
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("call-menu-move");
+    scene.window.click_named(format!("move-to:{destination}"));
+    scene.window.until("the target was moved", |_| {
+        scene.caller.calls.view().call.is_some_and(|call| {
+            call.phase == Phase::Connected && call.target.place.channel_id() == Some(destination)
+        })
+    });
+    assert!(matches!(
+        scene.caller.calls.view().outcome,
+        Some(Outcome::Moved { .. })
+    ));
+    assert_eq!(scene.window.selected_channel(), scene.voice);
+    assert!(scene.window.state.read_with(&scene.window.cx, |state, _| {
+        state
+            .calls()
+            .view()
+            .call
+            .is_some_and(|call| call.target == scene.target)
+    }));
+    assert!(!scene.window.shows("person-menu"));
+    scene.window.click("leave-call");
+    scene
+        .window
+        .until("the own call ended", |window| window.view().call.is_none());
+    scene.world.run(scene.caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn call_member_rows_offer_account_and_call_actions_and_keep_their_source_scope(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    let ada = scene.ada;
+    scene.join_in_the_window();
+    scene.window.click("call-tab-members");
+    scene
+        .window
+        .until("Ada is listed outside the call", |window| {
+            window.shows_named(format!("call-member:{ada}"))
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    assert!(scene.window.shows("account-menu"));
+    assert!(!scene.window.shows("call-menu-volume"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.window.click("call-menu-invite");
+    let invitation = scene.invitation_for_ada();
+    scene
+        .window
+        .until("the row lists the pending invitation", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.call.as_ref())
+                .and_then(|panel| panel.channel())
+                .is_some_and(|channel| {
+                    channel.outside.iter().any(|person| {
+                        person.account_id == ada && person.invitation == Some(invitation.id)
+                    })
+                })
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.window.click("call-menu-withdraw-invitation");
+    scene.window.until("the invitation was withdrawn", |_| {
+        scene.admin.handle.live().view().model.is_some_and(|model| {
+            !model
+                .invitations
+                .iter()
+                .any(|current| current.id == invitation.id)
+        })
+    });
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .window
+        .until("Ada is listed inside the call", |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.call.as_ref())
+                .is_some_and(|panel| panel.people.iter().any(|person| person.account_id == ada))
+        });
+    scene.window.right_click_named(format!("call-tile:{ada}"));
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_hide_without_video(true, cx)
+        });
+    scene
+        .window
+        .until("the hidden tile loses its menu", |window| {
+            !window.shows("account-menu") && !window.shows_named(format!("call-tile:{ada}"))
+        });
+    scene
+        .window
+        .state
+        .update(&mut scene.window.cx, |state, cx| {
+            state.set_hide_without_video(false, cx)
+        });
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    assert!(scene.window.shows("call-menu-volume"));
+    scene.window.in_shell(|shell, window, cx| {
+        shell.open(
+            junto_client::shell::Open::CallTab(junto_client::shell::call::CallTab::Chat),
+            window,
+            cx,
+        )
+    });
+    assert!(!scene.window.shows("account-menu"));
+    scene.window.click("call-tab-members");
+    scene.window.right_click_named(format!("call-member:{ada}"));
+    scene.world.run(scene.caller.calls.leave());
+    scene
+        .window
+        .until("the former occupant menu closes", |window| {
+            !window.shows("account-menu")
+        });
+    assert!(scene.window.shows_named(format!("call-member:{ada}")));
+    scene.window.click("leave-call");
+    scene.window.until("the window left its call", |window| {
+        window.view().call.is_none()
+    });
 }

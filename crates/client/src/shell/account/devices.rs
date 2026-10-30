@@ -235,6 +235,7 @@ impl Shell {
         row: &DeviceLine,
         only: bool,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let device_id = row.id;
@@ -242,7 +243,7 @@ impl Shell {
             AskKind::RenameDevice(device_id),
             AskKind::RemoveDevice(device_id),
         );
-        let content: AnyElement = match self.account.mode {
+        let (content, actions) = crate::ui::collect_actions(|| match self.account.mode {
             Some(Mode::RenameDevice(id)) if id == device_id => div()
                 .flex()
                 .flex_col()
@@ -366,9 +367,18 @@ impl Shell {
                     ))
                     .into_any_element()
             }
-        };
+        });
+        let focus = window
+            .use_keyed_state(
+                SharedString::from(format!("device-focus-{device_id}")),
+                cx,
+                |_, cx| cx.focus_handle().tab_stop(true),
+            )
+            .read(cx)
+            .clone();
         let row = div()
             .id(SharedString::from(format!("device-result-{device_id}")))
+            .track_focus(&focus)
             .flex()
             .flex_col()
             .flex_none()
@@ -383,6 +393,13 @@ impl Shell {
                 view.refused(rename).or(view.refused(remove)),
                 "device-refused",
             ));
+        let row = crate::ui::bind_action_menu(
+            row,
+            SharedString::from(format!("device-actions-{device_id}")),
+            actions,
+            window,
+            cx,
+        );
         // The answer closes the form at a time that the person does not choose: the row
         // keeps the height of its form, whatever the text, the width and the scale make
         // that height (ADR 0730).
@@ -398,6 +415,7 @@ impl Shell {
         view: &AccountView,
         list: &DeviceList,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let read_again = |cx: &mut Context<Self>| {
@@ -431,7 +449,8 @@ impl Shell {
             } => {
                 let mut column = div().flex().flex_col().flex_none();
                 for row in rows {
-                    column = column.child(self.render_device_row(view, row, *only, theme, cx));
+                    column =
+                        column.child(self.render_device_row(view, row, *only, theme, window, cx));
                 }
                 column
                     // A disabled control states its reason without a pointer.
@@ -666,11 +685,11 @@ impl Shell {
         &mut self,
         view: &AccountView,
         page: &DevicesPage,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let list = self.render_device_list(view, &page.list, &theme, cx);
+        let list = self.render_device_list(view, &page.list, &theme, window, cx);
         let link = page
             .link
             .as_ref()

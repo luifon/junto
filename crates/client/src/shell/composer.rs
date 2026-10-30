@@ -2482,7 +2482,7 @@ impl Shell {
                         .into_any_element(),
                 ]
             } else {
-                self.document(&document, None, &names, &theme, window, cx)
+                self.document((names.server_id, None), &document, None, &names, &theme, cx)
             };
             div()
                 .relative()

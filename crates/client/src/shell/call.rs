@@ -646,6 +646,9 @@ impl Shell {
                         Microphone::Open { speaking: true }
                     ))
                     .marks(marks)
+                    .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
+                        tile.on_menu(open)
+                    })
                     .selector(format!("call-tile:{}", occupant.account_id))
                 };
                 let (large, strip): (Vec<_>, Vec<_>) = shown
@@ -1287,7 +1290,7 @@ impl Shell {
             let camera = self
                 .camera_request(occupant, cx)
                 .map(|_| occupant.account_id);
-            return row(index, occupant.account_id, label.into())
+            let item = row(index, occupant.account_id, label.into())
                 .child(
                     div()
                         .flex_1()
@@ -1301,6 +1304,13 @@ impl Shell {
                         .children(volume),
                 )
                 .into_any_element();
+            return self.call_member_target(
+                occupant.account_id,
+                occupant_name(occupant).to_string(),
+                true,
+                item,
+                cx,
+            );
         }
         let rest = index - 1 - people.len();
         if outside.is_empty() {
@@ -1316,17 +1326,23 @@ impl Shell {
                 account_id,
                 name,
                 state,
-            }) => row(people.len() + rest - 1, *account_id, name.clone())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(name_line(name.clone(), *account_id, false, None))
-                        .when_some(state.clone(), |column, state| {
-                            column.child(state_line(vec![state]))
-                        }),
-                )
-                .into_any_element(),
+            }) => self.call_member_target(
+                *account_id,
+                name.to_string(),
+                false,
+                row(people.len() + rest - 1, *account_id, name.clone())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(name_line(name.clone(), *account_id, false, None))
+                            .when_some(state.clone(), |column, state| {
+                                column.child(state_line(vec![state]))
+                            }),
+                    )
+                    .into_any_element(),
+                cx,
+            ),
             None => div().h(u(4.0)).into_any_element(),
         }
     }

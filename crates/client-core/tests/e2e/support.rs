@@ -595,6 +595,8 @@ pub fn logged_in(handle: &ServerHandle) -> AccountId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
+    /// Models a route absent on an older server.
+    NotFound,
     /// Answers `busy` and does not pass the request on.
     Busy,
     /// Passes the request on, waits for the answer of the server and drops it.
@@ -604,8 +606,6 @@ pub enum Fault {
     /// Answers `invalid_request` and does not pass the request on: a refusal that the
     /// client does not try again.
     Refused,
-    /// A route that an older server does not implement.
-    NotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

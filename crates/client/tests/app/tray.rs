@@ -224,6 +224,7 @@ fn the_unread_mentions_add_the_mark_and_keep_the_menu(cx: &mut TestAppContext) {
         .run(admin.handle.api().create_channel(
             workspace,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,

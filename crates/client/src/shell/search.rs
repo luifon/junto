@@ -18,7 +18,7 @@ use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
-    SideHeader, StatePanel, StyleExt,
+    SideHeader, StatePanel, StyleExt, Toggle,
 };
 
 /// One of the three filters of a search.
@@ -83,6 +83,7 @@ impl Shell {
 
     /// Changes the filters of the search and runs it again.
     pub fn set_search_filters(&mut self, filters: Filters, cx: &mut Context<Self>) {
+        self.search_date_invalid = false;
         self.state
             .update(cx, |state, cx| state.set_search_filters(filters, cx));
         cx.notify();
@@ -145,11 +146,7 @@ impl Shell {
         panel: &SearchPanel,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let filters = Filters {
-            channel: panel.channel.as_ref().map(|(channel_id, _)| *channel_id),
-            author: panel.author.as_ref().map(|(account_id, _)| *account_id),
-            date: panel.date,
-        };
+        let filters = panel.filters;
         let item = |selector: String,
                     index: usize,
                     title: SharedString,
@@ -288,7 +285,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The three filters of a search, under the header of its panel.
+    /// The filters of a search, under the header of its panel.
     fn render_filters(
         &mut self,
         panel: &SearchPanel,
@@ -367,20 +364,154 @@ impl Shell {
                     ),
             );
         }
-        row.into_any_element()
+        let filters = panel.filters;
+        let mut content = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pb(u(8.0));
+        let options: [(&'static str, &'static str, bool, Filters); 5] = [
+            (
+                "search-has-file",
+                "Has a file",
+                filters.has_file,
+                Filters {
+                    has_file: !filters.has_file,
+                    ..filters
+                },
+            ),
+            (
+                "search-has-link",
+                "Has a link",
+                filters.has_link,
+                Filters {
+                    has_link: !filters.has_link,
+                    ..filters
+                },
+            ),
+            (
+                "search-has-picture",
+                "Has a picture",
+                filters.has_picture,
+                Filters {
+                    has_picture: !filters.has_picture,
+                    ..filters
+                },
+            ),
+            (
+                "search-mentions-me",
+                "Mentions me",
+                filters.mentions_me,
+                Filters {
+                    mentions_me: !filters.mentions_me,
+                    ..filters
+                },
+            ),
+            (
+                "search-direct",
+                "Direct messages",
+                filters.direct,
+                Filters {
+                    direct: !filters.direct,
+                    ..filters
+                },
+            ),
+        ];
+        for (selector, title, on, next) in options {
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(title)
+                    .child(
+                    Toggle::new(selector, title, on, (text::ON, text::OFF))
+                        .held(match panel.capabilities {
+                            Some(supported)
+                                if supported.filters
+                                    && (!panel.text.is_empty() || supported.filter_only) =>
+                            {
+                                None
+                            }
+                            Some(supported) if supported.filters => Some(
+                                "Enter text: this server does not support filter-only searches.",
+                            ),
+                            Some(_) => Some("This server does not support these search filters."),
+                            None => Some("Server search support has not been confirmed."),
+                        })
+                        .selector(selector)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_search_filters(next, cx);
+                        })),
+                ),
+            );
+        }
+        content = content
+            .child(
+                div()
+                    .flex()
+                    .gap(u(6.0))
+                    .child(
+                        div().flex_1().min_w_0().child("From").child(
+                            Field::new(&self.search_from, "From date").selector("search-from"),
+                        ),
+                    )
+                    .child(div().flex_1().min_w_0().child("Through").child(
+                        Field::new(&self.search_through, "Through date").selector("search-through"),
+                    )),
+            )
+            .child(
+                Button::new("search-apply-dates")
+                    .label("Apply date range")
+                    .selector("search-apply-dates")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let format = time::macros::format_description!("[year]-[month]-[day]");
+                        let from =
+                            time::Date::parse(this.search_from.read(cx).value().trim(), format);
+                        let through =
+                            time::Date::parse(this.search_through.read(cx).value().trim(), format);
+                        if let (Ok(from), Ok(through)) = (from, through)
+                            && from <= through
+                            && through.next_day().is_some()
+                        {
+                            this.search_date_invalid = false;
+                            this.set_search_filters(
+                                Filters {
+                                    date: DateFilter::Range { from, through },
+                                    ..filters
+                                },
+                                cx,
+                            );
+                        } else {
+                            this.search_date_invalid = true;
+                            cx.notify();
+                        }
+                    })),
+            );
+        if self.search_date_invalid {
+            content = content.child(
+                div()
+                    .debug_selector(|| "search-date-invalid".to_owned())
+                    .child("Enter dates as YYYY-MM-DD, with From on or before Through."),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(row)
+            .child(content)
+            .into_any_element()
     }
 
     /// One result. `index` is its place in the list, and `number` its place among the
     /// results of its kind, which names a line of a transcript for a test.
     fn render_result(
         &mut self,
-        index: usize,
-        number: usize,
+        position: (usize, usize),
         row: &ResultRow,
         panel: &SearchPanel,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (index, number) = position;
         let colors = theme.colors;
         let server_id = panel.server_id;
         let (action, tag, selector): (SharedString, Option<SharedString>, String) = match row.target
@@ -404,7 +535,7 @@ impl Shell {
             icon: place_icon(&row.place),
             place: text::place_name(&row.place).into(),
             day: row.day.clone().into(),
-            action: Some(action),
+            action: Some(action.clone()),
             seed: row.author_id.as_uuid().as_u128(),
             picture: self.faces(server_id).image(row.author_id),
             presence: Some(self.faces(server_id).presence(row.author_id)),
@@ -417,6 +548,12 @@ impl Shell {
                 account: row.author_id,
             }),
             author: row.author.clone().into(),
+            account: self.excerpt_account(
+                server_id,
+                row.author_id,
+                super::account_menus::AccountSource::Search(row.target),
+                cx,
+            ),
             time: row.time.clone().into(),
             tag,
             text: row.text.clone().into(),
@@ -432,30 +569,76 @@ impl Shell {
         .into();
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let target = row.target;
-        div()
-            .id((
-                match row.target {
-                    ResultTarget::Message(_) => "result",
-                    ResultTarget::Transcript { .. } => "transcript-result",
-                },
-                index,
-            ))
-            .role(Role::ListItem)
-            .aria_label(label)
-            .debug_selector(move || selector.clone())
-            .flex_none()
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule_soft))
-            .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
-            .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
-            .focus_visible(move |style| style.shadow(ring))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.go_to_result(server_id, target, cx);
-            }))
-            .child(shown.element(theme, cx))
-            .into_any_element()
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
+        let copied = row.text.clone();
+        let (frame, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                action.clone(),
+                cx.listener(move |this, _, _, cx| {
+                    this.go_to_result(server_id, target, cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_TEXT,
+                cx.listener(move |this, _, _, cx| {
+                    this.copy_text(copied.clone(), cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_TARGET_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    let state = this.state.read(cx);
+                    let link = match target {
+                        ResultTarget::Message(id) => state.message_link(server_id, id),
+                        ResultTarget::Transcript { recording_id, .. } => {
+                            state.recording_link(server_id, recording_id)
+                        }
+                    };
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            div()
+                .id((
+                    match row.target {
+                        ResultTarget::Message(_) => "result",
+                        ResultTarget::Transcript { .. } => "transcript-result",
+                    },
+                    index,
+                ))
+                .role(Role::ListItem)
+                .aria_label(label)
+                .debug_selector(move || selector.clone())
+                .flex_none()
+                .border_t_1()
+                .border_color(Hsla::from(colors.rule_soft))
+                .cursor_pointer()
+                .focusable()
+                .tab_stop(true)
+                .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
+                .focus_visible(move |style| style.shadow(ring))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.go_to_result(server_id, target, cx);
+                }))
+                .child(shown.element(theme, cx))
+        });
+        let id: SharedString = format!(
+            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
+            panel.text,
+            panel.channel.as_ref().map(|(id, _)| id),
+            panel.author.as_ref().map(|(id, _)| id),
+            panel.filters
+        )
+        .into();
+        crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
     }
 
     /// Goes to what a result of a search names.
@@ -466,6 +649,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.members_open = false;
+        let file_call = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .is_some_and(|lists| {
+                lists.call.is_some() && lists.search.as_ref().is_some_and(|panel| panel.files)
+            });
+        if file_call {
+            self.state.update(cx, |state, cx| state.hide_search(cx));
+            self.open_call_panel(cx);
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+        }
         self.state.update(cx, |state, cx| match target {
             ResultTarget::Message(message_id) => state.go_to_result(message_id, cx),
             ResultTarget::Transcript {
@@ -493,17 +688,27 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let _ = window;
         let theme = theme(cx);
         let colors = theme.colors;
-        let found = panel.results.len();
+        let files = panel.files;
+        let found = if files {
+            panel.results.iter().map(|row| row.attachments.len()).sum()
+        } else {
+            panel.results.len()
+        };
         let note: SharedString = match &panel.state {
             SearchShown::Searching if found == 0 => text::SEARCHING.into(),
+            _ if files && found == 1 => "1 file".into(),
+            _ if files => format!("{found} files").into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
-        let header = SideHeader::new(text::SEARCH)
+        let header = SideHeader::new(if files { "Files" } else { text::SEARCH })
             .title_bar()
-            .icon(Icon::Search)
+            .icon(if files {
+                Icon::FolderOpen
+            } else {
+                Icon::Search
+            })
             .note(note)
             .trailing(
                 Button::new("close-search")
@@ -513,7 +718,11 @@ impl Shell {
                     .selector("close-search")
                     .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
             );
-        let filters = self.render_filters(panel, &theme, cx);
+        let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
+        let unsupported = panel.capabilities.filter(|supported| !files && !supported.filters).map(|_| {
+            Notice::new("This server does not support content, mention or direct-message filters. Text search and its channel, author and date filters remain available.")
+                .selector("search-filters-unsupported")
+        });
         let again = |cx: &mut Context<Self>| {
             Button::new("search-again")
                 .icon(Icon::Retry)
@@ -566,9 +775,42 @@ impl Shell {
                 .child(text::SEARCHING)
                 .into_any_element(),
             SearchShown::Nothing => {
-                StatePanel::new(text::SEARCH_NOTHING_TITLE, text::SEARCH_NOTHING)
-                    .selector("search-nothing")
-                    .into_any_element()
+                let empty = StatePanel::new(
+                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                        "Choose search filters"
+                    } else if files && panel.previous_files {
+                        "No older files"
+                    } else if files {
+                        "No files"
+                    } else {
+                        text::SEARCH_NOTHING_TITLE
+                    },
+                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                        "Choose a filter or enter text to search."
+                    } else if files && panel.previous_files {
+                        "No older files are available. You can return to newer files."
+                    } else if files {
+                        "Files shared here will appear in this list."
+                    } else {
+                        text::SEARCH_NOTHING
+                    },
+                )
+                .selector("search-nothing");
+                if files && panel.previous_files {
+                    empty
+                        .action(
+                            Button::new("previous-files")
+                                .label("Newer files")
+                                .selector("previous-files")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.search_scroll.set_offset(gpui::Point::default());
+                                    this.state.update(cx, |state, cx| state.previous_files(cx));
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    empty.into_any_element()
+                }
             }
             SearchShown::Refused(reason) => {
                 StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
@@ -596,7 +838,8 @@ impl Shell {
                             transcripts - 1
                         }
                     };
-                    rows.push(self.render_result(index, number, row, panel, &theme, cx));
+                    rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
+                    rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
                 }
                 // "Show more results" stands under the list, at a place of its own while
                 // results are listed: a page that arrives does not move it.
@@ -605,20 +848,40 @@ impl Shell {
                         .label(if panel.reading_more {
                             text::READING_MORE_RESULTS
                         } else {
-                            text::SHOW_MORE_RESULTS
+                            if files {
+                                "Older files"
+                            } else {
+                                text::SHOW_MORE_RESULTS
+                            }
                         })
                         .disabled(panel.reading_more || !panel.can_read_more)
                         .selector("more-results")
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if files {
+                                this.search_scroll.set_offset(gpui::Point::default());
+                            }
                             this.state
                                 .update(cx, |state, cx| state.read_more_results(cx));
                         })),
                 );
+                let previous = files.then(|| {
+                    div().flex().flex_none().px(u(14.0)).child(
+                        Button::new("previous-files")
+                            .label("Newer files")
+                            .selector("previous-files")
+                            .disabled(!panel.previous_files || panel.reading_more)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.search_scroll.set_offset(gpui::Point::default());
+                                this.state.update(cx, |state, cx| state.previous_files(cx));
+                            })),
+                    )
+                });
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
+                    .children(previous)
                     .child(
                         ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
                             .selector("search-results")
@@ -632,7 +895,11 @@ impl Shell {
         side_panel(
             &theme,
             text::SEARCH,
-            "search-panel",
+            if files {
+                "file-list-panel"
+            } else {
+                "search-panel"
+            },
             self.panel_width(
                 junto_client_core::settings::Panel::Search,
                 theme.metrics.side_panel_width,
@@ -640,7 +907,8 @@ impl Shell {
             ),
         )
         .child(header)
-        .child(filters)
+        .children(filters)
+        .children(unsupported)
         .child(
             crate::ui::notice_slot("search-go-failed-slot")
                 .children(go_failed)

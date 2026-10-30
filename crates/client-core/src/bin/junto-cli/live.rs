@@ -31,7 +31,7 @@ use super::{Arguments, Failure, end_session, failed, logged_in, shown, usage};
 /// How long `state` waits for the event stream to deliver.
 const LIVE_WAIT: Duration = Duration::from_secs(30);
 /// The longest line of standard input that `watch` takes as an action.
-const LONGEST_LINE: usize = 1024;
+const LONGEST_LINE: usize = 4096;
 
 /// What joins a call: each gives the token for the media server.
 enum Entry {
@@ -70,6 +70,7 @@ enum CallAction {
         channel_id: ChannelId,
         change: UpdateCallSettings,
     },
+    Status(ChannelId, String),
     Lock(ChannelId, bool),
     Meeting(ChannelId, bool),
     Ask(ChannelId),
@@ -186,6 +187,13 @@ fn parse_call(words: &[String], arguments: &Arguments) -> Result<CallAction, Fai
                 },
             }
         }
+        "status" => {
+            if words.get(2).is_none() {
+                return Err(usage("status needs text (an empty argument clears it)"));
+            }
+            CallAction::Status(channel(1)?, words[2..].join(" "))
+        }
+        "clear-status" => CallAction::Status(channel(1)?, String::new()),
         "lock" => CallAction::Lock(channel(1)?, true),
         "unlock" => CallAction::Lock(channel(1)?, false),
         "meeting" => CallAction::Meeting(channel(1)?, choice(words, 2, "on", "off", "meeting")?),
@@ -304,6 +312,16 @@ async fn perform(api: &ServerApi, action: CallAction) -> Result<Vec<String>, Fai
             let mut lines = vec![channel_line(&channel)];
             lines.extend(setting_lines(&channel, ""));
             Ok(lines)
+        }
+        CallAction::Status(channel_id, status) => {
+            let channel = api
+                .set_voice_channel_status(channel_id, &status)
+                .await
+                .map_err(failed)?;
+            Ok(vec![
+                channel_line(&channel),
+                format!("voice status: {}", shown(&channel.voice_status)),
+            ])
         }
         CallAction::Lock(channel_id, true) => {
             api.lock_call(channel_id).await.map_err(failed)?;
@@ -602,10 +620,17 @@ fn setting_lines(channel: &Channel, indent: &str) -> Vec<String> {
         Some(limit) => limit.to_string(),
         None => "none".to_owned(),
     };
-    vec![
+    let mut lines = vec![
         format!("{indent}user limit: {limit}"),
         format!("{indent}hides who is inside: {}", channel.hides_occupants),
-    ]
+    ];
+    if !channel.voice_status.is_empty() {
+        lines.push(format!(
+            "{indent}voice status: {}",
+            shown(&channel.voice_status)
+        ));
+    }
+    lines
 }
 
 /// The state of a server, one fact per line.
@@ -1319,6 +1344,37 @@ mod tests {
     use junto_client_core::protocol::invite::Invite;
 
     use super::*;
+
+    #[test]
+    fn status_accepts_unicode_multiword_text_and_explicit_clearing() {
+        let channel = ChannelId::generate();
+        for status in ["Planning 🚀", ""] {
+            let arguments =
+                Arguments::parse(["status".to_owned(), channel.to_string(), status.to_owned()])
+                    .unwrap_or_else(|_| panic!("valid status arguments"));
+            assert!(
+                matches!(parse_call(&arguments.positional, &arguments).unwrap_or_else(|_| panic!("valid status arguments")), CallAction::Status(id, text) if id == channel && text == status)
+            );
+        }
+        for (words, expected) in [
+            (
+                vec![
+                    "status".to_owned(),
+                    channel.to_string(),
+                    "Design".to_owned(),
+                    "review".to_owned(),
+                ],
+                "Design review",
+            ),
+            (vec!["clear-status".to_owned(), channel.to_string()], ""),
+        ] {
+            let arguments =
+                Arguments::parse(words).unwrap_or_else(|_| panic!("valid status arguments"));
+            assert!(
+                matches!(parse_call(&arguments.positional, &arguments).unwrap_or_else(|_| panic!("valid status arguments")), CallAction::Status(id, text) if id == channel && text == expected)
+            );
+        }
+    }
 
     #[test]
     fn the_details_of_an_event_name_a_changed_invite_and_the_logo() {

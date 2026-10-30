@@ -162,6 +162,8 @@ pub async fn fork(
             .fetch_one(&mut *connection)
             .await?;
         let channel = Channel {
+            voice_status: String::new(),
+            topic: String::new(),
             id: channel_id,
             workspace_id,
             category_id: source.channel.category_id,

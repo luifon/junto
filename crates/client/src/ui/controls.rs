@@ -13,9 +13,9 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type SharedClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// A switch with its state as a word beside it.
-#[derive(IntoElement)]
 pub struct Toggle {
     id: ElementId,
     label: SharedString,
@@ -24,7 +24,7 @@ pub struct Toggle {
     /// Why the person cannot change the switch. A switch with a reason takes no click.
     held: Option<SharedString>,
     selector: Option<&'static str>,
-    on_click: Option<ClickHandler>,
+    on_click: Option<SharedClickHandler>,
 }
 
 impl Toggle {
@@ -62,19 +62,54 @@ impl Toggle {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
+    }
+}
+
+impl Toggle {
+    fn context_actions(&self) -> Vec<super::RowAction> {
+        let Some(handler) = &self.on_click else {
+            return Vec::new();
+        };
+        vec![super::RowAction {
+            label: format!(
+                "{}: {}",
+                self.label,
+                if self.on {
+                    &self.words.1
+                } else {
+                    &self.words.0
+                }
+            )
+            .into(),
+            icon: None,
+            disabled: self.held.is_some(),
+            detail: self.held.clone(),
+            handler: Some(handler.clone()),
+        }]
+    }
+}
+
+impl IntoElement for Toggle {
+    type Element = gpui::ViewElement<Self>;
+    fn into_element(self) -> Self::Element {
+        super::action_menu::record(|| self.context_actions().into_iter().next());
+        gpui::ViewElement::new(self)
     }
 }
 
 impl RenderOnce for Toggle {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let actions = self.context_actions();
+        let id = self.id.clone();
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         let focus = super::reveal::handle(&self.id, window, cx);
-        div()
+        let frame = div()
             .id(self.id)
+            .relative()
             .role(Role::Switch)
             .aria_label(self.label.clone())
             .aria_selected(self.on)
@@ -134,7 +169,8 @@ impl RenderOnce for Toggle {
                         if self.on { self.words.0 } else { self.words.1 },
                         Some(self.label),
                     )),
-            )
+            );
+        super::bind_action_menu(frame, id, actions, window, cx)
     }
 }
 
@@ -566,8 +602,7 @@ impl RenderOnce for VolumeSlider {
             .items_center()
             .gap(u(8.0))
             .rounded(u(theme.metrics.radius))
-            .track_focus(&self.focus)
-            .tab_stop(true)
+            .track_focus(&self.focus.clone().tab_stop(true))
             .children(super::reveal::report(&self.focus, window))
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {

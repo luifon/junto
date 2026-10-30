@@ -12,8 +12,8 @@ ADR 0405 and ADR 0409 define the search: full-text search over messages and tran
 
 Query:
 
-- The header of a channel and of a direct conversation has the search field. Enter sends the text; the text is not sent while the person types. The search covers every place of the shown server that the account can read.
-- A text of more than 1,024 bytes is refused before a request, and an empty text ends the search.
+- The header of a channel and of a direct conversation has the search field, including when the account has no workspace. Enter sends the text; the text is not sent while the person types. The search covers every place of the shown server that the account can read.
+- A text of more than 1,024 bytes is refused before a request, and empty text opens the search criteria. With no text or criteria the window prompts for a filter without requesting all history.
 - The panel has three filters: a channel of the shown workspace, a member of the shown workspace as the author, and a time span of "any time", "today", "last 7 days" or "last 30 days". "Today" starts when the day began in the time zone of the person. A changed filter sends the search again.
 
 State:
@@ -47,3 +47,56 @@ Jump:
 - The results are what the account could read at the time of their request. A result of a place that the state still holds stays listed when the server stops giving its message or its recording to the account; opening it is refused then.
 - The marks follow the words of the query and not the match of the server. They can differ for a query with nested operators, and for a script whose words hold combining marks.
 - The window tests against the real server cover a query that finds messages and a transcript line, the filters, the jump to a message, a search without a result, a refused text, a further page, and the loss of the results of a channel with the access to it.
+
+Search-result rows expose their current Go to message or Open transcript action through the shared context menu, with Copy text for the displayed excerpt and Copy link. A message result copies the message application address; a transcript result copies its recording address. Navigation uses the same target and permission-checked state flow as the existing row click. The popup key includes the owner, target, query and filters, so a replacement search does not retain the previous menu. Existing row focus and keyboard behavior are preserved. Window tests: `context_menus::a_search_result_menu_copies_its_text_and_link_and_opens_its_target` and `search::a_transcript_search_result_menu_copies_its_line_and_recording_link_and_opens_it` cover both kinds, copying without navigation and the original target-opening actions.
+
+The panel offers independent file, link, picture, current-account mention and
+direct-conversation switches alongside the channel, author and date choices.
+Changing any filter starts a new first page and withdraws results of the previous
+filter combination. Retry and further-page requests keep the complete filter set.
+
+The From and Through fields accept calendar dates written as YYYY-MM-DD.
+Apply date range validates both dates and their order before sending a request.
+Both chosen days are included: the request starts at the beginning of From in
+the person's time zone and ends exclusively at the beginning of the day after
+Through. Each boundary uses that date's time-zone rules, including daylight
+saving changes. Today uses the same calendar-boundary rule. Choosing a date preset replaces the range.
+
+Files in the channel or conversation header, and in each place's context menu,
+opens a scoped file list using the search transport and its stale-request guards.
+It includes thread files and offers the existing file opener, picture preview,
+download, copy-name/link and message navigation actions. A conversation's list
+also works when the account belongs to no workspace. File panels without a
+workspace use the server list rather than requiring a workspace projection.
+During a call, the file list replaces the side panel while the stage and the
+connection remain active. Closing it restores the call panel.
+
+A file list holds one page of messages and their files at a time, newest first.
+Opening Files selects its source place. Navigating to another place closes the
+file list. Older files advances the cursor; Newer files returns through the recorded page
+cursors. Both reset the list scroll. A failed older-page request keeps the current
+page and does not advance cursor history. An empty older page still offers Newer
+files. Unlike text search, browsing files does not
+stop after 1,000 messages. Switching account or losing the source place withdraws
+the list and invalidates requests already in flight; it never broadens a lost
+file scope to another place. Existing permission-refresh behavior clears data
+before retrying a read.
+
+Search and Files have explicit modes independent of text. Filter-only searches
+retain their controls, paging and result cap; only Files replaces each page and
+keeps chronological back cursors. Without a workspace the server projection
+retains search results and known conversation participants as author choices.
+
+A search reads the server capabilities before sending extensions. Content,
+mention and direct switches show a reason and take no input when unsupported;
+ordinary text and its existing filters remain available. The core API also
+refuses unsupported extension requests, including scoped Files. No page is
+filtered locally to emulate an absent server capability.
+
+Message-change events withdraw that message's saved file metadata immediately
+and reread the affected open page. Every reread advances the request generation,
+so an earlier response cannot restore deleted messages or removed attachments.
+Opening Files starts without saved hits from an earlier visit.
+File and picture search results expose retained files through the common file
+controls, even when their message has no caption.
+Replacing server state also drops saved file metadata before rereading the open page.

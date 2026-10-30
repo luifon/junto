@@ -52,7 +52,7 @@ Documents:
   workspace-role or everyone mentions. Checkbox changes are author edits.
 - Ordinary documents contain at most 16 KiB of compact JSON, 100 content blocks, 1,000 inline nodes and 100
   distinct mentions. Text refuses control characters except tab and newline. Unknown node
-  kinds, unknown fields and repeated marks are refused. Links use HTTP, HTTPS or mailto,
+  kinds, unknown fields and repeated marks are refused. Links use HTTP, HTTPS, mailto or junto,
   have no credentials or controls, and contain at most 2,048 bytes.
 - An empty document needs an attachment. Account mentions in a channel name active
   workspace members; role mentions name roles of that workspace. Everyone mentions need
@@ -321,6 +321,8 @@ Read cost and future copies:
 - A future fork can duplicate attachment metadata and hard-link immutable chunks into a
   new attachment directory. Removing either copy leaves the other intact; editing or
   removing copied messages requires no shared mutable attachment ownership.
+
+`GET /api/v1/attachments/{attachment_id}/message` resolves a file link to its parent message. It shares the download lookup: the file must be complete, attached and not removed, and the caller must be allowed to read the parent message under the live/history policy. An unattached upload, a removed file, a deleted message and an inaccessible parent give not_found. It counts against the account's message-read limit. The client applies its ordinary inbound message bounds to the answer. No access-token reach is added. Server test: `attachment_permissions::a_file_link_resolves_only_an_attached_file_of_a_readable_message`.
 
 ## Consequences
 

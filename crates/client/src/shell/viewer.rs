@@ -40,6 +40,7 @@ const LONGEST_SIDE: u32 = 8192;
 /// The pictures of one message in the viewer.
 pub(crate) struct PictureViewer {
     pub(crate) server_id: ServerId,
+    owner: Option<junto_client_core::Owner>,
     pub(crate) message_id: MessageId,
     /// The pictures of the message, in the order of its files.
     pictures: Vec<Attachment>,
@@ -87,7 +88,10 @@ impl PictureViewer {
     /// the shown file: the message was deleted, or the retention removed its files. The
     /// call window lists no servers, so the server book is read in the state.
     pub(super) fn is_stale(&self, view: &ShellView, state: &AppState) -> bool {
-        if state.server(self.server_id).is_none() {
+        if state
+            .server(self.server_id)
+            .is_none_or(|server| server.owner() != self.owner)
+        {
             return true;
         }
         let Some(shown) = self.shown().map(|attachment| attachment.id) else {
@@ -155,6 +159,11 @@ impl Shell {
         };
         let viewer = PictureViewer {
             server_id,
+            owner: self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner()),
             message_id,
             pictures,
             shown: shown.min(last),
@@ -330,6 +339,7 @@ impl Shell {
             return div().into_any_element();
         };
         let (server_id, shown, count) = (viewer.server_id, viewer.shown, viewer.pictures.len());
+        let owner = viewer.owner;
         let area = Rc::clone(&viewer.area);
         let large = match viewer.large.as_ref() {
             Some(large) if large.attachment_id == attachment.id => match &large.image {
@@ -341,91 +351,97 @@ impl Shell {
         let theme = theme(cx);
         let (listed, failed) = self.listed_picture(server_id, &attachment, cx);
         let image = large.or(listed);
-        let bar = self.render_viewer_bar(&attachment, shown, count, &theme, window, cx);
-        let playback = Rc::clone(&self.message_pictures.playback);
-        let picture = Self::render_viewer_picture(
-            &attachment,
-            image,
-            failed,
-            area,
-            &playback,
-            &theme,
-            window,
-        );
-        let arrows = (count > 1).then(|| {
-            [
-                (
-                    "viewer-previous",
-                    Icon::ChevronLeft,
-                    text::PREVIOUS_PICTURE,
-                    -1,
-                ),
-                ("viewer-next", Icon::ChevronRight, text::NEXT_PICTURE, 1),
-            ]
-            .map(|(id, shape, label, step)| {
-                let strip = div().absolute().top_0().bottom_0().flex().items_center();
-                let strip = if step < 0 {
-                    strip.left(u(12.0))
-                } else {
-                    strip.right(u(12.0))
-                };
-                strip.child(
-                    div()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            Button::new(id)
-                                .icon(shape)
-                                .tooltip(label)
-                                .selector(id)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.step_picture_viewer(step, cx);
-                                })),
-                        ),
+        let menu_id: SharedString =
+            format!("viewer-actions:{server_id}:{:?}:{}", owner, attachment.id).into();
+        let (frame, actions) = crate::ui::collect_actions(|| {
+            self.file_copy_actions(server_id, &attachment, cx);
+            let bar = self.render_viewer_bar(&attachment, shown, count, &theme, window, cx);
+            let playback = Rc::clone(&self.message_pictures.playback);
+            let picture = Self::render_viewer_picture(
+                &attachment,
+                image,
+                failed,
+                area,
+                &playback,
+                &theme,
+                window,
+            );
+            let arrows = (count > 1).then(|| {
+                [
+                    (
+                        "viewer-previous",
+                        Icon::ChevronLeft,
+                        text::PREVIOUS_PICTURE,
+                        -1,
+                    ),
+                    ("viewer-next", Icon::ChevronRight, text::NEXT_PICTURE, 1),
+                ]
+                .map(|(id, shape, label, step)| {
+                    let strip = div().absolute().top_0().bottom_0().flex().items_center();
+                    let strip = if step < 0 {
+                        strip.left(u(12.0))
+                    } else {
+                        strip.right(u(12.0))
+                    };
+                    strip.child(
+                        div()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                Button::new(id)
+                                    .icon(shape)
+                                    .tooltip(label)
+                                    .selector(id)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.step_picture_viewer(step, cx);
+                                    })),
+                            ),
+                    )
+                })
+            });
+            let label: SharedString =
+                format!("{}: {}", text::PICTURE, text::label(&attachment.name)).into();
+            let mut cover = Hsla::from(theme.colors.basalt_deep);
+            cover.a = 0.92;
+            div()
+                .id("picture-viewer")
+                .role(Role::Dialog)
+                .aria_label(label)
+                .debug_selector(|| "picture-viewer".to_owned())
+                .absolute()
+                .inset_0()
+                .occlude()
+                .child(crate::ui::cover())
+                .flex()
+                .flex_col()
+                .bg(cover)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_layer(window, cx)),
                 )
-            })
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.close_layer(window, cx),
+                        "left" => this.step_picture_viewer(-1, cx),
+                        "right" => this.step_picture_viewer(1, cx),
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                }))
+                .child(bar)
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .px(u(SIDE_SPACE))
+                        .pb(u(BOTTOM_SPACE))
+                        .child(picture)
+                        .children(arrows.into_iter().flatten()),
+                )
+                .children(super::title_bar::layer_band(window, cx))
         });
-        let label: SharedString =
-            format!("{}: {}", text::PICTURE, text::label(&attachment.name)).into();
-        let mut cover = Hsla::from(theme.colors.basalt_deep);
-        cover.a = 0.92;
-        div()
-            .id("picture-viewer")
-            .role(Role::Dialog)
-            .aria_label(label)
-            .debug_selector(|| "picture-viewer".to_owned())
-            .absolute()
-            .inset_0()
-            .occlude()
-            .child(crate::ui::cover())
-            .flex()
-            .flex_col()
-            .bg(cover)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close_layer(window, cx)),
-            )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                match event.keystroke.key.as_str() {
-                    "escape" => this.close_layer(window, cx),
-                    "left" => this.step_picture_viewer(-1, cx),
-                    "right" => this.step_picture_viewer(1, cx),
-                    _ => return,
-                }
-                cx.stop_propagation();
-            }))
-            .child(bar)
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .px(u(SIDE_SPACE))
-                    .pb(u(BOTTOM_SPACE))
-                    .child(picture)
-                    .children(arrows.into_iter().flatten()),
-            )
-            .children(super::title_bar::layer_band(window, cx))
+        crate::ui::bind_action_menu(frame, menu_id, actions, window, cx)
             .focus_trap("picture-viewer-trap", self.layer_focus())
             .into_any_element()
     }

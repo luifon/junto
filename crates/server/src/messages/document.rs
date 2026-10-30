@@ -114,12 +114,12 @@ pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
                     reqwest::Url::parse(url).map_err(|_| ApiError::invalid("invalid link"))?;
                 if url.len() > 2048
                     || url.chars().any(char::is_control)
-                    || !matches!(parsed.scheme(), "https" | "http" | "mailto")
+                    || !matches!(parsed.scheme(), "https" | "http" | "mailto" | "junto")
                     || !parsed.username().is_empty()
                     || parsed.password().is_some()
                 {
                     return Err(ApiError::invalid(
-                        "links use http, https or mailto without credentials",
+                        "links use http, https, mailto or junto without credentials",
                     ));
                 }
             }

@@ -137,6 +137,28 @@ pub struct SearchPage {
     pub results: Vec<SearchHit>,
     pub next: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SearchCapabilities {
+    /// Content, mention, direct-message and conversation-scope filters.
+    #[serde(default)]
+    pub filters: bool,
+    /// Search criteria without a text term.
+    #[serde(default)]
+    pub filter_only: bool,
+    /// Explicit scoped file lists with chronological cursors.
+    #[serde(default)]
+    pub files: bool,
+}
+
+impl SearchCapabilities {
+    pub const ALL: Self = Self {
+        filters: true,
+        filter_only: true,
+        files: true,
+    };
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SearchHit {
@@ -152,6 +174,8 @@ pub struct SearchHit {
     pub created_at: OffsetDateTime,
     pub text: String,
     pub rank: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::message::Attachment>,
     /// The position of the message in its channel or conversation. Absent for a
     /// transcript line.
     #[serde(default)]
@@ -163,4 +187,18 @@ pub struct SearchHit {
     /// recording.
     #[serde(default)]
     pub start_ms: Option<u64>,
+}
+
+#[cfg(test)]
+mod search_capability_tests {
+    use super::SearchCapabilities;
+
+    #[test]
+    fn absent_extension_fields_never_enable_unsupported_search() {
+        let older: SearchCapabilities = serde_json::from_str("{}").unwrap();
+        assert_eq!(older, SearchCapabilities::default());
+        let partial: SearchCapabilities = serde_json::from_str(r#"{"filters":true}"#).unwrap();
+        assert!(partial.filters);
+        assert!(!partial.filter_only && !partial.files);
+    }
 }

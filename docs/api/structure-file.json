@@ -93,6 +93,13 @@
               "null"
             ]
           },
+          "topic": {
+            "maxLength": 1024,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "user_limit": {
             "description": "For a voice channel only. `null`: no limit.",
             "format": "int32",

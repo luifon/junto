@@ -28,13 +28,18 @@ mod support;
 mod account;
 mod admin;
 mod admin_pages;
+mod attachment_menus;
 mod badges;
 mod book;
 mod call_notices;
 mod calls;
+mod category_collapse;
 mod channel_calls;
+mod channel_creation;
+mod channel_files;
 mod channel_history;
 mod channel_references;
+mod channel_topics;
 mod channel_use;
 mod composer_preview;
 mod composing;
@@ -58,6 +63,7 @@ mod message_links;
 mod rule_changes;
 mod target_links;
 mod typing;
+mod voice_status;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]
@@ -82,6 +88,7 @@ mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
+mod personal_sections;
 mod pictures;
 mod presence;
 mod profile_cards;

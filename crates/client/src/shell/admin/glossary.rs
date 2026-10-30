@@ -125,6 +125,12 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let copied = term.to_owned();
+        crate::ui::RowAction::new(
+            text::COPY_TEXT,
+            cx.listener(move |this, _, _, cx| this.copy_text(copied.clone(), cx)),
+        )
+        .register();
         let position = u32::try_from(index).unwrap_or(u32::MAX);
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
         let held = page
@@ -313,14 +319,7 @@ impl Shell {
             .held()
             .or(sending(view).then_some(text::admin::SENDING));
         let terms = page.terms.loaded().cloned().unwrap_or_default();
-        // A row holds a control that takes the focus while the page takes changes, or while
-        // its form or question is open.
-        let open = |index: usize| {
-            matches!(
-                self.admin.mode,
-                Some(Mode::ChangeTerm(at) | Mode::RemoveTerm(at)) if at as usize == index
-            )
-        };
+        let open = |index: usize| matches!(self.admin.mode, Some(Mode::ChangeTerm(at) | Mode::RemoveTerm(at)) if at as usize == index);
         let list =
             std::iter::once(
                 Row::new(

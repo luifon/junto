@@ -302,13 +302,22 @@ fn hit_lines(hit: &SearchHit) -> Vec<String> {
     if let Some(start_ms) = hit.start_ms {
         what.push_str(&format!("  at {}", line_time(start_ms)));
     }
-    vec![
+    let mut lines = vec![
         format!(
             "result: {what}  place {}  author {}  {}  rank {}",
             hit.place_id, hit.author_id, hit.created_at, hit.rank
         ),
         format!("  {}", shown(&hit.text)),
-    ]
+    ];
+    lines.extend(hit.attachments.iter().map(|file| {
+        format!(
+            "file: {}  {} bytes  {}",
+            file.id,
+            file.bytes,
+            shown(&file.name)
+        )
+    }));
+    lines
 }
 
 async fn threads(
@@ -579,8 +588,17 @@ async fn search(
             .transpose()
     };
     let query = SearchQuery {
+        files: arguments.flag("files"),
         text: word(words, 0, "the text of the search")?.to_owned(),
         channel_id: parse("channel", "a channel")?,
+        conversation_id: arguments
+            .value("conversation")
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|_| usage("--conversation needs a conversation"))
+            })
+            .transpose()?,
         author_id: arguments
             .value("author")
             .map(|text| text.parse().map_err(|_| usage("--author needs an account")))
@@ -589,6 +607,11 @@ async fn search(
         until: time_of(arguments, "until")?,
         limit: arguments.number("limit")?,
         cursor: arguments.value("cursor").map(str::to_owned),
+        has_file: arguments.flag("has-file"),
+        has_link: arguments.flag("has-link"),
+        has_picture: arguments.flag("has-picture"),
+        mentions_me: arguments.flag("mentions-me"),
+        direct: arguments.flag("direct"),
     };
     let page = server.api().search(&query).await.map_err(failed)?;
     let mut lines: Vec<String> = page.results.iter().flat_map(hit_lines).collect();
@@ -668,6 +691,7 @@ mod tests {
             created_at: at,
             text: "the obsidian plan".to_owned(),
             rank: 0.5,
+            attachments: Vec::new(),
             position: Some(41),
             thread_root: Some(root_id),
             start_ms: None,

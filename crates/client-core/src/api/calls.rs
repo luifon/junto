@@ -5,7 +5,8 @@
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
-    ReportCallState, ReportScreenShare, ReportSpeaking, ShareAudio, ShareKind, UpdateCallSettings,
+    ReportCallState, ReportScreenShare, ReportSpeaking, SetVoiceChannelStatus, ShareAudio,
+    ShareKind, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
@@ -145,6 +146,21 @@ impl ServerApi {
     ) -> Result<Channel, ApiError> {
         let path = format!("/channels/{channel_id}/call/settings");
         self.send(Method::Patch, path, change).await
+    }
+
+    pub async fn set_voice_channel_status(
+        &self,
+        channel_id: ChannelId,
+        status: &str,
+    ) -> Result<Channel, ApiError> {
+        self.send(
+            Method::Put,
+            format!("/channels/{channel_id}/voice-status"),
+            &SetVoiceChannelStatus {
+                status: status.to_owned(),
+            },
+        )
+        .await
     }
 
     /// Asks for a place in the call of a voice channel. The answer carries the token for

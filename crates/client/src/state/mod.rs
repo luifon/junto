@@ -45,6 +45,7 @@ mod searching;
 pub mod startup;
 pub mod switcher;
 mod target_links;
+pub use target_links::OpenFileLink;
 mod threads;
 pub mod transcript_work;
 mod tray;
@@ -2118,8 +2119,12 @@ impl AppState {
             self.invalidate_profiles(server_id, cx);
         }
         self.reaction_people_changed(server_id, Some(event.as_ref()), cx);
-        if let Event::MessageChanged { message_id, .. } = event.as_ref() {
+        if let Event::MessageChanged {
+            place, message_id, ..
+        } = event.as_ref()
+        {
             self.forget_quotes(server_id, Some(*message_id), cx);
+            self.search_after_message_change(server_id, place, *message_id, cx);
         } else if matches!(
             event.as_ref(),
             Event::PermissionsChanged { .. }
@@ -2876,6 +2881,7 @@ impl AppState {
             self.selection.notify = None;
         }
         self.end_search_of_other_server(shown.server);
+        self.end_files_of_other_place(shown);
         self.drop_lost_search_filter(&snapshots, cx);
         let before = self.shown;
         self.follow_history(&before, &shown);

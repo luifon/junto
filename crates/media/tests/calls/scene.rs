@@ -587,6 +587,7 @@ impl Room {
             .create_channel(
                 workspace_id,
                 &CreateChannel {
+                    topic: String::new(),
                     name: "Daily".to_owned(),
                     kind: ChannelKind::Voice,
                     category_id: None,
@@ -673,6 +674,7 @@ impl Room {
             .create_channel(
                 self.workspace_id,
                 &CreateChannel {
+                    topic: String::new(),
                     name: name.to_owned(),
                     kind: ChannelKind::Voice,
                     category_id: None,

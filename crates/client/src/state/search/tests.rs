@@ -34,6 +34,8 @@ fn scene() -> Scene {
     let (own, ana) = (AccountId::generate(), AccountId::generate());
     let studio = WorkspaceId::generate();
     let channel = |kind, name: &str, position| Channel {
+        voice_status: String::new(),
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id: studio,
         category_id: None,
@@ -132,6 +134,7 @@ impl Scene {
             position: Some(7),
             thread_root: None,
             start_ms: None,
+            attachments: Vec::new(),
             page: 0,
         }
     }
@@ -149,16 +152,20 @@ impl Scene {
             position: None,
             thread_root: None,
             start_ms: None,
+            attachments: Vec::new(),
             page: 0,
         }
     }
 
     fn search(&self, text: &str, hits: Vec<Hit>) -> Search {
         Search {
+            files: false,
+            capabilities: Some(junto_client_core::protocol::discovery::SearchCapabilities::ALL),
             server_id: self.server_id,
             text: text.to_owned(),
             filters: Filters::default(),
             progress: Progress::Done,
+            file_pages: Vec::new(),
             hits,
             more: false,
             reading_more: false,
@@ -377,6 +384,7 @@ fn the_filters_offer_the_channels_and_the_members_of_the_shown_workspace() {
         channel: Some(scene.general),
         author: Some(scene.ana),
         date: DateFilter::Last7Days,
+        ..Filters::default()
     };
     search.going = Some(MessageId::generate());
     search.go_failed = Some("Gone.".to_owned());
@@ -466,6 +474,7 @@ fn the_text_of_a_result_is_held_up_to_a_bound() {
             created_at: morning(),
             text,
             rank: 1.0,
+            attachments: Vec::new(),
             position: None,
             thread_root: None,
             start_ms: None,
@@ -582,6 +591,8 @@ fn the_results_of_a_later_page_follow_the_listed_ones_in_the_order_of_the_server
     // The archived list answers: the second page joins the list after the first one, and
     // its messages do not go before the line of the transcript.
     let channel = Channel {
+        voice_status: String::new(),
+        topic: String::new(),
         id: archived,
         workspace_id: scene.studio,
         category_id: None,
@@ -614,4 +625,23 @@ fn the_results_of_a_later_page_follow_the_listed_ones_in_the_order_of_the_server
         panel.results[0].target,
         ResultTarget::Transcript { .. }
     ));
+}
+
+#[test]
+fn chosen_dates_include_the_whole_local_day_across_daylight_saving() {
+    let zone = Zone::Named(chrono_tz::America::New_York);
+    let day = time::macros::date!(2026 - 03 - 08);
+    let filter = DateFilter::Range {
+        from: day,
+        through: day,
+    };
+    let from = filter.from(time::OffsetDateTime::UNIX_EPOCH, zone).unwrap();
+    let until = filter.until(zone).unwrap();
+    assert_eq!((until - from).whole_hours(), 23);
+    assert_eq!(
+        DateFilter::Today.from(from + Duration::hours(12), zone),
+        Some(from)
+    );
+    assert_eq!(zone.local(from).date(), day);
+    assert_eq!(zone.local(until).date(), day.next_day().unwrap());
 }

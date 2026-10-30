@@ -402,6 +402,7 @@ pub async fn create_channel(
         id: ChannelId::generate(),
         workspace_id,
         name: &name,
+        topic: &body.topic,
         kind: body.kind,
         category_id: body.category_id,
         position: body.position,
@@ -419,6 +420,7 @@ pub(crate) struct NewChannel<'a> {
     pub id: ChannelId,
     pub workspace_id: WorkspaceId,
     pub name: &'a str,
+    pub topic: &'a str,
     pub kind: ChannelKind,
     pub category_id: Option<CategoryId>,
     /// Absent: after the last channel.
@@ -460,6 +462,8 @@ pub(crate) async fn create_channel_in(
         category_id: new.category_id,
         kind: new.kind,
         name: new.name.to_owned(),
+        voice_status: String::new(),
+        topic: validate::channel_topic(new.topic)?,
         position,
         permanent_messages: false,
         user_limit: None,
@@ -467,14 +471,15 @@ pub(crate) async fn create_channel_in(
     };
     sqlx::query(
         "insert into channels
-             (id, workspace_id, category_id, kind, name, position, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7)",
+             (id, workspace_id, category_id, kind, name, topic, position, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(channel.id)
     .bind(workspace_id)
     .bind(channel.category_id)
     .bind(channel.kind.stored())
     .bind(&channel.name)
+    .bind(&channel.topic)
     .bind(channel.position)
     .bind(now)
     .execute(&mut *connection)
@@ -626,6 +631,9 @@ pub(crate) async fn update_channel_in(
     record.require_open()?;
 
     let mut channel = record.channel;
+    if let Some(topic) = &change.topic {
+        channel.topic = validate::channel_topic(topic)?;
+    }
     let permanent_before = channel.permanent_messages;
     let category_before = channel.category_id;
     let name_before = channel.name.clone();
@@ -652,7 +660,7 @@ pub(crate) async fn update_channel_in(
     }
     let updated = sqlx::query(
         "update channels
-         set name = $2, category_id = $3, position = $4, permanent_messages = $5
+         set name = $2, category_id = $3, position = $4, permanent_messages = $5, topic = $6
          where id = $1 and deleted_at is null",
     )
     .bind(channel_id)
@@ -660,6 +668,7 @@ pub(crate) async fn update_channel_in(
     .bind(channel.category_id)
     .bind(channel.position)
     .bind(channel.permanent_messages)
+    .bind(&channel.topic)
     .execute(&mut *connection)
     .await?;
     if updated.rows_affected() == 0 {
@@ -670,11 +679,13 @@ pub(crate) async fn update_channel_in(
     let about = About::Channel(channel.workspace_id, channel_id);
     let only_permanence = change.permanent_messages.is_some()
         && new_name.is_none()
+        && change.topic.is_none()
         && change.category_id.is_none()
         && change.position.is_none();
     if !only_permanence {
         let updated = AuditEvent::ChannelUpdated {
             name: channel.name.clone(),
+            topic: channel.topic.clone(),
             category_id: channel.category_id,
             position: channel.position,
             permanent_messages: channel.permanent_messages,

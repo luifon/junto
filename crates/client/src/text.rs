@@ -317,6 +317,7 @@ pub const MEETING_PARTICIPANT_HELP: &str =
     "Microphones are blocked. Raise your hand to ask to speak.";
 pub const RAISED_A_HAND: &str = " raised their hand";
 pub const ALLOW: &str = "Allow";
+pub const ALLOW_TO_SPEAK: &str = "Allow to speak";
 pub const LOWER_HAND_OF_PERSON: &str = "Lower hand";
 pub const LOWER_HAND_HELP: &str = "Their microphone stays as it is.";
 pub const NO_RAISED_HAND: &str = "No hand is raised.";
@@ -1906,6 +1907,7 @@ pub const READING_LATER: &str = "Reading later messages…";
 pub const GO_TO_END: &str = "Go to the newest messages";
 pub const NEW_MESSAGES: &str = "New";
 pub const MARK_AS_READ: &str = "Mark as read";
+pub const EDIT_CHANNEL: &str = "Edit channel";
 pub const MARK_AS_READ_HELP: &str = "Mark every message of this channel as read";
 pub const EDITED: &str = "edited";
 pub const DELETED_MESSAGE: &str = "This message was deleted.";
@@ -2878,7 +2880,7 @@ pub const SEARCH_NOTHING_TITLE: &str = "No result";
 pub const SEARCH_NOTHING: &str = "No message and no transcript line that you can read holds these words. The search compares whole words.";
 pub const SEARCH_FAILED_TITLE: &str = "The search got no answer";
 pub const SEARCH_REFUSED_TITLE: &str = "The server did not take the search";
-pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search text.";
+pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search.";
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
 pub const MESSAGE_LINK_UNAVAILABLE: &str =
     "This link is unavailable or you do not have access to it.";
@@ -2901,6 +2903,7 @@ pub fn date_filter(filter: crate::state::search::DateFilter) -> &'static str {
     use crate::state::search::DateFilter;
     match filter {
         DateFilter::AnyTime => "Any time",
+        DateFilter::Range { .. } => "Date range",
         DateFilter::Today => "Today",
         DateFilter::Last7Days => "Last 7 days",
         DateFilter::Last30Days => "Last 30 days",
@@ -2919,7 +2922,11 @@ pub fn results_for(count: usize, more: bool, query: &str) -> String {
         (count, false) => format!("{count} results"),
         (count, true) => format!("{count}+ results"),
     };
-    format!("{count} for “{shown}”")
+    if query.trim().is_empty() {
+        count
+    } else {
+        format!("{count} for “{shown}”")
+    }
 }
 
 /// The line of a transcript as a result names it. The first line is line 1.
@@ -3305,10 +3312,23 @@ pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailabl
 pub const INVITATION_EXISTING_ACCOUNT: &str =
     "Use this invitation with your existing account. It may add you to workspaces on this server.";
 pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+pub const COPY_TARGET_LINK: &str = "Copy link";
+
+pub const EDIT_TEXT_MENU: &str = "Edit text";
+pub const CUT_SELECTION: &str = "Cut";
+pub const COPY_SELECTION: &str = "Copy";
+pub const PASTE_TEXT: &str = "Paste";
+pub const SELECT_ALL_TEXT: &str = "Select all";
+
+pub const ROW_ACTIONS: &str = "Row actions";
 pub const COPY_TEXT: &str = "Copy text";
 
 pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
 
+pub const LINKED_FILE: &str = "File";
+pub const COPY_FILE_NAME: &str = "Copy file name";
+
+pub const COPY_RECORDING_LINK: &str = "Copy recording link";
 pub const EDIT_TEXT: &str = "Edit text";
 pub const CUT: &str = "Cut";
 pub const COPY: &str = "Copy";
@@ -3377,6 +3397,43 @@ pub fn typing_people(names: &[String]) -> String {
         _ => "Several people are typing…".to_owned(),
     }
 }
+pub const LINK_ACTIONS: &str = "Link actions";
+pub const OPEN_LINK: &str = "Open link";
+
+pub const COPY_NAME: &str = "Copy name";
+pub const COPY_ACCOUNT_ID: &str = "Copy account ID";
+
+pub const ACCOUNT_ACTIONS: &str = "Account actions";
+
+pub const SELECT_SOURCE: &str = "Select source";
+pub const STOP_SHARING: &str = "Stop sharing";
+
+pub const COLLAPSE_CATEGORY: &str = "Collapse category";
+pub const EXPAND_CATEGORY: &str = "Expand category";
+pub const CHANNEL_TOPIC: &str = "Topic";
+pub const EDIT_TOPIC: &str = "Edit topic";
+pub const COPY_TOPIC: &str = "Copy topic";
+pub const TOPIC_EMPTY: &str = "No topic";
+pub const TOPIC_SAVED: &str = "Topic saved";
+pub const TOPIC_TOO_LONG: &str = "A topic has at most 1024 characters.";
+pub const CATEGORY_SETTINGS: &str = "Category settings";
+
+pub const FAVOURITES: &str = "Favourites";
+pub const ADD_FAVOURITE: &str = "Add to favourites";
+pub const REMOVE_FAVOURITE: &str = "Remove from favourites";
+pub const NEW_SECTION: &str = "New section";
+pub const SECTION_NAME: &str = "Section name";
+pub const SECTION_NAME_INVALID: &str = "Use 1 to 64 characters without control characters.";
+pub const RENAME_SECTION: &str = "Rename section";
+pub const REMOVE_SECTION: &str = "Remove section";
+pub const COLLAPSE_SECTION: &str = "Collapse section";
+pub const EXPAND_SECTION: &str = "Expand section";
+pub const MOVE_TO_SECTION: &str = "Move to";
+pub const RETURN_TO_CHANNEL_LIST: &str = "Return to channel list";
+pub const MOVE_CHANNEL_UP: &str = "Move channel up";
+pub const MOVE_CHANNEL_DOWN: &str = "Move channel down";
+pub const MOVE_SECTION_UP: &str = "Move section up";
+pub const MOVE_SECTION_DOWN: &str = "Move section down";
 
 #[cfg(test)]
 mod tests {

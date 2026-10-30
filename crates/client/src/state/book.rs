@@ -459,6 +459,63 @@ impl AppState {
         self.arrange_with(move |_| Some(change), cx);
     }
 
+    pub fn collapse_category(
+        &mut self,
+        owner: junto_client_core::Owner,
+        category: junto_client_core::protocol::ids::CategoryId,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.arrange_with(
+            move |client| {
+                (client.server(owner.entry.server_id)?.owner() == Some(owner)).then_some(
+                    Change::CollapseCategory {
+                        server: owner.entry.server_id,
+                        account: owner.account_id,
+                        category,
+                        collapsed,
+                    },
+                )
+            },
+            cx,
+        );
+    }
+
+    pub fn arrange_channels(
+        &mut self,
+        owner: junto_client_core::Owner,
+        workspace: WorkspaceId,
+        change: layout::channels::Change,
+        cx: &mut Context<Self>,
+    ) {
+        self.arrange_with(
+            move |client| {
+                let server = client.server(owner.entry.server_id)?;
+                if server.owner() != Some(owner) {
+                    return None;
+                }
+                let model = server.live().view().model?;
+                let shown = model.workspace(workspace)?;
+                let channel = match &change {
+                    layout::channels::Change::Place { channel, .. }
+                    | layout::channels::Change::MoveChannel { channel, .. } => Some(*channel),
+                    layout::channels::Change::Create { channel, .. } => *channel,
+                    _ => None,
+                };
+                if channel.is_some_and(|id| shown.channel(id).is_none()) {
+                    return None;
+                }
+                Some(Change::PersonalChannels {
+                    server: owner.entry.server_id,
+                    account: owner.account_id,
+                    workspace,
+                    change,
+                })
+            },
+            cx,
+        );
+    }
+
     /// Makes the change that `change` finds when the write runs, from the client as it is
     /// then. Nothing happens without one.
     fn arrange_with(

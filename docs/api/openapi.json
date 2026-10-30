@@ -2026,6 +2026,58 @@
         ]
       }
     },
+    "/api/v1/attachments/{attachment_id}/message": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "get_attachment_message",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/attachments/{attachment_id}/upload": {
       "get": {
         "tags": [
@@ -5329,6 +5381,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FollowedThreads"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/voice-status": {
+      "put": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "set_voice_channel_status",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetVoiceChannelStatus"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
                 }
               }
             }
@@ -9138,9 +9252,17 @@
           {
             "name": "q",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "files",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -9174,6 +9296,21 @@
             }
           },
           {
+            "name": "conversation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ConversationId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
             "name": "from",
             "in": "query",
             "required": false,
@@ -9193,6 +9330,46 @@
                 "string",
                 "null"
               ]
+            }
+          },
+          {
+            "name": "has_file",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "has_link",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "has_picture",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "mentions_me",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "direct",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -9234,6 +9411,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/search/capabilities": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchCapabilities"
                 }
               }
             }
@@ -14150,6 +14369,27 @@
               "position": {
                 "type": "integer",
                 "format": "int32"
+              },
+              "topic": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "status",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "voice_channel_status_updated"
+                ]
+              },
+              "status": {
+                "type": "string"
               }
             }
           },
@@ -16053,6 +16293,10 @@
             "type": "integer",
             "format": "int32"
           },
+          "topic": {
+            "type": "string",
+            "maxLength": 1024
+          },
           "user_limit": {
             "type": [
               "integer",
@@ -16061,6 +16305,10 @@
             "format": "int32",
             "description": "The largest number of people in the call of a voice channel. Absent: no limit. A\nperson who is invited or moved in can pass it (ADR 0504).",
             "minimum": 0
+          },
+          "voice_status": {
+            "type": "string",
+            "maxLength": 500
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -16162,6 +16410,13 @@
               "null"
             ],
             "description": "For a channel in a category. `true`: the channel takes the overrides of its category,\nand the entry states no overrides of its own. `false`: the channel has its own\noverrides. Absent: a new channel in a category is synced, and an existing channel\nkeeps its state until a stated override changes what it uses."
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
           },
           "user_limit": {
             "type": [
@@ -16516,6 +16771,10 @@
             ],
             "format": "int32",
             "description": "Absent: after the last channel."
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 1024
           }
         }
       },
@@ -19614,6 +19873,23 @@
           }
         }
       },
+      "SearchCapabilities": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "boolean",
+            "description": "Explicit scoped file lists with chronological cursors."
+          },
+          "filter_only": {
+            "type": "boolean",
+            "description": "Search criteria without a text term."
+          },
+          "filters": {
+            "type": "boolean",
+            "description": "Content, mention, direct-message and conversation-scope filters."
+          }
+        }
+      },
       "SearchHit": {
         "type": "object",
         "required": [
@@ -19624,6 +19900,12 @@
           "rank"
         ],
         "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            }
+          },
           "author_id": {
             "$ref": "#/components/schemas/AccountId"
           },
@@ -20207,6 +20489,19 @@
         "properties": {
           "following": {
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetVoiceChannelStatus": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 500
           }
         },
         "additionalProperties": false
@@ -20876,6 +21171,13 @@
                 ],
                 "format": "int32"
               },
+              "topic": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 1024
+              },
               "workspace": {
                 "$ref": "#/components/schemas/StructureId"
               }
@@ -20925,6 +21227,13 @@
                   "null"
                 ],
                 "format": "int32"
+              },
+              "topic": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 1024
               }
             }
           },
@@ -21808,6 +22117,13 @@
               "null"
             ],
             "format": "int32"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
           }
         }
       },

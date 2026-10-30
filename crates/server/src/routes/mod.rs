@@ -159,6 +159,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(pins::list));
     add(&mut router, || routes!(pins::pin, pins::unpin));
     add(&mut router, || routes!(search::search));
+    add(&mut router, || routes!(search::capabilities));
     add(&mut router, || {
         routes!(notifications::get_settings, notifications::set_settings)
     });
@@ -190,6 +191,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(attachments::put_chunk));
     add(&mut router, || routes!(attachments::complete_upload));
+    add(&mut router, || routes!(attachments::get_attachment_message));
     add(&mut router, || routes!(attachments::download));
     add(&mut router, || {
         routes!(messages::channel_history, messages::send_channel_message)
@@ -422,6 +424,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(calls::report_speaking));
     add(&mut router, || routes!(calls::get_channel_call));
     add(&mut router, || routes!(calls::update_call_settings));
+    add(&mut router, || routes!(calls::set_voice_channel_status));
     add(&mut router, || routes!(calls::join_channel_call));
     add(&mut router, || {
         routes!(calls::lock_call, calls::unlock_call)

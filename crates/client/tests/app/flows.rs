@@ -482,6 +482,7 @@ fn the_lists_follow_the_events_of_the_server_without_a_reload(cx: &mut TestAppCo
         .run(api.create_channel(
             workspace_id,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,

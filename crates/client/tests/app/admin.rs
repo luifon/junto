@@ -31,6 +31,7 @@ impl Admin {
 
     fn channel(&self, world: &World, workspace_id: WorkspaceId, name: &str) -> ChannelId {
         let channel = CreateChannel {
+            topic: String::new(),
             name: name.to_owned(),
             kind: ChannelKind::Text,
             category_id: None,
@@ -583,6 +584,7 @@ fn the_settings_of_a_channel_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
         .unwrap()
         .id;
     let channel = CreateChannel {
+        topic: String::new(),
         name: "plans".to_owned(),
         kind: ChannelKind::Text,
         category_id: None,
@@ -699,6 +701,7 @@ fn a_cancelled_form_of_a_channel_keeps_its_settings_waiting_and_tells_the_refusa
         .unwrap()
         .id;
     let channel = CreateChannel {
+        topic: String::new(),
         name: "plans".to_owned(),
         kind: ChannelKind::Text,
         category_id: None,
@@ -837,6 +840,7 @@ fn an_administrator_drags_channels_to_another_place_and_category(cx: &mut TestAp
         .id;
     let create = |name: &str, category_id| {
         let channel = CreateChannel {
+            topic: String::new(),
             name: name.to_owned(),
             kind: ChannelKind::Text,
             category_id,
@@ -993,6 +997,7 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
         .id;
     let create = |name: &str, category_id, position| {
         let channel = CreateChannel {
+            topic: String::new(),
             name: name.to_owned(),
             kind: ChannelKind::Text,
             category_id,
@@ -1376,6 +1381,7 @@ fn an_administrator_renames_reorders_and_deletes_categories_in_the_window(cx: &m
         .run(owner.api().create_channel(
             default,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: Some(projects),
@@ -1459,6 +1465,7 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
         .run(owner.api().create_channel(
             default,
             &CreateChannel {
+                topic: String::new(),
                 name: "plans".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,

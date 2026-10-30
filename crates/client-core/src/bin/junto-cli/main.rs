@@ -127,6 +127,10 @@ commands:
                                marks, `or`, and a minus before a word
                                [--channel <id>] [--author <account>] [--from <time>]
                                [--until <time>] [--limit <n>] [--cursor <continuation>]
+                               [--has-file] [--has-link] [--has-picture]
+                               [--mentions-me] [--direct] [--conversation <id>]
+                               Empty text searches by filters alone. Add --files and
+                               a channel or conversation for a chronological file list.
 
 actions of call:
   show [<channel>]             the call of a voice channel, or the call of this account
@@ -137,6 +141,8 @@ actions of call:
   unshare
   hand <up|down>
   speaking <yes|no>
+  status <channel> <text>      set voice status (empty text clears it)
+  clear-status <channel>       clear voice status, including from watch
   settings <channel> [--limit <n> | --no-limit] [--hide <yes|no>]
   lock <channel>, unlock <channel>
   meeting <channel> <on|off>
@@ -438,6 +444,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "quiet",
     "time-zone",
     "channel",
+    "conversation",
     "author",
     "from",
     "until",
@@ -445,6 +452,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "category",
     "position",
     "permanent",
+    "topic",
     "allow",
     "deny",
     "action",
@@ -457,6 +465,12 @@ const VALUE_OPTIONS: &[&str] = &[
     "permissions",
 ];
 const FLAGS: &[&str] = &[
+    "files",
+    "has-file",
+    "has-link",
+    "has-picture",
+    "mentions-me",
+    "direct",
     "when-selected",
     "wait",
     "yes",

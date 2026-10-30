@@ -340,6 +340,55 @@ impl Shell {
             )
     }
 
+    fn open_channel_creation(
+        &mut self,
+        owner: junto_client_core::Owner,
+        workspace: junto_client_core::protocol::ids::WorkspaceId,
+        category: Option<junto_client_core::protocol::ids::CategoryId>,
+        kind: ChannelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.read(cx);
+        let view = state.view();
+        if !state
+            .server(owner.entry.server_id)
+            .is_some_and(|server| server.owner() == Some(owner))
+            || view
+                .selected
+                .as_ref()
+                .is_none_or(|server| server.id != owner.entry.server_id)
+            || !view.workspace().is_some_and(|shown| {
+                shown.id == workspace
+                    && shown
+                        .sections
+                        .iter()
+                        .any(|section| section.category_id == category && section.may_create)
+            })
+        {
+            return;
+        }
+        let open = match category {
+            Some(category_id) => crate::state::admin::AdminOpen::Category {
+                server_id: owner.entry.server_id,
+                workspace_id: workspace,
+                category_id,
+            },
+            None => crate::state::admin::AdminOpen::Server {
+                server_id: owner.entry.server_id,
+                page: crate::state::admin::AdminPage::Channels,
+            },
+        };
+        self.open_admin(open, window, cx);
+        self.admin.new_kind = kind;
+        self.set_admin_mode(
+            Some(super::admin::Mode::CreateChannel(category)),
+            "",
+            window,
+            cx,
+        );
+    }
+
     /// The sections of the channels of a workspace with their threads and the people in
     /// their voice channels, and the entry boxes of its voice channels.
     fn channel_rows(
@@ -353,6 +402,7 @@ impl Shell {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let account_owner = server_id.and_then(|id| self.state.read(cx).server(id)?.owner());
         let faces = self.shown_faces();
         // The person whose menu is open, and the menu.
         let open_menu = match &self.layer {
@@ -373,15 +423,207 @@ impl Shell {
             let title: SharedString = match &section.title {
                 SectionTitle::TextChannels => text::TEXT_CHANNELS.into(),
                 SectionTitle::VoiceChannels => text::VOICE_CHANNELS.into(),
-                SectionTitle::Category(name) => name.clone().into(),
+                SectionTitle::Category(name) | SectionTitle::Personal(name) => name.clone().into(),
+                SectionTitle::Favourites => text::FAVOURITES.into(),
             };
-            rows.push(
-                CategoryHeader::new(title)
-                    .first(position == 0)
-                    .into_any_element(),
+            let key: SharedString = format!(
+                "section-menu:{account_owner:?}:{workspace_id}:{:?}",
+                section
+                    .personal
+                    .map(|location| format!("personal:{location:?}"))
+                    .or_else(|| section.category_id.map(|id| id.to_string()))
+                    .unwrap_or_else(|| format!("{:?}", section.title))
+            )
+            .into();
+            let selector = match section.personal {
+                Some(junto_client_core::arrangement::channels::Location::Favourites) => {
+                    "personal-favourites-header".to_owned()
+                }
+                Some(junto_client_core::arrangement::channels::Location::Section(id)) => {
+                    format!("personal-section-header:{id}")
+                }
+                _ => section
+                    .category_id
+                    .map(|id| format!("category-header:{id}"))
+                    .unwrap_or_else(|| format!("section-header:{workspace_id}:{position}")),
+            };
+            let header = CategoryHeader::new(title)
+                .first(position == 0)
+                .menu_id(key.clone())
+                .when_some(
+                    section.category_id.zip(account_owner),
+                    |header, (category_id, owner)| {
+                        header.action(crate::ui::RowAction::new(
+                            text::CATEGORY_SETTINGS,
+                            cx.listener(move |this, _, window, cx| {
+                                if this
+                                    .state
+                                    .read(cx)
+                                    .server(owner.entry.server_id)
+                                    .is_some_and(|server| server.owner() == Some(owner))
+                                {
+                                    this.open_admin(
+                                        crate::state::admin::AdminOpen::Category {
+                                            server_id: owner.entry.server_id,
+                                            workspace_id,
+                                            category_id,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        ))
+                    },
+                )
+                .when_some(
+                    account_owner.filter(|_| !section.rows.is_empty()),
+                    |header, owner| {
+                        let places: Vec<_> = section
+                            .rows
+                            .iter()
+                            .flat_map(|row| {
+                                std::iter::once(junto_client_core::model::PlaceId::Channel(row.id))
+                                    .chain(row.threads.iter().map(move |thread| {
+                                        junto_client_core::model::PlaceId::Thread {
+                                            channel_id: row.id,
+                                            root_id: thread.root_id,
+                                        }
+                                    }))
+                            })
+                            .collect();
+                        let mut action = crate::ui::RowAction::new(
+                            text::MARK_AS_READ,
+                            cx.listener(move |this, _, _, cx| {
+                                if this
+                                    .state
+                                    .read(cx)
+                                    .server(owner.entry.server_id)
+                                    .is_some_and(|server| server.owner() == Some(owner))
+                                {
+                                    this.state.update(cx, |state, _| {
+                                        for place in &places {
+                                            state.mark_place_as_read(owner.entry.server_id, *place);
+                                        }
+                                    });
+                                }
+                            }),
+                        );
+                        action.disabled = section.rows.iter().all(|row| {
+                            row.unread.messages == 0
+                                && row.unread.mentions == 0
+                                && row
+                                    .threads
+                                    .iter()
+                                    .all(|thread| thread.unread == 0 && thread.mentions == 0)
+                        });
+                        header.action(action)
+                    },
+                );
+            let header = header.when_some(
+                section.category_id.zip(account_owner),
+                |header, (category, owner)| {
+                    let collapsed = section.collapsed;
+                    let unread = super::personal::collapsed_unread(section);
+                    header
+                        .toggle(
+                            collapsed,
+                            crate::ui::RowAction::new(
+                                if collapsed {
+                                    text::EXPAND_CATEGORY
+                                } else {
+                                    text::COLLAPSE_CATEGORY
+                                },
+                                cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.collapse_category(owner, category, !collapsed, cx)
+                                    })
+                                }),
+                            ),
+                        )
+                        .unread(
+                            format!("category-unread:{category}"),
+                            collapsed.then_some(unread).flatten(),
+                        )
+                },
             );
+            let header = header.when_some(
+                account_owner.filter(|_| section.may_create),
+                |header, owner| {
+                    let category = section.category_id;
+                    let kind = if section.title == SectionTitle::VoiceChannels {
+                        ChannelKind::Voice
+                    } else {
+                        ChannelKind::Text
+                    };
+                    let create_selector = category
+                        .map(|id| format!("category-create:{id}"))
+                        .unwrap_or_else(|| {
+                            format!(
+                                "section-create:{workspace_id}:{}",
+                                if kind == ChannelKind::Voice {
+                                    "voice"
+                                } else {
+                                    "text"
+                                }
+                            )
+                        });
+                    header.create(
+                        create_selector,
+                        crate::ui::RowAction::new(
+                            text::admin::NEW_CHANNEL,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_channel_creation(
+                                    owner,
+                                    workspace_id,
+                                    category,
+                                    kind,
+                                    window,
+                                    cx,
+                                )
+                            }),
+                        ),
+                    )
+                },
+            );
+            let header = match account_owner {
+                Some(owner) => self
+                    .personal_header(header, owner, workspace_id, section, cx)
+                    .action(crate::ui::RowAction::new(
+                        text::NEW_SECTION,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_personal_section(
+                                super::personal::SectionDialog {
+                                    owner,
+                                    workspace: workspace_id,
+                                    id: None,
+                                    channel: None,
+                                },
+                                window,
+                                cx,
+                            )
+                        }),
+                    )),
+                None => header,
+            };
+            let frame = div()
+                .id(SharedString::from(format!("section-drop:{key}")))
+                .debug_selector(move || selector)
+                .flex_none()
+                .child(header);
+            let frame = match section.personal.zip(account_owner) {
+                Some((location, owner)) => {
+                    self.personal_drop(frame, owner, workspace_id, location, None, cx)
+                }
+                None => frame,
+            };
+            rows.push(frame.into_any_element());
             let mut after_occupants = false;
-            for channel in &section.rows {
+            for channel in section
+                .rows
+                .iter()
+                .filter(|row| !section.collapsed || row.selected)
+            {
                 let channel_id = channel.id;
                 let index = channel_index;
                 channel_index += 1;
@@ -400,7 +642,7 @@ impl Shell {
                         .is_empty()
                 });
                 let row = ChannelRow::new(
-                    ("channel", index),
+                    SharedString::from(format!("channel:{channel_id}")),
                     match channel.kind {
                         ChannelKind::Text => Icon::Hash,
                         ChannelKind::Voice => Icon::Speaker,
@@ -445,62 +687,98 @@ impl Shell {
                     server_id
                         .filter(|_| channel_menu == Some(channel_id))
                         .map(|server_id| {
-                            self.render_channel_menu(
-                                server_id,
-                                channel_id,
-                                &channel.name,
-                                &channel.mute,
-                                cx,
-                            )
+                            self.render_channel_menu(server_id, workspace_id, channel, cx)
                         });
                 let held = self.state.clone();
                 let hover = self.state.clone();
-                rows.push(
-                    div()
-                        .id(("channel-drop", index))
-                        .relative()
-                        .flex_none()
-                        .can_drop(move |value, _, cx| {
+                let drag_name: SharedString = channel.name.clone().into();
+                let status = server_id
+                    .and_then(|server| self.voice_status_row(server, channel, theme, window, cx));
+                let frame = div()
+                    .id(SharedString::from(format!("channel-drop:{channel_id}")))
+                    .relative()
+                    .flex_none()
+                    .can_drop(move |value, _, cx| {
+                        value.downcast_ref::<PersonDrag>().is_some_and(|person| {
+                            held.read(cx)
+                                .view()
+                                .person_drop(*person, channel_id)
+                                .is_some()
+                        })
+                    })
+                    .drag_over::<PersonDrag>(move |style, person, _, cx| {
+                        if hover
+                            .read(cx)
+                            .view()
+                            .person_drop(*person, channel_id)
+                            .is_some()
+                        {
+                            style.bg(Hsla::from(colors.limestone_hover))
+                        } else {
+                            style
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, person: &PersonDrag, _, cx| {
+                        this.drop_person(*person, channel_id, cx)
+                    }))
+                    .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
+                    // The identifier and not the name: a name comes from the server
+                    // and need not be the only one.
+                    .debug_selector(move || format!("channel-row:{channel_id}"))
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                if has_draft {
+                                    format!("draft-channel:{channel_id}")
+                                } else {
+                                    format!("channel-content:{channel_id}")
+                                }
+                            })
+                            .child(row),
+                    )
+                    .children(status)
+                    .children(menu)
+                    .when_some(account_owner, |frame, owner| {
+                        frame.on_drag(
+                            super::personal::ChannelDrag {
+                                owner,
+                                workspace: workspace_id,
+                                channel: channel_id,
+                            },
+                            move |_, _, _, cx| {
+                                cx.new(|_| super::person_drag::DragLabel(drag_name.clone()))
+                            },
+                        )
+                    });
+                let frame = match section.personal.zip(account_owner) {
+                    Some((location, owner)) => {
+                        // Keep both accepted drag types: moving a person into a call and arranging a channel.
+                        let arranged = self.personal_drop(
+                            frame,
+                            owner,
+                            workspace_id,
+                            location,
+                            Some(channel_id),
+                            cx,
+                        );
+                        let state = self.state.clone();
+                        arranged.can_drop(move |value, _, cx| {
+                            if let Some(drag) = value.downcast_ref::<super::personal::ChannelDrag>()
+                            {
+                                return drag.owner == owner && drag.workspace == workspace_id;
+                            }
                             value.downcast_ref::<PersonDrag>().is_some_and(|person| {
-                                held.read(cx)
+                                state
+                                    .read(cx)
                                     .view()
                                     .person_drop(*person, channel_id)
                                     .is_some()
                             })
                         })
-                        .drag_over::<PersonDrag>(move |style, person, _, cx| {
-                            if hover
-                                .read(cx)
-                                .view()
-                                .person_drop(*person, channel_id)
-                                .is_some()
-                            {
-                                style.bg(Hsla::from(colors.limestone_hover))
-                            } else {
-                                style
-                            }
-                        })
-                        .on_drop(cx.listener(move |this, person: &PersonDrag, _, cx| {
-                            this.drop_person(*person, channel_id, cx)
-                        }))
-                        .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
-                        // The identifier and not the name: a name comes from the server
-                        // and need not be the only one.
-                        .debug_selector(move || format!("channel-row:{channel_id}"))
-                        .child(
-                            div()
-                                .debug_selector(move || {
-                                    if has_draft {
-                                        format!("draft-channel:{channel_id}")
-                                    } else {
-                                        format!("channel-content:{channel_id}")
-                                    }
-                                })
-                                .child(row),
-                        )
-                        .children(menu)
-                        .into_any_element(),
-                );
+                    }
+                    None => frame,
+                };
+                rows.push(frame.into_any_element());
                 // The threads of the channel that hold something unread, and the thread
                 // of the side panel.
                 for (place, entry) in channel.threads.iter().enumerate() {
@@ -547,6 +825,10 @@ impl Shell {
                         .selected(entry.open)
                         .unread(sign)
                         .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
+                        .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.root_id == root_id))
+                        .when_some(account_owner, |row, owner| row.on_menu(Self::handler(cx, move |this, window, cx| {
+                            this.open_thread_menu(owner, workspace_id, channel_id, root_id, window, cx);
+                        })))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let Some(server_id) = server_id else {
                                 return;
@@ -556,8 +838,15 @@ impl Shell {
                             });
                             this.open_thread(server_id, channel_id, root_id, window, cx);
                         }));
+                    let menu = match self.layer {
+                        Layer::ThreadMenu(open) if open.root_id == root_id => {
+                            Some(self.render_thread_menu(open, entry, cx))
+                        }
+                        _ => None,
+                    };
                     rows.push(
                         div()
+                            .relative()
                             .flex_none()
                             .debug_selector(move || format!("thread-row:{root_id}"))
                             .child(
@@ -571,6 +860,7 @@ impl Shell {
                                     })
                                     .child(row),
                             )
+                            .children(menu)
                             .into_any_element(),
                     );
                 }
@@ -665,8 +955,7 @@ impl Shell {
                     .marks(occupant_marks(occupant))
                     .selector(format!("occupant:{account_id}"))
                     .open(menu.is_some());
-                    // The menu of a person holds what the person of this device can do with
-                    // another person. The own row has none.
+                    // Other people keep the volume and moderation menu.
                     let row = if occupant.is_self {
                         row
                     } else {
@@ -694,7 +983,27 @@ impl Shell {
                                     cx.new(|_| super::person_drag::DragLabel(name.clone()))
                                 })
                             })
-                            .child(row)
+                            .child(if occupant.is_self {
+                                super::account_menus::account_target(
+                                    SharedString::from(format!(
+                                        "own-occupant:{channel_id}:{account_id}"
+                                    )),
+                                    account_owner,
+                                    Some(super::account_menus::AccountTarget {
+                                        account_id,
+                                        name: occupant_name(occupant).to_string(),
+                                        departed: false,
+                                    }),
+                                    Some(super::account_menus::AccountSource::VoiceOccupant {
+                                        channel_id,
+                                        account_id,
+                                    }),
+                                    row,
+                                    cx,
+                                )
+                            } else {
+                                row.into_any_element()
+                            })
                             .children(menu)
                             .into_any_element(),
                     );
@@ -716,6 +1025,53 @@ impl Shell {
                     .child(text::NO_CHANNELS)
                     .into_any_element(),
             );
+        }
+        if let Some(owner) = account_owner {
+            rows.push(
+                div()
+                    .px(u(14.0))
+                    .py(u(8.0))
+                    .child(
+                        Button::new("new-personal-section")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Plus)
+                            .label(text::NEW_SECTION)
+                            .selector("new-personal-section")
+                            .w_full()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_personal_section(
+                                    super::personal::SectionDialog {
+                                        owner,
+                                        workspace: workspace_id,
+                                        id: None,
+                                        channel: None,
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .into_any_element(),
+            );
+            if cx.has_active_drag() {
+                let target = div()
+                    .id("personal-return-target")
+                    .debug_selector(|| "personal-return-target".to_owned())
+                    .mx(u(14.0))
+                    .py(u(10.0))
+                    .child(text::RETURN_TO_CHANNEL_LIST);
+                rows.push(
+                    self.personal_drop(
+                        target,
+                        owner,
+                        workspace_id,
+                        junto_client_core::arrangement::channels::Location::Default,
+                        None,
+                        cx,
+                    )
+                    .into_any_element(),
+                );
+            }
         }
         (rows, entries)
     }
@@ -799,10 +1155,8 @@ impl Shell {
                         state.select_conversation(server_id, conversation_id, cx);
                     });
                 }));
-            let menu = (direct_menu == Some(conversation_id)).then(|| {
-                let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
-                self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
-            });
+            let menu = (direct_menu == Some(conversation_id))
+                .then(|| self.render_direct_menu(server_id, direct, cx));
             conversations.push(
                 div()
                     .relative()

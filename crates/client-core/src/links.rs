@@ -1,6 +1,6 @@
 //! Addresses that open a place in the application.
 
-use junto_protocol::ids::MessageId;
+use junto_protocol::ids::{AttachmentId, ChannelId, ConversationId, MessageId, RecordingId};
 use junto_protocol::secret::InviteCode;
 use url::{Url, form_urlencoded};
 
@@ -17,6 +17,26 @@ pub enum AppLink {
     Message {
         server: ServerAddress,
         id: MessageId,
+    },
+    Thread {
+        server: ServerAddress,
+        id: MessageId,
+    },
+    Channel {
+        server: ServerAddress,
+        id: ChannelId,
+    },
+    Conversation {
+        server: ServerAddress,
+        id: ConversationId,
+    },
+    File {
+        server: ServerAddress,
+        id: AttachmentId,
+    },
+    Recording {
+        server: ServerAddress,
+        id: RecordingId,
     },
 }
 
@@ -55,6 +75,41 @@ pub fn parse(text: &str) -> Option<AppLink> {
                 id: id.parse().ok()?,
             })
         }
+        "thread" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::Thread {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
+        "channel" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::Channel {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
+        "conversation" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::Conversation {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
+        "file" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::File {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
+        "recording" => {
+            let (server, id) = read_target(&link, "id")?;
+            Some(AppLink::Recording {
+                server,
+                id: id.parse().ok()?,
+            })
+        }
         _ => None,
     }
 }
@@ -80,6 +135,15 @@ pub fn format(link: &AppLink) -> String {
     match link {
         AppLink::Invite { server, code } => write_target("invite", server, "code", code.expose()),
         AppLink::Message { server, id } => write_target("message", server, "id", &id.to_string()),
+        AppLink::Thread { server, id } => write_target("thread", server, "id", &id.to_string()),
+        AppLink::Channel { server, id } => write_target("channel", server, "id", &id.to_string()),
+        AppLink::Conversation { server, id } => {
+            write_target("conversation", server, "id", &id.to_string())
+        }
+        AppLink::File { server, id } => write_target("file", server, "id", &id.to_string()),
+        AppLink::Recording { server, id } => {
+            write_target("recording", server, "id", &id.to_string())
+        }
     }
 }
 
@@ -224,6 +288,24 @@ mod tests {
             "x".repeat(LONGEST_LINK + 1),
         ] {
             assert_eq!(parse(&bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn channel_conversation_file_recording_and_thread_links_round_trip() {
+        for kind in ["channel", "conversation", "file", "recording", "thread"] {
+            let written = format!("junto://{kind}?server=https%3A%2F%2Fchat.example.test&id={ID}");
+            let link = parse(&written).unwrap_or_else(|| panic!("{kind} is not accepted"));
+            assert_eq!(format(&link), written);
+            for bad in [
+                format!("{written}&id={ID}"),
+                format!("{written}&unknown=value"),
+                written.replace(ID, "not-an-identifier"),
+                written.replace("https%3A", "file%3A"),
+                format!("{written}#fragment"),
+            ] {
+                assert_eq!(parse(&bad), None, "{bad}");
+            }
         }
     }
 }

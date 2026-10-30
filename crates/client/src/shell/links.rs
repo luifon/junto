@@ -37,6 +37,46 @@ impl Shell {
                     self.prefill_link_server(server.as_str(), window, cx);
                 }
             }
+            AppLink::Thread { server, id } => {
+                let opened = self
+                    .state
+                    .update(cx, |state, cx| state.open_thread_link(&server, id, cx));
+                if !opened {
+                    self.prefill_link_server(server.as_str(), window, cx);
+                }
+            }
+            AppLink::Channel { server, id } => {
+                let opened = self
+                    .state
+                    .update(cx, |state, cx| state.open_channel_link(&server, id, cx));
+                if !opened {
+                    self.prefill_link_server(server.as_str(), window, cx);
+                }
+            }
+            AppLink::Conversation { server, id } => {
+                let opened = self.state.update(cx, |state, cx| {
+                    state.open_conversation_link(&server, id, cx)
+                });
+                if !opened {
+                    self.prefill_link_server(server.as_str(), window, cx);
+                }
+            }
+            AppLink::File { server, id } => {
+                let opened = self
+                    .state
+                    .update(cx, |state, cx| state.open_file_link(&server, id, cx));
+                if !opened {
+                    self.prefill_link_server(server.as_str(), window, cx);
+                }
+            }
+            AppLink::Recording { server, id } => {
+                let opened = self
+                    .state
+                    .update(cx, |state, cx| state.open_recording_link(&server, id, cx));
+                if !opened {
+                    self.prefill_link_server(server.as_str(), window, cx);
+                }
+            }
             AppLink::Invite { server, code } => {
                 let saved = self
                     .state

@@ -4,9 +4,8 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Role,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Window, deferred, div,
-    prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Role, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Window, deferred, div, prelude::FluentBuilder, px,
 };
 use gpui_base::input::InputState;
 use junto_client_core::arrangement::{Change, GroupColour, GroupId};
@@ -23,8 +22,9 @@ use crate::text;
 use crate::text::book as txt;
 use crate::theme::{Theme, u};
 use crate::ui::{
-    Badge, Button, ButtonKind, CornerCount, Dialog, Field, Menu, MenuItem, StyleExt, dialog_footer,
-    focus_ring_inside, icon, menu_separator, selection_mark, tooltip, unread_dot,
+    Badge, Button, ButtonKind, ContextMenuExt, CornerCount, Dialog, Field, Menu, MenuItem,
+    StyleExt, dialog_footer, focus_ring_inside, icon, menu_separator, selection_mark, tooltip,
+    unread_dot,
 };
 
 /// A server that is dragged in the server book.
@@ -45,6 +45,8 @@ pub(crate) struct ArrangeUi {
     drop: Option<BookDrop>,
     /// The name of the group of the open rename dialog.
     group_name: Entity<InputState>,
+    pub(super) section_name: Entity<InputState>,
+    pub(super) section_invalid: bool,
 }
 
 impl ArrangeUi {
@@ -52,6 +54,8 @@ impl ArrangeUi {
         Self {
             drop: None,
             group_name: Field::state(txt::GROUP_NAME_FIELD, window, cx),
+            section_name: Field::state(text::SECTION_NAME, window, cx),
+            section_invalid: false,
         }
     }
 }
@@ -73,16 +77,6 @@ pub(crate) fn group_colour(colour: GroupColour, theme: &Theme) -> gpui::Rgba {
 /// The colour of a group as a wash under its servers.
 pub(crate) fn group_wash(colour: GroupColour, theme: &Theme) -> Hsla {
     Hsla::from(group_colour(colour, theme)).opacity(0.16)
-}
-
-/// The keys that open the menu of a row: the menu key, and Shift with F10.
-fn opens_menu(event: &KeyDownEvent) -> bool {
-    let keys = &event.keystroke;
-    match keys.key.as_str() {
-        "menu" => true,
-        "f10" => keys.modifiers.shift,
-        _ => false,
-    }
 }
 
 impl Shell {
@@ -357,15 +351,8 @@ impl Shell {
                     );
                 });
             }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _, window, cx| this.open_group_menu(id, window, cx)),
-            )
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if opens_menu(event) {
-                    this.open_group_menu(id, window, cx);
-                    cx.stop_propagation();
-                }
+            .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                this.open_group_menu(id, window, cx);
             }))
             .on_drag(GroupDrag(id), {
                 let name = name.clone();
@@ -529,15 +516,8 @@ impl Shell {
                     );
                 });
             }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _, window, cx| this.open_group_menu(id, window, cx)),
-            )
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if opens_menu(event) {
-                    this.open_group_menu(id, window, cx);
-                    cx.stop_propagation();
-                }
+            .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                this.open_group_menu(id, window, cx);
             }))
             .on_drag(GroupDrag(id), move |_, _, _, cx| {
                 cx.new(|_| DragLabel(name.clone()))

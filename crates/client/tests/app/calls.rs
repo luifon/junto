@@ -22,6 +22,7 @@ pub fn voice_channel(world: &World, admin: &Admin, window: &mut Window, name: &s
         .run(admin.handle.api().create_channel(
             workspace_id,
             &CreateChannel {
+                topic: String::new(),
                 name: name.to_owned(),
                 kind: ChannelKind::Voice,
                 category_id: None,

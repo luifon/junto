@@ -153,3 +153,56 @@ async fn starting_an_upload_requires_permission_to_send_somewhere_in_the_channel
         .await
         .error(ErrorCode::Forbidden);
 }
+
+#[tokio::test]
+async fn a_file_link_resolves_only_an_attached_file_of_a_readable_message() {
+    let files = files().await;
+    let file = files.upload(b"a linked file").await;
+    let path = format!("/api/v1/attachments/{}/message", file.id);
+    files
+        .server
+        .get(&files.owner, &path)
+        .await
+        .error(ErrorCode::NotFound);
+    let message = files.attach(&[file.id]).await;
+    let read: Message = files
+        .server
+        .get(&files.owner, &path)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(read.id, message.id);
+    assert_eq!(read.attachments[0].id, file.id);
+    deny(&files, &[W::ViewChannel]).await;
+    files
+        .server
+        .get(&files.owner, &path)
+        .await
+        .error(ErrorCode::NotFound);
+    files
+        .server
+        .get(
+            &files.owner,
+            &format!(
+                "/api/v1/attachments/{}/message",
+                junto_protocol::ids::AttachmentId::generate()
+            ),
+        )
+        .await
+        .error(ErrorCode::NotFound);
+    sqlx::query("delete from channel_person_overrides where channel_id=$1 and account_id=$2")
+        .bind(files.channel.id)
+        .bind(files.owner.account_id)
+        .execute(&files.server.db)
+        .await
+        .unwrap();
+    files
+        .server
+        .delete(&files.owner, &format!("/api/v1/messages/{}", message.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    files
+        .server
+        .get(&files.owner, &path)
+        .await
+        .error(ErrorCode::NotFound);
+}

@@ -266,3 +266,153 @@ fn a_tall_menu_reveals_its_profile_header_after_arrow_navigation(cx: &mut TestAp
         "{shown:?} in {menu:?}"
     );
 }
+
+#[gpui::test]
+fn a_wheel_outside_a_menu_closes_it_but_its_own_list_keeps_scrolling(cx: &mut TestAppContext) {
+    let (host, cx) = popup(cx);
+    cx.simulate_keystrokes("menu");
+    settle(cx);
+    let bounds = cx.debug_bounds("test-menu").unwrap();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+        ..Default::default()
+    });
+    settle(cx);
+    assert!(host.read_with(cx, |host, _| host.opened));
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: point(px(2.0), px(2.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-40.0))),
+        ..Default::default()
+    });
+    settle(cx);
+    assert!(!host.read_with(cx, |host, _| host.opened));
+    let trigger = host.read_with(cx, |host, _| host.trigger.clone());
+    assert!(cx.update(|window, _| trigger.is_focused(window)));
+}
+
+struct GrowingPopup {
+    absolute: bool,
+    focus: FocusHandle,
+    placement: std::rc::Rc<super::MenuPlacement>,
+    grown: bool,
+}
+
+impl Render for GrowingPopup {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let menu = Menu::new("growing", "Actions", &self.focus)
+            .selector("growing")
+            .children((0_usize..if self.grown { 30 } else { 3 }).map(|index| {
+                MenuItem::new(("growing-action", index), format!("Action {index}")).selector(
+                    if index == 0 {
+                        "growing-first"
+                    } else {
+                        "growing-action"
+                    },
+                )
+            }));
+        let menu = if self.absolute {
+            let size = window.viewport_size();
+            menu.popup_at_stable(
+                point(size.width - px(10.0), size.height - px(10.0)),
+                self.placement.clone(),
+            )
+        } else {
+            menu.popup_stable(point(px(10.0), px(10.0)), self.placement.clone())
+        };
+        div().relative().size_full().child(
+            div()
+                .absolute()
+                .right_0()
+                .bottom_0()
+                .size(px(20.0))
+                .child(menu),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_popup_that_grows_keeps_its_existing_actions_in_place(cx: &mut TestAppContext) {
+    check_popup_growth(cx, false);
+}
+
+#[gpui::test]
+fn a_popup_at_a_pointer_keeps_its_existing_actions_in_place(cx: &mut TestAppContext) {
+    check_popup_growth(cx, true);
+}
+
+fn check_popup_growth(cx: &mut TestAppContext, absolute: bool) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| GrowingPopup {
+        absolute,
+        focus: cx.focus_handle(),
+        placement: Default::default(),
+        grown: false,
+    });
+    settle(cx);
+    let first = cx.debug_bounds("growing-first").unwrap();
+    host.update(cx, |host, cx| {
+        host.grown = true;
+        cx.notify();
+    });
+    settle(cx);
+    assert_eq!(
+        cx.debug_bounds("growing-first").unwrap().origin,
+        first.origin
+    );
+    let bounds = cx.debug_bounds("growing").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(bounds.top() >= px(0.0) && bounds.bottom() <= viewport.height);
+    cx.simulate_resize(gpui::size(px(320.0), px(240.0)));
+    settle(cx);
+    let resized = cx.debug_bounds("growing").unwrap();
+    assert!(resized.left() >= px(0.0) && resized.right() <= px(320.0));
+    assert!(resized.top() >= px(0.0) && resized.bottom() <= px(240.0));
+}
+
+struct SliderMenu {
+    menu: FocusHandle,
+    slider: FocusHandle,
+    state: Entity<gpui_base::slider::SliderState>,
+}
+
+impl Render for SliderMenu {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Menu::new("slider-menu", "Person actions", &self.menu)
+            .child(div().flex().w_full().child(crate::ui::VolumeSlider::new(
+                "slider-menu-volume",
+                &self.state,
+                &self.slider,
+                "Volume for Rin",
+            )))
+            .child(MenuItem::new("slider-menu-copy", "Copy name"))
+    }
+}
+
+#[gpui::test]
+fn menu_arrows_reach_an_explicit_volume_focus_handle(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| SliderMenu {
+        menu: cx.focus_handle(),
+        slider: cx.focus_handle(),
+        state: cx.new(|_| crate::ui::VolumeSlider::state(100)),
+    });
+    let (menu, slider, state) = host.read_with(cx, |host, _| {
+        (host.menu.clone(), host.slider.clone(), host.state.clone())
+    });
+    cx.update(|window, cx| menu.focus(window, cx));
+    settle(cx);
+    cx.simulate_keystrokes("down");
+    settle(cx);
+    assert!(cx.update(|window, _| slider.is_focused(window)));
+    cx.simulate_keystrokes("left");
+    settle(cx);
+    assert_eq!(state.read_with(cx, |state, _| state.value().end()), 90.0);
+}

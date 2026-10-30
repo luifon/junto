@@ -155,6 +155,7 @@ async fn the_tool_shows_the_state_watches_events_and_runs_call_actions() {
     let account_id = logged_in(&handle);
     let workspace = handle.api().workspaces().await.unwrap().remove(0);
     let create = |name: &str, kind| CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind,
         category_id: None,
@@ -203,6 +204,18 @@ async fn the_tool_shows_the_state_watches_events_and_runs_call_actions() {
     assert!(has("own call: none".to_owned()), "{state}");
     assert!(lines.last().unwrap().starts_with("cursor: "), "{state}");
     assert!(!state.contains("status:"), "{state}");
+
+    let (status, output, errors) = run(&data_dir, &["call", "status", &voice_id, "Design review"]);
+    assert_eq!(status, Some(0), "{output}\n{errors}");
+    assert!(output.contains("voice status: Design review"), "{output}");
+    let (status, state, errors) = run(&data_dir, &["state"]);
+    assert_eq!(status, Some(0), "{state}\n{errors}");
+    assert!(state.contains("  voice status: Design review"), "{state}");
+    let (status, output, errors) = run(&data_dir, &["call", "status", &voice_id, ""]);
+    assert_eq!(status, Some(0), "{output}\n{errors}");
+    let (status, state, errors) = run(&data_dir, &["state"]);
+    assert_eq!(status, Some(0), "{state}\n{errors}");
+    assert!(!state.contains("voice status:"), "{state}");
 
     let (status, shown, errors) = run(&data_dir, &["call", "show", &voice_id]);
     assert_eq!(status, Some(0), "{shown}\n{errors}");
@@ -273,6 +286,19 @@ async fn the_tool_shows_the_state_watches_events_and_runs_call_actions() {
         line.starts_with("event ")
             && line.contains(" channel_updated ")
             && line.ends_with(&format!("channel={voice_id}"))
+    });
+    watch.write(&format!("status {voice_id} Live design review"));
+    watch.line("the full status text", |line| {
+        line == "voice status: Live design review"
+    });
+    let unicode_status = "🚀".repeat(500);
+    watch.write(&format!("status {voice_id} {unicode_status}"));
+    watch.line("a maximum-length Unicode status", |line| {
+        line == format!("voice status: {unicode_status}")
+    });
+    watch.write(&format!("clear-status {voice_id}"));
+    watch.line("the cleared status", |line| {
+        line.trim_end() == "voice status:"
     });
     watch.write(&format!("show {voice_id}"));
     watch.line("the call of the channel", |line| line == "in use: false");

@@ -178,6 +178,17 @@ impl ServerApi {
         })
     }
 
+    /// The readable parent message of a completed, attached file.
+    pub async fn attachment_message(
+        &self,
+        attachment_id: AttachmentId,
+    ) -> Result<Message, ApiError> {
+        bounded(
+            self.get(format!("/attachments/{attachment_id}/message"))
+                .await?,
+        )
+    }
+
     pub async fn message(&self, message_id: MessageId) -> Result<Message, ApiError> {
         bounded(self.get(format!("/messages/{message_id}")).await?)
     }

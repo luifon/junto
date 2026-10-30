@@ -19,7 +19,7 @@ use axum::{
 use junto_protocol::{
     error::ErrorCode,
     ids::{AttachmentId, MessageId},
-    message::{StartUpload, Upload},
+    message::{Message, StartUpload, Upload},
 };
 use sqlx::Row;
 use time::Duration;
@@ -383,7 +383,7 @@ async fn downloadable(
     connection: &mut sqlx::PgConnection,
     access: &Access,
     id: AttachmentId,
-) -> ApiResult<sqlx::postgres::PgRow> {
+) -> ApiResult<(sqlx::postgres::PgRow, Message)> {
     let row = sqlx::query(
         "select message_id,bytes,media_type,sha256,storage_id
              from attachments
@@ -397,7 +397,7 @@ async fn downloadable(
     .await?
     .ok_or_else(ApiError::not_found)?;
     let message: Option<MessageId> = row.try_get("message_id")?;
-    messages::get(
+    let (_, message) = messages::get(
         connection,
         access,
         message.ok_or_else(ApiError::not_found)?,
@@ -408,7 +408,41 @@ async fn downloadable(
         )),
     )
     .await?;
-    Ok(row)
+    Ok((row, message))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/attachments/{attachment_id}/message",
+    tag = "messages",
+    params(("attachment_id" = AttachmentId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = Message), ApiError)
+)]
+pub async fn get_attachment_message(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<AttachmentId>,
+) -> ApiResult<Json<Message>> {
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        if !counted {
+            app.message_reads
+                .attempt_of(access.account_id, app.now())
+                .map_err(|error| {
+                    ApiError::new(ErrorCode::RateLimited, "too many message reads")
+                        .retry_after(error.retry_after)
+                })?;
+            counted = true;
+        }
+        let (_, message) = downloadable(&app, connection, &access, id).await?;
+        if message.deleted || !message.attachments.iter().any(|file| file.id == id) {
+            return Err(ApiError::not_found());
+        }
+        Ok(message)
+    })
+    .map(Json)
 }
 
 /// The stored file of an attachment that the caller of a running download may still read.
@@ -420,7 +454,7 @@ async fn stored_decided_again(
 ) -> ApiResult<AttachmentId> {
     read!(app.background(), |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let row = downloadable(app, connection, &access, id).await?;
+        let (row, _) = downloadable(app, connection, &access, id).await?;
         Ok(row.try_get::<AttachmentId, _>("storage_id")?)
     })
 }
@@ -450,7 +484,7 @@ pub async fn download(
     let now = app.now();
     let (parts, size, media, hash, account_id, storage_id) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let row = downloadable(&app, connection, &access, id).await?;
+        let (row, _) = downloadable(&app, connection, &access, id).await?;
         Ok((
             files::chunks(connection, id).await?,
             row.try_get::<i64, _>("bytes")?,

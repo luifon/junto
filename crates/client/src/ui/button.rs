@@ -41,9 +41,8 @@ pub enum ButtonKind {
     CallLeave,
 }
 
-type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type ClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-#[derive(IntoElement)]
 pub struct Button {
     id: ElementId,
     kind: ButtonKind,
@@ -150,8 +149,39 @@ impl Button {
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
+    }
+}
+
+impl IntoElement for Button {
+    type Element = gpui::ViewElement<Self>;
+
+    #[track_caller]
+    fn into_element(self) -> Self::Element {
+        super::action_menu::record(|| {
+            if self.on_click.is_none() && !self.disabled {
+                return None;
+            }
+            Some(super::action_menu::RowAction {
+                label: self
+                    .label
+                    .clone()
+                    .or_else(|| self.accessible_label.clone())
+                    .or_else(|| self.tooltip.clone())?,
+                icon: self.icon,
+                disabled: self.disabled,
+                detail: self.disabled.then(|| self.tooltip.clone()).flatten(),
+                handler: self.on_click.clone(),
+            })
+        });
+        gpui::ViewElement::new(self)
+    }
+
+    #[track_caller]
+    #[inline(never)]
+    fn into_any_element(self) -> gpui::AnyElement {
+        gpui::Element::into_any(self.into_element())
     }
 }
 

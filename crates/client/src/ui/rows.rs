@@ -193,6 +193,11 @@ impl RenderOnce for WorkspaceRow {
 /// The label above a group of channels.
 #[derive(IntoElement)]
 pub struct CategoryHeader {
+    menu_id: Option<ElementId>,
+    actions: Vec<super::RowAction>,
+    toggle: Option<(bool, super::RowAction)>,
+    create: Option<(SharedString, super::RowAction)>,
+    unread: Option<(SharedString, UnreadSign)>,
     name: SharedString,
     first: bool,
     count: Option<SharedString>,
@@ -201,10 +206,41 @@ pub struct CategoryHeader {
 impl CategoryHeader {
     pub fn new(name: impl Into<SharedString>) -> Self {
         Self {
+            menu_id: None,
+            actions: Vec::new(),
+            toggle: None,
+            create: None,
+            unread: None,
             name: name.into(),
             first: false,
             count: None,
         }
+    }
+
+    pub fn menu_id(mut self, id: impl Into<ElementId>) -> Self {
+        self.menu_id = Some(id.into());
+        self
+    }
+
+    pub fn action(mut self, action: super::RowAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    pub fn create(mut self, selector: impl Into<SharedString>, action: super::RowAction) -> Self {
+        self.actions.push(action.clone());
+        self.create = Some((selector.into(), action));
+        self
+    }
+
+    pub fn toggle(mut self, collapsed: bool, action: super::RowAction) -> Self {
+        self.toggle = Some((collapsed, action));
+        self
+    }
+
+    pub fn unread(mut self, id: impl Into<SharedString>, sign: Option<UnreadSign>) -> Self {
+        self.unread = sign.map(|sign| (id.into(), sign));
+        self
     }
 
     /// The count of what waits in the section, drawn after its name.
@@ -221,9 +257,40 @@ impl CategoryHeader {
 }
 
 impl RenderOnce for CategoryHeader {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
-        div()
+        let ring = focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let id = self
+            .menu_id
+            .unwrap_or_else(|| format!("section-header:{}", self.name).into());
+        let label: SharedString = self.unread.as_ref().map_or_else(
+            || self.name.clone(),
+            |(_, sign)| format!("{}, {}", self.name, sign.label).into(),
+        );
+        let copied = self.name.to_string();
+        let mut actions = vec![super::RowAction::new(
+            crate::text::COPY_NAME,
+            move |_, window, cx| {
+                window.dispatch_action(
+                    Box::new(super::CopyToClipboard {
+                        text: copied.clone(),
+                    }),
+                    cx,
+                );
+            },
+        )];
+        if let Some((_, action)) = &self.toggle {
+            actions.push(action.clone());
+        }
+        actions.extend(self.actions);
+        let frame = div()
+            .id(id.clone())
+            .relative()
+            .role(Role::Group)
+            .aria_label(label)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
             .flex()
             .flex_none()
             .items_center()
@@ -234,6 +301,36 @@ impl RenderOnce for CategoryHeader {
             .pr(u(10.0))
             .typeface(theme.types.label, &theme)
             .ink(theme.colors.bronze)
+            .when_some(self.toggle, |header, (collapsed, action)| {
+                header
+                    .role(Role::Button)
+                    .aria_expanded(!collapsed)
+                    .cursor_pointer()
+                    .on_click(move |event, window, cx| {
+                        if let Some(handler) = &action.handler {
+                            handler(event, window, cx);
+                        }
+                    })
+                    .child(icon(
+                        if collapsed {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        12.0,
+                        theme.colors.bronze,
+                    ))
+            })
+            .when_some(self.unread, |header, (id, sign)| {
+                header.tooltip(tooltip(sign.label.clone())).child(
+                    div()
+                        .debug_selector(move || id.to_string())
+                        .flex()
+                        .items_center()
+                        .h(gpui::px(0.0))
+                        .child(sign.element(cx)),
+                )
+            })
             .child(
                 div()
                     .flex_none()
@@ -258,7 +355,25 @@ impl RenderOnce for CategoryHeader {
                     .flex_1()
                     .h(gpui::px(1.0))
                     .bg(Hsla::from(theme.colors.rule)),
+            );
+        let frame = frame.when_some(self.create, |header, (selector, action)| {
+            header.child(
+                div().debug_selector(move || selector.to_string()).child(
+                    super::Button::new("section-create")
+                        .kind(super::ButtonKind::Ghost)
+                        .icon(Icon::Plus)
+                        .tooltip(action.label.clone())
+                        .disabled(action.disabled)
+                        .on_click(move |event, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(handler) = &action.handler {
+                                handler(event, window, cx);
+                            }
+                        }),
+                ),
             )
+        });
+        super::bind_action_menu(frame, id, actions, window, cx)
     }
 }
 

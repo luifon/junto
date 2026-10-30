@@ -87,6 +87,10 @@ A Wayland compositor gives the focus to a window only for an activation token th
 
 `src/elements/text.rs` also exposes `with_text_paint_observer`, scoped to one subtree and restored by a guard when painting returns or unwinds. The observer receives each painted string and its `TextLayout` after the text backgrounds and before its foreground. Without an observer the original combined paint path remains. The client uses this to draw selection highlights and retain the positions of read-only text across the shell (ADR 0740). Remove this correction when gpui offers a scoped equivalent; run `copying::`, the message-list tests and the window suite against a replacement.
 
+### Read-only text selection
+
+`src/elements/text.rs` also exposes `with_text_paint_observer`, scoped to one subtree and restored by a guard when painting returns or unwinds. The observer receives each painted string and its `TextLayout` after the text backgrounds and before its foreground. Without an observer the original combined paint path remains. The client uses this to draw selection highlights and retain the positions of read-only text across the shell (ADR 0740). Remove this correction when gpui offers a scoped equivalent; run `copying::`, the message-list tests and the window suite against a replacement.
+
 ## Consequences
 
 - The workspace keeps three more corrected copies. A new version of gpui replaces them only after the tests above pass with it; the copies are removed when a pinned upstream version stops a panic in each callback of the platform and puts its state back.

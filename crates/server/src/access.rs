@@ -74,6 +74,8 @@ type ChannelRow = (
     Option<CategoryId>,
     String,
     String,
+    String,
+    String,
     i32,
     bool,
     i64,
@@ -83,7 +85,7 @@ type ChannelRow = (
     Option<OffsetDateTime>,
 );
 
-const CHANNEL_COLUMNS: &str = "id, workspace_id, category_id, kind, name, position, \
+const CHANNEL_COLUMNS: &str = "id, workspace_id, category_id, kind, name, topic, voice_status, position, \
      permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants, \
      archived_at";
 
@@ -796,6 +798,8 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         category_id,
         kind,
         name,
+        topic,
+        voice_status,
         position,
         permanent_messages,
         permanent_message_count,
@@ -811,6 +815,8 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
             category_id,
             kind: ChannelKind::read(&kind)?,
             name,
+            voice_status,
+            topic,
             position,
             permanent_messages,
             user_limit: user_limit.map(db::count).transpose()?,

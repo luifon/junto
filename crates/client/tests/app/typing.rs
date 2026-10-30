@@ -152,6 +152,7 @@ fn voice_channel_chat_shows_the_same_transient_activity(cx: &mut TestAppContext)
             workspace,
             &CreateChannel {
                 name: "voice-chat".to_owned(),
+                topic: String::new(),
                 kind: ChannelKind::Voice,
                 category_id: None,
                 position: None,

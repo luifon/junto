@@ -1773,6 +1773,25 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let mut copied = vec![
+            txt::audit_head(row, self.state.read(cx).hour_cycle()),
+            row.sentence.clone(),
+        ];
+        if let Some(token) = &row.token {
+            copied.push(txt::audit_token(token));
+        }
+        if let Some(reason) = &row.reason {
+            copied.push(txt::audit_reason(reason));
+        }
+        if let Some(message) = &row.message {
+            copied.push(txt::audit_message(message));
+        }
+        let copied = copied.join("\n");
+        crate::ui::RowAction::new(
+            text::COPY_TEXT,
+            cx.listener(move |this, _, _, cx| this.copy_text(copied.clone(), cx)),
+        )
+        .register();
         // The entry of the deletion of a workspace opens the log of that workspace.
         let action = row.deleted_workspace.clone().map(|(workspace_id, name)| {
             row_action(

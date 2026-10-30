@@ -59,6 +59,8 @@ Text of a server:
 - A name of an account, of a device or of a server is shown without control characters, cut at 64 characters, in a line of its own that is cut at the width of its place.
 - A sentence that asks a question or tells the person what to do is fixed text and holds no name of a server. A statement can hold a name in quotation marks.
 
+Each linked-device row has a context menu made from its current row actions (ADR 0731). Rename keeps the field in the same row; Remove keeps the confirmation and the refusal to remove the last device. The row is a keyboard focus target for Menu and Shift+F10. The account layer stays open while this menu is used. Window test: `context_menus::a_device_menu_renames_its_device_and_keeps_the_last_device`.
+
 ## Consequences
 
 - A person changes the name and the picture of one account without a change of the profile preset or of the accounts on other servers.

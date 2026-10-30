@@ -65,6 +65,7 @@ fn channel_in(
     name: &str,
 ) -> junto_client_core::protocol::ids::ChannelId {
     let channel = CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind: ChannelKind::Text,
         category_id: Some(category_id),
@@ -727,6 +728,7 @@ fn a_member_who_may_set_the_user_limit_alone_changes_it_on_the_overview(cx: &mut
     let default = default_workspace(&world, &admin.handle);
     let api = admin.handle.api();
     let channel = CreateChannel {
+        topic: String::new(),
         name: "Huddle".to_owned(),
         kind: ChannelKind::Voice,
         category_id: None,

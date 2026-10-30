@@ -6,7 +6,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
-use super::{Avatar, DrawnPicture, Meter, StyleExt, icon};
+use super::{Avatar, ContextMenuExt, DrawnPicture, Meter, StyleExt, focus_ring_inside, icon};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -72,6 +72,8 @@ pub fn grid(count: usize, stage: (f32, f32)) -> (usize, (f32, f32)) {
     (fitted.0, (tile, (tile * 9.0 / 16.0).floor()))
 }
 
+type MenuHandler = Box<dyn Fn(gpui::Point<gpui::Pixels>, &mut Window, &mut App)>;
+
 #[derive(IntoElement)]
 pub struct PersonTile {
     camera_picture: Option<DrawnPicture>,
@@ -91,6 +93,7 @@ pub struct PersonTile {
     focused: bool,
     sidebar: bool,
     size: Option<(f32, f32)>,
+    on_menu: Option<MenuHandler>,
 }
 
 impl PersonTile {
@@ -119,7 +122,17 @@ impl PersonTile {
             focused: false,
             sidebar: false,
             size: None,
+            on_menu: None,
         }
+    }
+
+    /// Context triggers provide a window position; the caller owns the menu and its actions.
+    pub fn on_menu(
+        mut self,
+        handler: impl Fn(gpui::Point<gpui::Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_menu = Some(Box::new(handler));
+        self
     }
 
     pub fn camera_view(
@@ -238,6 +251,7 @@ impl RenderOnce for PersonTile {
             TileMark::HandRaised => icon(Icon::Hand, 13.0, colors.ochre).into_any_element(),
             TileMark::Level(lit) => Meter::plate(lit).into_any_element(),
         });
+        let focus_id = self.id.clone();
         div()
             .id(self.id)
             .role(Role::ListItem)
@@ -262,6 +276,31 @@ impl RenderOnce for PersonTile {
                 } else {
                     tile.border_1().border_color(Hsla::from(colors.basalt_rule))
                 }
+            })
+            .when_some(self.on_menu, |tile, open| {
+                let focus = super::reveal::handle(&focus_id, window, cx);
+                let bounds =
+                    std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+                let measured = bounds.clone();
+                let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+                tile.track_focus(&focus)
+                    .children(super::reveal::report(&focus, window))
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_context_menu(move |window, cx| {
+                        let at = if window.last_input_was_keyboard() {
+                            let bounds = bounds.get();
+                            gpui::point(bounds.left(), bounds.bottom())
+                        } else {
+                            window.mouse_position()
+                        };
+                        focus.focus(window, cx);
+                        open(at, window, cx);
+                    })
+                    .child(
+                        gpui::canvas(move |bounds, _, _| measured.set(bounds), |_, (), _, _| ())
+                            .absolute()
+                            .inset_0(),
+                    )
             })
             .child(
                 div().mb(u(16.0)).child(
@@ -365,5 +404,90 @@ mod tests {
     fn many_tiles_keep_the_size_of_the_strip_and_the_stage_scrolls() {
         assert_eq!(grid(40, (656.0, 380.0)), (4, STRIP_TILE_SIZE));
         assert_eq!(grid(3, (100.0, 380.0)), (1, STRIP_TILE_SIZE));
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use gpui::{
+        Context, Entity, FocusHandle, Modifiers, MouseButton, ParentElement, Pixels, Point, Render,
+        TestAppContext, VisualTestContext, point,
+    };
+    use gpui_base::FocusTrapElement as _;
+
+    struct Host {
+        root: FocusHandle,
+        opened: Vec<Point<Pixels>>,
+        parent: usize,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let open =
+                cx.listener(|this, position: &Point<Pixels>, _, _| this.opened.push(*position));
+            div()
+                .id("tile-parent")
+                .size_full()
+                .focus_trap("tile-host", &self.root)
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, _, _| this.parent += 1),
+                )
+                .child(
+                    PersonTile::new("menu-tile", "Rin", 17, "Rin, microphone off")
+                        .selector("menu-tile")
+                        .on_menu(move |position, window, cx| open(&position, window, cx)),
+                )
+        }
+    }
+
+    fn settle(cx: &mut VisualTestContext) {
+        for _ in 0..50 {
+            cx.run_until_parked();
+            if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
+                cx.run_until_parked();
+                return;
+            }
+        }
+        panic!("tile menu test did not settle");
+    }
+
+    #[gpui::test]
+    fn a_tile_context_trigger_consumes_the_pointer_and_has_a_keyboard_target(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            crate::theme::install(crate::theme::Theme::stone(), cx);
+        });
+        let (host, cx): (Entity<Host>, _) = cx.add_window_view(|_, cx| Host {
+            root: cx.focus_handle(),
+            opened: Vec::new(),
+            parent: 0,
+        });
+        let root = host.read_with(cx, |host, _| host.root.clone());
+        cx.update(|window, cx| root.focus(window, cx));
+        settle(cx);
+        let at = cx.debug_bounds("menu-tile").unwrap().center();
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+        settle(cx);
+        assert_eq!(
+            host.read_with(cx, |host, _| (host.opened.clone(), host.parent)),
+            (vec![at], 0)
+        );
+        cx.simulate_keystrokes("tab");
+        settle(cx);
+        for key in ["menu", "shift-f10"] {
+            cx.simulate_keystrokes(key);
+            settle(cx);
+        }
+        let opened = host.read_with(cx, |host, _| host.opened.clone());
+        assert_eq!(opened.len(), 3);
+        let bounds = cx.debug_bounds("menu-tile").unwrap();
+        for at in &opened[1..] {
+            assert!(bounds.contains(at) || *at == point(bounds.left(), bounds.bottom()));
+        }
     }
 }

@@ -39,6 +39,7 @@ struct Operation {
 struct World {
     /// The directory of the exports of the server.
     _exports: crate::support::Scratch,
+    _attachments: crate::support::Scratch,
     server: TestServer,
     plain: Member,
     administrator: Member,
@@ -76,8 +77,10 @@ fn operation(
 
 async fn world() -> World {
     let exports = crate::support::Scratch::new();
+    let attachments = crate::support::Scratch::new();
     let server = TestServer::start_for_calls_with(|config| {
         config.exports_directory = Some(exports.0.clone());
+        config.attachments_directory = Some(attachments.0.clone());
     })
     .await;
     let free = junto_server::storage::FakeDisk::new(crate::support::FREE_DISK);
@@ -253,6 +256,23 @@ async fn world() -> World {
     server
         .make_private(&owner, workspace.id, vault.id, role.id)
         .await;
+    let private_file = crate::messages_support::upload(
+        &server,
+        &owner,
+        json!({"channel_id":vault.id}),
+        b"private file",
+    )
+    .await;
+    let mut file_message = crate::messages_support::text("private attachment");
+    file_message["attachments"] = json!([private_file.id]);
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/channels/{}/messages", vault.id),
+            &file_message,
+        )
+        .await
+        .ok::<junto_protocol::message::Message>(StatusCode::CREATED);
     let seat = server.enter_call(&administrator, hall.id).await;
     server.enter_call(&call_guest, hall.id).await;
     server
@@ -454,6 +474,13 @@ async fn world() -> World {
             &[&absent],
             none.clone(),
             &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/attachments/{attachment_id}/message",
+            &[&private_file.id],
+            none.clone(),
+            &[(Plain, NotFound)],
         ),
         operation(
             Method::GET,
@@ -875,6 +902,13 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}",
+            &[&vault.id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
             Method::PATCH,
             "/api/v1/channels/{channel_id}",
             &[&channel.id],
@@ -1075,6 +1109,13 @@ async fn world() -> World {
             "/api/v1/channels/{channel_id}/call/settings",
             &[&hall_id],
             json!({ "user_limit": 50 }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/voice-status",
+            &[&hall_id],
+            json!({ "status": "Planning" }),
             &forbidden,
         ),
         operation(
@@ -1488,6 +1529,13 @@ async fn world() -> World {
         operation(Method::GET, "/api/v1/search", &[], none.clone(), &own),
         operation(
             Method::GET,
+            "/api/v1/search/capabilities",
+            &[],
+            none.clone(),
+            &[],
+        ),
+        operation(
+            Method::GET,
             "/api/v1/threads/unread",
             &[],
             none.clone(),
@@ -1716,6 +1764,7 @@ async fn world() -> World {
     }
     World {
         _exports: exports,
+        _attachments: attachments,
         server,
         plain,
         administrator,

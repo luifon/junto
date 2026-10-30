@@ -47,6 +47,7 @@ mod rules;
 mod sound_help;
 mod tones;
 mod tray;
+mod voice_status;
 #[cfg(target_os = "windows")]
 mod windows_share;
 
@@ -984,7 +985,8 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     window.until("the screens and windows are listed", |window| {
         window.shows("share-sources")
     });
-    window.click("share-display:1");
+    window.right_click_named("share-display:1".to_owned());
+    window.click("context-action:Select source");
     window.click("share-sound-1");
     window.click("start-share");
     window.until("the share of the screen runs", |window| {
@@ -1017,9 +1019,10 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
             slots == [0, 1]
         })
     });
-    // The menu ends the screen; the window goes on.
-    window.click("call-share");
-    window.click("share-stop:0");
+    // The picture menu ends only its screen; the window goes on.
+    window.click("share-card:own:0");
+    window.right_click_named("share-viewport".to_owned());
+    window.click("call-menu-stop-share");
     window.until("the screen has ended", |window| {
         window.capture.running() == 1
             && window
@@ -1077,9 +1080,19 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
         heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
 
+    let volume = stage(&mut window).unwrap().volume;
+    window.right_click_named("share-viewport".to_owned());
+    assert!(window.shows("call-menu-volume"));
+    window.press("down right");
+    window.until("the share menu changes shared sound volume", |window| {
+        stage(window).is_some_and(|stage| stage.volume == volume + 10)
+    });
+    window.press("escape");
+
     // The person picks the window: its picture and its sound, and not the sound of the
     // screen.
-    window.click_named(format!("share-thumbnail:{admin_id}:1"));
+    window.right_click_named(format!("share-card:{admin_id}:1"));
+    window.click("call-menu-watch-share");
     window.until("the window of the administrator is watched", |window| {
         stage(window).is_some_and(|stage| {
             stage
@@ -1108,6 +1121,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     });
 
     // The administrator ends the screen: the window watches the share that is left.
+    window.right_click_named("share-viewport".to_owned());
     caller.calls.stop_share(Some(0));
     window.until(
         "the window of the administrator is left and watched",
@@ -1119,6 +1133,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
                         .is_some_and(|share| share.id == shared_window)
                 })
                 && !window.shows("shares-bar")
+                && !window.shows("account-menu")
         },
     );
     window.until("the window plays its sound", |window| {

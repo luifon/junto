@@ -86,6 +86,21 @@ Secrets:
 
 The selected server's menu offers "Invite people" to the owner, administrators and accounts with the server's `create_invites` permission. It opens the existing Invites page directly on its new-invite form, retaining its expiry, use-count and workspace-grant rules. The derived view uses the same server permission predicate as administration; a permission event updates an open menu and the press rechecks it before opening. No separate invitation permission rule is introduced. Window tests cover the owner, an ordinary member, and granting and revoking the permission while the menu remains open.
 
+Creation from the channel column:
+
+- A category header and the text and voice sections without a category have a plus button and a New channel context action for an account that may create there. The controls remain available when a category is collapsed; their activation does not collapse or expand it. The ungrouped sections stay present for a workspace manager even when empty.
+- The existing name and kind form opens with its category fixed and its kind initially matching the section, or text for a named category. A category form uses that category's settings scope, so category management alone is enough without workspace management. It keeps the same acknowledgement and refusal handling as administration creation.
+- For a non-administrator, the selected workspace holds the existing category rule readers. A successful read is required before evaluating category creation with the shared permission function; a refusal offers no control. A rule or account change invalidates the control. Opening an action checks the captured owner, selected server, workspace and current category permission again. The server decides the mutation.
+- Window test `channel_creation` covers plus and context actions, text and voice, ungrouped voice defaults, category assignment, collapsed state and category-only management granted and revoked during the session.
+
+Administration row menus:
+
+- Each item of the administration page list collects its existing Button actions while it is built and attaches their shared context menu (ADR 0731) to the item's frame. Headers and footers are outside this scope. The menu is available by right-click, Menu and Shift+F10, also from a control in the row. It uses the same labels, disabled reasons and callbacks as the buttons, so confirmations, permission refusals and forms keep their existing behavior.
+- This covers the action rows of workspaces, categories, channels, archived channels, server and workspace roles, accounts, workspace members, invites, join requests, access tokens, exports, glossary entries, recordings and permission-rule subjects. A row with no button action has no menu from this binding. The popup remains inside the administration focus hierarchy and restores its original focus after closing; its floating placement is bounded by the window rather than the scrolled list.
+- Window tests: `context_menus::an_administration_workspace_menu_renames_its_workspace` renames through the row's context menu and reads the new value from the server; `a_role_context_menu_preserves_the_delete_confirmation` verifies that choosing Delete opens the existing confirmation and the role remains until confirmation. The list's focus and scrolling tests cover the binding without changing the list's keyboard behavior.
+
+Audit entries and glossary terms have a Copy text context action, including rows the account may only read. It copies the displayed audit heading, sentence, token reference, reason and message, or the glossary term; it uses the shared Copied confirmation. These rows remain keyboard targets even when their changing actions are unavailable. A context action alone does not classify a row as containing a control: Tab skips such rows, while row navigation and the menu key reach their menus. Copying does not grant a changing permission or open a form. Window tests: `context_menus::an_audit_row_copies_its_displayed_entry` and `a_readonly_glossary_row_copies_its_term_without_editing`.
+
 ## Consequences
 
 - Every screen of the administration is designed in this record.

@@ -295,7 +295,17 @@ fn a_device_list_that_was_not_read_and_an_approval_without_an_answer_are_read_ag
     assert!(first.shows("link-fingerprint") && first.shows("link-check"));
     assert!(!first.shows("link-approved"));
     assert_eq!(world.run(handle.api().devices()).unwrap().len(), 2);
+    let away = first
+        .cx
+        .debug_bounds("account-nav-devices")
+        .unwrap()
+        .center();
+    first.move_pointer(away);
     proxy.release_events();
+    first.until(
+        "the released device event is drawn before checking the link",
+        |first| first.devices().len() == 2,
+    );
 
     // "Check again" reads the list: the key is there, and the device is linked.
     let scroll = first.in_shell(|shell, _, _| shell.account_scroll_handle());

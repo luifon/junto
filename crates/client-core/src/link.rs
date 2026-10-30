@@ -23,17 +23,26 @@ pub const LONGEST: usize = 2048;
 /// The schemes of the links that a message can hold.
 const SCHEMES: [&str; 3] = ["https", "http", "mailto"];
 
-/// An address that this device may open: HTTP, HTTPS or mailto, without a user name and a
-/// password, in the form of a URI that holds no quote, space, control character or other
+/// An address that this device may open: HTTP, HTTPS, mailto or a validated Junto target,
+/// without credentials, in the form of a URI that holds no quote, space, control character or other
 /// character outside RFC 3986.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Link(String);
 
 impl Link {
-    /// The link of an address that the server accepts: HTTP, HTTPS or mailto, without a
-    /// user name and a password, without a control character, at most 2,048 bytes. Nothing
-    /// for any other address.
+    /// A supported address without credentials or controls, at most 2,048 bytes.
+    /// Application targets also pass the shared application-address parser.
     pub fn parse(address: &str) -> Option<Self> {
+        if address
+            .split_once(':')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("junto"))
+        {
+            if address.len() > LONGEST {
+                return None;
+            }
+            let target = crate::links::parse(address)?;
+            return Self::with_schemes(&crate::links::format(&target), &["junto"]);
+        }
         Self::with_schemes(address, &SCHEMES)
     }
 
@@ -133,6 +142,24 @@ mod tests {
             opened(&format!("https://example.com/{}", "a".repeat(LONGEST))),
             None
         );
+    }
+
+    #[test]
+    fn application_addresses_use_the_shared_parser_and_keep_the_uri_bounds() {
+        let address = "junto://channel?server=https%3A%2F%2Fexample.test&id=00000000-0000-0000-0000-000000000001";
+        let link = Link::parse(address).unwrap();
+        assert_eq!(link.as_str(), address);
+        assert_eq!(Link::parse(link.as_str()), Some(link));
+        for refused in [
+            address.replace("channel", "unknown"),
+            format!("{address}&id=00000000-0000-0000-0000-000000000002"),
+            address.replace("example.test", "user%3Asecret%40example.test"),
+            format!("{address}#fragment"),
+            format!("{address}&unexpected=value"),
+            format!("{address}{}", "x".repeat(LONGEST)),
+        ] {
+            assert!(Link::parse(&refused).is_none(), "{refused}");
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ mod category_refresh;
 mod category_timing;
 mod category_visibility;
 mod change_positions;
+mod channel_topics;
 mod channel_use;
 mod concurrency;
 mod contacts;
@@ -83,6 +84,7 @@ mod transcriber_real;
 mod transcripts;
 mod typing;
 mod upgrades;
+mod voice_status;
 
 mod call_lines;
 mod messages;

@@ -696,6 +696,16 @@ impl AppState {
         else {
             return wanted;
         };
+        if !model.is_administrator()
+            && let Some(workspace) = view.workspace().and_then(|shown| model.workspace(shown.id))
+        {
+            for category in &workspace.categories {
+                want((
+                    server_id,
+                    AdminPart::CategoryRules(workspace.workspace.id, category.id),
+                ));
+            }
+        }
         if self.selection.notices == Some(server_id) {
             for workspace_id in super::notices::archived_lists_of_notices(model) {
                 want((server_id, AdminPart::Archived(workspace_id)));

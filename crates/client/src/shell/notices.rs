@@ -10,13 +10,12 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, Context, Entity, FollowMode, FontWeight, HighlightStyle, Hsla, InteractiveElement,
     IntoElement, ListAlignment, ListState, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, Window, deferred, div, list,
-    prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, StyledText, Window, div, list, prelude::FluentBuilder, px,
 };
 use gpui_base::input::InputState;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::protocol::discovery::NotificationLevel;
-use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, ServerId};
+use junto_client_core::protocol::ids::{ChannelId, ConversationId, ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::settings::Panel;
 
@@ -32,9 +31,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, Dialog, Field, Menu, MenuItem, Notice, Segmented,
-    SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label, menu_separator,
-    scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ChannelRow, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice,
+    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
+    menu_separator, scroll_bar, unread_dot,
 };
 
 /// The icon of the place of a message.
@@ -47,6 +46,13 @@ pub(crate) fn place_icon(place: &Whereabouts) -> Icon {
         Whereabouts::Channel { .. } | Whereabouts::Unknown => Icon::Hash,
         Whereabouts::Direct { .. } => Icon::Person,
     }
+}
+
+pub(crate) struct ExcerptAccount {
+    owner: junto_client_core::Owner,
+    account_id: junto_client_core::protocol::ids::AccountId,
+    departed: bool,
+    source: super::account_menus::AccountSource,
 }
 
 /// A message outside its list, as a notice and a search result show it (view H of the
@@ -65,6 +71,7 @@ pub(crate) struct Excerpt {
     pub profile: Option<crate::ui::OpenProfile>,
     pub name_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     pub author: SharedString,
+    pub account: Option<ExcerptAccount>,
     pub time: SharedString,
     /// A short word after the time, such as "microphone".
     pub tag: Option<SharedString>,
@@ -77,6 +84,16 @@ pub(crate) struct Excerpt {
 
 impl Excerpt {
     pub(crate) fn element(self, theme: &Theme, cx: &gpui::App) -> gpui::Div {
+        let owner = self.account.as_ref().map(|account| account.owner);
+        let source = self.account.as_ref().map(|account| account.source.clone());
+        let target = self
+            .account
+            .as_ref()
+            .map(|account| super::account_menus::AccountTarget {
+                account_id: account.account_id,
+                name: self.author.to_string(),
+                departed: account.departed,
+            });
         let colors = theme.colors;
         let mark = HighlightStyle {
             color: Some(colors.ink.into()),
@@ -166,14 +183,24 @@ impl Excerpt {
                     .flex()
                     .gap(u(10.0))
                     .child(
-                        div().flex_none().mt(u(2.0)).child(
-                            Avatar::new(self.seed, 30.0)
-                                .image(self.picture)
-                                .when_some(self.presence, |avatar, presence| {
-                                    avatar.presence(presence)
-                                })
-                                .when_some(self.profile, |avatar, target| avatar.profile(target)),
-                        ),
+                        div()
+                            .flex_none()
+                            .mt(u(2.0))
+                            .child(super::account_menus::account_target(
+                                SharedString::from(format!("excerpt-avatar:{}", self.seed)),
+                                owner,
+                                target.clone(),
+                                source.clone(),
+                                Avatar::new(self.seed, 30.0)
+                                    .image(self.picture)
+                                    .when_some(self.presence, |avatar, presence| {
+                                        avatar.presence(presence)
+                                    })
+                                    .when_some(self.profile, |avatar, target| {
+                                        avatar.profile(target)
+                                    }),
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -185,7 +212,11 @@ impl Excerpt {
                                     .items_baseline()
                                     .gap(u(8.0))
                                     .line_height(u(19.0))
-                                    .child(
+                                    .child(super::account_menus::account_target(
+                                        SharedString::from(format!("excerpt-author:{}", self.seed)),
+                                        owner,
+                                        target,
+                                        source.clone(),
                                         div()
                                             .min_w_0()
                                             .truncate()
@@ -202,7 +233,8 @@ impl Excerpt {
                                                 .into_any_element(),
                                                 None => self.author.into_any_element(),
                                             }),
-                                    )
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .flex_none()
@@ -339,6 +371,22 @@ impl NoticeList {
 }
 
 impl Shell {
+    pub(super) fn excerpt_account(
+        &self,
+        server_id: ServerId,
+        account_id: junto_client_core::protocol::ids::AccountId,
+        source: super::account_menus::AccountSource,
+        cx: &gpui::App,
+    ) -> Option<ExcerptAccount> {
+        let state = self.state.read(cx);
+        Some(ExcerptAccount {
+            owner: state.server(server_id)?.owner()?,
+            account_id,
+            departed: state.account_departure(server_id, account_id).is_some(),
+            source,
+        })
+    }
+
     /// Opens the notices of the shown server in the side panel, or closes them.
     pub fn toggle_notices(&mut self, cx: &mut Context<Self>) {
         let view = self.state.read(cx).view();
@@ -630,6 +678,14 @@ impl Shell {
                 account,
             }),
             author: row.author.clone().into(),
+            account: row.author_id.and_then(|id| {
+                self.excerpt_account(
+                    server_id,
+                    id,
+                    super::account_menus::AccountSource::Notice(notice_id),
+                    cx,
+                )
+            }),
             time: row.time.clone().into(),
             tag: row.jump.map(|_| text::notice_kind(row.kind).into()),
             text: row.text.clone().into(),
@@ -650,7 +706,11 @@ impl Shell {
         .into();
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let held = row.clone();
+        let menu = matches!(self.layer, Layer::NoticeMenu(server, notice)
+            if server == server_id && notice == notice_id)
+        .then(|| self.render_notice_menu(server_id, row, cx));
         div()
+            .relative()
             .w_full()
             .child(
                 div()
@@ -658,6 +718,12 @@ impl Shell {
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                        this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
+                    }))
                     .when(below_a_notice, |entry| {
                         entry
                             .border_t_1()
@@ -666,17 +732,65 @@ impl Shell {
                     .when(row.jump.is_some(), |entry| {
                         entry
                             .cursor_pointer()
-                            .focusable()
-                            .tab_stop(true)
                             .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
-                            .focus_visible(move |style| style.shadow(ring))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.go_to_notice(&held, cx);
                             }))
                     })
                     .child(shown.element(&theme, cx)),
             )
+            .children(menu)
             .into_any_element()
+    }
+
+    fn render_notice_menu(
+        &mut self,
+        server_id: ServerId,
+        row: &NoticeRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let notice_id = row.id;
+        let mut items = vec![
+            MenuItem::new("notice-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("notice-mark-read")
+                .disabled(row.read)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state.mark_notice_read(server_id, notice_id, cx);
+                    });
+                }))
+                .into_any_element(),
+        ];
+        if let Some(jump) = row.jump {
+            let message_id = jump.message_id;
+            items.push(
+                MenuItem::new("notice-copy-link", text::COPY_TARGET_LINK)
+                    .icon(Icon::Link)
+                    .selector("notice-copy-link")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let link = this.state.read(cx).message_link(server_id, message_id);
+                        this.close_layer(window, cx);
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }))
+                    .into_any_element(),
+            );
+            let held = row.clone();
+            items.push(
+                MenuItem::new("notice-go-to", text::GO_TO_MESSAGE)
+                    .icon(Icon::Chat)
+                    .selector("notice-go-to")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.go_to_notice(&held, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        self.row_menu("notice-menu", text::NOTIFICATIONS.to_owned(), items, cx)
     }
 
     /// The control above the oldest listed notice that reads the older ones.
@@ -784,16 +898,93 @@ impl Shell {
         items
     }
 
-    /// The menu of a channel, drawn at its row: its notification settings and its mute.
+    /// The actions of a channel, at its row.
     pub(crate) fn render_channel_menu(
         &mut self,
         server_id: ServerId,
-        channel_id: ChannelId,
-        name: &str,
-        mute: &Mute,
+        workspace_id: WorkspaceId,
+        channel: &crate::state::view::ChannelRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let channel_id = channel.id;
         let mut items = vec![
+            MenuItem::new("channel-files", "Files")
+                .icon(Icon::FolderOpen)
+                .disabled(!channel.allowed.read_history)
+                .selector("channel-files")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.show_place_files(
+                        server_id,
+                        junto_client_core::model::PlaceId::Channel(channel_id),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
+            MenuItem::new("channel-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("channel-mark-read")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, _| {
+                        state.mark_place_as_read(
+                            server_id,
+                            junto_client_core::model::PlaceId::Channel(channel_id),
+                        );
+                    });
+                }))
+                .into_any_element(),
+        ];
+        if let Some(status) = self.voice_status_item(server_id, channel, cx) {
+            items.push(status);
+        }
+        if let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        {
+            items.extend(self.personal_channel_items(
+                super::personal::ChannelDrag {
+                    owner,
+                    workspace: workspace_id,
+                    channel: channel_id,
+                },
+                cx,
+            ));
+        }
+        items.push(
+            MenuItem::new("channel-copy-link", text::COPY_TARGET_LINK)
+                .icon(Icon::Link)
+                .selector("channel-copy-link")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let link = this.state.read(cx).channel_link(server_id, channel_id);
+                    this.close_layer(window, cx);
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }))
+                .into_any_element(),
+        );
+        if channel.allowed.manage {
+            items.push(
+                MenuItem::new("channel-edit", text::EDIT_CHANNEL)
+                    .icon(Icon::Gear)
+                    .selector("channel-edit")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_channel_settings(
+                            workspace_id,
+                            channel_id,
+                            crate::state::admin::ChannelPage::Overview,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
+        items.push(
             MenuItem::new("channel-notify-settings", text::NOTIFICATION_SETTINGS_ITEM)
                 .icon(Icon::Bell)
                 .selector("channel-notify-settings")
@@ -806,10 +997,10 @@ impl Shell {
                     );
                 }))
                 .into_any_element(),
-            menu_separator(cx).into_any_element(),
-        ];
+        );
+        items.push(menu_separator(cx).into_any_element());
         items.extend(
-            self.mute_items(mute, "channel", cx, move |this, length, cx| {
+            self.mute_items(&channel.mute, "channel", cx, move |this, length, cx| {
                 this.state.update(cx, |state, cx| {
                     state.set_channel_mute(server_id, channel_id, length, cx);
                 });
@@ -817,26 +1008,104 @@ impl Shell {
         );
         self.row_menu(
             "channel-menu",
-            format!("{}: {name}", text::CHANNEL_MENU),
+            format!("{}: {}", text::CHANNEL_MENU, channel.name),
             items,
             cx,
         )
     }
 
-    /// The menu of a direct conversation, drawn at its row: its mute (ADR 0515).
+    /// The read and mute actions of a direct conversation, at its row (ADR 0515).
     pub(crate) fn render_direct_menu(
         &mut self,
         server_id: ServerId,
-        account_id: AccountId,
-        name: &str,
-        mute: &Mute,
+        direct: &crate::state::view::DirectRow,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let items = self.mute_items(mute, "direct", cx, move |this, length, cx| {
-            this.state.update(cx, |state, cx| {
-                state.set_direct_mute(server_id, account_id, length, cx);
-            });
-        });
+        let conversation_id = direct.id;
+        let account_id = direct.account_id;
+        let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+        let mut items = vec![
+            MenuItem::new("direct-files", "Files")
+                .icon(Icon::FolderOpen)
+                .selector("direct-files")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.show_place_files(
+                        server_id,
+                        junto_client_core::model::PlaceId::Direct(conversation_id),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
+            MenuItem::new("direct-mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .selector("direct-mark-read")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state.update(cx, |state, _| {
+                        state.mark_place_as_read(
+                            server_id,
+                            junto_client_core::model::PlaceId::Direct(conversation_id),
+                        );
+                    });
+                }))
+                .into_any_element(),
+            menu_separator(cx).into_any_element(),
+        ];
+        items.insert(
+            1,
+            MenuItem::new("direct-copy-link", text::COPY_TARGET_LINK)
+                .icon(Icon::Link)
+                .selector("direct-copy-link")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let link = this
+                        .state
+                        .read(cx)
+                        .conversation_link(server_id, conversation_id);
+                    this.close_layer(window, cx);
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }))
+                .into_any_element(),
+        );
+        if let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        {
+            items.insert(
+                0,
+                MenuItem::new("direct-open", text::OPEN)
+                    .icon(Icon::Chat)
+                    .selector("direct-open")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !matches!(&this.layer, Layer::DirectMenu(id) if *id == conversation_id)
+                            || this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .is_none_or(|server| server.owner() != Some(owner))
+                        {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.select_conversation(server_id, conversation_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
+        items.extend(
+            self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.set_direct_mute(server_id, account_id, length, cx);
+                });
+            }),
+        );
         self.row_menu(
             "direct-menu",
             format!("{}: {name}", text::CONVERSATION_MENU),
@@ -856,7 +1125,7 @@ impl Shell {
             .absolute()
             .left(u(40.0))
             .top(u(26.0))
-            .child(deferred(
+            .child(
                 Menu::new(selector, label, self.layer_focus())
                     .selector(selector)
                     .width(232.0)
@@ -864,8 +1133,9 @@ impl Shell {
                         this.close_layer(window, cx);
                     }))
                     .children(items)
-                    .child(div().h(u(4.0))),
-            ))
+                    .child(div().h(u(4.0)))
+                    .popup(gpui::Point::default()),
+            )
             .into_any_element()
     }
 

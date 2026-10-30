@@ -24,8 +24,9 @@ use junto_client_core::protocol::call::{
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
-    AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
-    MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId, WorkspaceRoleId,
+    AccountId, AttachmentId, CallId, CallInvitationId, CategoryId, ChannelId, ConversationId,
+    EntryRequestId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId,
+    WorkspaceRoleId,
 };
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
@@ -713,6 +714,8 @@ pub enum SectionTitle {
     TextChannels,
     VoiceChannels,
     Category(String),
+    Favourites,
+    Personal(String),
 }
 
 /// The microphone of a person in a voice channel.
@@ -806,6 +809,8 @@ pub struct VoiceState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRow {
+    pub voice_status: String,
+    pub topic: String,
     pub id: ChannelId,
     pub kind: ChannelKind,
     pub name: String,
@@ -828,6 +833,11 @@ pub struct ChannelRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelSection {
+    /// Absent for the sections grouped by channel kind.
+    pub category_id: Option<CategoryId>,
+    pub collapsed: bool,
+    pub may_create: bool,
+    pub personal: Option<junto_client_core::arrangement::channels::Location>,
     pub title: SectionTitle,
     pub rows: Vec<ChannelRow>,
 }
@@ -1231,6 +1241,7 @@ pub struct ServerLists {
     pub uploads: Arc<HashMap<u64, UploadProgress>>,
     /// The notices of the server that the side panel shows.
     pub notices: Option<NoticesPanel>,
+    pub search: Option<SearchPanel>,
     /// The notices of the server that the person has not read.
     pub unread_notices: usize,
     /// Present when the main area shows the place of the call of this device: its voice
@@ -1410,6 +1421,8 @@ pub struct PersonMenu {
     pub volume: u16,
     /// With "mute members": whether the microphone of the person is blocked now.
     pub microphone_blocked: Option<bool>,
+    /// The presenter may remove the microphone block in this call.
+    pub allow_to_speak: bool,
     /// With "deafen members": whether the sound of the person is blocked now.
     pub sound_blocked: Option<bool>,
     /// With "mute members", or for the presenter of meeting mode in that call: whether the
@@ -1498,6 +1511,8 @@ impl ShellView {
             microphone_blocked: allowed
                 .mute
                 .then_some(matches!(occupant.microphone, Microphone::Held(_))),
+            allow_to_speak: row.voice.as_ref().is_some_and(|voice| voice.presents)
+                && matches!(occupant.microphone, Microphone::Held(_)),
             sound_blocked: allowed.deafen.then_some(occupant.sound_blocked),
             hand_raised: (allowed.mute || row.voice.as_ref().is_some_and(|voice| voice.presents))
                 .then_some(occupant.hand_raised),
@@ -2255,6 +2270,8 @@ fn channel_row(
     unreads: &Unreads,
 ) -> ChannelRow {
     ChannelRow {
+        voice_status: channel.channel.voice_status.clone(),
+        topic: channel.channel.topic.clone(),
         id: channel.channel.id,
         kind: channel.channel.kind,
         name: channel.channel.name.clone(),
@@ -2361,6 +2378,20 @@ fn thread_entries(
     (entries, more)
 }
 
+pub(crate) fn category_may_create(
+    model: &ServerModel,
+    workspace: WorkspaceId,
+    category: CategoryId,
+) -> bool {
+    model.is_administrator()
+        || model
+            .admin
+            .category_rules(workspace, category)
+            .loaded()
+            .and_then(|rules| model.permissions_with_rules(workspace, &rules.rules))
+            .is_some_and(|permissions| permissions.contains(&WorkspacePermission::ManageChannel))
+}
+
 /// The channels of a workspace in the groups of the channel column: first the channels
 /// without a category, by kind, then each category that holds a visible channel.
 fn sections(
@@ -2369,7 +2400,7 @@ fn sections(
     model: &ServerModel,
     known: &Known,
     unreads: &Unreads,
-) -> Vec<ChannelSection> {
+) -> (Vec<ChannelSection>, Option<ChannelId>) {
     let in_category = |channel: &ChannelModel| {
         channel.channel.category_id.filter(|id| {
             workspace
@@ -2391,8 +2422,15 @@ fn sections(
             .filter(|channel| channel.channel.kind == kind && in_category(channel).is_none())
             .map(row)
             .collect();
-        if !rows.is_empty() {
-            made.push(ChannelSection { title, rows });
+        if !rows.is_empty() || workspace.holds(WorkspacePermission::ManageChannel) {
+            made.push(ChannelSection {
+                category_id: None,
+                collapsed: false,
+                may_create: workspace.holds(WorkspacePermission::ManageChannel),
+                personal: None,
+                title,
+                rows,
+            });
         }
     }
     // The server lists a category only while it holds a channel that the person sees or
@@ -2406,11 +2444,75 @@ fn sections(
             .map(row)
             .collect();
         made.push(ChannelSection {
+            category_id: Some(category.id),
+            collapsed: known.arrangement.category_collapsed(
+                server_id,
+                model.account.id,
+                category.id,
+            ),
+            personal: None,
+            may_create: category_may_create(model, workspace.workspace.id, category.id),
             title: SectionTitle::Category(category.name.clone()),
             rows,
         });
     }
-    made
+    let fallback = made
+        .iter()
+        .flat_map(|section| &section.rows)
+        .find(|row| row.kind == ChannelKind::Text)
+        .or_else(|| made.iter().flat_map(|section| &section.rows).next())
+        .map(|row| row.id);
+    if let Some(layout) =
+        known
+            .arrangement
+            .channels(server_id, model.account.id, workspace.workspace.id)
+    {
+        use junto_client_core::arrangement::channels::Location;
+        let mut personal = Vec::new();
+        let placed: HashSet<_> = layout
+            .favourites
+            .iter()
+            .chain(layout.sections.iter().flat_map(|section| &section.channels))
+            .copied()
+            .collect();
+        let mut by_id = HashMap::new();
+        for section in &mut made {
+            for row in std::mem::take(&mut section.rows) {
+                if placed.contains(&row.id) {
+                    by_id.insert(row.id, row);
+                } else {
+                    section.rows.push(row);
+                }
+            }
+        }
+        let mut rows = |ids: &[ChannelId]| {
+            ids.iter()
+                .filter_map(|id| by_id.remove(id))
+                .collect::<Vec<_>>()
+        };
+        let favourites = rows(&layout.favourites);
+        if !favourites.is_empty() {
+            personal.push(ChannelSection {
+                category_id: None,
+                collapsed: layout.favourites_collapsed,
+                may_create: false,
+                personal: Some(Location::Favourites),
+                title: SectionTitle::Favourites,
+                rows: favourites,
+            });
+        }
+        personal.extend(layout.sections.iter().map(|section| ChannelSection {
+            category_id: None,
+            collapsed: section.collapsed,
+            may_create: false,
+            personal: Some(Location::Section(section.id)),
+            title: SectionTitle::Personal(section.name.clone()),
+            rows: rows(&section.channels),
+        }));
+        personal.extend(made);
+        made = personal;
+    }
+    (made, fallback)
 }
 
 fn members(
@@ -2675,6 +2777,13 @@ fn server_lists(
         _ => Writing::OPEN,
     };
     ServerLists {
+        search: (shown.is_none() || call.is_some())
+            .then(|| match workspace {
+                Some(workspace) => super::search::search_panel(server_id, workspace, model, known),
+                None => super::search::search_without_workspace(server_id, model, known),
+            })
+            .flatten()
+            .filter(|_| selection.notices != Some(server_id)),
         workspace: shown,
         directs,
         conversation,
@@ -2774,7 +2883,7 @@ fn workspace_view(
     unreads: &Unreads,
     conversation: Option<ConversationShown>,
 ) -> WorkspaceParts {
-    let mut sections = sections(server_id, workspace, model, known, unreads);
+    let (mut sections, fallback) = sections(server_id, workspace, model, known, unreads);
     let wanted = selection
         .channels
         .get(&(server_id, workspace.workspace.id))
@@ -2793,12 +2902,7 @@ fn workspace_view(
     } else {
         wanted
             .filter(|id| rows().any(|row| row.id == *id))
-            .or_else(|| {
-                rows()
-                    .find(|row| row.kind == ChannelKind::Text)
-                    .map(|row| row.id)
-            })
-            .or_else(|| rows().next().map(|row| row.id))
+            .or(fallback)
     };
     // The thread of the side panel belongs to the shown channel.
     let open_thread = selection
@@ -2840,6 +2944,8 @@ fn workspace_view(
         // A call of an archived voice channel has ended: the row has no voice state, and
         // the main area shows its messages.
         channel = Some(ChannelRow {
+            voice_status: archived.channel.voice_status.clone(),
+            topic: archived.channel.topic.clone(),
             id: channel_id,
             kind: archived.channel.kind,
             name: archived.channel.name.clone(),

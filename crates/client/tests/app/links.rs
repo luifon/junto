@@ -1,7 +1,9 @@
-use crate::harness::{World, named, open};
+use crate::harness::{Window, World, named, open};
 use gpui::TestAppContext;
+use junto_client::app;
 use junto_client_core::address::ServerAddress;
 use junto_client_core::links::{self, AppLink};
+use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::MessageId;
 
 #[gpui::test]
@@ -173,4 +175,212 @@ fn an_existing_account_confirms_an_invite_into_another_workspace(cx: &mut TestAp
         window.in_shell(|shell, _, _| shell.join_error().is_some())
     });
     assert!(window.shows("join-dialog"));
+}
+
+pub(crate) fn registered_main_window(cx: &mut TestAppContext, mut original: Window) -> Window {
+    let handle = cx
+        .update(|cx| app::open_main_window(original.state.clone(), Default::default(), cx))
+        .unwrap();
+    let main = original.window_of(handle.into());
+    original.cx.update(|window, _| window.remove_window());
+    main
+}
+
+pub(crate) fn deliver_from_outside(window: &mut Window, link: AppLink) {
+    use junto_client_core::instance::{Activation, Instance, Start};
+    use junto_client_core::paths::DataDir;
+    let root = tempfile::tempdir().unwrap();
+    let directory = DataDir::open(root.path().join("profile")).unwrap();
+    let Start::Primary(_instance, mut receive) =
+        Instance::start(&directory, Activation::default()).unwrap()
+    else {
+        panic!("the first process owns the test profile");
+    };
+    let activation = Activation {
+        link: Some(links::format(&link)),
+        activation_token: None,
+    };
+    assert!(matches!(
+        Instance::start(&directory, activation.clone()).unwrap(),
+        Start::Forwarded
+    ));
+    let forwarded = receive.try_recv().unwrap();
+    assert_eq!(forwarded, activation);
+    window.as_window(|window| {
+        window.cx.cx.update(|cx| {
+            app::open_url(
+                forwarded.link.as_deref().unwrap(),
+                forwarded.activation_token.as_deref(),
+                cx,
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn externally_delivered_invite_requires_confirmation_before_spending_its_code(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let code = world.owner(&server).invite(&world, 1);
+    let (_directory, original) = named(cx, "Member");
+    let mut window = registered_main_window(cx, original);
+    deliver_from_outside(
+        &mut window,
+        AppLink::Invite {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            code,
+        },
+    );
+    window.until("the external invitation awaits confirmation", |window| {
+        window.shows("join-dialog")
+    });
+    assert!(window.view().servers.is_empty());
+    window.click("join-with-code");
+    window.until_ready();
+    assert_eq!(window.view().servers.len(), 1);
+}
+
+#[gpui::test]
+fn externally_delivered_message_targets_its_message(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let mut window = registered_main_window(cx, original);
+    let channel = admin.text_channel(&world, &mut window, "planning");
+    let message = admin.send(
+        &world,
+        channel,
+        crate::messages::document("External destination"),
+    );
+    deliver_from_outside(
+        &mut window,
+        AppLink::Message {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: message.id,
+        },
+    );
+    window.until("the external message is targeted", |window| {
+        window.selected_channel() == channel
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == message.id && row.target)
+    });
+}
+
+#[gpui::test]
+fn externally_delivered_channel_opens_its_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let mut window = registered_main_window(cx, original);
+    let channel = admin.text_channel(&world, &mut window, "planning");
+    deliver_from_outside(
+        &mut window,
+        AppLink::Channel {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: channel,
+        },
+    );
+    window.until("the external channel is loaded", |window| {
+        window.selected_channel() == channel && window.feed().is_some_and(|feed| feed.loaded)
+    });
+}
+
+#[gpui::test]
+fn externally_delivered_conversation_opens_its_conversation(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let mut window = registered_main_window(cx, original);
+    let own = window.own_account();
+    let direct = world
+        .run(admin.handle.api().open_conversation(own))
+        .unwrap();
+    deliver_from_outside(
+        &mut window,
+        AppLink::Conversation {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: direct.id,
+        },
+    );
+    window.until("the external conversation is loaded", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.place == PlaceId::Direct(direct.id) && feed.loaded)
+    });
+}
+
+#[gpui::test]
+fn externally_delivered_file_opens_its_file_dialog(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let mut window = registered_main_window(cx, original);
+    let channel = admin.text_channel(&world, &mut window, "planning");
+    let message = crate::pictures::send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(channel),
+        "External report",
+        vec![("planning.txt", b"The weekly plan".to_vec())],
+    );
+    let file = message.attachments[0].id;
+    deliver_from_outside(
+        &mut window,
+        AppLink::File {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: file,
+        },
+    );
+    window.until("the external file is shown", |window| {
+        window.selected_channel() == channel
+            && window.shows_named(format!("linked-file-name:{file}"))
+    });
+}
+
+#[gpui::test]
+fn externally_delivered_thread_opens_its_thread_panel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let mut window = registered_main_window(cx, original);
+    let channel = admin.text_channel(&world, &mut window, "planning");
+    let root = admin
+        .send(
+            &world,
+            channel,
+            crate::messages::document("External thread"),
+        )
+        .id;
+    admin.reply(&world, root, crate::messages::document("The answer"));
+    deliver_from_outside(
+        &mut window,
+        AppLink::Thread {
+            server: ServerAddress::parse(&server.address()).unwrap(),
+            id: root,
+        },
+    );
+    window.until("the external thread is loaded", |window| {
+        window.selected_channel() == channel
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| {
+                    thread.root_id == root && thread.feed.as_ref().is_some_and(|feed| feed.loaded)
+                })
+    });
 }

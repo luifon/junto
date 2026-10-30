@@ -490,6 +490,7 @@ struct Rich {
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
     profiles: Vec<(Range<usize>, crate::ui::OpenProfile, String)>,
+    people: Vec<(Range<usize>, super::account_menus::AccountTarget)>,
     channels: Vec<(Range<usize>, ChannelId)>,
     spoilers: Vec<(Range<usize>, Vec<usize>)>,
     copy_targets: Vec<(Range<usize>, String)>,
@@ -532,6 +533,7 @@ impl Rich {
             families: Vec::new(),
             links: Vec::new(),
             profiles: Vec::new(),
+            people: Vec::new(),
             channels: Vec::new(),
             spoilers: Vec::new(),
             copy_targets: Vec::new(),
@@ -707,6 +709,20 @@ impl Rich {
                         _ => rich.text.push_str(text::MENTION_EVERYONE),
                     }
                     rich.padding();
+                    if let Inline::Account { account_id } = node {
+                        rich.people.push((
+                            start..rich.text.len(),
+                            super::account_menus::AccountTarget {
+                                account_id: *account_id,
+                                name: names
+                                    .accounts
+                                    .get(account_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                                departed: names.departed.contains_key(account_id),
+                            },
+                        ));
+                    }
                     if let Inline::Account { account_id } = node
                         && let Some(server) =
                             presence.and_then(crate::state::people::ServerFaces::server_id)
@@ -833,6 +849,11 @@ impl Rich {
             range.hash(&mut identity);
             target.hash(&mut identity);
         }
+        for (range, person) in &self.people {
+            range.hash(&mut identity);
+            person.account_id.hash(&mut identity);
+            person.departed.hash(&mut identity);
+        }
         for (range, channel) in &self.channels {
             range.hash(&mut identity);
             channel.hash(&mut identity);
@@ -848,12 +869,16 @@ impl Rich {
         id: usize,
         open_channel: Option<ChannelOpener>,
         reveal: Option<SpoilerOpener>,
+        owner: Option<junto_client_core::Owner>,
+        source: Option<super::account_menus::AccountSource>,
     ) -> AnyElement {
         RichElement {
             rich: self,
             id,
             open_channel,
             reveal,
+            owner,
+            source,
         }
         .into_any_element()
     }
@@ -865,7 +890,62 @@ struct RichElement {
     id: usize,
     open_channel: Option<ChannelOpener>,
     reveal: Option<SpoilerOpener>,
+    owner: Option<junto_client_core::Owner>,
+    source: Option<super::account_menus::AccountSource>,
 }
+
+struct RichMenus {
+    id: usize,
+    owner: Option<junto_client_core::Owner>,
+    source: Option<super::account_menus::AccountSource>,
+    layout: gpui::TextLayout,
+    links: Vec<(Range<usize>, Link)>,
+    people: Vec<(Range<usize>, super::account_menus::AccountTarget)>,
+}
+impl RichMenus {
+    fn wrap(self, child: impl IntoElement) -> AnyElement {
+        let content = if self.links.is_empty() {
+            child.into_any_element()
+        } else {
+            crate::ui::LinkMenu::text(
+                ("rich-links", self.id),
+                self.layout.clone(),
+                self.links,
+                child,
+            )
+            .into_any_element()
+        };
+        let Some(owner) = self.owner.filter(|_| !self.people.is_empty()) else {
+            return content;
+        };
+        let (ranges, people): (Vec<_>, Vec<_>) = self.people.into_iter().unzip();
+        let source = self.source;
+        crate::ui::TextTargets::new(
+            ("mentioned-people", self.id),
+            text::ACCOUNT_ACTIONS,
+            self.layout,
+            ranges,
+            content,
+        )
+        .on_menu(move |indices, position, window, cx| {
+            let people = indices
+                .into_iter()
+                .filter_map(|index| people.get(index).cloned())
+                .collect();
+            window.dispatch_action(
+                Box::new(super::account_menus::OpenAccountMenu {
+                    owner,
+                    people,
+                    source: source.clone(),
+                    position,
+                }),
+                cx,
+            );
+        })
+        .into_any_element()
+    }
+}
+
 #[derive(Clone)]
 enum TextTarget {
     Link(Link),
@@ -917,6 +997,7 @@ impl RenderOnce for RichElement {
             families,
             links,
             profiles,
+            people,
             channels,
             spoilers,
             copy_targets,
@@ -959,6 +1040,14 @@ impl RenderOnce for RichElement {
         let styled = StyledText::new(text)
             .with_highlights(highlights)
             .with_font_family_overrides(families);
+        let menus = RichMenus {
+            id: self.id,
+            owner: self.owner,
+            source: self.source,
+            layout: styled.layout().clone(),
+            links: links.clone(),
+            people,
+        };
         let mut targets: Vec<_> = links
             .into_iter()
             .map(|(range, link)| (range, TextTarget::Link(link)))
@@ -981,8 +1070,11 @@ impl RenderOnce for RichElement {
             .collect();
         targets.sort_by_key(|(range, _)| range.start);
         if targets.is_empty() {
-            return crate::selectable::SelectableText::rich(styled, copy_targets, replacements)
-                .into_any_element();
+            return menus.wrap(crate::selectable::SelectableText::rich(
+                styled,
+                copy_targets,
+                replacements,
+            ));
         }
         let ranges = targets.iter().map(|(range, _)| range.clone()).collect();
         let hover = targets.clone();
@@ -990,7 +1082,10 @@ impl RenderOnce for RichElement {
             .on_click(ranges, move |index, window, cx| {
                 if let Some((_, target)) = targets.get(index) {
                     match target {
-                        TextTarget::Link(link) => crate::opening::open_link(link, cx),
+                        TextTarget::Link(link) => window.dispatch_action(
+                            Box::new(crate::ui::OpenLink { link: link.clone() }),
+                            cx,
+                        ),
                         TextTarget::Channel(id) => {
                             if let Some(open) = &self.open_channel {
                                 open(*id, cx);
@@ -1026,44 +1121,45 @@ impl RenderOnce for RichElement {
             });
         let text = crate::selectable::SelectableText::rich(text, copy_targets, replacements);
         let Some((focus, selected)) = focus_state else {
-            return text.into_any_element();
+            return menus.wrap(text);
         };
         let theme = theme(cx);
         let ring = focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
-        div()
-            .id(wrapper_id)
-            .debug_selector(|| "profile-text".to_owned())
-            .children(crate::ui::report_focus(&focus, window))
-            .role(Role::Group)
-            .aria_label(label.unwrap_or_default())
-            .track_focus(&focus)
-            .min_w_0()
-            .focus_visible(move |style| style.shadow(ring))
-            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-                let current = keyboard
-                    .iter()
-                    .position(|(_, target, _)| Some(*target) == selected.get())
-                    .unwrap_or(0);
-                match event.keystroke.key.as_str() {
-                    "left" | "right" => {
-                        let next = if event.keystroke.key == "right" {
-                            (current + 1) % keyboard.len()
-                        } else {
-                            (current + keyboard.len() - 1) % keyboard.len()
-                        };
-                        selected.set(Some(keyboard[next].1));
-                        window.refresh();
-                        cx.stop_propagation();
+        menus.wrap(
+            div()
+                .id(wrapper_id)
+                .debug_selector(|| "profile-text".to_owned())
+                .children(crate::ui::report_focus(&focus, window))
+                .role(Role::Group)
+                .aria_label(label.unwrap_or_default())
+                .track_focus(&focus)
+                .min_w_0()
+                .focus_visible(move |style| style.shadow(ring))
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    let current = keyboard
+                        .iter()
+                        .position(|(_, target, _)| Some(*target) == selected.get())
+                        .unwrap_or(0);
+                    match event.keystroke.key.as_str() {
+                        "left" | "right" => {
+                            let next = if event.keystroke.key == "right" {
+                                (current + 1) % keyboard.len()
+                            } else {
+                                (current + keyboard.len() - 1) % keyboard.len()
+                            };
+                            selected.set(Some(keyboard[next].1));
+                            window.refresh();
+                            cx.stop_propagation();
+                        }
+                        "enter" | "space" => {
+                            window.dispatch_action(Box::new(keyboard[current].1), cx);
+                            cx.stop_propagation();
+                        }
+                        _ => {}
                     }
-                    "enter" | "space" => {
-                        window.dispatch_action(Box::new(keyboard[current].1), cx);
-                        cx.stop_propagation();
-                    }
-                    _ => {}
-                }
-            })
-            .child(text)
-            .into_any_element()
+                })
+                .child(text),
+        )
     }
 }
 
@@ -1086,6 +1182,7 @@ struct RichParagraph {
     id: usize,
     owner: Option<junto_client_core::Owner>,
     open_channel: Option<ChannelOpener>,
+    source: Option<super::account_menus::AccountSource>,
 }
 
 impl gpui::RenderOnce for RichParagraph {
@@ -1102,6 +1199,8 @@ impl gpui::RenderOnce for RichParagraph {
                 self.id,
                 self.open_channel,
                 None,
+                self.owner,
+                self.source,
             );
         }
         let state = window.use_keyed_state(("spoiler-state", self.id), cx, |_, _| SpoilerReveals {
@@ -1145,7 +1244,13 @@ impl gpui::RenderOnce for RichParagraph {
                         }
                     })
             })
-            .child(rich.element(self.id, self.open_channel, Some(reveal)))
+            .child(rich.element(
+                self.id,
+                self.open_channel,
+                Some(reveal),
+                self.owner,
+                self.source,
+            ))
             .into_any_element()
     }
 }
@@ -1157,6 +1262,7 @@ fn paragraph(
     id: usize,
     open_channel: &Option<ChannelOpener>,
     owner: Option<junto_client_core::Owner>,
+    source: Option<super::account_menus::AccountSource>,
 ) -> AnyElement {
     if !content
         .iter()
@@ -1169,6 +1275,8 @@ fn paragraph(
                 id,
                 open_channel.clone(),
                 None,
+                owner,
+                source,
             ))
             .into_any_element();
     }
@@ -1184,6 +1292,7 @@ fn paragraph(
             id,
             owner,
             open_channel: open_channel.clone(),
+            source,
         })
         .into_any_element()
 }
@@ -2161,7 +2270,7 @@ impl Shell {
                 &self.faces(feed.server_id).for_place(feed.place),
                 &theme,
             ),
-            FeedRow::Recording(row) => self.render_recording_card(index, row, cx),
+            FeedRow::Recording(row) => self.render_recording_card(index, row, window, cx),
             FeedRow::Message(row) => {
                 let shape = if compact {
                     MessageShape::Compact
@@ -2176,10 +2285,83 @@ impl Shell {
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(&self, server_id: ServerId, quote: &Quote, cx: &mut Context<Self>) -> AnyElement {
+    fn reply_line(
+        &mut self,
+        quote: &Quote,
+        source: (&Feed, super::account_menus::AccountSource),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (feed, parent) = source;
         let theme = theme(cx);
-        let faces = self.faces(server_id);
         let drawings = Drawings::of(cx);
+        let faces = self.faces(feed.server_id);
+        let owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let suffix = match &parent {
+            super::account_menus::AccountSource::Message(id) => id.to_string(),
+            super::account_menus::AccountSource::Pending(id) => format!("pending:{id}"),
+            _ => quote.message_id.to_string(),
+        };
+        let key: SharedString = format!("reply-preview:{suffix}").into();
+        let copied = match &quote.text {
+            QuoteText::Text(value) | QuoteText::File(value) => value.clone(),
+            QuoteText::Deleted => text::QUOTE_DELETED.to_owned(),
+            QuoteText::Unknown => text::QUOTE_UNKNOWN.to_owned(),
+        };
+        let (server_id, target) = (feed.server_id, quote.message_id);
+        let (_, actions) = crate::ui::collect_actions(|| {
+            if let Some(owner) = owner {
+                crate::ui::RowAction::new(
+                    text::COPY_TEXT,
+                    cx.listener(move |this, _, _, cx| {
+                        if this
+                            .state
+                            .read(cx)
+                            .server(server_id)
+                            .is_some_and(|server| server.owner() == Some(owner))
+                        {
+                            this.copy_text(copied.clone(), cx);
+                        }
+                    }),
+                )
+                .register();
+                if !matches!(&quote.text, QuoteText::Deleted) {
+                    crate::ui::RowAction::new(
+                        text::COPY_TARGET_LINK,
+                        cx.listener(move |this, _, _, cx| {
+                            let state = this.state.read(cx);
+                            let link = state
+                                .server(server_id)
+                                .filter(|server| server.owner() == Some(owner))
+                                .and_then(|_| state.message_link(server_id, target));
+                            if let Some(link) = link {
+                                this.copy_text(link, cx);
+                            }
+                        }),
+                    )
+                    .register();
+                    crate::ui::RowAction::new(
+                        text::GO_TO_MESSAGE,
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                let address = state
+                                    .server(server_id)
+                                    .filter(|server| server.owner() == Some(owner))
+                                    .map(|server| server.entry().address);
+                                if let Some(address) = address {
+                                    state.open_message_link(&address, target, cx);
+                                }
+                            });
+                        }),
+                    )
+                    .register();
+                }
+            }
+        });
         let colors = theme.colors;
         let message_id = quote.message_id;
         let owner = self.state.read(cx).owner(server_id);
@@ -2190,7 +2372,51 @@ impl Shell {
             QuoteText::Deleted => (StyledText::new(text::QUOTE_DELETED), false),
             QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
-        div()
+        let author = quote
+            .author_id
+            .map(|account_id| super::account_menus::AccountTarget {
+                account_id,
+                name: quote
+                    .author
+                    .clone()
+                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                departed: feed.names.departed.contains_key(&account_id),
+            });
+        let author_selector = format!("reply-author:{suffix}");
+        let identity = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(6.0))
+            .debug_selector(move || author_selector)
+            .when_some(quote.author_id, |line, author| {
+                line.child(super::people::avatar(&faces, author, 14.0).radius(2.0))
+            })
+            .when_some(quote.author.clone(), |line, author| {
+                line.child(div().font_weight(FontWeight::BOLD).ink(colors.ink).child(
+                    match quote.author_id {
+                        Some(account) => {
+                            super::people::person_name(&faces, account, author, "reply-author")
+                        }
+                        None => author.into_any_element(),
+                    },
+                ))
+            });
+        let identity = super::account_menus::account_target(
+            format!("reply-author-target:{suffix}").into(),
+            owner,
+            author,
+            quote
+                .author_id
+                .map(|account| super::account_menus::AccountSource::ReplyAuthor {
+                    parent: Box::new(parent),
+                    quoted: target,
+                    account,
+                }),
+            identity,
+            cx,
+        );
+        let frame = div()
             .id(SharedString::from(format!("reply-quote-{message_id}")))
             .role(if owner.is_some() {
                 Role::Link
@@ -2240,31 +2466,20 @@ impl Shell {
                     .rounded_tl(u(4.0))
                     .border_color(Hsla::from(colors.rule)),
             )
-            .when_some(quote.author_id, |line, author_id| {
-                line.child(super::people::avatar(&faces, author_id, 14.0).radius(2.0))
-            })
-            .when_some(quote.author.clone(), |line, author| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .font_weight(FontWeight::BOLD)
-                        .ink(colors.ink)
-                        .child(match quote.author_id {
-                            Some(account) => {
-                                super::people::person_name(&faces, account, author, "reply-author")
-                            }
-                            None => author.into_any_element(),
-                        }),
-                )
-            })
+            .child(identity)
             .child(
                 div()
                     .min_w_0()
                     .truncate()
                     .when(!known, |sentence| sentence.ink(colors.ink_3))
                     .child(sentence),
-            )
-            .into_any_element()
+            );
+        let selector = key.to_string();
+        let frame = div()
+            .id(key.clone())
+            .debug_selector(move || selector)
+            .child(frame);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
     }
 
     fn open_reply_quote(
@@ -2288,14 +2503,24 @@ impl Shell {
     /// message: the third part of `message`.
     pub(super) fn document(
         &mut self,
+        origin: (Option<ServerId>, Option<u64>),
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
         theme: &Theme,
-        _window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        let (server_id, pending) = origin;
+        let source = message
+            .map(|(_, message, _)| super::account_menus::AccountSource::Message(message.id))
+            .or_else(|| pending.map(super::account_menus::AccountSource::Pending));
+        let owner = server_id.and_then(|server_id| {
+            self.state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner())
+        });
         let drawings = Drawings::of(cx);
         let presence = self.shown_faces();
         let style = RichStyle {
@@ -2303,9 +2528,7 @@ impl Shell {
             drawings: &drawings,
             presence: Some(&presence),
         };
-        let spoiler_owner = names
-            .server_id
-            .and_then(|server_id| self.state.read(cx).owner(server_id));
+        let spoiler_owner = owner;
         let open_channel: Option<ChannelOpener> = names.server_id.and_then(|server_id| {
             let owner = self.state.read(cx).owner(server_id)?;
             let state = self.state.clone();
@@ -2359,6 +2582,7 @@ impl Shell {
                                 next(),
                                 &open_channel,
                                 spoiler_owner,
+                                source.clone(),
                             ))
                             .into_any_element(),
                     );
@@ -2376,6 +2600,7 @@ impl Shell {
                                 next(),
                                 &open_channel,
                                 spoiler_owner,
+                                source.clone(),
                             ))
                             .into_any_element(),
                     );
@@ -2388,6 +2613,7 @@ impl Shell {
                         next(),
                         &open_channel,
                         spoiler_owner,
+                        source.clone(),
                     ));
                 }
                 Block::Quote { content } => blocks.push(
@@ -2404,6 +2630,7 @@ impl Shell {
                             next(),
                             &open_channel,
                             spoiler_owner,
+                            source.clone(),
                         ))
                         .into_any_element(),
                 ),
@@ -2445,6 +2672,7 @@ impl Shell {
                                     next(),
                                     &open_channel,
                                     spoiler_owner,
+                                    source.clone(),
                                 ))
                                 .into_any_element(),
                         );
@@ -2530,6 +2758,7 @@ impl Shell {
                                     next(),
                                     &open_channel,
                                     spoiler_owner,
+                                    source.clone(),
                                 ))
                                 .into_any_element(),
                         );
@@ -2975,12 +3204,17 @@ impl Shell {
         server_id: ServerId,
         place_id: PlaceId,
         message: &Message,
-        window: &Window,
+        window: &mut Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let message_id = message.id;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
         self.message_pictures.fit = list_fit(window);
         // The pictures of the message, which the viewer shows one after the other.
         let pictures: Rc<Vec<Attachment>> = Rc::new(
@@ -2997,58 +3231,71 @@ impl Shell {
             .iter()
             .enumerate()
             .map(|(index, attachment)| {
-                let download = self.download_control(server_id, attachment, index, "", theme, cx);
-                let name: SharedString = text::label(&attachment.name).into();
-                let size: SharedString = text::file_size(attachment.bytes).into();
-                if is_picture(attachment) {
-                    let key = self.want_picture(server_id, attachment, cx);
-                    let held = key
-                        .as_ref()
-                        .and_then(|key| self.message_pictures.held.get(key));
-                    #[cfg(feature = "test-support")]
-                    let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
-                    let (width, height) = picture_size(attachment);
-                    let attachment_id = attachment.id;
-                    let slot: SharedString = format!("{place_id:?}:{attachment_id}").into();
-                    let picture: AnyElement = match held {
-                        Some(Picture::Ready(image)) => {
-                            moving::picture(image.clone(), slot, &self.message_pictures.playback)
-                        }
-                        Some(Picture::Failed | Picture::Unanswered { .. }) => div()
-                            .p(u(8.0))
-                            .typeface(theme.types.small, theme)
-                            .ink(colors.ink_3)
-                            .child(text::PICTURE_FAILED)
-                            .into_any_element(),
-                        _ => div()
-                            .typeface(theme.types.small, theme)
-                            .ink(colors.ink_3)
-                            .child(text::PICTURE_LOADING)
-                            .into_any_element(),
-                    };
-                    let place = pictures
-                        .iter()
-                        .position(|picture| picture.id == attachment_id)
-                        .unwrap_or_default();
-                    let open = {
-                        let pictures = Rc::clone(&pictures);
-                        move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                            this.open_picture_viewer(
-                                server_id,
-                                message_id,
-                                pictures.as_ref().clone(),
-                                place,
-                                window,
-                                cx,
-                            );
-                        }
-                    };
-                    let by_key = open.clone();
-                    let ring = ring.clone();
-                    let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
-                    // The card takes the width of the list up to the size of the picture,
-                    // and the picture keeps its proportions in the width that it gets.
-                    return div()
+                let (target, actions) = crate::ui::collect_actions(|| {
+                    self.file_copy_actions(server_id, attachment, cx);
+                    let download =
+                        self.download_control(server_id, attachment, index, "", theme, cx);
+                    let name: SharedString = text::label(&attachment.name).into();
+                    let size: SharedString = text::file_size(attachment.bytes).into();
+                    if is_picture(attachment) {
+                        let key = self.want_picture(server_id, attachment, cx);
+                        let held = key
+                            .as_ref()
+                            .and_then(|key| self.message_pictures.held.get(key));
+                        #[cfg(feature = "test-support")]
+                        let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
+                        let (width, height) = picture_size(attachment);
+                        let attachment_id = attachment.id;
+                        let slot: SharedString = format!("{place_id:?}:{attachment_id}").into();
+                        let picture: AnyElement = match held {
+                            Some(Picture::Ready(image)) => moving::picture(
+                                image.clone(),
+                                slot,
+                                &self.message_pictures.playback,
+                            ),
+                            Some(Picture::Failed | Picture::Unanswered { .. }) => div()
+                                .p(u(8.0))
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_3)
+                                .child(text::PICTURE_FAILED)
+                                .into_any_element(),
+                            _ => div()
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_3)
+                                .child(text::PICTURE_LOADING)
+                                .into_any_element(),
+                        };
+                        let place = pictures
+                            .iter()
+                            .position(|picture| picture.id == attachment_id)
+                            .unwrap_or_default();
+                        let open = {
+                            let pictures = Rc::clone(&pictures);
+                            move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                                this.open_picture_viewer(
+                                    server_id,
+                                    message_id,
+                                    pictures.as_ref().clone(),
+                                    place,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        };
+                        let by_key = open.clone();
+                        let by_menu = open.clone();
+                        crate::ui::RowAction::new(
+                            text::OPEN_PICTURE,
+                            cx.listener(move |this, _, window, cx| {
+                                by_menu(this, window, cx);
+                            }),
+                        )
+                        .register();
+                        let ring = ring.clone();
+                        let label: SharedString = format!("{}: {name}", text::OPEN_PICTURE).into();
+                        // The card takes the width of the list up to the size of the picture,
+                        // and the picture keeps its proportions in the width that it gets.
+                        return div()
                         .flex_none()
                         .mt(u(5.0))
                         .w_full()
@@ -3130,62 +3377,80 @@ impl Shell {
                                 .child(download),
                         )
                         .into_any_element();
-                }
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(u(10.0))
-                    .mt(u(5.0))
+                    }
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(10.0))
+                        .mt(u(5.0))
+                        .w_full()
+                        .max_w(u(PICTURE_WIDTH + 60.0))
+                        .min_h(u(42.0))
+                        .pl(u(6.0))
+                        .pr(u(6.0))
+                        .rounded(u(theme.metrics.radius))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .bg(Hsla::from(colors.travertine_hi))
+                        .debug_selector(move || format!("file:{}", index))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .size(u(30.0))
+                                .rounded(u(theme.metrics.radius_small))
+                                .bg(Hsla::from(colors.terracotta))
+                                .font_family(theme.fonts.mono.clone())
+                                .font_weight(FontWeight::BOLD)
+                                .text_size(u(12.0))
+                                .ink(colors.on_terracotta)
+                                .child(extension(&attachment.name)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(u(13.5))
+                                        .line_height(u(17.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .ink(colors.ink)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(u(12.5))
+                                        .line_height(u(17.0))
+                                        .ink(colors.ink_3)
+                                        .child(size),
+                                ),
+                        )
+                        .child(download)
+                        .into_any_element()
+                });
+                let id: SharedString = format!(
+                    "attachment-actions:{server_id}:{owner:?}:{message_id}:{}",
+                    attachment.id
+                )
+                .into();
+                let ring = ring.clone();
+                let frame = div()
+                    .id(id.clone())
+                    .role(Role::Group)
+                    .aria_label(SharedString::from(text::label(&attachment.name)))
                     .w_full()
-                    .max_w(u(PICTURE_WIDTH + 60.0))
-                    .min_h(u(42.0))
-                    .pl(u(6.0))
-                    .pr(u(6.0))
-                    .rounded(u(theme.metrics.radius))
-                    .border_1()
-                    .border_color(Hsla::from(colors.rule))
-                    .bg(Hsla::from(colors.travertine_hi))
-                    .debug_selector(move || format!("file:{}", index))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(u(30.0))
-                            .rounded(u(theme.metrics.radius_small))
-                            .bg(Hsla::from(colors.terracotta))
-                            .font_family(theme.fonts.mono.clone())
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(u(12.0))
-                            .ink(colors.on_terracotta)
-                            .child(extension(&attachment.name)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(u(13.5))
-                                    .line_height(u(17.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .ink(colors.ink)
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(u(12.5))
-                                    .line_height(u(17.0))
-                                    .ink(colors.ink_3)
-                                    .child(size),
-                            ),
-                    )
-                    .child(download)
-                    .into_any_element()
+                    .flex_none()
+                    .focusable()
+                    .tab_stop(!is_picture(attachment))
+                    .focus_visible(move |style| style.shadow(ring))
+                    .child(target);
+                crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
             })
             .collect()
     }
@@ -3582,6 +3847,101 @@ impl Shell {
             .into_any_element()
     }
 
+    fn thread_person(
+        &self,
+        feed: &Feed,
+        root: MessageId,
+        identity: (
+            Option<junto_client_core::protocol::ids::AccountId>,
+            Option<&str>,
+        ),
+        content: impl IntoElement,
+        cx: &gpui::App,
+    ) -> AnyElement {
+        let (Some(account), name) = identity else {
+            return content.into_any_element();
+        };
+        let owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let target = super::account_menus::AccountTarget {
+            account_id: account,
+            name: name
+                .or_else(|| feed.names.accounts.get(&account).map(String::as_str))
+                .unwrap_or(text::UNKNOWN_PERSON)
+                .to_owned(),
+            departed: feed.names.departed.contains_key(&account),
+        };
+        let selector = format!("thread-person:{root}:{account}");
+        super::account_menus::account_target(
+            selector.clone().into(),
+            owner,
+            Some(target),
+            Some(super::account_menus::AccountSource::ThreadAuthor { root, account }),
+            div().debug_selector(move || selector).child(content),
+            cx,
+        )
+    }
+
+    fn thread_chip_menu(
+        &self,
+        frame: gpui::Stateful<gpui::Div>,
+        feed: &Feed,
+        row: &MessageRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner())
+        else {
+            return frame;
+        };
+        let Some(channel) = crate::state::feed::channel_of(feed.place) else {
+            return frame;
+        };
+        let (server_id, root) = (feed.server_id, row.message.id);
+        let mut actions = vec![crate::ui::RowAction::new(
+            text::COPY_TARGET_LINK,
+            cx.listener(move |this, _, _, cx| {
+                let state = this.state.read(cx);
+                let link = state
+                    .server(server_id)
+                    .filter(|server| server.owner() == Some(owner))
+                    .and_then(|_| state.thread_link(server_id, root));
+                if let Some(link) = link {
+                    this.copy_text(link, cx);
+                }
+            }),
+        )];
+        if row.can_thread && row.thread_refused.is_none() {
+            actions.push(crate::ui::RowAction::new(
+                text::OPEN_THREAD,
+                cx.listener(move |this, _, window, cx| {
+                    if this
+                        .state
+                        .read(cx)
+                        .server(server_id)
+                        .is_some_and(|server| server.owner() == Some(owner))
+                    {
+                        this.open_thread(server_id, channel, root, window, cx);
+                    }
+                }),
+            ));
+        }
+        crate::ui::bind_action_menu(
+            frame.focusable().tab_stop(true),
+            SharedString::from(format!("thread-preview-menu:{server_id}:{root}")),
+            actions,
+            window,
+            cx,
+        )
+    }
+
     /// What a message of a channel shows of its thread: the count of the replies, the
     /// author and the time of the last one, and what the person has not read in it. A
     /// press opens the thread in the side panel.
@@ -3590,6 +3950,7 @@ impl Shell {
         feed: &Feed,
         row: &MessageRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme.colors;
@@ -3681,14 +4042,20 @@ impl Shell {
                             for (place, author) in mark.authors.iter().enumerate() {
                                 authors = authors.child(
                                     div().absolute().top_0().left(u(step * place as f32)).child(
-                                        Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
-                                            .radius(2.0)
-                                            .image(faces.image(*author))
-                                            .presence(faces.presence(*author))
-                                            .profile(crate::ui::OpenProfile {
-                                                server: feed.server_id,
-                                                account: *author,
-                                            }),
+                                        self.thread_person(
+                                            feed,
+                                            message_id,
+                                            (Some(*author), None),
+                                            Avatar::new(author.as_uuid().as_u128(), AUTHOR_PICTURE)
+                                                .radius(2.0)
+                                                .image(faces.image(*author))
+                                                .presence(faces.presence(*author))
+                                                .profile(crate::ui::OpenProfile {
+                                                    server: feed.server_id,
+                                                    account: *author,
+                                                }),
+                                            cx,
+                                        ),
                                     ),
                                 );
                             }
@@ -3702,17 +4069,23 @@ impl Shell {
                                     .map_or(0, |author| author.as_uuid().as_u128());
                                 let picture = last.author_id.and_then(|author| faces.image(author));
                                 chip.child(
-                                    Avatar::new(seed, 18.0)
-                                        .radius(2.0)
-                                        .image(picture)
-                                        .when_some(last.author_id, |avatar, id| {
-                                            avatar.presence(faces.presence(id)).profile(
-                                                crate::ui::OpenProfile {
-                                                    server: feed.server_id,
-                                                    account: id,
-                                                },
-                                            )
-                                        }),
+                                    self.thread_person(
+                                        feed,
+                                        message_id,
+                                        (last.author_id, Some(&last.author)),
+                                        Avatar::new(seed, 18.0)
+                                            .radius(2.0)
+                                            .image(picture)
+                                            .when_some(last.author_id, |avatar, account| {
+                                                avatar.presence(faces.presence(account)).profile(
+                                                    crate::ui::OpenProfile {
+                                                        server: feed.server_id,
+                                                        account,
+                                                    },
+                                                )
+                                            }),
+                                        cx,
+                                    ),
                                 )
                             },
                         )
@@ -3756,7 +4129,8 @@ impl Shell {
                                     .ink(colors.terracotta_deep)
                                     .child(text::SHOWN_IN_PANEL),
                             )
-                        }),
+                        })
+                        .map(|chip| self.thread_chip_menu(chip, feed, row, window, cx)),
                 )
                 .into_any_element(),
         )
@@ -3784,6 +4158,19 @@ impl Shell {
             .map_or(0, |author| author.as_uuid().as_u128());
         let faces = self.faces(feed.server_id).for_place(feed.place);
         let picture = message.author_id.and_then(|author| faces.image(author));
+        let account_owner = self
+            .state
+            .read(cx)
+            .server(feed.server_id)
+            .and_then(|server| server.owner());
+        let account_target =
+            message
+                .author_id
+                .map(|account_id| super::account_menus::AccountTarget {
+                    account_id,
+                    name: row.author.clone(),
+                    departed: feed.names.departed.contains_key(&account_id),
+                });
         let body: Vec<AnyElement> = if message.deleted {
             vec![
                 div()
@@ -3794,11 +4181,11 @@ impl Shell {
         } else {
             let mut body = match &message.document {
                 Some(document) => self.document(
+                    (Some(feed.server_id), None),
                     document,
                     Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
-                    window,
                     cx,
                 ),
                 None => Vec::new(),
@@ -3824,7 +4211,7 @@ impl Shell {
             }
             body.extend(self.reactions(feed, row, &theme, cx));
             if !bare {
-                body.extend(self.thread_chip(feed, row, &theme, cx));
+                body.extend(self.thread_chip(feed, row, &theme, window, cx));
             }
             body
         };
@@ -3851,7 +4238,11 @@ impl Shell {
                 .items_baseline()
                 .gap(u(8.0))
                 .line_height(u(19.0))
-                .child(
+                .child(super::account_menus::account_target(
+                    SharedString::from(format!("author-name:{message_id}")),
+                    account_owner,
+                    account_target.clone(),
+                    Some(super::account_menus::AccountSource::Message(message_id)),
                     div()
                         .min_w_0()
                         .truncate()
@@ -3866,7 +4257,8 @@ impl Shell {
                             ),
                             None => SharedString::from(row.author.clone()).into_any_element(),
                         }),
-                )
+                    cx,
+                ))
                 .child(
                     div()
                         .flex_none()
@@ -3987,11 +4379,17 @@ impl Shell {
                     ))
             })
             .children((message.pinned && !message.deleted && !bare).then(|| Self::pin_mark(&theme)))
-            .children(
-                row.reply
-                    .as_ref()
-                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
-            )
+            .children(row.reply.as_ref().map(|quote| {
+                self.reply_line(
+                    quote,
+                    (
+                        feed,
+                        super::account_menus::AccountSource::Message(message_id),
+                    ),
+                    window,
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()
@@ -4002,16 +4400,23 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(seed, 34.0).image(picture).when_some(
-                                message.author_id,
-                                |avatar, id| {
-                                    avatar.presence(faces.presence(id)).profile(
-                                        crate::ui::OpenProfile {
-                                            server: feed.server_id,
-                                            account: id,
-                                        },
-                                    )
-                                },
+                            .child(super::account_menus::account_target(
+                                SharedString::from(format!("author-picture:{message_id}")),
+                                account_owner,
+                                account_target,
+                                Some(super::account_menus::AccountSource::Message(message_id)),
+                                Avatar::new(seed, 34.0).image(picture).when_some(
+                                    message.author_id,
+                                    |avatar, account| {
+                                        avatar.presence(faces.presence(account)).profile(
+                                            crate::ui::OpenProfile {
+                                                server: feed.server_id,
+                                                account,
+                                            },
+                                        )
+                                    },
+                                ),
+                                cx,
                             ))
                             .into_any_element()
                     })
@@ -4038,7 +4443,7 @@ impl Shell {
         row: &WaitingRow,
         feed: &Feed,
         compact: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -4094,7 +4499,14 @@ impl Shell {
                 )
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
-        let body = self.document(&pending.document, None, &feed.names, &theme, window, cx);
+        let body = self.document(
+            (Some(feed.server_id), Some(pending.id)),
+            &pending.document,
+            None,
+            &feed.names,
+            &theme,
+            cx,
+        );
         div()
             .id(("waiting", index))
             .debug_selector(move || format!("waiting:{id}"))
@@ -4102,11 +4514,14 @@ impl Shell {
             .pb(u(4.0))
             .pl(u(side))
             .pr(u(18.0))
-            .children(
-                row.reply
-                    .as_ref()
-                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
-            )
+            .children(row.reply.as_ref().map(|quote| {
+                self.reply_line(
+                    quote,
+                    (feed, super::account_menus::AccountSource::Pending(id)),
+                    window,
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()
@@ -4741,12 +5156,13 @@ fn system_line(
                                 families: Vec::new(),
                                 links: Vec::new(),
                                 profiles,
+                                people: Vec::new(),
                                 channels: Vec::new(),
                                 spoilers: Vec::new(),
                                 copy_targets: Vec::new(),
                                 replacements,
                             }
-                            .element(0, None, None),
+                            .element(0, None, None, None, None),
                         ),
                 ),
         )
@@ -5219,6 +5635,14 @@ mod rich_integration {
         let concealed = Rich::shown(&content, &names, style, &HashSet::new());
         assert_eq!(concealed.profiles.len(), 1);
         assert_eq!(concealed.profiles[0].1.account, visible);
+        assert_eq!(
+            concealed
+                .people
+                .iter()
+                .map(|(_, target)| target.account_id)
+                .collect::<Vec<_>>(),
+            [visible]
+        );
         assert!(concealed.channels.is_empty());
         assert!(!concealed.text.contains("Ivo"));
         assert!(!concealed.text.contains("plans"));
@@ -5239,6 +5663,14 @@ mod rich_integration {
             [visible, hidden]
         );
         assert_eq!(revealed.channels[0].1, channel);
+        assert_eq!(
+            revealed
+                .people
+                .iter()
+                .map(|(_, target)| target.account_id)
+                .collect::<Vec<_>>(),
+            [visible, hidden]
+        );
         assert!(revealed.spoilers.is_empty());
         assert_eq!(revealed.links.len(), 1);
         for (range, _, _) in &revealed.profiles {

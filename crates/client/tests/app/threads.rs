@@ -134,6 +134,23 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
     assert!(!window.shows("thread-panel"));
     window.open_thread_of(root_id);
     assert!(window.shows("thread-panel") && window.shows("thread-root"));
+    window.right_click_named("thread-replies".to_owned());
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Tracks or mixdown?"
+    );
+    window.right_click_named("thread-replies".to_owned());
+    window.click("context-action:Copy link");
+    assert!(
+        window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap()
+            .contains(&root_id.to_string())
+    );
     assert!(window.shows("thread-composer") && window.shows("composer"));
     assert!(window.shows("thread-no-messages"));
     // The channel column lists the open thread under its channel.
@@ -401,18 +418,24 @@ fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
     assert!(row_of(&mut window).message.pinned);
     assert!(window.shows_named(format!("pin:{root_id}")));
     assert!(!window.shows("unpin"));
+    window.right_click_named("go-to-pin".to_owned());
+    assert!(!window.shows("context-action:Unpin"));
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Tracks or mixdown?"
+    );
 
     // With the permission the person takes the pin away from the list.
     admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
     // The change of the roles reloads the state, and the pin list is read again: for
     // that moment the list is not drawn. The person presses "Unpin" when it is there.
-    window.until("the permission", |window| {
-        held_row(window).is_some_and(|row| row.can_pin)
+    window.until("the permission and the reloaded pin row", |window| {
+        held_row(window).is_some_and(|row| row.can_pin) && window.shows("unpin")
     });
-    window.until("no pin", |window| {
-        window.click_if_shown("unpin");
-        pins(window) == Some(Vec::new())
-    });
+    window.right_click_named("go-to-pin".to_owned());
+    window.click("context-action:Unpin");
+    window.until("no pin", |window| pins(window) == Some(Vec::new()));
     window.until("the message without its pin", |window| {
         held_row(window).is_some_and(|row| !row.message.pinned)
     });

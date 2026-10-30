@@ -38,6 +38,8 @@ fn scene() -> Scene {
     let (own, ana) = (AccountId::generate(), AccountId::generate());
     let studio = WorkspaceId::generate();
     let channel = |kind, name: &str, position| Channel {
+        voice_status: String::new(),
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id: studio,
         category_id: None,

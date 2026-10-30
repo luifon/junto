@@ -11,7 +11,8 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportSpeaking, ReportWatching, ShareAudio, UpdateCallSettings, ViewerQuery,
+    ReportSpeaking, ReportWatching, SetVoiceChannelStatus, ShareAudio, UpdateCallSettings,
+    ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -636,6 +637,79 @@ pub async fn update_call_settings(
     let channel = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         update_call_settings_in(connection, &access, now, channel_id, &body).await
+    })?;
+    Ok(Json(channel))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/channels/{channel_id}/voice-status",
+    tag = "calls",
+    params(("channel_id" = ChannelId, Path)),
+    request_body = SetVoiceChannelStatus,
+    security(("session" = [])),
+    responses((status = 200, body = Channel), ApiError)
+)]
+pub async fn set_voice_channel_status(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+    ApiJson(body): ApiJson<SetVoiceChannelStatus>,
+) -> ApiResult<Json<Channel>> {
+    let status = body.status.trim().to_owned();
+    if status.chars().count() > 500 || status.chars().any(char::is_control) {
+        return Err(ApiError::invalid(
+            "voice status is at most 500 characters on one line",
+        ));
+    }
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    let channel = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let voice = voice(connection, &access, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &voice.scope,
+            permission: WorkspacePermission::SetVoiceChannelStatus,
+        })?;
+        let in_channel = match store::call(connection, By::Place(voice.place), false).await? {
+            Some(call) => store::is_inside(connection, call.id, access.account_id).await?,
+            None => false,
+        };
+        if !in_channel {
+            access.require(Request::Channel {
+                scope: &voice.scope,
+                permission: WorkspacePermission::ManageChannel,
+            })?;
+        }
+        let mut channel = voice.record.channel.clone();
+        if channel.voice_status == status {
+            return Ok(channel);
+        }
+        channel.voice_status.clone_from(&status);
+        sqlx::query("update channels set voice_status=$2 where id=$1")
+            .bind(channel_id)
+            .bind(&status)
+            .execute(&mut *connection)
+            .await?;
+        audit::record(
+            connection,
+            now,
+            Some(access.account_id),
+            voice.about(),
+            &AuditEvent::VoiceChannelStatusUpdated {
+                status: status.clone(),
+            },
+        )
+        .await?;
+        events::publish(
+            connection,
+            now,
+            &Event::ChannelUpdated {
+                channel: channel.clone(),
+            },
+        )
+        .await?;
+        Ok(channel)
     })?;
     Ok(Json(channel))
 }

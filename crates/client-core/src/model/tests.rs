@@ -46,6 +46,8 @@ pub(crate) fn channel(
     position: i32,
 ) -> Channel {
     Channel {
+        voice_status: String::new(),
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id,
         category_id: None,

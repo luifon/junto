@@ -4,6 +4,7 @@
 //! is activated with Enter or Space. A control has a role and a label for the accessibility
 //! tree (ADR 0702).
 
+mod action_menu;
 mod area;
 mod avatar;
 mod button;
@@ -13,6 +14,8 @@ mod field;
 mod fit;
 mod form_space;
 mod held;
+mod input_menu;
+mod link_menu;
 mod marks;
 mod menu;
 mod mosaic;
@@ -29,6 +32,7 @@ pub(crate) use reveal::report as report_focus;
 mod rows;
 mod scroll;
 mod segmented;
+mod text_targets;
 pub(crate) mod tile;
 mod tooltip;
 
@@ -36,6 +40,7 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
+pub use action_menu::{RowAction, bind_action_menu, collect_actions};
 pub use area::{COVER, KEPT, area, cover};
 #[cfg(feature = "test-support")]
 pub use area::{record_areas, take_areas};
@@ -49,8 +54,10 @@ pub use form_space::{FormSpace, NewRow};
 #[cfg(feature = "test-support")]
 pub use held::take_unsettled;
 pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
+pub use input_menu::InputMenu;
+pub use link_menu::{CopyToClipboard, LinkMenu, OpenLink};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
-pub use menu::{ContextMenuExt, Menu, MenuItem, menu_label, menu_separator};
+pub use menu::{ContextMenuExt, Menu, MenuItem, MenuPlacement, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;
 pub(crate) use paint_text::paint_text;
@@ -71,6 +78,7 @@ pub use rows::{
 };
 pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
+pub use text_targets::TextTargets;
 pub use tile::{PersonTile, TileMark};
 pub use tooltip::tooltip;
 

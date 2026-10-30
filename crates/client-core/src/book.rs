@@ -12,14 +12,14 @@ use crate::arrangement::{ArrangeError, Arrangement, Change};
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 7;
+pub const BOOK_FORMAT_VERSION: u32 = 9;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
     migrations: &[
-        unchanged, unchanged, unchanged, unchanged, unchanged, unchanged,
+        unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged,
     ],
     limit: 4 * 1024 * 1024,
 };
@@ -27,7 +27,8 @@ const BOOK: Versioned = Versioned {
 /// Version 2 added the state `refused` of the profile preset, version 3 the moderation
 /// notices that the person put away, version 4 the logout of the person, and version 5 the
 /// memberships `inactive` and `deleted` (ADR 0121), version 6 the kept keys of removed
-/// servers (ADR 0712), version 7 the arrangement of the person (ADR 0775). Every book of an
+/// servers (ADR 0712), version 7 the arrangement of the person, version 8 the collapsed
+/// categories of each account and version 9 personal channel sections (ADR 0775). Every book of an
 /// earlier version is a
 /// book of the next one, with no notice put away and no logout; the version tells an older
 /// client that it cannot read the file, so that it does not drop the field or the entry
@@ -1141,6 +1142,10 @@ mod tests {
         assert_eq!(stored["arrangement"]["groups"][0]["colour"], "olive");
         assert_eq!(stored["arrangement"]["groups"][0]["collapsed"], true);
 
+        let mut previous = stored;
+        previous["format_version"] = serde_json::json!(7);
+        fs::write(data_dir.book_file(), serde_json::to_vec(&previous).unwrap()).unwrap();
+
         // A second reader of the file finds the same arrangement.
         let again = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
         let read = again.arrangement().unwrap();
@@ -1401,15 +1406,15 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":8,"servers":[],"folders":[]}"#;
-        fs::write(data_dir.book_file(), newer).unwrap();
+        let newer = serde_json::to_vec(&serde_json::json!({"format_version": BOOK_FORMAT_VERSION + 1,"servers":[],"folders":[]})).unwrap();
+        fs::write(data_dir.book_file(), &newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 8,
-                supported: 7,
+                found,
+                supported,
                 ..
-            })
+            }) if found == BOOK_FORMAT_VERSION + 1 && supported == BOOK_FORMAT_VERSION
         ));
         assert!(matches!(
             book.add(entry("https://acme.example.test", "Acme")),
@@ -1428,5 +1433,55 @@ mod tests {
             512
         );
         assert!(serde_json::from_str::<EventCursor>("\"\"").is_err());
+    }
+    #[test]
+    fn personal_channels_survive_restart_and_a_version_8_book_has_none() {
+        use crate::arrangement::channels::{Change as PersonalChange, Location};
+        use junto_protocol::ids::{ChannelId, WorkspaceId};
+        let (_directory, data_dir, book) = book();
+        let entry = book
+            .add(entry("https://studio.example.test", "Studio"))
+            .unwrap();
+        let (account, workspace, channel) = (
+            AccountId::generate(),
+            WorkspaceId::generate(),
+            ChannelId::generate(),
+        );
+        book.arrange(Change::PersonalChannels {
+            server: entry.server_id,
+            account,
+            workspace,
+            change: PersonalChange::Place {
+                channel,
+                to: Location::Favourites,
+                before: None,
+            },
+        })
+        .unwrap();
+        let again = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
+        assert_eq!(
+            again
+                .arrangement()
+                .unwrap()
+                .channels(entry.server_id, account, workspace)
+                .unwrap()
+                .favourites,
+            [channel]
+        );
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        stored["format_version"] = serde_json::json!(8);
+        stored["arrangement"]["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_layouts");
+        fs::write(data_dir.book_file(), serde_json::to_vec(&stored).unwrap()).unwrap();
+        let old = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
+        assert!(
+            old.arrangement()
+                .unwrap()
+                .channels(entry.server_id, account, workspace)
+                .is_none()
+        );
     }
 }

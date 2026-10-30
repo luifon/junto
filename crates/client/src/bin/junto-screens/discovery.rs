@@ -178,6 +178,7 @@ fn hit(number: u32, place_id: uuid::Uuid, author: &str, minutes: i64, text: &str
         position: Some(u64::from(number)),
         thread_root: None,
         start_ms: None,
+        attachments: Vec::new(),
         page: 0,
     }
 }
@@ -196,13 +197,17 @@ fn retention() -> Search {
         position: None,
         thread_root: None,
         start_ms: Some(1_843_000),
+        attachments: Vec::new(),
         page: 0,
     };
     Search {
+        files: false,
+        capabilities: Some(junto_client_core::protocol::discovery::SearchCapabilities::ALL),
         server_id: server_id(),
         text: "retention".to_owned(),
         filters: Filters::default(),
         progress: Progress::Done,
+        file_pages: Vec::new(),
         hits: vec![
             hit(
                 1,
@@ -543,8 +548,38 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 channel: Some(id(GENERAL)),
                 author: Some(person("Luca")),
                 date: DateFilter::Last7Days,
+                ..Filters::default()
             };
             search.hits.truncate(1);
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-filter-only", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.text.clear();
+            search.filters.date = DateFilter::Today;
+            search
+                .hits
+                .retain(|hit| hit.created_at.date() == morning().date());
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-choose-filters", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.text.clear();
+            search.hits.clear();
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-older-server", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.capabilities = Some(Default::default());
             searching(shell, search, window, cx);
         },
     )?;

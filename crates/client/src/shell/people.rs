@@ -110,6 +110,28 @@ pub(crate) fn avatar_of(
 }
 
 impl Shell {
+    pub(super) fn account_copy_actions(
+        &self,
+        account_id: AccountId,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        crate::ui::RowAction::new(
+            crate::text::COPY_NAME,
+            cx.listener(move |this, _, _, cx| {
+                this.copy_text(name.clone(), cx);
+            }),
+        )
+        .register();
+        crate::ui::RowAction::new(
+            crate::text::COPY_ACCOUNT_ID,
+            cx.listener(move |this, _, _, cx| {
+                this.copy_text(account_id.to_string(), cx);
+            }),
+        )
+        .register();
+    }
+
     /// The pictures of the people of a server, as the view of this frame carries them.
     pub(crate) fn faces(&self, server_id: ServerId) -> ServerFaces {
         self.view

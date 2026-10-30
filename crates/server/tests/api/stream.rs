@@ -462,8 +462,9 @@ async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
     let mut stream = server.stream(&owner).await;
     assert_eq!(stream.subscribe(Level::Full, None).await, before);
     transaction.commit().await.unwrap();
+    let frame = after_checkpoints(&mut stream).await;
     assert_eq!(
-        after_checkpoints(&mut stream).await,
+        frame,
         Frame::Message(ServerMessage::Resync {
             reason: ResyncReason::SkippedEvent
         })

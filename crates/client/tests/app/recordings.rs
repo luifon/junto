@@ -247,6 +247,29 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
         })
         .map(|(position, file)| (position, file.clone()))
         .unwrap();
+    window.right_click_named(format!("recorded-file-{position}"));
+    window.click("context-action:Copy name");
+    assert!(window.shows("recording-files"));
+    assert!(
+        window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap()
+            .contains("Luca")
+    );
+    window.right_click_named(format!("recorded-file-{position}"));
+    window.click("context-action:Copy recording link");
+    assert!(
+        window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap()
+            .contains(&recording_id.to_string())
+    );
     window.click_named(format!("recorded-file-{position}"));
     assert!(!window.shows("recording-files"));
     let saved = window.until_saved(recording_id, Some(own_file.segment_id));

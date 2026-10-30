@@ -42,6 +42,8 @@ fn reachable() -> Reach {
 
 fn channel(workspace_id: WorkspaceId, kind: ChannelKind, name: &str, position: i32) -> Channel {
     Channel {
+        voice_status: String::new(),
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id,
         category_id: None,
@@ -2679,6 +2681,36 @@ pub(super) mod calls {
     }
 
     #[test]
+    fn a_presenter_menu_allows_both_reasons_of_microphone_block_only_inside_the_call() {
+        for reason in [BlockReason::Meeting, BlockReason::Moderator] {
+            let mut scene = scene();
+            let (own, daily, other) = (scene.own, scene.daily, AccountId::generate());
+            let mut person = participant(other);
+            person.microphone_block = Some(MicrophoneBlock { by: own, reason });
+            scene.call(daily, vec![participant(own), person]).meeting = Some(Meeting {
+                presenter: own,
+                started_at: time(),
+            });
+            let server = scene.server();
+            for inside in [false, true] {
+                let known = if inside {
+                    in_call(active(target(&server, &scene, daily)))
+                } else {
+                    Known::default()
+                };
+                let view = derive(
+                    std::slice::from_ref(&server),
+                    &selected(&server, &scene, daily),
+                    &known,
+                );
+                let menu = view.person_menu(daily, other).unwrap();
+                assert_eq!(menu.allow_to_speak, inside);
+                assert_eq!(menu.microphone_blocked, None);
+            }
+        }
+    }
+
+    #[test]
     fn a_participant_of_meeting_mode_is_told_who_runs_it_and_when_the_person_may_speak() {
         let mut scene = scene();
         let (own, daily, general) = (scene.own, scene.daily, scene.general);
@@ -3268,6 +3300,7 @@ pub(super) mod calls {
                 destinations: Vec::new(),
                 volume: 140,
                 microphone_blocked: None,
+                allow_to_speak: false,
                 sound_blocked: None,
                 hand_raised: None,
                 disconnect: false,

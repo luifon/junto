@@ -597,6 +597,8 @@ mod tests {
             position: 0,
         };
         let general = Channel {
+            voice_status: String::new(),
+            topic: String::new(),
             id: ChannelId::generate(),
             workspace_id: studio,
             category_id: Some(teams.id),

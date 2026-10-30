@@ -127,8 +127,7 @@ fn with_tokens(text: &str, mentions: &[Mention]) -> (String, Vec<MentionTarget>)
     (made, targets)
 }
 
-/// True when the server accepts the address of a link: HTTP, HTTPS or mailto, without a
-/// user name and a password, without a control character, at most 2,048 bytes.
+/// True for a supported link, including an application target, within the URI bounds.
 pub fn link_is_accepted(address: &str) -> bool {
     Link::parse(address).is_some()
 }
@@ -366,7 +365,10 @@ fn bracket_link(text: &str) -> Bracket<'_> {
 
 /// The length of a bare address at the start of `text`.
 fn bare_link(text: &str) -> Option<usize> {
-    if !(text.starts_with("https://") || text.starts_with("http://")) {
+    if !(text.starts_with("https://")
+        || text.starts_with("http://")
+        || text.starts_with("junto://"))
+    {
         return None;
     }
     // An address ends at white space. Text without white space that is longer than an
@@ -495,7 +497,7 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                 }
                 Bracket::NoneBefore(end) => no_link_before = at + end,
             },
-            'h' => {
+            'h' | 'j' => {
                 let starts_word = text[..at]
                     .chars()
                     .next_back()
@@ -1465,6 +1467,22 @@ mod tests {
                 marked(" b", &[Mark::Italic])
             ]
         );
+    }
+
+    #[test]
+    fn application_targets_are_links_bare_or_named_but_unknown_targets_are_text() {
+        let address = "junto://channel?server=https%3A%2F%2Fexample.test&id=00000000-0000-0000-0000-000000000001";
+        assert_eq!(one(address), [link(address, address)]);
+        assert_eq!(
+            one(&format!("[planning]({address})")),
+            [link("planning", address)]
+        );
+        assert_eq!(
+            one(&format!("See {address}.")),
+            [plain("See "), link(address, address), plain(".")]
+        );
+        let unknown = address.replace("channel", "unknown");
+        assert_eq!(one(&unknown), [plain(&unknown)]);
     }
 
     #[test]

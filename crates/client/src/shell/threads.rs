@@ -11,7 +11,7 @@ use junto_client_core::protocol::structure::ChannelKind;
 use super::feed::{MessageShape, PaneShown};
 use super::{Layer, Pane, Shell};
 use crate::assets::Icon;
-use crate::state::feed::Feed;
+use crate::state::feed::{Feed, MessageRow};
 use crate::state::notices::Jump;
 use crate::state::view::{ForkState, PinsPanel, PinsState, ShellView, ThreadPanel};
 use crate::text;
@@ -353,6 +353,97 @@ impl Shell {
             .into_any_element()
     }
 
+    fn message_preview_menu(
+        &mut self,
+        row: &MessageRow,
+        feed: &Feed,
+        target: (SharedString, bool),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        render: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement,
+    ) -> AnyElement {
+        let (key, go_to) = target;
+        let (server_id, message_id) = (feed.server_id, row.message.id);
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
+        let jump = Jump::to(server_id, &row.message);
+        let (content, actions) = crate::ui::collect_actions(|| {
+            if let Some(owner) = owner
+                && !row.message.deleted
+            {
+                if let Some(document) = &row.message.document {
+                    let copied = self.copied_document(document, &feed.names, cx);
+                    if !copied.is_empty() {
+                        crate::ui::RowAction::new(
+                            text::COPY_TEXT,
+                            cx.listener(move |this, _, _, cx| {
+                                if this
+                                    .state
+                                    .read(cx)
+                                    .server(server_id)
+                                    .is_some_and(|server| server.owner() == Some(owner))
+                                {
+                                    this.copy_text(copied.clone(), cx);
+                                }
+                            }),
+                        )
+                        .register();
+                    }
+                }
+                crate::ui::RowAction::new(
+                    text::COPY_TARGET_LINK,
+                    cx.listener(move |this, _, _, cx| {
+                        let state = this.state.read(cx);
+                        let link = state
+                            .server(server_id)
+                            .filter(|server| server.owner() == Some(owner))
+                            .and_then(|_| state.message_link(server_id, message_id));
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }),
+                )
+                .register();
+                if go_to {
+                    crate::ui::RowAction::new(
+                        text::GO_TO_MESSAGE,
+                        cx.listener(move |this, _, _, cx| {
+                            if this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .is_some_and(|server| server.owner() == Some(owner))
+                            {
+                                this.go_to(jump, cx);
+                            }
+                        }),
+                    )
+                    .register();
+                }
+            }
+            render(self, window, cx)
+        });
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(key.clone())
+            .relative()
+            .w_full()
+            .min_w_0()
+            .flex_none()
+            .role(Role::Group)
+            .aria_label(text::ROW_ACTIONS)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+    }
+
     /// The first message of the thread and the count of its replies, above the replies.
     fn render_thread_root(
         &mut self,
@@ -366,44 +457,63 @@ impl Shell {
             return div().flex_none().into_any_element();
         };
         let replies = root.message.reply_count;
-        div()
-            .id("thread-root")
-            .debug_selector(|| "thread-root".to_owned())
-            .flex()
-            .flex_col()
-            .flex_none()
-            .max_h(u(260.0))
-            .child(
+        self.message_preview_menu(
+            root,
+            feed,
+            (
+                format!("thread-root-actions:{}", root.message.id).into(),
+                true,
+            ),
+            window,
+            cx,
+            |this, window, cx| {
                 div()
-                    .id("thread-root-message")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .pt(u(8.0))
-                    .child(self.render_message(0, root, feed, MessageShape::Bare, window, cx)),
-            )
-            .child(
-                div()
+                    .id("thread-root")
+                    .debug_selector(|| "thread-root".to_owned())
                     .flex()
+                    .flex_col()
                     .flex_none()
-                    .items_center()
-                    .gap(u(8.0))
-                    .px(u(14.0))
-                    .pt(u(4.0))
-                    .pb(u(3.0))
+                    .max_h(u(260.0))
                     .child(
                         div()
-                            .id("thread-replies")
-                            .debug_selector(|| "thread-replies".to_owned())
-                            .flex_none()
-                            .text_size(u(12.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .ink(colors.ink_2)
-                            .child(SharedString::from(text::replies(replies))),
+                            .id("thread-root-message")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .pt(u(8.0))
+                            .child(this.render_message(
+                                0,
+                                root,
+                                feed,
+                                MessageShape::Bare,
+                                window,
+                                cx,
+                            )),
                     )
-                    .child(div().flex_1().h(px(1.0)).bg(Hsla::from(colors.rule_soft))),
-            )
-            .into_any_element()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(u(8.0))
+                            .px(u(14.0))
+                            .pt(u(4.0))
+                            .pb(u(3.0))
+                            .child(
+                                div()
+                                    .id("thread-replies")
+                                    .debug_selector(|| "thread-replies".to_owned())
+                                    .flex_none()
+                                    .text_size(u(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .ink(colors.ink_2)
+                                    .child(SharedString::from(text::replies(replies))),
+                            )
+                            .child(div().flex_1().h(px(1.0)).bg(Hsla::from(colors.rule_soft))),
+                    )
+                    .into_any_element()
+            },
+        )
     }
 
     /// The side panel of the pinned messages of the shown channel.
@@ -476,50 +586,60 @@ impl Shell {
                     let jump = Jump::to(server_id, &row.message);
                     let message =
                         self.render_message(index, row, feed, MessageShape::Bare, window, cx);
-                    shown.push(
-                        div()
-                            .flex_none()
-                            .debug_selector(move || format!("pin:{message_id}"))
-                            .pt(u(6.0))
-                            .pb(u(7.0))
-                            .when(index > 0, |entry| {
-                                entry
-                                    .border_t_1()
-                                    .border_color(Hsla::from(colors.rule_soft))
-                            })
-                            .child(message)
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(u(6.0))
-                                    .pl(u(58.0))
-                                    .pt(u(3.0))
-                                    .child(
-                                        Button::new(("go-to-pin", index))
-                                            .label(text::GO_TO_MESSAGE)
-                                            .selector("go-to-pin")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.go_to(jump, cx);
-                                            })),
-                                    )
-                                    .when(row.can_pin, |actions| {
-                                        actions.child(
-                                            Button::new(("unpin", index))
-                                                .icon(Icon::Pin)
-                                                .label(text::UNPIN)
-                                                .selector("unpin")
+                    shown.push(self.message_preview_menu(
+                        row,
+                        feed,
+                        (format!("pin-actions:{message_id}").into(), false),
+                        window,
+                        cx,
+                        |_, _, cx| {
+                            div()
+                                .flex_none()
+                                .debug_selector(move || format!("pin:{message_id}"))
+                                .pt(u(6.0))
+                                .pb(u(7.0))
+                                .when(index > 0, |entry| {
+                                    entry
+                                        .border_t_1()
+                                        .border_color(Hsla::from(colors.rule_soft))
+                                })
+                                .child(message)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(u(6.0))
+                                        .pl(u(58.0))
+                                        .pt(u(3.0))
+                                        .child(
+                                            Button::new(("go-to-pin", index))
+                                                .label(text::GO_TO_MESSAGE)
+                                                .selector("go-to-pin")
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.state.update(cx, |state, cx| {
-                                                        state.set_pinned(
-                                                            server_id, message_id, false, cx,
-                                                        );
-                                                    });
+                                                    this.go_to(jump, cx);
                                                 })),
                                         )
-                                    }),
-                            )
-                            .into_any_element(),
-                    );
+                                        .when(row.can_pin, |actions| {
+                                            actions.child(
+                                                Button::new(("unpin", index))
+                                                    .icon(Icon::Pin)
+                                                    .label(text::UNPIN)
+                                                    .selector("unpin")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.state.update(cx, |state, cx| {
+                                                                state.set_pinned(
+                                                                    server_id, message_id, false,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        },
+                                                    )),
+                                            )
+                                        }),
+                                )
+                                .into_any_element()
+                        },
+                    ));
                 }
                 ScrollArea::new("pin-list", &self.pins_scroll, text::PINS)
                     .selector("pin-list")

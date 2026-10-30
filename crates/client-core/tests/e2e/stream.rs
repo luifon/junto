@@ -76,6 +76,7 @@ pub async fn channel(
     kind: ChannelKind,
 ) -> Channel {
     let create = CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind,
         category_id: None,

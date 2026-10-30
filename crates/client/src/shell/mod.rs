@@ -4,10 +4,12 @@
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
 pub mod account;
+mod account_menus;
 pub mod admin;
 mod arrange;
 mod book;
 pub mod call;
+mod call_menus;
 mod camera;
 mod channels;
 mod composer;
@@ -19,6 +21,8 @@ mod direct;
 pub(crate) mod draft_storage;
 mod edges;
 mod feed;
+mod file_links;
+mod files;
 mod forwarding;
 mod invited;
 mod join;
@@ -37,6 +41,7 @@ mod panic_notice;
 mod people;
 mod permissions;
 mod person_drag;
+mod personal;
 mod picture_crop;
 mod pictures;
 mod placement;
@@ -51,10 +56,12 @@ mod server_menu;
 mod settings;
 pub mod share;
 mod switcher;
+mod thread_menu;
 mod threads;
 pub mod title_bar;
 mod transcript_edit;
 mod viewer;
+mod voice_status;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -104,6 +111,9 @@ pub(crate) enum Layer {
     ShareMenu,
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
+    AccountMenu(Box<account_menus::OpenAccountMenu>),
+    CallMoveMenu(Box<account_menus::OpenAccountMenu>),
+    ThreadMenu(thread_menu::ThreadMenuOpen),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
     ComposerMenu(feed::ComposerMenuOpen),
@@ -115,6 +125,8 @@ pub(crate) enum Layer {
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
     Fork(threads::ForkDialog),
+    /// The menu of one notification, at its row.
+    NoticeMenu(ServerId, uuid::Uuid),
     /// The menu of a channel, at its row.
     ChannelMenu(junto_client_core::protocol::ids::ChannelId),
     /// The menu of a group of the server book, at its head (ADR 0775).
@@ -125,6 +137,8 @@ pub(crate) enum Layer {
     GroupChoice(ServerId),
     /// The dialog that names a group.
     RenameGroup(junto_client_core::arrangement::GroupId),
+    PersonalSection(personal::SectionDialog),
+    VoiceStatus(voice_status::Editor),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
     /// The dialog of the notification settings of a scope.
@@ -154,6 +168,7 @@ pub(crate) enum Layer {
     QuickSwitcher,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
+    FileLink(Box<crate::state::OpenFileLink>),
 }
 
 /// What the emoji of the picker is for.
@@ -257,6 +272,7 @@ pub struct Shell {
     focus: FocusHandle,
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
+    thread_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
     profile: profile::ProfileUi,
@@ -316,6 +332,8 @@ pub struct Shell {
     /// The server book is drawn as its row of icons in this drawing.
     pub(crate) book_collapsed: bool,
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
+    account_volume: Option<VolumeControl>,
+    account_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
@@ -440,6 +458,10 @@ pub struct Shell {
     pub(crate) record_language_closed_by_press: bool,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
+    voice_status_field: Entity<InputState>,
+    search_from: Entity<InputState>,
+    search_through: Entity<InputState>,
+    search_date_invalid: bool,
     /// The press of the pointer that closed the list of a filter was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) filter_closed_by_press: bool,
@@ -531,6 +553,9 @@ impl Shell {
         let switcher = switcher::Switcher::new(window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
+        let voice_status_field = Field::state("Status", window, cx);
+        let search_from = Field::state("YYYY-MM-DD", window, cx);
+        let search_through = Field::state("YYYY-MM-DD", window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
         let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
         let quiet_zone_search = Field::state(text::QUIET_ZONE_SEARCH, window, cx);
@@ -554,6 +579,27 @@ impl Shell {
         let book = book::BookUi::new(window, cx);
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
+            Field::observe(
+                &voice_status_field,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Submitted => this.save_voice_status(false, window, cx),
+                    FieldEvent::Changed => this.voice_status_changed(cx),
+                },
+            ),
+            Field::observe(
+                &arrange.section_name,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Submitted => this.save_personal_section(window, cx),
+                    FieldEvent::Changed => {
+                        this.arrange.section_invalid = false;
+                        cx.notify();
+                    }
+                },
+            ),
             cx.on_release(move |this: &mut Self, cx| {
                 this.save_composers(cx);
                 this.state.update(cx, |state, cx| {
@@ -594,6 +640,14 @@ impl Shell {
                     FieldEvent::Submitted => this.submit_search(window, cx),
                 },
             ),
+            Field::observe(&search_from, window, cx, |this: &mut Self, _, _, cx| {
+                this.search_date_invalid = false;
+                cx.notify();
+            }),
+            Field::observe(&search_through, window, cx, |this: &mut Self, _, _, cx| {
+                this.search_date_invalid = false;
+                cx.notify();
+            }),
             Field::observe(&quiet_from, window, cx, |this: &mut Self, _, _, cx| {
                 this.quiet_refused = false;
                 cx.notify();
@@ -695,6 +749,15 @@ impl Shell {
                     }
                 },
             ),
+            cx.subscribe_in(
+                &state,
+                window,
+                |this, _, event: &crate::state::OpenFileLink, window, cx| {
+                    if !this.detached {
+                        this.open_layer(Layer::FileLink(Box::new(event.clone())), window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
                 if let Some(view) = &mut this.view {
                     view.show_levels(state.read(cx).shown_levels());
@@ -764,6 +827,7 @@ impl Shell {
             state,
             focus: cx.focus_handle(),
             layer_focus: cx.focus_handle(),
+            thread_menu_placement: Default::default(),
             layer: Layer::None,
             switcher,
             profile: profile::ProfileUi::default(),
@@ -794,6 +858,8 @@ impl Shell {
             invitations_scroll: ScrollHandle::new(),
             invitations_newest: None,
             volumes: HashMap::new(),
+            account_volume: None,
+            account_menu_placement: Default::default(),
             device_menu_closed_by_press: false,
             share_menu_closed_by_press: false,
             detached,
@@ -873,6 +939,10 @@ impl Shell {
             recording_parts_closed_by_press: false,
             record_language_closed_by_press: false,
             search_field,
+            voice_status_field,
+            search_from,
+            search_through,
+            search_date_invalid: false,
             filter_closed_by_press: false,
             quiet_from,
             quiet_until,
@@ -1383,8 +1453,17 @@ impl Shell {
         if matches!(self.layer, Layer::QuickSwitcher) {
             self.close_switcher(window, cx);
         }
+        self.account_volume = None;
+        self.account_menu_placement = Default::default();
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
+        }
+        if let Layer::ThreadMenu(open) = self.layer
+            && !matches!(&layer, Layer::ThreadMenu(next) if next.same_target(&open))
+        {
+            self.state.update(cx, |state, cx| {
+                state.end_thread_menu(open.owner, open.root_id, cx)
+            });
         }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
@@ -1400,6 +1479,7 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_volume = None;
         if matches!(self.layer, Layer::Profile) {
             self.close_profile(window, cx);
             return;
@@ -1407,6 +1487,11 @@ impl Shell {
         if matches!(self.layer, Layer::QuickSwitcher) {
             self.close_switcher(window, cx);
             return;
+        }
+        if let Layer::ThreadMenu(open) = self.layer {
+            self.state.update(cx, |state, cx| {
+                state.end_thread_menu(open.owner, open.root_id, cx)
+            });
         }
         if matches!(self.layer, Layer::Join(_)) {
             // A code is not kept in a field that nobody sees.
@@ -1639,6 +1724,7 @@ impl Render for Shell {
             self.take_state(window, cx);
         }
         self.derived_since_drawing = false;
+        self.drop_hidden_account_menu(window, cx);
         self.selection_context();
         self.text_selection
             .focus(if matches!(self.layer, Layer::None) {
@@ -1868,6 +1954,19 @@ impl Shell {
                     this.close_window(window, cx);
                 }),
             )
+            .on_action(
+                cx.listener(|this, action: &crate::ui::CopyToClipboard, _, cx| {
+                    this.copy_text(action.text.clone(), cx);
+                }),
+            )
+            .on_action(cx.listener(|_, action: &crate::ui::OpenLink, _, cx| {
+                crate::opening::open_link(&action.link, cx);
+            }))
+            .on_action(cx.listener(
+                |this, action: &account_menus::OpenAccountMenu, window, cx| {
+                    this.open_account_menu(action.clone(), window, cx);
+                },
+            ))
             // After every click: a press that closed the menu of the server is over. A press
             // ends without a release in the window when the system took it, for example a
             // press on the title bar of Windows that moves the window; the next press ends it
@@ -1968,6 +2067,15 @@ impl Shell {
                     .is_none_or(|workspace| workspace.thread.is_none())
                     || Self::fork_is_done(dialog, view)
             }
+            Layer::NoticeMenu(server_id, notice_id) => {
+                view.selected
+                    .as_ref()
+                    .is_none_or(|server| server.id != *server_id)
+                    || view
+                        .lists()
+                        .and_then(|lists| lists.notices.as_ref())
+                        .is_none_or(|panel| !panel.rows.iter().any(|row| row.id == *notice_id))
+            }
             // The channel or the conversation of the menu is no longer listed.
             Layer::ChannelMenu(channel_id) => view.workspace().is_none_or(|workspace| {
                 !workspace
@@ -1980,6 +2088,7 @@ impl Shell {
                 .lists()
                 .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
             // The group, the server or the workspace of the menu is no longer listed.
+            Layer::PersonalSection(dialog) => !self.personal_dialog_current(*dialog, cx),
             Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
                 !view.groups.iter().any(|row| row.id == *group)
             }
@@ -1989,9 +2098,13 @@ impl Shell {
             Layer::GroupChoice(server_id) => !view.servers.iter().any(|row| row.id == *server_id),
             // The scope of the dialog is gone.
             Layer::Notify => view.notify.is_none(),
-            Layer::SearchFilter(_) => view
-                .workspace()
-                .is_none_or(|workspace| workspace.search.is_none()),
+            Layer::SearchFilter(_) => view.lists().is_none_or(|lists| {
+                lists.search.is_none()
+                    && lists
+                        .workspace
+                        .as_ref()
+                        .is_none_or(|workspace| workspace.search.is_none())
+            }),
             // The card of the recording is no longer among the shown rows.
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 !view.may_remove_recording(*server_id, *recording_id)
@@ -2007,6 +2120,7 @@ impl Shell {
                 }),
             // The server shows no content any more, or the channel of the open
             // settings is gone.
+            Layer::VoiceStatus(_) => self.voice_status_editor_stale(cx),
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
             Layer::Account => self.state.read(cx).account_view().is_none(),
@@ -2024,6 +2138,20 @@ impl Shell {
             }
             Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
+            Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
+            Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
+            Layer::AccountMenu(open) | Layer::CallMoveMenu(open) => {
+                !open.source_is_present(view, self.state.read(cx))
+                    || !self.account_source_visible(open, view, cx)
+                    || (matches!(&self.layer, Layer::CallMoveMenu(_))
+                        && Self::call_participant_menu(open, view)
+                            .is_none_or(|menu| menu.destinations.is_empty()))
+                    || self
+                        .state
+                        .read(cx)
+                        .server(open.owner.entry.server_id)
+                        .is_none_or(|server| server.owner() != Some(open.owner))
+            }
             Layer::None
             | Layer::Welcome
             | Layer::Settings
@@ -2061,7 +2189,9 @@ impl Shell {
             Layer::None
             | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
+            | Layer::ThreadMenu(_)
             | Layer::MessageMenu(_)
+            | Layer::NoticeMenu(..)
             | Layer::ComposerMenu(_)
             | Layer::ChannelMenu(_)
             | Layer::GroupMenu(_)
@@ -2087,6 +2217,8 @@ impl Shell {
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
             Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
+            Layer::PersonalSection(dialog) => self.render_personal_section(*dialog, cx),
+            Layer::VoiceStatus(_) => self.render_voice_status(cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)
                 .into_any_element(),
@@ -2102,6 +2234,9 @@ impl Shell {
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
+            Layer::FileLink(_) => self.render_linked_file(window, cx),
+            Layer::AccountMenu(_) => self.render_account_menu(window, cx),
+            Layer::CallMoveMenu(_) => self.render_call_move_menu(view, window, cx),
         }
     }
 }

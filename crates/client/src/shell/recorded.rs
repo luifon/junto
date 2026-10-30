@@ -327,6 +327,7 @@ impl Shell {
         &mut self,
         card: &RecordingCard,
         detail: &CardDetail,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut items: Vec<AnyElement> =
@@ -359,7 +360,23 @@ impl Shell {
                 div()
                     .flex_none()
                     .debug_selector(move || format!("recorded-file-{index}"))
-                    .child(item)
+                    .child(
+                        self.recording_row_menu(
+                            card,
+                            (
+                                format!(
+                                    "recording-file-menu:{}:{}",
+                                    card.recording_id, file.segment_id
+                                )
+                                .into(),
+                                text::COPY_NAME,
+                                file_title(file),
+                            ),
+                            item,
+                            window,
+                            cx,
+                        ),
+                    )
                     .into_any_element(),
             );
         }
@@ -368,16 +385,24 @@ impl Shell {
             TranscriptState::Ready | TranscriptState::Partial
         ) {
             let (held, stem) = (card.clone(), detail.text_stem.clone());
-            items.push(
-                MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
-                    .icon(Icon::Document)
-                    .selector("recorded-text")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
-                        this.close_layer(window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            let item = MenuItem::new("recorded-text", text::RECORDING_TRANSCRIPT_TEXT)
+                .icon(Icon::Document)
+                .selector("recorded-text")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.save_recorded(&held, RecordedFile::Text, stem.clone(), false, cx);
+                    this.close_layer(window, cx);
+                }));
+            items.push(self.recording_row_menu(
+                card,
+                (
+                    format!("recording-file-menu:{}:text", card.recording_id).into(),
+                    text::COPY_NAME,
+                    text::RECORDING_TRANSCRIPT_TEXT.to_owned(),
+                ),
+                item,
+                window,
+                cx,
+            ));
         }
         div()
             .absolute()
@@ -398,6 +423,113 @@ impl Shell {
                 ),
             ))
             .into_any_element()
+    }
+
+    fn recording_row_menu(
+        &mut self,
+        card: &RecordingCard,
+        target: (SharedString, &'static str, String),
+        content: impl IntoElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (key, label, copied) = target;
+        let (server_id, recording_id) = (card.server_id, card.recording_id);
+        let name = copied.clone();
+        let (content, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                label,
+                cx.listener(move |this, _, _, cx| this.copy_text(copied.clone(), cx)),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_RECORDING_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(link) = this.state.read(cx).recording_link(server_id, recording_id)
+                    {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            content.into_any_element()
+        });
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(key.clone())
+            .relative()
+            .w_full()
+            .role(Role::Group)
+            .aria_label(name)
+            .when(label == text::COPY_TEXT, |row| {
+                row.focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+            })
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+    }
+
+    fn transcript_row_menu(
+        &mut self,
+        row: &LineRow,
+        target: (ServerId, RecordingId, &'static str),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        render: impl FnOnce(&mut Self, &mut Context<Self>) -> AnyElement,
+    ) -> AnyElement {
+        let (server_id, recording_id, surface) = target;
+        let (line, copied) = (row.line, row.text.clone());
+        let (content, actions) = crate::ui::collect_actions(|| {
+            crate::ui::RowAction::new(
+                text::COPY_TEXT,
+                cx.listener(move |this, _, _, cx| {
+                    this.copy_text(copied.clone(), cx);
+                }),
+            )
+            .register();
+            crate::ui::RowAction::new(
+                text::COPY_RECORDING_LINK,
+                cx.listener(move |this, _, _, cx| {
+                    let link = this.state.read(cx).recording_link(server_id, recording_id);
+                    if let Some(link) = link {
+                        this.copy_text(link, cx);
+                    }
+                }),
+            )
+            .register();
+            if surface == "card" {
+                crate::ui::RowAction::new(
+                    text::OPEN_TRANSCRIPT,
+                    cx.listener(move |this, _, _, cx| {
+                        this.open_transcript(server_id, recording_id, Some(line), cx);
+                    }),
+                )
+                .register();
+            }
+            render(self, cx)
+        });
+        let key = SharedString::from(format!(
+            "transcript-actions:{server_id}:{recording_id}:{surface}:{line}"
+        ));
+        let selector = format!("transcript-context:{surface}:{recording_id}:{line}");
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(key.clone())
+            .debug_selector(move || selector)
+            .w_full()
+            .min_w_0()
+            .role(Role::Group)
+            .aria_label(format!("{} · {}", row.time, row.name))
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
     }
 
     /// One line of a transcript (view G of the design): its time, its speaker with the
@@ -603,6 +735,7 @@ impl Shell {
         card: &RecordingCard,
         transcript: &TranscriptShown,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -653,8 +786,12 @@ impl Shell {
         let faces = self.faces(server_id);
         for row in transcript.lines.iter().take(SHOWN_LINES) {
             let picture = faces.image(row.account_id);
-            parts.push(Self::transcript_line(
-                row, picture, &faces, server_id, true, false, theme,
+            parts.push(self.transcript_row_menu(
+                row,
+                (server_id, recording_id, "card"),
+                window,
+                cx,
+                |_, _| Self::transcript_line(row, picture, &faces, server_id, true, false, theme),
             ));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
@@ -680,6 +817,13 @@ impl Shell {
                 .child({
                     let ring =
                         crate::ui::focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
+                    crate::ui::RowAction::new(
+                        text::SHOW_ALL,
+                        cx.listener(move |this, _, _, cx| {
+                            this.open_transcript(server_id, recording_id, None, cx);
+                        }),
+                    )
+                    .register();
                     div()
                         .id(("show-transcript", recording_id.as_uuid().as_u128() as usize))
                         .role(Role::Button)
@@ -769,7 +913,9 @@ impl Shell {
     /// chat, so the rows of the chat do not move.
     fn render_recording_parts(
         &mut self,
+        card: &RecordingCard,
         detail: &CardDetail,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -777,55 +923,77 @@ impl Shell {
         let mut items: Vec<AnyElement> =
             vec![menu_label(text::transcripts::PARTS_HELP, false, cx).into_any_element()];
         for (index, part) in detail.parts.iter().enumerate() {
-            items.push(
-                div()
-                    .debug_selector(move || format!("recording-part:{index}"))
-                    .flex()
-                    .items_start()
-                    .gap(u(6.0))
-                    .px(u(12.0))
-                    .py(u(5.0))
-                    .text_size(u(13.0))
-                    .line_height(u(18.0))
-                    .when(part.failed, |row| {
-                        row.child(div().mt(u(2.0)).child(icon(
-                            Icon::Warning,
-                            13.0,
-                            colors.cinnabar,
-                        )))
-                    })
-                    .child(
+            let content = div()
+                .debug_selector(move || format!("recording-part:{index}"))
+                .flex()
+                .items_start()
+                .gap(u(6.0))
+                .px(u(12.0))
+                .py(u(5.0))
+                .text_size(u(13.0))
+                .line_height(u(18.0))
+                .when(part.failed, |row| {
+                    row.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .ink(colors.ink)
-                                    .child(SharedString::from(part.title.clone())),
-                            )
-                            .child(
-                                div()
-                                    .ink(if part.failed {
-                                        colors.cinnabar_ink
-                                    } else {
-                                        colors.ink_2
-                                    })
-                                    .child(SharedString::from(part.state.clone())),
-                            )
-                            .when_some(part.span.clone(), |column, span| {
-                                column.child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("recording-part-span:{index}")
-                                        })
-                                        .font_family(theme.fonts.mono.clone())
-                                        .ink(colors.ink_2)
-                                        .child(SharedString::from(span)),
-                                )
-                            }),
+                            .mt(u(2.0))
+                            .child(icon(Icon::Warning, 13.0, colors.cinnabar)),
                     )
-                    .into_any_element(),
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .ink(colors.ink)
+                                .child(SharedString::from(part.title.clone())),
+                        )
+                        .child(
+                            div()
+                                .ink(if part.failed {
+                                    colors.cinnabar_ink
+                                } else {
+                                    colors.ink_2
+                                })
+                                .child(SharedString::from(part.state.clone())),
+                        )
+                        .when_some(part.span.clone(), |column, span| {
+                            column.child(
+                                div()
+                                    .debug_selector(move || format!("recording-part-span:{index}"))
+                                    .font_family(theme.fonts.mono.clone())
+                                    .ink(colors.ink_2)
+                                    .child(SharedString::from(span)),
+                            )
+                        }),
+                )
+                .into_any_element();
+            let value = [
+                Some(part.title.clone()),
+                Some(part.state.clone()),
+                part.span.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+            items.push(
+                self.recording_row_menu(
+                    card,
+                    (
+                        format!(
+                            "recording-part-menu:{}:{index}:{}",
+                            card.recording_id, part.title
+                        )
+                        .into(),
+                        text::COPY_TEXT,
+                        value,
+                    ),
+                    content,
+                    window,
+                    cx,
+                ),
             );
         }
         div()
@@ -857,6 +1025,47 @@ impl Shell {
         &mut self,
         index: usize,
         row: &RecordingRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (server_id, recording_id) = (row.card.server_id, row.card.recording_id);
+        let (content, actions) = crate::ui::collect_actions(|| {
+            if matches!(row.card.state, CardState::Shown(_)) {
+                crate::ui::RowAction::new(
+                    text::COPY_TARGET_LINK,
+                    cx.listener(move |this, _, _, cx| {
+                        let link = this.state.read(cx).recording_link(server_id, recording_id);
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }),
+                )
+                .register();
+            }
+            self.recording_card_content(index, row, window, cx)
+        });
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let key = SharedString::from(format!("recording-actions:{recording_id}"));
+        let frame = div()
+            .id(key.clone())
+            .w_full()
+            .min_w_0()
+            .role(Role::Group)
+            .aria_label(text::RECORDING)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(content);
+        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+    }
+
+    fn recording_card_content(
+        &mut self,
+        index: usize,
+        row: &RecordingRow,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -930,7 +1139,7 @@ impl Shell {
                             .into_any_element(),
                     ]
                 }
-                CardState::Shown(detail) => self.card_body(index, card, detail, &theme, cx),
+                CardState::Shown(detail) => self.card_body(index, card, detail, &theme, window, cx),
             };
         div()
             .id(("recording", index))
@@ -1018,13 +1227,14 @@ impl Shell {
         card: &RecordingCard,
         detail: &CardDetail,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let (server_id, recording_id) = (card.server_id, card.recording_id);
         let files_open =
             matches!(&self.layer, Layer::RecordingFiles(open) if *open == recording_id);
-        let menu = files_open.then(|| self.render_recording_files(card, detail, cx));
+        let menu = files_open.then(|| self.render_recording_files(card, detail, window, cx));
         let line = |sentence: String| {
             div()
                 .text_size(u(13.5))
@@ -1088,7 +1298,7 @@ impl Shell {
         if !detail.parts.is_empty() {
             let parts_open =
                 matches!(&self.layer, Layer::RecordingParts(open) if *open == recording_id);
-            let list = parts_open.then(|| self.render_recording_parts(detail, cx));
+            let list = parts_open.then(|| self.render_recording_parts(card, detail, window, cx));
             actions.push(
                 div()
                     .relative()
@@ -1346,7 +1556,7 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        body.extend(self.card_transcript(card, &detail.transcript, theme, cx));
+        body.extend(self.card_transcript(card, &detail.transcript, theme, window, cx));
         body
     }
 
@@ -1424,31 +1634,41 @@ impl Shell {
         transcript: &TranscriptShown,
         marked: bool,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let corrected = row
-            .corrected
-            .then(|| self.corrected_mark(recording_id, row.line, theme, cx));
-        let (body, control) = self.line_body(server_id, recording_id, row, transcript, theme, cx);
-        let key = (recording_id, TranscriptChange::Line(row.line));
-        let open = self.transcript_edit.open.map(|(_, open)| open);
-        let picture = self.faces(server_id).image(row.account_id);
-        let line = Self::line_frame(
+        self.transcript_row_menu(
             row,
-            picture,
-            &self.faces(server_id),
-            server_id,
-            false,
-            marked,
-            theme,
-            corrected,
-            body,
-            control,
-        );
-        self.transcript_edit
-            .space
-            .row(open, &[key], line)
-            .into_any_element()
+            (server_id, recording_id, "panel"),
+            window,
+            cx,
+            |this, cx| {
+                let corrected = row
+                    .corrected
+                    .then(|| this.corrected_mark(recording_id, row.line, theme, cx));
+                let (body, control) =
+                    this.line_body(server_id, recording_id, row, transcript, theme, cx);
+                let key = (recording_id, TranscriptChange::Line(row.line));
+                let open = this.transcript_edit.open.map(|(_, open)| open);
+                let picture = this.faces(server_id).image(row.account_id);
+                let line = Self::line_frame(
+                    row,
+                    picture,
+                    &this.faces(server_id),
+                    server_id,
+                    false,
+                    marked,
+                    theme,
+                    corrected,
+                    body,
+                    control,
+                );
+                this.transcript_edit
+                    .space
+                    .row(open, &[key], line)
+                    .into_any_element()
+            },
+        )
     }
 
     /// The head of the transcript list: the count of the lines, the language, and the
@@ -1544,7 +1764,7 @@ impl Shell {
         let (open, names, marked) = (open.clone(), names.clone(), panel.line);
         let shown = Arc::new(transcript.clone());
         let render =
-            cx.processor(move |this: &mut Self, index: usize, _, cx| {
+            cx.processor(move |this: &mut Self, index: usize, window, cx| {
                 let theme = theme(cx);
                 if index == 0 {
                     return this.transcript_head(server_id, recording_id, &shown, &theme, cx);
@@ -1558,6 +1778,7 @@ impl Shell {
                         &shown,
                         marked == Some(row.line),
                         &theme,
+                        window,
                         cx,
                     );
                 }

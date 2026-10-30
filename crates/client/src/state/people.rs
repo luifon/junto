@@ -1513,6 +1513,14 @@ pub struct PresetPicture {
 }
 
 impl AppState {
+    pub(crate) fn account_departure(
+        &self,
+        server_id: ServerId,
+        account_id: AccountId,
+    ) -> Option<Departure> {
+        self.known.people.departure(server_id, account_id)
+    }
+
     /// Before the view is derived: the cache of a server belongs to the account of its
     /// session, and ends with its server.
     pub(super) fn keep_people(&mut self, cx: &mut Context<Self>) {
