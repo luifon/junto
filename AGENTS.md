@@ -99,7 +99,7 @@ The release tooling of the client: the macOS bundle, its disk image and their si
 
 ## `vendor/`
 
-Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8 and `gpui-pre-linux` 0.3.8, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
+Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8, `gpui-pre-linux` 0.3.8 and `gpui-pre-macos` 0.3.8, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
 
 - `vendor/README.md`: the checksum of each source archive, the files that were kept, each correction, when to remove it, and the tests to run when a copy is replaced.
 - ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
@@ -150,6 +150,7 @@ Run each heavy command through `tools/serial.sh` when other work shares the mach
   - `frames` (ADR 0774): `JUNTO_TEST_FRAMES=1 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh cargo test -p junto-client --test frames`
   - `endurance`: `JUNTO_TEST_ENDURANCE=1` with the same wrappers and `--test endurance`. `JUNTO_TEST_ENDURANCE_MINUTES` sets the measured time (default 10).
   - `modes` (ADR 0914): `JUNTO_TEST_MODES=1` with the same wrappers, `--release` and `--test modes`, after `cargo build --release -p junto-server` and the release build of `spikes/test-participant`. It measures one window per process in seven modes and prints the table; `JUNTO_TEST_MODES_PROFILE` names a directory for the profiles of each mode. `docs/client-performance.md` has the measured figures.
+  - `native_macos_windows` (ADR 0757): `JUNTO_TEST_NATIVE_MACOS_WINDOWS=1 cargo test -p junto-client --test native_macos_windows`. Two native processes check main/call maximize, restart and restore, then Dock reopening with call still visible; no server. The macOS CI job runs it.
   - `native_panics` (ADR 0757): `JUNTO_TEST_NATIVE_PANICS=1 cargo test -p junto-client --test native_panics`. It needs no server; a panic in a task and in a press posted through AppKit, after which the client must continue. It also runs on Windows and Linux with a desktop, where only the task panics; the CI jobs of the three systems run it.
   - `rehearsal`: against a deployment installed with `docs/install.md` ("Trial on one machine"), with `JUNTO_REHEARSAL_ADDRESS`, `JUNTO_REHEARSAL_OWNER_CODE_FILE`, `JUNTO_REHEARSAL_SPEECH` and `JUNTO_REHEARSAL_WORK`. See `crates/client/tests/rehearsal/main.rs`.
   - Native device stages (ADR 0913): `JUNTO_TEST_NATIVE_DEVICES=1 tools/native-devices.sh <stage>`. They open real devices and need a person at the machine and the BlackHole virtual sound device; a permission request also needs `JUNTO_TEST_PERMISSION_REQUEST`. The stages that start services need the six variables above. See `crates/media/tests/native/README.md`.

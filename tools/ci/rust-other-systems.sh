@@ -94,6 +94,8 @@ if [ "$system" = macos ]; then
     # report and states it (ADR 0757). The window appears without taking the focus.
     step "Panics in the callbacks of the platform"
     run env JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked --workspace --test native_panics
+    step "Native macOS window placement and Dock reopening"
+    run env JUNTO_TEST_NATIVE_MACOS_WINDOWS=1 cargo test --no-fail-fast --locked --workspace --test native_macos_windows
     # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0916):
     # updates:: without a database, then the other tests against the PostgreSQL build for
     # macOS of the version of the CI image. Not here: the tests of live::, which need LiveKit.

@@ -78,6 +78,13 @@ path = "tests/native_panics/main.rs"
 harness = false
 required-features = ["test-support"]
 
+# Native AppKit maximize/restart/restore and Dock reopening with a visible call window.
+[[test]]
+name = "native_macos_windows"
+path = "tests/native_macos_windows/main.rs"
+harness = false
+required-features = ["test-support"]
+
 # An isolated detached window for the native placement driver.
 [[test]]
 name = "native_placement"

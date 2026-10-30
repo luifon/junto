@@ -135,6 +135,16 @@ class JobSteps(unittest.TestCase):
                           "--workspace --test emoji_fonts", failed, system)
             self.assertNotIn("Lint", failed, system)
 
+    def test_native_macos_windows_run_only_on_macos_and_failure_fails_the_job(self):
+        command = "cargo test --no-fail-fast --locked --workspace --test native_macos_windows"
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            self.assertEqual(command in commands, system == "macos")
+        status, _, output = self.run_job("macos", fail_on="--test native_macos_windows")
+        self.assertEqual(status, 1)
+        self.assertIn("Native macOS window placement and Dock reopening (exit 1)", output)
+
     def test_every_cargo_test_runs_every_test_program(self):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)
