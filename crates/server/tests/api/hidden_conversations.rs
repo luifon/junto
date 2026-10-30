@@ -198,3 +198,91 @@ async fn group_visibility_events_are_personal_and_do_not_reveal_messages_after_l
         Event::ConversationVisibilityChanged { .. } | Event::MessageChanged { .. }
     )));
 }
+
+#[tokio::test]
+async fn overlapping_visibility_and_new_messages_converge_across_sessions() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let mut reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let session = server.login(&reader.key).await;
+    let other_token = session.token.expose().to_owned();
+    let group: Value = server
+        .post(
+            &writer,
+            "/api/v1/group-conversations",
+            &json!({"name":"Project","account_ids":[reader.account_id,third.account_id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let id = &group["id"];
+    let id = id.as_str().unwrap();
+    let visibility = format!("/api/v1/conversations/{id}/visibility");
+    let messages = format!("/api/v1/conversations/{id}/messages");
+    let mut stream = server
+        .subscribed(&reader, junto_protocol::events::Level::Full)
+        .await;
+    let hide_body = json!({"hidden":true});
+    let reopen_body = json!({"hidden":false});
+    let message_body = text("Concurrent decision");
+    let (hide, reopen, sent) = tokio::join!(
+        server.put(&reader, &visibility, &hide_body),
+        server.send(
+            reqwest::Method::PUT,
+            &visibility,
+            Some(other_token.as_str()),
+            Some(&reopen_body),
+            None
+        ),
+        server.post(&writer, &messages, &message_body)
+    );
+    hide.empty(StatusCode::NO_CONTENT);
+    reopen.empty(StatusCode::NO_CONTENT);
+    let message: Message = sent.ok(StatusCode::CREATED);
+    let events = server.traffic(&reader, &mut stream).await;
+    let last = events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            junto_protocol::events::Event::ConversationVisibilityChanged {
+                conversation_id,
+                hidden,
+            } if conversation_id.to_string() == id => Some(*hidden),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    let first = server.snapshot(&reader).await;
+    assert_eq!(
+        first
+            .hidden_conversations
+            .iter()
+            .any(|value| value.to_string() == id),
+        last
+    );
+    reader.token = other_token;
+    let second = server.snapshot(&reader).await;
+    assert_eq!(second.hidden_conversations, first.hidden_conversations);
+    let page: MessagePage = server.get(&reader, &messages).await.ok(StatusCode::OK);
+    assert!(page.messages.iter().any(|value| value.id == message.id));
+    server
+        .put(&reader, &visibility, &json!({"hidden":true}))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server
+        .post(
+            &writer,
+            &messages,
+            &text("Later message restores visibility"),
+        )
+        .await
+        .ok::<Message>(StatusCode::CREATED);
+    assert!(
+        !server
+            .snapshot(&reader)
+            .await
+            .hidden_conversations
+            .iter()
+            .any(|value| value.to_string() == id)
+    );
+}
