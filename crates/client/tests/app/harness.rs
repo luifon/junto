@@ -640,10 +640,11 @@ impl Window {
             assert!(
                 Instant::now() < deadline,
                 "after {PATIENCE:?} this did not hold: {what}; the clock of the test moved \
-                 {:?} meanwhile; the calls of the window: {:?}",
+                 {:?} meanwhile; the calls of the window: {:?}; administration: {:?}",
                 self.cx.executor().now().duration_since(clock_start),
                 self.state
-                    .read_with(&self.cx, |state, _| state.calls().view())
+                    .read_with(&self.cx, |state, _| state.calls().view()),
+                self.admin()
             );
             self.pass(Duration::from_millis(20));
         }
