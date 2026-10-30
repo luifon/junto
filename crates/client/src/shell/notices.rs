@@ -995,6 +995,35 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
+        if let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        {
+            items.insert(
+                0,
+                MenuItem::new("direct-open", text::OPEN)
+                    .icon(Icon::Chat)
+                    .selector("direct-open")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !matches!(&this.layer, Layer::DirectMenu(id) if *id == conversation_id)
+                            || this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .is_none_or(|server| server.owner() != Some(owner))
+                        {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.select_conversation(server_id, conversation_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
         items.extend(
             self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
                 this.state.update(cx, |state, cx| {

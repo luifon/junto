@@ -141,6 +141,16 @@ fn a_direct_menu_marks_its_conversation_read_without_opening_it(cx: &mut TestApp
             .unread,
         0
     );
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    window.click("direct-open");
+    window.until("the menu opens its conversation", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .conversation
+                .as_ref()
+                .is_some_and(|row| row.id == conversation.id)
+        })
+    });
 }
 
 #[gpui::test]
@@ -1495,4 +1505,90 @@ fn thread_preview_people_and_the_thread_have_separate_context_targets(cx: &mut T
     window.until("the removed thread closes its person menu", |window| {
         !window.shows("account-menu")
     });
+}
+
+#[gpui::test]
+fn a_category_header_copies_its_name_and_opens_its_existing_settings(cx: &mut TestAppContext) {
+    use junto_client::state::admin::view::Listed;
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    let category = world
+        .run(owner.api().create_category(
+            workspace,
+            &CreateCategory {
+                name: "Planning".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap();
+    window.until("the category is listed", |window| window.view().workspace().is_some_and(|workspace| workspace.sections.iter().any(|section| matches!(&section.title, junto_client::state::view::SectionTitle::Category(name) if name == "Planning"))));
+    let selected = window.selected_channel();
+    window.right_click_named(format!("category-header:{}", category.id));
+    window.click("context-action:Copy name");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Planning"
+    );
+    window.right_click_named(format!("category-header:{}", category.id));
+    window.click("context-action:Category settings");
+    window.until("the target category settings are loaded", |window| {
+        matches!(window.admin().map(|view| view.scope), Some(Scope::Category(settings)) if settings.category_id == category.id && matches!(settings.page.rules, Listed::Loaded(_)))
+    });
+    assert_eq!(window.selected_channel(), selected);
+}
+
+#[gpui::test]
+fn category_settings_from_a_header_keep_the_server_permission_check(cx: &mut TestAppContext) {
+    use junto_client::state::admin::view::Listed;
+    use junto_client_core::protocol::structure::{ChannelKind, CreateCategory, CreateChannel};
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _, _) = with_root(cx, &world);
+    let workspace = window.view().workspace().unwrap().id;
+    let category = world
+        .run(admin.handle.api().create_category(
+            workspace,
+            &CreateCategory {
+                name: "Planning".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap();
+    let planning = world
+        .run(admin.handle.api().create_channel(
+            workspace,
+            &CreateChannel {
+                name: "planning".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: Some(category.id),
+                position: None,
+            },
+        ))
+        .unwrap();
+    admin.send(&world, planning.id, document("Unread category message"));
+    window.until("the category has a visible channel", |window| window.shows_channel("planning") && window.view().workspace().is_some_and(|workspace| workspace.sections.iter().any(|section| matches!(&section.title, junto_client::state::view::SectionTitle::Category(name) if name == "Planning"))));
+    let selected = window.selected_channel();
+    window.until("the category has unread chat", |window| {
+        window
+            .channels()
+            .iter()
+            .any(|row| row.id == planning.id && row.unread.messages > 0)
+    });
+    window.right_click_named(format!("category-header:{}", category.id));
+    window.click("context-action:Mark as read");
+    window.until("the category chat is read", |window| {
+        window
+            .channels()
+            .iter()
+            .any(|row| row.id == planning.id && row.unread.messages == 0)
+    });
+    assert_eq!(window.selected_channel(), selected);
+    window.right_click_named(format!("category-header:{}", category.id));
+    window.click("context-action:Category settings");
+    window.until("the category permission refusal is shown", |window| {
+        matches!(window.admin().map(|view| view.scope), Some(Scope::Category(settings)) if settings.category_id == category.id && matches!(settings.page.rules, Listed::Failed(_)))
+    });
+    assert!(!window.shows("rules-add"));
 }

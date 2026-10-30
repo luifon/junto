@@ -3802,3 +3802,5 @@ pub const ACCOUNT_ACTIONS: &str = "Account actions";
 
 pub const SELECT_SOURCE: &str = "Select source";
 pub const STOP_SHARING: &str = "Stop sharing";
+
+pub const CATEGORY_SETTINGS: &str = "Category settings";

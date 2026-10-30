@@ -24,8 +24,9 @@ use junto_client_core::protocol::call::{
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
-    AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
-    MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId, WorkspaceRoleId,
+    AccountId, AttachmentId, CallId, CallInvitationId, CategoryId, ChannelId, ConversationId,
+    EntryRequestId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId,
+    WorkspaceRoleId,
 };
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
@@ -826,6 +827,8 @@ pub struct ChannelRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelSection {
+    /// Absent for the sections grouped by channel kind.
+    pub category_id: Option<CategoryId>,
     pub title: SectionTitle,
     pub rows: Vec<ChannelRow>,
 }
@@ -2388,7 +2391,11 @@ fn sections(
             .map(row)
             .collect();
         if !rows.is_empty() {
-            made.push(ChannelSection { title, rows });
+            made.push(ChannelSection {
+                category_id: None,
+                title,
+                rows,
+            });
         }
     }
     // The server lists a category only while it holds a channel that the person sees or
@@ -2402,6 +2409,7 @@ fn sections(
             .map(row)
             .collect();
         made.push(ChannelSection {
+            category_id: Some(category.id),
             title: SectionTitle::Category(category.name.clone()),
             rows,
         });

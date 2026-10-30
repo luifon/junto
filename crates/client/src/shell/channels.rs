@@ -376,9 +376,83 @@ impl Shell {
                 SectionTitle::VoiceChannels => text::VOICE_CHANNELS.into(),
                 SectionTitle::Category(name) => name.clone().into(),
             };
+            let key: SharedString = format!(
+                "section-menu:{account_owner:?}:{workspace_id}:{:?}",
+                section
+                    .category_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| format!("{:?}", section.title))
+            )
+            .into();
+            let selector = section
+                .category_id
+                .map(|id| format!("category-header:{id}"))
+                .unwrap_or_else(|| format!("section-header:{workspace_id}:{position}"));
+            let header = CategoryHeader::new(title)
+                .first(position == 0)
+                .menu_id(key)
+                .when_some(
+                    section.category_id.zip(account_owner),
+                    |header, (category_id, owner)| {
+                        header.action(crate::ui::RowAction::new(
+                            text::CATEGORY_SETTINGS,
+                            cx.listener(move |this, _, window, cx| {
+                                if this
+                                    .state
+                                    .read(cx)
+                                    .server(owner.entry.server_id)
+                                    .is_some_and(|server| server.owner() == Some(owner))
+                                {
+                                    this.open_admin(
+                                        crate::state::admin::AdminOpen::Category {
+                                            server_id: owner.entry.server_id,
+                                            workspace_id,
+                                            category_id,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        ))
+                    },
+                )
+                .when_some(
+                    account_owner.filter(|_| !section.rows.is_empty()),
+                    |header, owner| {
+                        let channels: Vec<_> = section.rows.iter().map(|row| row.id).collect();
+                        let mut action = crate::ui::RowAction::new(
+                            text::MARK_AS_READ,
+                            cx.listener(move |this, _, _, cx| {
+                                if this
+                                    .state
+                                    .read(cx)
+                                    .server(owner.entry.server_id)
+                                    .is_some_and(|server| server.owner() == Some(owner))
+                                {
+                                    this.state.update(cx, |state, _| {
+                                        for id in &channels {
+                                            state.mark_place_as_read(
+                                                owner.entry.server_id,
+                                                junto_client_core::model::PlaceId::Channel(*id),
+                                            );
+                                        }
+                                    });
+                                }
+                            }),
+                        );
+                        action.disabled = section
+                            .rows
+                            .iter()
+                            .all(|row| row.unread.messages == 0 && row.unread.mentions == 0);
+                        header.action(action)
+                    },
+                );
             rows.push(
-                CategoryHeader::new(title)
-                    .first(position == 0)
+                div()
+                    .debug_selector(move || selector)
+                    .flex_none()
+                    .child(header)
                     .into_any_element(),
             );
             let mut after_occupants = false;

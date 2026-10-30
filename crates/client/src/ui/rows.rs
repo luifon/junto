@@ -193,6 +193,8 @@ impl RenderOnce for WorkspaceRow {
 /// The label above a group of channels.
 #[derive(IntoElement)]
 pub struct CategoryHeader {
+    menu_id: Option<ElementId>,
+    actions: Vec<super::RowAction>,
     name: SharedString,
     first: bool,
     count: Option<SharedString>,
@@ -201,10 +203,22 @@ pub struct CategoryHeader {
 impl CategoryHeader {
     pub fn new(name: impl Into<SharedString>) -> Self {
         Self {
+            menu_id: None,
+            actions: Vec::new(),
             name: name.into(),
             first: false,
             count: None,
         }
+    }
+
+    pub fn menu_id(mut self, id: impl Into<ElementId>) -> Self {
+        self.menu_id = Some(id.into());
+        self
+    }
+
+    pub fn action(mut self, action: super::RowAction) -> Self {
+        self.actions.push(action);
+        self
     }
 
     /// The count of what waits in the section, drawn after its name.
@@ -221,9 +235,33 @@ impl CategoryHeader {
 }
 
 impl RenderOnce for CategoryHeader {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
-        div()
+        let ring = focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let id = self
+            .menu_id
+            .unwrap_or_else(|| format!("section-header:{}", self.name).into());
+        let copied = self.name.to_string();
+        let mut actions = vec![super::RowAction::new(
+            crate::text::COPY_NAME,
+            move |_, window, cx| {
+                window.dispatch_action(
+                    Box::new(super::CopyToClipboard {
+                        text: copied.clone(),
+                    }),
+                    cx,
+                );
+            },
+        )];
+        actions.extend(self.actions);
+        let frame = div()
+            .id(id.clone())
+            .relative()
+            .role(Role::Group)
+            .aria_label(self.name.clone())
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
             .flex()
             .flex_none()
             .items_center()
@@ -258,7 +296,8 @@ impl RenderOnce for CategoryHeader {
                     .flex_1()
                     .h(gpui::px(1.0))
                     .bg(Hsla::from(theme.colors.rule)),
-            )
+            );
+        super::bind_action_menu(frame, id, actions, window, cx)
     }
 }
 
