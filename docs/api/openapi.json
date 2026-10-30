@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Junto server API",
-    "description": "The public application API of a Junto server. Every route is under the version prefix, except the server information route, which tells a client which versions the server supports.",
+    "description": "The public application API of a Junto server. Every route is under the version prefix, except the server information route, which tells a client which versions the server supports. Junto-Event-Revision advertises a reader's document decoder revision; without it message reads use v1 paragraphs and quotes. Message extensions require the revision advertised by /api/v1/message-format.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -3171,6 +3171,57 @@
       }
     },
     "/api/v1/channels/{channel_id}": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "One channel the caller can see, including an archived channel.",
+        "operationId": "get_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "delete": {
         "tags": [
           "channels"
@@ -7054,6 +7105,48 @@
         ]
       }
     },
+    "/api/v1/message-format": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "supported",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentFormat"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/messages/{message_id}": {
       "get": {
         "tags": [
@@ -7467,6 +7560,109 @@
         ]
       }
     },
+    "/api/v1/messages/{message_id}/reactions": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "reaction_people",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "emoji",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AccountId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/AccountId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReactionPeople"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/messages/{message_id}/thread": {
       "get": {
         "tags": [
@@ -7846,6 +8042,51 @@
                 "schema": {
                   "$ref": "#/components/schemas/ThreadState"
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/messages/{message_id}/unread": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "mark_unread",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
               }
             }
           },
@@ -14968,6 +15209,79 @@
           {
             "type": "object",
             "required": [
+              "level",
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "heading"
+                ]
+              },
+              "level": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "small"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "server",
+              "message_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "forward"
+                ]
+              },
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "server": {
+                "$ref": "#/components/schemas/Origin"
+              },
+              "verified": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "content",
               "kind"
             ],
@@ -16527,6 +16841,19 @@
         },
         "additionalProperties": false
       },
+      "DocumentFormat": {
+        "type": "object",
+        "required": [
+          "event_revision"
+        ],
+        "properties": {
+          "event_revision": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "EditMessage": {
         "type": "object",
         "required": [
@@ -16939,6 +17266,27 @@
           {
             "type": "object",
             "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "spoiler"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "text",
               "kind"
             ],
@@ -16997,6 +17345,24 @@
               },
               "url": {
                 "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "channel_id",
+              "kind"
+            ],
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
               }
             }
           },
@@ -17383,6 +17749,14 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "read_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -17654,6 +18028,11 @@
           },
           "place": {
             "$ref": "#/components/schemas/MessagePlace"
+          },
+          "read_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "unread": {
             "type": "integer",
@@ -18391,6 +18770,61 @@
           },
           "own": {
             "type": "boolean"
+          }
+        }
+      },
+      "ReactionPeople": {
+        "type": "object",
+        "required": [
+          "people"
+        ],
+        "properties": {
+          "next_after": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReactionPerson"
+            }
+          },
+          "previous_before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ReactionPerson": {
+        "type": "object",
+        "required": [
+          "id",
+          "departed"
+        ],
+        "properties": {
+          "departed": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -20938,6 +21372,11 @@
             "minimum": 0
           },
           "mentions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "read_revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0

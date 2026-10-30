@@ -1476,19 +1476,19 @@ async fn rule_d14_the_statements_of_the_purge_read_through_indexes() {
     }
     // The rows of many accounts for the messages of one page, and the next page.
     let dependents = [
-        "thread_reads_pkey",
-        "thread_reply_authors_order",
-        "notifications_message",
-        "message_mention_accounts_message",
-        "message_mentions_notified_pkey",
-        "message_mentions_message",
-        "message_reactions_pkey",
+        &["thread_reads_pkey"][..],
+        &["thread_reply_authors_order"][..],
+        &["notifications_message"][..],
+        &["message_mention_accounts_message"][..],
+        &["message_mentions_notified_pkey"][..],
+        &["message_mentions_message"][..],
+        &["message_reactions_pkey", "message_reaction_people"][..],
     ];
     assert_eq!(
         dependents.len(),
         junto_server::purge::MESSAGE_DEPENDENTS.len()
     );
-    for ((table, column), index) in junto_server::purge::MESSAGE_DEPENDENTS
+    for ((table, column), indexes) in junto_server::purge::MESSAGE_DEPENDENTS
         .iter()
         .zip(dependents)
     {
@@ -1499,7 +1499,10 @@ async fn rule_d14_the_statements_of_the_purge_read_through_indexes() {
             .fetch_one(&mut *connection)
             .await
             .unwrap_or_else(|error| panic!("{table}: {error}"));
-        assert!(uses_index(&plan, index), "{table}: {plan}");
+        assert!(
+            indexes.iter().any(|index| uses_index(&plan, index)),
+            "{table}: {plan}"
+        );
         let mut scans = Vec::new();
         sequential_scans(&plan, &mut scans);
         assert!(scans.is_empty(), "{table}: {scans:?} {plan}");

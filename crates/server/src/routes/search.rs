@@ -3,7 +3,7 @@ use crate::{
     access::Access,
     error::{ApiError, ApiResult},
     extract::{ApiQuery, Bearer},
-    messages::Place,
+    messages::{self, Place},
     read,
     state::AppState,
 };
@@ -128,8 +128,11 @@ pub async fn search(
              select page.*,case when page.transcript then (
                  select l.search_text from transcript_lines l
                  where l.recording_id=page.id and l.line=page.line)
-             else (select message_search_text(m.document) from messages m where m.id=page.id)
-             end as text from page order by page.rank desc,page.id desc,page.line desc")
+             else null::text end as text,
+             case when not page.transcript then (
+                 select m.document from messages m where m.id=page.id)
+             else null::jsonb end as document
+             from page order by page.rank desc,page.id desc,page.line desc")
             .bind(&query.q)
             .bind(allowed.ids())
             .bind(access.account_id)
@@ -152,6 +155,11 @@ pub async fn search(
             let rank: f32 = row.try_get("rank")?;
             next = Some(format!("{rank}:{id}:{line}"));
             let transcript: bool = row.try_get("transcript")?;
+            let document = row.try_get::<Option<sqlx::types::Json<junto_protocol::message::Document>>, _>("document")?;
+            let text = if let Some(document) = document {
+                messages::document::preview_text(&document.0)
+            } else { row.try_get::<Option<String>, _>("text")?.unwrap_or_default() };
+            let text = text.chars().take(512).collect();
             results.push(SearchHit {
                 message_id: (!transcript).then(|| MessageId::from_uuid(id)),
                 recording_id: transcript.then(|| RecordingId::from_uuid(id)),
@@ -160,7 +168,7 @@ pub async fn search(
                 workspace_id: row.try_get("workspace_id")?,
                 author_id: row.try_get("author_id")?,
                 created_at: row.try_get("created_at")?,
-                text: row.try_get("text")?,
+                text,
                 rank,
                 position: row
                     .try_get::<Option<i64>, _>("position")?

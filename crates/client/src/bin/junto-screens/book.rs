@@ -56,6 +56,7 @@ fn harbor_with_direct(mentions: u64) -> ServerSnapshot {
             high_account_id: luca.max(ana),
         };
         model.message_states = vec![MessageState {
+            read_revision: 0,
             place: MessagePlace::Direct {
                 conversation_id: conversation.id,
                 low_account_id: conversation.low_account_id,

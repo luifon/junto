@@ -337,6 +337,34 @@ async fn world() -> World {
             &unknown,
         ),
         operation(
+            Method::GET,
+            "/api/v1/message-format",
+            &[],
+            none.clone(),
+            &[],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/messages/{message_id}/unread",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/messages/{message_id}/reactions",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
             Method::PUT,
             "/api/v1/messages/{message_id}",
             &[&absent],
@@ -1682,6 +1710,8 @@ async fn world() -> World {
     for operation in &mut operations {
         if operation.template == "/api/v1/search" {
             operation.path.push_str("?q=sample");
+        } else if operation.template == "/api/v1/messages/{message_id}/reactions" {
+            operation.path.push_str("?emoji=%F0%9F%91%8D");
         }
     }
     World {

@@ -604,6 +604,8 @@ pub enum Fault {
     /// Answers `invalid_request` and does not pass the request on: a refusal that the
     /// client does not try again.
     Refused,
+    /// A route that an older server does not implement.
+    NotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1084,15 +1086,22 @@ async fn serve(
         client.write_all(body).await?;
         return client.shutdown().await;
     }
-    if fault == Some(Fault::Refused) {
-        let body =
-            br#"{"error":{"code":"invalid_request","message":"the proxy of the test refused"}}"#;
+    if fault == Some(Fault::Refused) || fault == Some(Fault::NotFound) {
+        let (status, reason, body): (u16, &str, &[u8]) = if fault == Some(Fault::NotFound) {
+            (
+                404,
+                "Not Found",
+                br#"{"error":{"code":"not_found","message":"the old server has no route"}}"#,
+            )
+        } else {
+            (400, "Bad Request", br#"{"error":{"code":"invalid_request","message":"the proxy of the test refused"}}"#)
+        };
         let head = format!(
-            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+            "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n\
              content-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         );
-        answered(400, body);
+        answered(status, body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(body).await?;
         return client.shutdown().await;

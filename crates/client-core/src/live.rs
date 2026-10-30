@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
-use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId};
+use junto_protocol::ids::{
+    AccountId, AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId,
+};
 use junto_protocol::message::Document;
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -84,6 +86,8 @@ pub struct LiveView {
 /// is the truth; a reader that only draws the state does not need the notices.
 #[derive(Debug, Clone)]
 pub enum Notice {
+    /// Transient activity, or a reset after losing its connection. It changes no model cursor.
+    Typing(Option<junto_protocol::typing::Typing>),
     /// An event was applied to the state.
     Event {
         id: u64,
@@ -120,6 +124,11 @@ pub enum LoadError {
 
 pub(crate) enum Command {
     PresenceNotifications,
+    Typing {
+        account_id: AccountId,
+        place: PlaceId,
+        lifetime_ms: u32,
+    },
     Refresh {
         reply: oneshot::Sender<Result<Cursor, LoadError>>,
     },
@@ -148,8 +157,12 @@ pub(crate) enum Command {
     MarkRead {
         place: PlaceId,
         position: u64,
+        explicit: bool,
     },
-    Enqueue(Box<PendingMessage>),
+    Enqueue {
+        account_id: AccountId,
+        pending: Box<PendingMessage>,
+    },
     /// The uploads of a waiting message are complete: the upload of this client and the
     /// attachment that the server holds for it.
     FilesReady {
@@ -334,6 +347,14 @@ impl LiveServer {
         self.shared.send(Command::ReleaseMembers(workspace_id));
     }
 
+    pub fn typing(&self, account_id: AccountId, place: PlaceId, lifetime_ms: u32) {
+        self.shared.send(Command::Typing {
+            account_id,
+            place,
+            lifetime_ms,
+        });
+    }
+
     /// Asks for the messages of a place (ADR 0721). The first page is read, appears in
     /// the state as a timeline, and follows the events from then on. A place with unread
     /// messages opens at the read position of the account, and every other place at its
@@ -395,7 +416,20 @@ impl LiveServer {
     /// Moves the read position of the account in a place forward. The client sends one
     /// request for a place at a time, at most one in a second, with the newest position.
     pub fn mark_read(&self, place: PlaceId, position: u64) {
-        self.shared.send(Command::MarkRead { place, position });
+        self.shared.send(Command::MarkRead {
+            place,
+            position,
+            explicit: true,
+        });
+    }
+
+    /// Advances a visible list unless an explicit unread boundary paused it.
+    pub fn mark_seen(&self, place: PlaceId, position: u64) {
+        self.shared.send(Command::MarkRead {
+            place,
+            position,
+            explicit: false,
+        });
     }
 
     /// Puts a message into the state as one that waits to be sent, and sends it when all
@@ -408,11 +442,29 @@ impl LiveServer {
         reply_to: Option<MessageId>,
         files: Vec<PendingFile>,
     ) -> Option<u64> {
+        let account_id = self.shared.model()?.account.id;
+        self.enqueue_message_for(account_id, place, document, reply_to, files)
+    }
+
+    pub(crate) fn enqueue_message_for(
+        &self,
+        account_id: AccountId,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+        files: Vec<PendingFile>,
+    ) -> Option<u64> {
+        if self.shared.model()?.account.id != account_id {
+            return None;
+        }
         let id = self.shared.next_number();
         let created_at = OffsetDateTime::now_utc();
         let pending = PendingMessage::new(id, place, document, reply_to, files, created_at);
         self.shared
-            .send(Command::Enqueue(Box::new(pending)))
+            .send(Command::Enqueue {
+                account_id,
+                pending: Box::new(pending),
+            })
             .then_some(id)
     }
 

@@ -3,24 +3,24 @@
 //! rows are added before and after it.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, Context, Focusable, FollowMode, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, ListAlignment, ListOffset, ListState,
-    MouseButton, ParentElement, RenderImage, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window,
-    canvas, div, list, point, prelude::FluentBuilder, px,
+    ParentElement, RenderImage, RenderOnce, Role, SharedString, StatefulInteractiveElement,
+    StrikethroughStyle, Styled, StyledText, UnderlineStyle, Window, canvas, div, list, point,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::Departure;
-use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
+use junto_client_core::protocol::ids::{AttachmentId, ChannelId, MessageId, ServerId};
 use junto_client_core::protocol::message::{
     Attachment, Block, Document, Inline, Mark, Message, Reaction,
 };
@@ -37,13 +37,12 @@ use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
 };
-use crate::state::people::ServerFaces;
 use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, Menu, MenuItem, Notice, StatePanel, StyleExt, focus_ring_inside,
-    icon, ledge, tooltip,
+    Avatar, Button, ButtonKind, ContextMenuExt, Menu, MenuItem, Notice, StatePanel, StyleExt,
+    focus_ring_inside, icon, ledge, tooltip,
 };
 
 /// The side of a picture of an author in the thread line of a message, in pixels of the
@@ -378,7 +377,7 @@ pub(crate) enum MessageShape {
     Wide,
     /// In a list of a side panel.
     Compact,
-    /// In a side panel, without its actions, its menu, its pin mark and the mark of its
+    /// In a side panel, with read actions and without its action bar, its pin mark or the mark of its
     /// thread: the root of the thread of the side panel, and a message of the pin list.
     Bare,
 }
@@ -389,6 +388,15 @@ pub(crate) struct MessageMenuOpen {
     pub message_id: MessageId,
     /// The list that the message was drawn in.
     pub pane: Pane,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposerMenuOpen {
+    pub pane: Pane,
+    pub server_id: ServerId,
+    pub place: PlaceId,
+    pub owner: junto_client_core::Owner,
 }
 
 /// True when the server marked the file as a picture that a client can show (ADR 0408).
@@ -467,6 +475,13 @@ fn extension(name: &str) -> SharedString {
         )
 }
 
+#[derive(Clone, Copy)]
+struct RichStyle<'a> {
+    theme: &'a Theme,
+    drawings: &'a Drawings,
+    presence: Option<&'a crate::state::people::ServerFaces>,
+}
+
 /// The text of inline content with the styles of its parts.
 struct Rich {
     text: String,
@@ -475,6 +490,10 @@ struct Rich {
     /// The parts that open an address, with the address.
     links: Vec<(Range<usize>, Link)>,
     profiles: Vec<(Range<usize>, crate::ui::OpenProfile, String)>,
+    channels: Vec<(Range<usize>, ChannelId)>,
+    spoilers: Vec<(Range<usize>, Vec<usize>)>,
+    copy_targets: Vec<(Range<usize>, String)>,
+    replacements: Vec<(Range<usize>, String)>,
 }
 
 impl Rich {
@@ -482,6 +501,7 @@ impl Rich {
     fn of(content: &[Inline], names: &Names, theme: &Theme, drawings: &Drawings) -> Self {
         Self::with_presence(content, names, theme, drawings, None)
     }
+    #[cfg(test)]
     fn with_presence(
         content: &[Inline],
         names: &Names,
@@ -489,15 +509,56 @@ impl Rich {
         drawings: &Drawings,
         presence: Option<&crate::state::people::ServerFaces>,
     ) -> Self {
-        let colors = theme.colors;
+        Self::shown(
+            content,
+            names,
+            RichStyle {
+                theme,
+                drawings,
+                presence,
+            },
+            &HashSet::new(),
+        )
+    }
+    fn shown(
+        content: &[Inline],
+        names: &Names,
+        style: RichStyle<'_>,
+        revealed: &HashSet<Vec<usize>>,
+    ) -> Self {
         let mut rich = Self {
             text: String::new(),
             highlights: Vec::new(),
             families: Vec::new(),
             links: Vec::new(),
             profiles: Vec::new(),
+            channels: Vec::new(),
+            spoilers: Vec::new(),
+            copy_targets: Vec::new(),
+            replacements: Vec::new(),
         };
-        for node in content {
+        rich.append(content, names, style, revealed, &[]);
+        rich
+    }
+
+    fn append(
+        &mut self,
+        content: &[Inline],
+        names: &Names,
+        style: RichStyle<'_>,
+        revealed: &HashSet<Vec<usize>>,
+        prefix: &[usize],
+    ) {
+        let RichStyle {
+            theme,
+            drawings,
+            presence,
+        } = style;
+        let colors = theme.colors;
+        let rich = self;
+        for (index, node) in content.iter().enumerate() {
+            let mut path = prefix.to_vec();
+            path.push(index);
             let start = rich.text.len();
             match node {
                 Inline::Text { text, marks } => {
@@ -522,10 +583,11 @@ impl Rich {
                 }
                 Inline::Code { text } => {
                     // A thin space at each end stands for the padding of the design.
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     let stand_ins = rich.push_shown(text, drawings);
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     let range = start..rich.text.len();
+                    rich.copy_targets.push((range.clone(), text.clone()));
                     let style = HighlightStyle {
                         color: Some(colors.terracotta_deep.into()),
                         background_color: Some(colors.code_wash.into()),
@@ -557,11 +619,62 @@ impl Rich {
                         ..HighlightStyle::default()
                     };
                     rich.style(range.clone(), style, &stand_ins, theme);
+                    rich.copy_targets.push((range.clone(), link.to_string()));
                     rich.links.push((range, link));
+                }
+                Inline::Spoiler { content } => {
+                    if revealed.contains(&path) {
+                        rich.append(content, names, style, revealed, &path);
+                    } else {
+                        rich.text.push_str(text::SPOILER);
+                        let range = start..rich.text.len();
+                        rich.highlights.push((
+                            range.clone(),
+                            HighlightStyle {
+                                color: Some(colors.travertine_hi.into()),
+                                background_color: Some(colors.ink_3.into()),
+                                ..HighlightStyle::default()
+                            },
+                        ));
+                        rich.copy_targets.push((
+                            range.clone(),
+                            crate::state::feed::copy_text(
+                                &Document {
+                                    blocks: vec![Block::Paragraph {
+                                        content: content.clone(),
+                                    }],
+                                },
+                                names,
+                            ),
+                        ));
+                        rich.spoilers.push((range, path));
+                    }
+                }
+                Inline::Channel { channel_id } => {
+                    rich.text.push('#');
+                    let name = names.channels.get(channel_id);
+                    rich.text
+                        .push_str(name.map_or(text::UNKNOWN_CHANNEL_REFERENCE, String::as_str));
+                    {
+                        let range = start..rich.text.len();
+                        rich.highlights.push((
+                            range.clone(),
+                            HighlightStyle {
+                                color: Some(colors.cypress_ink.into()),
+                                underline: Some(UnderlineStyle {
+                                    thickness: px(1.0),
+                                    color: None,
+                                    wavy: false,
+                                }),
+                                ..HighlightStyle::default()
+                            },
+                        ));
+                        rich.channels.push((range, *channel_id));
+                    }
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
                     let mut status_mark = None;
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     match node {
                         Inline::Account { account_id } => {
                             rich.text.push('@');
@@ -573,9 +686,12 @@ impl Rich {
                             );
                             if let Some(presence) = presence {
                                 let presence = presence.presence(*account_id);
+                                let decoration = rich.text.len();
                                 rich.text.push(' ');
                                 let start = rich.text.len();
                                 rich.text.push_str(text::presence::mark(presence));
+                                rich.replacements
+                                    .push((decoration..rich.text.len(), String::new()));
                                 status_mark = Some((start, presence));
                             }
                         }
@@ -590,7 +706,7 @@ impl Rich {
                         }
                         _ => rich.text.push_str(text::MENTION_EVERYONE),
                     }
-                    rich.text.push('\u{2009}');
+                    rich.padding();
                     if let Inline::Account { account_id } = node
                         && let Some(server) =
                             presence.and_then(crate::state::people::ServerFaces::server_id)
@@ -649,7 +765,6 @@ impl Rich {
                 }
             }
         }
-        rich
     }
 
     /// Adds `text` as the window shows it (ADR 0758). Returns the ranges of the stand-ins
@@ -657,12 +772,24 @@ impl Rich {
     fn push_shown(&mut self, text: &str, drawings: &Drawings) -> Vec<Range<usize>> {
         let start = self.text.len();
         let shown = drawings.shown(text);
+        self.replacements.extend(
+            shown
+                .replacements()
+                .map(|(from, to)| (start + to.start..start + to.end, text[from].to_owned())),
+        );
         let stand_ins = shown
             .stand_ins()
             .map(|range| start + range.start..start + range.end)
             .collect();
         self.text.push_str(&shown.text);
         stand_ins
+    }
+
+    fn padding(&mut self) {
+        let start = self.text.len();
+        self.text.push('\u{2009}');
+        self.replacements
+            .push((start..self.text.len(), String::new()));
     }
 
     /// Gives `range` the style `style`, and each stand-in inside it the colour of secondary
@@ -706,10 +833,29 @@ impl Rich {
             range.hash(&mut identity);
             target.hash(&mut identity);
         }
+        for (range, channel) in &self.channels {
+            range.hash(&mut identity);
+            channel.hash(&mut identity);
+        }
+        for (range, path) in &self.spoilers {
+            range.hash(&mut identity);
+            path.hash(&mut identity);
+        }
         identity.finish()
     }
-    fn element(self, id: usize) -> AnyElement {
-        RichElement { rich: self, id }.into_any_element()
+    fn element(
+        self,
+        id: usize,
+        open_channel: Option<ChannelOpener>,
+        reveal: Option<SpoilerOpener>,
+    ) -> AnyElement {
+        RichElement {
+            rich: self,
+            id,
+            open_channel,
+            reveal,
+        }
+        .into_any_element()
     }
 }
 
@@ -717,11 +863,15 @@ impl Rich {
 struct RichElement {
     rich: Rich,
     id: usize,
+    open_channel: Option<ChannelOpener>,
+    reveal: Option<SpoilerOpener>,
 }
 #[derive(Clone)]
 enum TextTarget {
     Link(Link),
     Profile(crate::ui::OpenProfile, String),
+    Channel(ChannelId),
+    Spoiler(Vec<usize>),
 }
 
 fn focused_highlights(
@@ -767,6 +917,10 @@ impl RenderOnce for RichElement {
             families,
             links,
             profiles,
+            channels,
+            spoilers,
+            copy_targets,
+            replacements,
         } = self.rich;
         let wrapper_id: gpui::ElementId = ("profile-text", self.id).into();
         let mut unique = std::collections::HashSet::new();
@@ -813,10 +967,22 @@ impl RenderOnce for RichElement {
                     .into_iter()
                     .map(|(range, target, label)| (range, TextTarget::Profile(target, label))),
             )
+            .chain(
+                channels
+                    .into_iter()
+                    .filter(|_| self.open_channel.is_some())
+                    .map(|(range, id)| (range, TextTarget::Channel(id))),
+            )
+            .chain(
+                spoilers
+                    .into_iter()
+                    .map(|(range, path)| (range, TextTarget::Spoiler(path))),
+            )
             .collect();
         targets.sort_by_key(|(range, _)| range.start);
         if targets.is_empty() {
-            return styled.into_any_element();
+            return crate::selectable::SelectableText::rich(styled, copy_targets, replacements)
+                .into_any_element();
         }
         let ranges = targets.iter().map(|(range, _)| range.clone()).collect();
         let hover = targets.clone();
@@ -825,6 +991,18 @@ impl RenderOnce for RichElement {
                 if let Some((_, target)) = targets.get(index) {
                     match target {
                         TextTarget::Link(link) => crate::opening::open_link(link, cx),
+                        TextTarget::Channel(id) => {
+                            if let Some(open) = &self.open_channel {
+                                open(*id, cx);
+                                cx.stop_propagation();
+                            }
+                        }
+                        TextTarget::Spoiler(path) => {
+                            if let Some(reveal) = &self.reveal {
+                                reveal(path.clone(), cx);
+                                cx.stop_propagation();
+                            }
+                        }
                         TextTarget::Profile(target, _) => {
                             window.dispatch_action(Box::new(*target), cx);
                             cx.stop_propagation();
@@ -840,10 +1018,13 @@ impl RenderOnce for RichElement {
                         let label = match target {
                             TextTarget::Link(link) => link.to_string(),
                             TextTarget::Profile(_, label) => label.clone(),
+                            TextTarget::Channel(_) => text::CHANNEL_REFERENCE.to_owned(),
+                            TextTarget::Spoiler(_) => text::REVEAL_SPOILER.to_owned(),
                         };
                         tooltip(label)(window, cx)
                     })
             });
+        let text = crate::selectable::SelectableText::rich(text, copy_targets, replacements);
         let Some((focus, selected)) = focus_state else {
             return text.into_any_element();
         };
@@ -886,18 +1067,124 @@ impl RenderOnce for RichElement {
     }
 }
 
-/// One block of a document in the list.
+type ChannelOpener = Rc<dyn Fn(ChannelId, &mut gpui::App)>;
+type SpoilerOpener = Rc<dyn Fn(Vec<usize>, &mut gpui::App)>;
+
+struct SpoilerReveals {
+    content: Vec<Inline>,
+    owner: Option<junto_client_core::Owner>,
+    paths: HashSet<Vec<usize>>,
+}
+
+#[derive(IntoElement)]
+struct RichParagraph {
+    content: Vec<Inline>,
+    names: Names,
+    theme: Theme,
+    drawings: Drawings,
+    presence: crate::state::people::ServerFaces,
+    id: usize,
+    owner: Option<junto_client_core::Owner>,
+    open_channel: Option<ChannelOpener>,
+}
+
+impl gpui::RenderOnce for RichParagraph {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let style = RichStyle {
+            theme: &self.theme,
+            drawings: &self.drawings,
+            presence: Some(&self.presence),
+        };
+        if !junto_client_core::protocol::message::inline_nodes(&self.content)
+            .any(|(node, _)| matches!(node, Inline::Spoiler { .. }))
+        {
+            return Rich::shown(&self.content, &self.names, style, &HashSet::new()).element(
+                self.id,
+                self.open_channel,
+                None,
+            );
+        }
+        let state = window.use_keyed_state(("spoiler-state", self.id), cx, |_, _| SpoilerReveals {
+            content: self.content.clone(),
+            owner: self.owner,
+            paths: HashSet::new(),
+        });
+        state.update(cx, |state, _| {
+            if state.content != self.content || state.owner != self.owner {
+                state.content = self.content.clone();
+                state.owner = self.owner;
+                state.paths.clear();
+            }
+        });
+        let rich = Rich::shown(&self.content, &self.names, style, &state.read(cx).paths);
+        let first = rich.spoilers.first().map(|(_, path)| path.clone());
+        let reveal: SpoilerOpener = Rc::new(move |path, cx| {
+            state.update(cx, |state, cx| {
+                state.paths.insert(path);
+                cx.notify();
+            })
+        });
+        let keyboard = reveal.clone();
+        let ring = focus_ring_inside(
+            self.theme.colors.terracotta_deep,
+            self.theme.metrics.focus_ring,
+        );
+        div()
+            .id(("spoiler-control", self.id))
+            .when_some(first, |frame, first| {
+                frame
+                    .role(Role::Button)
+                    .aria_label(text::SPOILER_KEYBOARD)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            keyboard(first.clone(), cx);
+                            cx.stop_propagation();
+                        }
+                    })
+            })
+            .child(rich.element(self.id, self.open_channel, Some(reveal)))
+            .into_any_element()
+    }
+}
+
 fn paragraph(
     content: &[Inline],
     names: &Names,
-    theme: &Theme,
-    drawings: &Drawings,
-    presence: &crate::state::people::ServerFaces,
+    style: RichStyle<'_>,
     id: usize,
+    open_channel: &Option<ChannelOpener>,
+    owner: Option<junto_client_core::Owner>,
 ) -> AnyElement {
+    if !content
+        .iter()
+        .any(|node| matches!(node, Inline::Spoiler { .. }))
+    {
+        return div()
+            .id(("paragraph", id))
+            .min_w_0()
+            .child(Rich::shown(content, names, style, &HashSet::new()).element(
+                id,
+                open_channel.clone(),
+                None,
+            ))
+            .into_any_element();
+    }
     div()
+        .id(("paragraph", id))
         .min_w_0()
-        .child(Rich::with_presence(content, names, theme, drawings, Some(presence)).element(id))
+        .child(RichParagraph {
+            content: content.to_vec(),
+            names: names.clone(),
+            theme: style.theme.clone(),
+            drawings: style.drawings.clone(),
+            presence: style.presence.cloned().unwrap_or_default(),
+            id,
+            owner,
+            open_channel: open_channel.clone(),
+        })
         .into_any_element()
 }
 
@@ -983,6 +1270,9 @@ fn code_block(
     language: Option<&str>,
     tokens: &[(Range<usize>, Token)],
     theme: &Theme,
+    message_id: Option<MessageId>,
+    block_index: usize,
+    cx: &mut Context<Shell>,
 ) -> AnyElement {
     let colors = theme.colors;
     let colour = |token: Token| match token {
@@ -1004,6 +1294,7 @@ fn code_block(
             )
         })
         .collect();
+    let copy = code.to_owned();
     div()
         .relative()
         .flex_none()
@@ -1023,18 +1314,40 @@ fn code_block(
         .text_size(u(13.0))
         .line_height(u(19.0))
         .ink(colors.code_text)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(u(6.0))
+                .mb(u(4.0))
+                .text_size(u(12.0))
+                .ink(colors.bone_3)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(language.unwrap_or_default().to_owned())),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .debug_selector(move || match message_id {
+                            Some(id) => format!("copy-code:{id}:{block_index}"),
+                            None => format!("copy-code:{block_index}"),
+                        })
+                        .child(
+                            Button::new(("copy-code", block_index))
+                                .label(text::COPY)
+                                .tooltip(text::COPY_TEXT)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_text(copy.clone(), cx)
+                                })),
+                        ),
+                ),
+        )
         .child(StyledText::new(code.to_owned()).with_highlights(highlights))
-        .when_some(language, |block, language| {
-            block.child(
-                div()
-                    .absolute()
-                    .top(u(6.0))
-                    .right(u(9.0))
-                    .text_size(u(12.0))
-                    .ink(colors.bone_3)
-                    .child(SharedString::from(language.to_owned())),
-            )
-        })
         .into_any_element()
 }
 
@@ -1098,7 +1411,7 @@ impl Shell {
         if let Some(position) = feed.end_position.filter(|_| feed.unread > 0) {
             let (server_id, place) = (feed.server_id, feed.place);
             self.state
-                .update(cx, |state, _| state.mark_read(server_id, place, position));
+                .update(cx, |state, _| state.mark_seen(server_id, place, position));
         }
     }
 
@@ -1318,7 +1631,7 @@ impl Shell {
         pane: Pane,
         shown: &PaneShown<'_>,
         mut notices: Vec<AnyElement>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1463,9 +1776,12 @@ impl Shell {
                     None => self.render_composer(
                         pane,
                         shown.draft,
-                        compact,
-                        shown.permanent,
-                        shown.writing,
+                        super::composer::Mode {
+                            compact,
+                            permanent: shown.permanent,
+                            writing: shown.writing,
+                        },
+                        window,
                         cx,
                     ),
                 },
@@ -1609,6 +1925,43 @@ impl Shell {
         }
         shown.failed = (feed.reading.older_failed, feed.reading.newer_failed);
         let state = self.list(pane).list.clone();
+        let lane = if pane == Pane::Main { 0 } else { 1 };
+        self.text_selection.history(
+            lane,
+            state.clone(),
+            feed.rows.clone(),
+            feed.names.clone(),
+            || {
+                feed.rows
+                    .iter()
+                    .filter_map(|row| {
+                        let FeedRow::Message(row) = row else {
+                            return None;
+                        };
+                        let message = &row.message;
+                        let words = if message.deleted {
+                            text::DELETED_MESSAGE.to_owned()
+                        } else {
+                            message
+                                .document
+                                .as_ref()
+                                .map(|document| {
+                                    crate::state::feed::selection_text(document, &feed.names)
+                                })
+                                .unwrap_or_default()
+                        };
+                        Some((
+                            crate::selectable::MessageKey {
+                                lane,
+                                position: message.position,
+                                id: message.id,
+                            },
+                            words,
+                        ))
+                    })
+                    .collect()
+            },
+        );
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
         // The list lays out each row as a root, where a flex row takes the width of its
@@ -1817,19 +2170,20 @@ impl Shell {
                 };
                 self.render_message(index, row, feed, shape, window, cx)
             }
-            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, cx),
+            FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, window, cx),
         }
     }
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(
-        quote: &Quote,
-        faces: &ServerFaces,
-        theme: &Theme,
-        drawings: &Drawings,
-    ) -> AnyElement {
+    fn reply_line(&self, server_id: ServerId, quote: &Quote, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme(cx);
+        let faces = self.faces(server_id);
+        let drawings = Drawings::of(cx);
         let colors = theme.colors;
+        let message_id = quote.message_id;
+        let owner = self.state.read(cx).owner(server_id);
+        let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let (sentence, known): (StyledText, bool) = match &quote.text {
             QuoteText::Text(text) => (drawings.shown(text).styled(colors.ink_3.into()), true),
             QuoteText::File(name) => (StyledText::new(name.clone()), true),
@@ -1837,6 +2191,33 @@ impl Shell {
             QuoteText::Unknown => (StyledText::new(text::QUOTE_UNKNOWN), false),
         };
         div()
+            .id(SharedString::from(format!("reply-quote-{message_id}")))
+            .role(if owner.is_some() {
+                Role::Link
+            } else {
+                Role::Note
+            })
+            .aria_label(text::VIEW_QUOTED_MESSAGE)
+            .debug_selector(move || format!("reply-quote:{message_id}"))
+            .rounded(u(theme.metrics.radius_small))
+            .when(owner.is_some(), |line| {
+                line.focusable()
+                    .tab_stop(true)
+                    .cursor_pointer()
+                    .tooltip(tooltip(text::VIEW_QUOTED_MESSAGE))
+                    .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_reply_quote(server_id, message_id, owner, cx);
+                        cx.stop_propagation();
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.open_reply_quote(server_id, message_id, owner, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+            })
             .relative()
             .flex()
             .items_center()
@@ -1860,7 +2241,7 @@ impl Shell {
                     .border_color(Hsla::from(colors.rule)),
             )
             .when_some(quote.author_id, |line, author_id| {
-                line.child(super::people::avatar(faces, author_id, 14.0).radius(2.0))
+                line.child(super::people::avatar(&faces, author_id, 14.0).radius(2.0))
             })
             .when_some(quote.author.clone(), |line, author| {
                 line.child(
@@ -1870,7 +2251,7 @@ impl Shell {
                         .ink(colors.ink)
                         .child(match quote.author_id {
                             Some(account) => {
-                                super::people::person_name(faces, account, author, "reply-author")
+                                super::people::person_name(&faces, account, author, "reply-author")
                             }
                             None => author.into_any_element(),
                         }),
@@ -1886,19 +2267,61 @@ impl Shell {
             .into_any_element()
     }
 
+    fn open_reply_quote(
+        &mut self,
+        server_id: ServerId,
+        id: MessageId,
+        owner: Option<junto_client_core::Owner>,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            if owner.is_none() || state.owner(server_id) != owner {
+                return;
+            }
+            if let Some(address) = state.server(server_id).map(|server| server.entry().address) {
+                state.open_message_link(&address, id, cx);
+            }
+        });
+    }
+
     /// The blocks of a document. A check box takes a click when the person can edit its
     /// message: the third part of `message`.
-    fn document(
+    pub(super) fn document(
         &mut self,
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
         theme: &Theme,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let drawings = Drawings::of(cx);
         let presence = self.shown_faces();
+        let style = RichStyle {
+            theme,
+            drawings: &drawings,
+            presence: Some(&presence),
+        };
+        let spoiler_owner = names
+            .server_id
+            .and_then(|server_id| self.state.read(cx).owner(server_id));
+        let open_channel: Option<ChannelOpener> = names.server_id.and_then(|server_id| {
+            let owner = self.state.read(cx).owner(server_id)?;
+            let state = self.state.clone();
+            Some(Rc::new(move |channel_id, cx: &mut gpui::App| {
+                state.update(cx, |state, cx| {
+                    if state.owner(server_id) != Some(owner) {
+                        return;
+                    }
+                    if let Some(address) =
+                        state.server(server_id).map(|server| server.entry().address)
+                    {
+                        state.open_channel_link(&address, channel_id, cx);
+                    }
+                });
+            }) as ChannelOpener)
+        });
         let mut blocks = Vec::new();
         let mut texts = 0;
         let mut next = || {
@@ -1907,14 +2330,64 @@ impl Shell {
         };
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
+                Block::Forward {
+                    server,
+                    message_id,
+                    verified,
+                } => blocks.push(self.render_forward(
+                    server,
+                    *message_id,
+                    *verified,
+                    names.server_id,
+                    cx,
+                )),
+                Block::Heading { level, content } => {
+                    let (size, height) = match level {
+                        1 => (26.0, 32.0),
+                        2 => (22.0, 28.0),
+                        _ => (18.0, 24.0),
+                    };
+                    blocks.push(
+                        div()
+                            .text_size(u(size))
+                            .line_height(u(height))
+                            .font_weight(FontWeight::BOLD)
+                            .child(paragraph(
+                                content,
+                                names,
+                                style,
+                                next(),
+                                &open_channel,
+                                spoiler_owner,
+                            ))
+                            .into_any_element(),
+                    );
+                }
+                Block::Small { content } => {
+                    blocks.push(
+                        div()
+                            .text_size(u(12.0))
+                            .line_height(u(18.0))
+                            .ink(colors.ink_3)
+                            .child(paragraph(
+                                content,
+                                names,
+                                style,
+                                next(),
+                                &open_channel,
+                                spoiler_owner,
+                            ))
+                            .into_any_element(),
+                    );
+                }
                 Block::Paragraph { content } => {
                     blocks.push(paragraph(
                         content,
                         names,
-                        theme,
-                        &drawings,
-                        &presence,
+                        style,
                         next(),
+                        &open_channel,
+                        spoiler_owner,
                     ));
                 }
                 Block::Quote { content } => blocks.push(
@@ -1927,16 +2400,24 @@ impl Shell {
                         .child(paragraph(
                             content,
                             names,
-                            theme,
-                            &drawings,
-                            &presence,
+                            style,
                             next(),
+                            &open_channel,
+                            spoiler_owner,
                         ))
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
                     let tokens = self.code_tokens.of(text, language.as_deref());
-                    blocks.push(code_block(text, language.as_deref(), &tokens, theme));
+                    blocks.push(code_block(
+                        text,
+                        language.as_deref(),
+                        &tokens,
+                        theme,
+                        message.map(|(_, message, _)| message.id),
+                        block_index,
+                        cx,
+                    ));
                 }
                 Block::List { ordered, items } => {
                     for (number, item) in items.iter().enumerate() {
@@ -1957,7 +2438,14 @@ impl Shell {
                                         .ink(colors.ink_2)
                                         .child(mark),
                                 )
-                                .child(paragraph(item, names, theme, &drawings, &presence, next()))
+                                .child(paragraph(
+                                    item,
+                                    names,
+                                    style,
+                                    next(),
+                                    &open_channel,
+                                    spoiler_owner,
+                                ))
                                 .into_any_element(),
                         );
                     }
@@ -2038,10 +2526,10 @@ impl Shell {
                                 .child(paragraph(
                                     &item.content,
                                     names,
-                                    theme,
-                                    &drawings,
-                                    &presence,
+                                    style,
                                     next(),
+                                    &open_channel,
+                                    spoiler_owner,
                                 ))
                                 .into_any_element(),
                         );
@@ -2049,7 +2537,23 @@ impl Shell {
                 }
             }
         }
-        blocks
+        if document.forward_origins() == 1 {
+            vec![
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(4.0))
+                    .my(u(4.0))
+                    .p(u(10.0))
+                    .border_l_3()
+                    .border_color(colors.rule)
+                    .bg(colors.plaster)
+                    .children(blocks)
+                    .into_any_element(),
+            ]
+        } else {
+            blocks
+        }
     }
 
     /// The reactions of a message, and the control that adds one.
@@ -2071,77 +2575,114 @@ impl Shell {
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
         let drawings = Drawings::of(cx);
-        let chips = message.reactions.iter().enumerate().map(|(index, held)| {
-            let Reaction { emoji, count, own } = held.clone();
-            let shown = SharedString::from(drawings.shown(&emoji).into_owned());
-            let stand_in = shown.as_ref() != emoji.as_str();
-            let label: SharedString = text::reaction_label(&shown, count, own).into();
-            let sent = emoji.clone();
-            let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-            let acts = can_react && (own || may_add);
-            let reason = (can_react && !acts)
-                .then(|| text::not_permitted(WorkspacePermission::AddReactions));
-            div()
-                .id(("reaction", index))
-                .role(if can_react { Role::Button } else { Role::Note })
-                .aria_label(label.clone())
-                .debug_selector(move || format!("reaction:{message_id}:{index}"))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(5.0))
-                .h(u(23.0))
-                .px(u(7.0))
-                .rounded(u(theme.metrics.radius))
-                .border_1()
-                .border_color(Hsla::from(if own {
-                    colors.terracotta_wash_rule
-                } else {
-                    colors.rule
-                }))
-                .bg(Hsla::from(if own {
-                    colors.terracotta_wash
-                } else {
-                    colors.travertine_hi
-                }))
-                .text_size(u(13.0))
-                .line_height(u(17.0))
-                .tooltip(tooltip(match reason {
-                    Some(reason) => SharedString::from(format!("{label} {reason}")),
-                    None => label.clone(),
-                }))
-                .when_some(reason, |chip, reason| {
-                    chip.aria_description(reason).cursor_not_allowed()
-                })
-                .when(acts, |chip| {
-                    chip.cursor_pointer()
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(move |style| style.shadow(ring))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let emoji = sent.clone();
-                            this.state.update(cx, |state, cx| {
-                                state.react(server_id, message_id, emoji, !own, cx);
-                            });
-                        }))
-                })
-                .child(
-                    div()
-                        .when(stand_in, |sign| sign.ink(colors.ink_3))
-                        .child(crate::ui::paint_text(shown, None)),
-                )
-                .child(
-                    div()
-                        .text_size(u(12.5))
-                        .font_weight(FontWeight::BOLD)
-                        .ink(if own {
-                            colors.terracotta_deep
-                        } else {
-                            colors.ink_2
-                        })
-                        .child(SharedString::from(count.to_string())),
-                )
+        let first_key = message.reactions.first().and_then(|reaction| {
+            self.reactor_key(
+                server_id,
+                PlaceId::of_message(message),
+                message_id,
+                reaction.emoji.clone(),
+                cx,
+            )
         });
+        let emojis: Vec<String> = message
+            .reactions
+            .iter()
+            .map(|reaction| reaction.emoji.clone())
+            .collect();
+        let chips: Vec<_> = message
+            .reactions
+            .iter()
+            .enumerate()
+            .map(|(index, held)| {
+                let Reaction { emoji, count, own } = held.clone();
+                let shown = SharedString::from(drawings.shown(&emoji).into_owned());
+                let stand_in = shown.as_ref() != emoji.as_str();
+                let label: SharedString = text::reaction_label(&shown, count, own).into();
+                let sent = emoji.clone();
+                let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+                let acts = can_react && (own || may_add);
+                let reason = (can_react && !acts)
+                    .then(|| text::not_permitted(WorkspacePermission::AddReactions));
+                div()
+                    .id(("reaction", index))
+                    .role(if can_react { Role::Button } else { Role::Note })
+                    .aria_label(label.clone())
+                    .debug_selector(move || format!("reaction:{message_id}:{index}"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(5.0))
+                    .h(u(23.0))
+                    .px(u(7.0))
+                    .rounded(u(theme.metrics.radius))
+                    .border_1()
+                    .border_color(Hsla::from(if own {
+                        colors.terracotta_wash_rule
+                    } else {
+                        colors.rule
+                    }))
+                    .bg(Hsla::from(if own {
+                        colors.terracotta_wash
+                    } else {
+                        colors.travertine_hi
+                    }))
+                    .text_size(u(13.0))
+                    .line_height(u(17.0))
+                    .tooltip({
+                        let caption = match reason {
+                            Some(reason) => SharedString::from(format!("{label} {reason}")),
+                            None => label.clone(),
+                        };
+                        let key = self.reactor_key(
+                            server_id,
+                            PlaceId::of_message(message),
+                            message_id,
+                            emoji.clone(),
+                            cx,
+                        );
+                        let state = self.state.clone();
+                        move |window, cx| match &key {
+                            Some(key) => super::reaction_people::tooltip(
+                                state.clone(),
+                                key.clone(),
+                                caption.clone(),
+                            )(window, cx),
+                            None => tooltip(caption.clone())(window, cx),
+                        }
+                    })
+                    .when_some(reason, |chip, reason| {
+                        chip.aria_description(reason).cursor_not_allowed()
+                    })
+                    .when(acts, |chip| {
+                        chip.cursor_pointer()
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(move |style| style.shadow(ring))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let emoji = sent.clone();
+                                this.state.update(cx, |state, cx| {
+                                    state.react(server_id, message_id, emoji, !own, cx);
+                                });
+                            }))
+                    })
+                    .child(
+                        div()
+                            .when(stand_in, |sign| sign.ink(colors.ink_3))
+                            .child(crate::ui::paint_text(shown, None)),
+                    )
+                    .child(
+                        div()
+                            .text_size(u(12.5))
+                            .font_weight(FontWeight::BOLD)
+                            .ink(if own {
+                                colors.terracotta_deep
+                            } else {
+                                colors.ink_2
+                            })
+                            .child(SharedString::from(count.to_string())),
+                    )
+            })
+            .collect();
         Some(
             div()
                 .flex()
@@ -2169,6 +2710,29 @@ impl Shell {
                             .cursor_not_allowed()
                             .tooltip(tooltip(refused))
                             .child(icon(Icon::SmilePlus, 14.0, colors.ink_3)),
+                    )
+                })
+                .when_some(first_key, |row, key| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("reaction-people:{message_id}"))
+                            .child(
+                                Button::new("reaction-people")
+                                    .kind(ButtonKind::Ghost)
+                                    .h(u(23.0))
+                                    .px(u(5.0))
+                                    .icon(Icon::People)
+                                    .tooltip(text::WHO_REACTED)
+                                    .accessible_label(text::WHO_REACTED)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_reaction_people(
+                                            key.clone(),
+                                            emojis.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            ),
                     )
                 })
                 .when(may_add, |row| {
@@ -2406,16 +2970,16 @@ impl Shell {
 
     /// The files of a message: a picture inline, every other file as a row with its size
     /// and the state of its download.
-    fn attachments(
+    pub(super) fn attachments(
         &mut self,
-        feed: &Feed,
+        server_id: ServerId,
+        place_id: PlaceId,
         message: &Message,
         window: &Window,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
-        let server_id = feed.server_id;
         let message_id = message.id;
         self.message_pictures.fit = list_fit(window);
         // The pictures of the message, which the viewer shows one after the other.
@@ -2445,7 +3009,7 @@ impl Shell {
                     let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
                     let attachment_id = attachment.id;
-                    let slot: SharedString = format!("{:?}:{attachment_id}", feed.place).into();
+                    let slot: SharedString = format!("{place_id:?}:{attachment_id}").into();
                     let picture: AnyElement = match held {
                         Some(Picture::Ready(image)) => {
                             moving::picture(image.clone(), slot, &self.message_pictures.playback)
@@ -2771,6 +3335,54 @@ impl Shell {
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
         let channel_id = crate::state::feed::channel_of(feed.place);
+        let owner = self.state.read(cx).owner(server_id);
+        let drawings = Drawings::of(cx);
+        let recent: Vec<_> = self
+            .state
+            .read(cx)
+            .recent_emoji()
+            .iter()
+            .filter_map(|value| emojis::get(value))
+            .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
+            .take(3)
+            .collect();
+        let quick: Vec<_> = if row.can_react && !row.react_refused {
+            recent
+                .into_iter()
+                .enumerate()
+                .map(|(index, emoji)| {
+                    let sign = emoji.as_str();
+                    div()
+                        .flex_none()
+                        .debug_selector(move || format!("quick-emoji:{message_id}:{sign}"))
+                        .child(
+                            Button::new(("quick-emoji", index))
+                                .kind(ButtonKind::Ghost)
+                                .label(sign)
+                                .tooltip(emoji.name())
+                                .h(u(22.0))
+                                .w(u(26.0))
+                                .px(u(1.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.state.read(cx).owner(server_id) == owner {
+                                        this.state.update(cx, |state, cx| {
+                                            state.react(
+                                                server_id,
+                                                message_id,
+                                                sign.to_owned(),
+                                                true,
+                                                cx,
+                                            )
+                                        });
+                                    }
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let action = |id: &'static str, shown: Icon, label: &'static str| {
             div()
                 .id(id)
@@ -2811,6 +3423,9 @@ impl Shell {
             .top(u(-10.0))
             .right(u(18.0))
             .flex()
+            .flex_wrap()
+            .max_w_full()
+            .justify_end()
             .items_center()
             .gap(u(1.0))
             .px(u(3.0))
@@ -2820,6 +3435,23 @@ impl Shell {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
+            .when_some(row.message.document.as_ref(), |bar, document| {
+                let copied = self.copied_document(document, &feed.names, cx);
+                bar.child(
+                    div()
+                        .debug_selector(move || format!("copy-message:{message_id}"))
+                        .child(
+                            Button::new("copy-message")
+                                .kind(ButtonKind::Ghost)
+                                .label(text::COPY_TEXT)
+                                .h(u(22.0))
+                                .px(u(6.0))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_text(copied.clone(), cx)
+                                })),
+                        ),
+                )
+            })
             .when(row.can_react && row.react_refused, |bar| {
                 bar.child(refused(
                     "react",
@@ -2837,6 +3469,7 @@ impl Shell {
                     )),
                 )
             })
+            .children(quick)
             .when(row.can_reply, |bar| {
                 bar.child(
                     action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
@@ -3165,11 +3798,12 @@ impl Shell {
                     Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
+                    window,
                     cx,
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed, message, window, &theme, cx));
+            body.extend(self.attachments(feed.server_id, feed.place, message, window, &theme, cx));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {
@@ -3195,6 +3829,22 @@ impl Shell {
             body
         };
         let pane = Pane::of(feed.place);
+        let body = if bare {
+            body
+        } else {
+            vec![
+                self.text_selection
+                    .message(
+                        div().children(body),
+                        crate::selectable::MessageKey {
+                            lane: if pane == Pane::Main { 0 } else { 1 },
+                            position: message.position,
+                            id: message_id,
+                        },
+                    )
+                    .into_any_element(),
+            ]
+        };
         let header = (!row.grouped).then(|| {
             div()
                 .flex()
@@ -3234,10 +3884,20 @@ impl Shell {
                     )
                 })
         });
-        let open_menu = !bare
-            && matches!(&self.layer, Layer::MessageMenu(open)
-                if open.message_id == message_id && open.pane == pane);
-        let menu = open_menu.then(|| self.render_message_menu(row, feed, window, cx));
+        let open_menu = matches!(&self.layer, Layer::MessageMenu(open)
+                if open.message_id == message_id && open.pane == pane && open.read_only == bare);
+        let menu = open_menu.then(|| {
+            let mut shown = row.clone();
+            if bare {
+                shown.can_react = false;
+                shown.can_reply = false;
+                shown.can_thread = false;
+                shown.can_pin = false;
+                shown.can_edit = false;
+                shown.can_delete = false;
+            }
+            self.render_message_menu(&shown, feed, window, cx)
+        });
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         // A message without an action has no bar and no menu: a permanent one still has the
         // bar, which states that it cannot be changed.
@@ -3283,42 +3943,54 @@ impl Shell {
                 frame.hover(move |style| style.bg(Hsla::from(colors.row_hover)))
             })
             .when(open_menu, |frame| frame.bg(Hsla::from(colors.row_hover)))
-            .when(!message.deleted && !bare, |frame| {
+            .when(!message.deleted, |frame| {
                 let has_actions = row.has_actions();
-                let (by_click, by_key) = (
-                    cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                        if has_actions {
-                            this.open_message_menu(pane, message_id, window, cx);
-                        }
-                    }),
-                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                        let keys = &event.keystroke;
-                        let opens = match keys.key.as_str() {
-                            "menu" | "enter" | "space" => true,
-                            "f10" => keys.modifiers.shift,
-                            _ => false,
-                        };
-                        if opens && has_actions {
-                            this.open_message_menu(pane, message_id, window, cx);
-                            cx.stop_propagation();
-                        }
-                    }),
-                );
                 frame
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.shadow(ring))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        this.message_hovered(pane, message_id, *hovered, cx);
+                    .when(!bare, |frame| {
+                        frame.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            this.message_hovered(pane, message_id, *hovered, cx);
+                        }))
+                    })
+                    .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                        if has_actions {
+                            this.open_layer(
+                                Layer::MessageMenu(MessageMenuOpen {
+                                    pane,
+                                    message_id,
+                                    read_only: bare,
+                                }),
+                                window,
+                                cx,
+                            );
+                        }
                     }))
-                    .on_mouse_down(MouseButton::Right, by_click)
-                    .on_key_down(by_key)
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && has_actions
+                            {
+                                this.open_layer(
+                                    Layer::MessageMenu(MessageMenuOpen {
+                                        pane,
+                                        message_id,
+                                        read_only: bare,
+                                    }),
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
             })
             .children((message.pinned && !message.deleted && !bare).then(|| Self::pin_mark(&theme)))
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
+                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
             )
             .child(
                 div()
@@ -3366,6 +4038,7 @@ impl Shell {
         row: &WaitingRow,
         feed: &Feed,
         compact: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -3421,7 +4094,7 @@ impl Shell {
                 )
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
-        let body = self.document(&pending.document, None, &feed.names, &theme, cx);
+        let body = self.document(&pending.document, None, &feed.names, &theme, window, cx);
         div()
             .id(("waiting", index))
             .debug_selector(move || format!("waiting:{id}"))
@@ -3432,7 +4105,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &faces, &theme, &Drawings::of(cx))),
+                    .map(|quote| self.reply_line(feed.server_id, quote, cx)),
             )
             .child(
                 div()
@@ -3553,7 +4226,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_layer(
-            Layer::MessageMenu(MessageMenuOpen { message_id, pane }),
+            Layer::MessageMenu(MessageMenuOpen {
+                message_id,
+                pane,
+                read_only: false,
+            }),
             window,
             cx,
         );
@@ -3609,6 +4286,20 @@ impl Shell {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn readonly_text_point(
+        &self,
+        text: &str,
+        byte: usize,
+    ) -> Option<gpui::Point<gpui::Pixels>> {
+        self.text_selection.text_point(text, byte)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn painted_readonly_text(&self) -> Vec<String> {
+        self.text_selection.painted_text()
+    }
+
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
@@ -3628,7 +4319,7 @@ impl Shell {
         &mut self,
         row: &MessageRow,
         feed: &Feed,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let message_id = row.message.id;
@@ -3636,6 +4327,95 @@ impl Shell {
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
         let mut items = Vec::new();
+        if let Some(document) = &row.message.document {
+            let copied = self.copied_document(document, &feed.names, cx);
+            items.push(
+                MenuItem::new("message-copy-text", text::COPY_TEXT)
+                    .selector("message-copy-text")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.copy_text(copied.clone(), cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if !row.message.deleted {
+            items.push(
+                MenuItem::new("message-copy-link", text::COPY_MESSAGE_LINK)
+                    .selector("message-copy-link")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let link = this.state.read(cx).message_link(server_id, message_id);
+                        this.close_layer(window, cx);
+                        if let Some(link) = link {
+                            this.copy_text(link, cx);
+                        }
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if row.message.document.is_some() && !row.message.deleted {
+            items.push(
+                MenuItem::new("message-forward", text::FORWARD_MESSAGE)
+                    .selector("message-forward")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_forward(server_id, message_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if !row.message.deleted && row.message.position > 0 {
+            let place = PlaceId::of_message(&row.message);
+            items.push(
+                MenuItem::new("message-mark-unread", text::MARK_UNREAD)
+                    .selector("message-mark-unread")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.mark_message_unread(server_id, message_id, place, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if let Some(reaction) = row.message.reactions.first()
+            && let Some(key) = self.reactor_key(
+                server_id,
+                PlaceId::of_message(&row.message),
+                message_id,
+                reaction.emoji.clone(),
+                cx,
+            )
+        {
+            let emojis = row
+                .message
+                .reactions
+                .iter()
+                .map(|reaction| reaction.emoji.clone())
+                .collect::<Vec<_>>();
+            items.push(
+                MenuItem::new("message-reaction-people", text::WHO_REACTED)
+                    .selector("message-reaction-people")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if feed.unread > 0 {
+            let place = PlaceId::of_message(&row.message);
+            items.push(
+                MenuItem::new("message-mark-read", text::MARK_AS_READ)
+                    .selector("message-mark-read")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state
+                            .update(cx, |state, _| state.mark_place_as_read(server_id, place));
+                    }))
+                    .into_any_element(),
+            );
+        }
         if row.can_react && row.react_refused {
             items.push(
                 MenuItem::new("message-react", text::REACT)
@@ -3646,6 +4426,47 @@ impl Shell {
                     .into_any_element(),
             );
         } else if row.can_react {
+            let drawings = Drawings::of(cx);
+            let recent: Vec<_> = self
+                .state
+                .read(cx)
+                .recent_emoji()
+                .iter()
+                .filter_map(|value| emojis::get(value))
+                .filter(|emoji| drawings.drawing(emoji) != crate::emoji::Drawing::Broken)
+                .take(3)
+                .collect();
+            let owner = self.state.read(cx).owner(server_id);
+            for (index, emoji) in recent.into_iter().enumerate() {
+                items.push(
+                    MenuItem::new(
+                        ("message-quick-emoji", index),
+                        format!("{} {}", emoji.as_str(), emoji.name()),
+                    )
+                    .selector(
+                        [
+                            "message-quick-emoji-0",
+                            "message-quick-emoji-1",
+                            "message-quick-emoji-2",
+                        ][index],
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        if this.state.read(cx).owner(server_id) == owner {
+                            this.state.update(cx, |state, cx| {
+                                state.react(
+                                    server_id,
+                                    message_id,
+                                    emoji.as_str().to_owned(),
+                                    true,
+                                    cx,
+                                )
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+                );
+            }
             items.push(
                 MenuItem::new("message-react", text::REACT)
                     .icon(Icon::SmilePlus)
@@ -3732,21 +4553,16 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        gpui::deferred(
-            gpui::anchored().child(
-                // The menu opens at the start of the text of its message, inside the list.
-                div().absolute().top(u(4.0)).left(u(44.0)).child(
-                    Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
-                        .selector("message-menu")
-                        .on_close(Self::handler(cx, |this, window, cx| {
-                            this.close_layer(window, cx);
-                        }))
-                        .children(items),
-                ),
-            ),
-        )
-        .with_priority(1)
-        .into_any_element()
+        Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
+            .selector("message-menu")
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx);
+            }))
+            .children(items)
+            .popup(point(
+                u(44.0).to_pixels(window.rem_size()),
+                u(4.0).to_pixels(window.rem_size()),
+            ))
     }
 
     /// The question before a message is deleted: the deletion cannot be undone
@@ -3841,6 +4657,7 @@ fn system_line(
     let mut line = String::new();
     let mut strong = Vec::new();
     let mut profiles = Vec::new();
+    let mut replacements = Vec::new();
     for part in &row.parts {
         let start = line.len();
         line.push_str(&part.text);
@@ -3863,9 +4680,11 @@ fn system_line(
         }
         if let Some(account) = part.account {
             let presence = faces.presence(account);
+            let decoration = line.len();
             line.push(' ');
             let start = line.len();
             line.push_str(text::presence::mark(presence));
+            replacements.push((decoration..line.len(), String::new()));
             strong.push((
                 start..line.len(),
                 HighlightStyle {
@@ -3922,12 +4741,154 @@ fn system_line(
                                 families: Vec::new(),
                                 links: Vec::new(),
                                 profiles,
+                                channels: Vec::new(),
+                                spoilers: Vec::new(),
+                                copy_targets: Vec::new(),
+                                replacements,
                             }
-                            .element(0),
+                            .element(0, None, None),
                         ),
                 ),
         )
         .into_any_element()
+}
+
+impl Shell {
+    pub(crate) fn open_composer_menu(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(feed) = self.pane_feed(pane) else {
+            return;
+        };
+        let (server_id, place) = (feed.server_id, feed.place);
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        else {
+            return;
+        };
+        self.focus_composer(pane, window, cx);
+        self.open_layer(
+            Layer::ComposerMenu(ComposerMenuOpen {
+                pane,
+                server_id,
+                place,
+                owner,
+            }),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn composer_menu_current(
+        &self,
+        open: ComposerMenuOpen,
+        view: &ShellView,
+        cx: &gpui::App,
+    ) -> bool {
+        let feed = match open.pane {
+            Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
+            Pane::Thread => view
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .and_then(|thread| thread.feed.as_ref()),
+        };
+        feed.is_some_and(|feed| feed.server_id == open.server_id && feed.place == open.place)
+            && self
+                .state
+                .read(cx)
+                .server(open.server_id)
+                .and_then(|server| server.owner())
+                == Some(open.owner)
+    }
+
+    pub(crate) fn render_composer_menu(
+        &self,
+        pane: Pane,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Layer::ComposerMenu(open) = self.layer else {
+            return None;
+        };
+        if open.pane != pane {
+            return None;
+        }
+        let input = self.pen(pane).input.read(cx);
+        let capabilities = input.context_menu_capabilities();
+        let copy = !capabilities.is_disabled() && capabilities.is_copyable();
+        let edit = capabilities.is_editable();
+        let select = !capabilities.is_disabled() && !input.value().is_empty();
+        let paste = edit && cx.read_from_clipboard().is_some();
+        let actions: [(&'static str, &'static str, Box<dyn gpui::Action>, bool); 4] = [
+            (
+                "composer-cut",
+                text::CUT,
+                Box::new(gpui_base::input::Cut),
+                copy && edit,
+            ),
+            (
+                "composer-copy",
+                text::COPY,
+                Box::new(gpui_base::input::Copy),
+                copy,
+            ),
+            (
+                "composer-paste",
+                text::PASTE,
+                Box::new(gpui_base::input::Paste),
+                paste,
+            ),
+            (
+                "composer-select-all",
+                text::SELECT_ALL,
+                Box::new(gpui_base::input::SelectAll),
+                select,
+            ),
+        ];
+        Some(
+            Menu::new("composer-menu", text::EDIT_TEXT, self.layer_focus())
+                .selector("composer-menu")
+                .on_close(Self::handler(cx, |this, window, cx| {
+                    this.close_layer(window, cx)
+                }))
+                .children(actions.into_iter().map(|(id, label, action, enabled)| {
+                    MenuItem::new(id, label)
+                        .selector(id)
+                        .disabled(!enabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let current = this
+                                .view
+                                .as_ref()
+                                .is_some_and(|view| this.composer_menu_current(open, view, cx));
+                            this.close_layer(window, cx);
+                            if !current {
+                                return;
+                            }
+                            this.focus_composer(pane, window, cx);
+                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
+                            let shell = cx.entity().downgrade();
+                            let action = action.boxed_clone();
+                            window.defer(cx, move |window, cx| {
+                                let current = shell.upgrade().is_some_and(|shell| {
+                                    let this = shell.read(cx);
+                                    this.view.as_ref().is_some_and(|view| {
+                                        this.composer_menu_current(open, view, cx)
+                                    })
+                                });
+                                if current {
+                                    focus.dispatch_action(action.as_ref(), window, cx);
+                                }
+                            });
+                        }))
+                }))
+                .popup(point(px(0.0), px(0.0))),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -4205,5 +5166,84 @@ mod role_label_colours {
             style.background_color,
             Some(theme.colors.terracotta_wash.into())
         );
+    }
+}
+
+#[cfg(test)]
+mod rich_integration {
+    use super::*;
+
+    #[test]
+    fn concealed_spoilers_hide_profile_and_channel_targets_until_revealed() {
+        use junto_client_core::protocol::ids::AccountId;
+        let visible = AccountId::generate();
+        let hidden = AccountId::generate();
+        let channel = ChannelId::generate();
+        let names = Names {
+            accounts: [(visible, "Mira".to_owned()), (hidden, "Ivo".to_owned())].into(),
+            channels: [(channel, "plans".to_owned())].into(),
+            ..Names::default()
+        };
+        let content = vec![
+            Inline::Text {
+                text: "é ".to_owned(),
+                marks: Vec::new(),
+            },
+            Inline::Account {
+                account_id: visible,
+            },
+            Inline::Code {
+                text: "run()".to_owned(),
+            },
+            Inline::Spoiler {
+                content: vec![
+                    Inline::Account { account_id: hidden },
+                    Inline::Channel {
+                        channel_id: channel,
+                    },
+                ],
+            },
+            Inline::Link {
+                text: " source".to_owned(),
+                url: "https://example.test".to_owned(),
+            },
+        ];
+        let theme = Theme::stone();
+        let drawings = Drawings::default();
+        let faces = crate::state::people::Faces::default().of(ServerId::generate());
+        let style = RichStyle {
+            theme: &theme,
+            drawings: &drawings,
+            presence: Some(&faces),
+        };
+        let concealed = Rich::shown(&content, &names, style, &HashSet::new());
+        assert_eq!(concealed.profiles.len(), 1);
+        assert_eq!(concealed.profiles[0].1.account, visible);
+        assert!(concealed.channels.is_empty());
+        assert!(!concealed.text.contains("Ivo"));
+        assert!(!concealed.text.contains("plans"));
+        assert_eq!(concealed.spoilers.len(), 1);
+        assert!(
+            concealed
+                .copy_targets
+                .iter()
+                .any(|(_, text)| text == "run()")
+        );
+        let revealed = Rich::shown(&content, &names, style, &HashSet::from([vec![3]]));
+        assert_eq!(
+            revealed
+                .profiles
+                .iter()
+                .map(|(_, target, _)| target.account)
+                .collect::<Vec<_>>(),
+            [visible, hidden]
+        );
+        assert_eq!(revealed.channels[0].1, channel);
+        assert!(revealed.spoilers.is_empty());
+        assert_eq!(revealed.links.len(), 1);
+        for (range, _, _) in &revealed.profiles {
+            assert!(revealed.text.is_char_boundary(range.start));
+            assert!(revealed.text.is_char_boundary(range.end));
+        }
     }
 }

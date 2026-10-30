@@ -37,6 +37,7 @@ mod discovery;
 mod messages;
 mod recordings;
 mod refresh;
+mod typing;
 
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -107,12 +108,22 @@ impl Peer {
     }
 
     async fn subscribe(&mut self) -> (Level, Cursor) {
-        let text = soon("a subscribe", self.from_client.recv())
-            .await
-            .expect("the client closed the connection");
-        match serde_json::from_str(&text).unwrap() {
-            ClientMessage::Subscribe { level, cursor, .. } => (level, cursor.unwrap()),
-        }
+        soon("a subscribe", async {
+            loop {
+                let text = self
+                    .from_client
+                    .recv()
+                    .await
+                    .expect("the client closed the connection");
+                match serde_json::from_str(&text).unwrap() {
+                    ClientMessage::Subscribe { level, cursor, .. } => {
+                        return (level, cursor.unwrap());
+                    }
+                    ClientMessage::TypingWatch { .. } | ClientMessage::Typing { .. } => {}
+                }
+            }
+        })
+        .await
     }
 
     /// Answers the `subscribe` of the client as a server that serves it.
@@ -2239,7 +2250,7 @@ async fn refresh_acknowledges_a_snapshot_requested_after_the_call() {
 
 #[tokio::test(start_paused = true)]
 async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_cursor() {
-    for (enabled, revision) in [(false, 3), (true, 2), (true, 3)] {
+    for (enabled, revision) in [(false, 11), (true, 10), (true, 11)] {
         let mut rig = rig();
         rig.live.presence_notifications(enabled);
         let mut notices = rig.live.notices();
@@ -2254,8 +2265,11 @@ async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_curso
             cursor,
             presence,
             ..
-        } = serde_json::from_str(&frame).unwrap();
-        assert_eq!(presence, enabled && revision >= 3);
+        } = serde_json::from_str(&frame).unwrap()
+        else {
+            panic!("expected a subscription");
+        };
+        assert_eq!(presence, enabled && revision >= 11);
         let cursor = cursor.unwrap();
         peer.send(&ServerMessage::Subscribed { level, cursor })
             .await;
@@ -2287,7 +2301,7 @@ async fn presence_invalidations_need_opt_in_and_server_support_and_move_no_curso
 
 #[tokio::test(start_paused = true)]
 async fn appearance_invalidations_negotiate_revision_and_reload_the_public_snapshot() {
-    for revision in [3, 4] {
+    for revision in [11, 12] {
         let mut rig = rig();
         rig.want(ConnectionLevel::Selected, "jst_one");
         let mut peer = rig.peer().await;
@@ -2300,8 +2314,11 @@ async fn appearance_invalidations_negotiate_revision_and_reload_the_public_snaps
             cursor,
             appearance,
             ..
-        } = serde_json::from_str(&frame).unwrap();
-        assert_eq!(appearance, revision >= 4);
+        } = serde_json::from_str(&frame).unwrap()
+        else {
+            panic!("expected a subscription");
+        };
+        assert_eq!(appearance, revision >= 12);
         let cursor = cursor.unwrap();
         peer.send(&ServerMessage::Subscribed { level, cursor })
             .await;

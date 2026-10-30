@@ -1,5 +1,9 @@
 //! Thread history and transactional copies into channels.
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use junto_authz::{Request, WorkspacePermission};
 use junto_protocol::{
     audit::AuditEvent,
@@ -27,27 +31,7 @@ use crate::{
     transact, validate,
 };
 
-pub(super) async fn root(
-    connection: &mut PgConnection,
-    access: &Access,
-    id: MessageId,
-    purpose: Purpose,
-) -> ApiResult<(Place, Message)> {
-    let (place, message) = messages::get(connection, access, id, purpose).await?;
-    let authored_root: bool =
-        sqlx::query_scalar("select call_id is null and readers is null from messages where id=$1")
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await?;
-    if !authored_root
-        || !matches!(place.value, MessagePlace::Channel { .. })
-        || message.thread_root.is_some()
-        || message.system.is_some()
-    {
-        return Err(ApiError::invalid("a thread needs an authored channel root"));
-    }
-    Ok((place, message))
-}
+pub(super) use crate::messages::threads::root;
 
 #[utoipa::path(get,path="/api/v1/messages/{message_id}/thread",tag="messages",params(("message_id"=MessageId,Path),Page),security(("session"=[])),responses((status=200,body=ThreadPage),ApiError))]
 pub async fn history(
@@ -90,10 +74,9 @@ pub async fn history(
         if !ascending {
             ids.reverse();
         }
-        let replies = MessagePage {
-            messages: messages::load_messages(connection, &access, &place, &ids).await?,
-            has_more,
-        };
+        let mut messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let has_more = messages::page::bound(&mut messages, ascending)? || has_more;
+        let replies = MessagePage { messages, has_more };
         let allowed = super::search::places(connection, &access).await?;
         let forks = sqlx::query_scalar("select channel_id from thread_forks where root_id=$1 and channel_id=any($2) order by channel_id")
             .bind(id)
@@ -114,11 +97,21 @@ pub async fn reply(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Thread(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Thread(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 
@@ -399,8 +392,12 @@ pub async fn mark_read(
         if body.position > state.latest {
             return Err(ApiError::invalid("read position is beyond the thread"));
         }
-        messages::threads::advance(connection, app.now(), &access, id, body.position as i64)
-            .await?;
+        let revision: i64 = sqlx::query_scalar("insert into thread_reads(root_id,account_id,position) values($1,$2,0)
+            on conflict(root_id,account_id) do update set position=thread_reads.position returning read_revision")
+            .bind(id).bind(access.account_id).fetch_one(&mut *connection).await?;
+        if body.read_revision.is_none_or(|expected| expected == revision as u64) {
+            messages::threads::advance(connection, app.now(), &access, id, body.position as i64).await?;
+        }
         messages::threads::state(connection, access.account_id, id).await
     })
     .map(Json)

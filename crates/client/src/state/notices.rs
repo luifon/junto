@@ -167,6 +167,8 @@ fn names_of(
                 .collect(),
             MessagePlace::Direct { .. } => HashMap::new(),
         },
+        server_id: None,
+        channels: super::view::channel_names(model),
         accounts: accounts.clone(),
         roles,
         departed: HashMap::new(),

@@ -364,10 +364,7 @@ fn mention_suggestions_offer_only_what_the_person_may_mention(cx: &mut TestAppCo
     type_at(&mut window);
     let offered = names(&mut window);
     assert!(offered.iter().any(|name| name == "Editors"), "{offered:?}");
-    assert!(
-        !offered.iter().any(|name| name == "everyone"),
-        "{offered:?}"
-    );
+    assert!(!offered.iter().any(|name| name == "channel"), "{offered:?}");
 
     // "mention everyone" gives @everyone; without "mention roles" no role is offered.
     rule(
@@ -385,7 +382,7 @@ fn mention_suggestions_offer_only_what_the_person_may_mention(cx: &mut TestAppCo
             names(window)
         },
         |offered| {
-            offered.iter().any(|name| name == "everyone")
+            offered.iter().any(|name| name == "channel")
                 && !offered.iter().any(|name| name == "Editors")
                 && offered.iter().any(|name| name == "Ada")
         },

@@ -6,6 +6,8 @@
 //! the data directory with a key of the fonts; the next start that finds the same key
 //! measures only the key. Until the results arrive every emoji counts as drawn.
 
+pub(crate) mod completion;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -278,6 +280,12 @@ pub struct Shown<'a> {
 }
 
 impl Shown<'_> {
+    /// Original and displayed byte ranges of each replaced emoji.
+    pub fn replacements(&self) -> impl Iterator<Item = (Range<usize>, Range<usize>)> + '_ {
+        self.replaced
+            .iter()
+            .map(|replaced| (replaced.from.clone(), replaced.to.clone()))
+    }
     /// The ranges of the stand-ins in the shown text.
     pub fn stand_ins(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.replaced.iter().map(|replaced| replaced.to.clone())

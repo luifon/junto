@@ -258,6 +258,17 @@ impl Dir {
             .map_err(|fault| storage_error(fault, "open", &self.path.join(name)))
     }
 
+    pub(crate) fn names(&self) -> Result<Vec<std::ffi::OsString>, StorageError> {
+        self.handle
+            .names()
+            .map_err(|error| StorageError::io("list", &self.path, error))
+    }
+
+    /// Checks a private file through the opened directory without reading its content.
+    pub(crate) fn contains_private(&self, name: &str) -> Result<bool, StorageError> {
+        Ok(self.open_file(name, true)?.is_some())
+    }
+
     /// Reads a regular file of the user of at most `limit` bytes. `None` when the file
     /// does not exist.
     pub(crate) fn read(&self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, StorageError> {

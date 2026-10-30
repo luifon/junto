@@ -976,7 +976,13 @@ impl TestServer {
         body: Option<&B>,
         forwarded_for: Option<&str>,
     ) -> Reply {
-        let mut request = self.http.request(method, format!("{}{path}", self.base));
+        let mut request = self
+            .http
+            .request(method, format!("{}{path}", self.base))
+            .header(
+                "Junto-Event-Revision",
+                junto_protocol::events::EVENT_REVISION.to_string(),
+            );
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }

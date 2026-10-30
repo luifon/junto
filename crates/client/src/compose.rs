@@ -13,19 +13,20 @@
 use std::ops::Range;
 
 use junto_client_core::link::Link;
-use junto_client_core::protocol::ids::{AccountId, WorkspaceRoleId};
+use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceRoleId};
 use junto_client_core::protocol::message::{Block, CheckItem, Document, Inline, Mark};
 
 /// What a mention names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MentionTarget {
+    Channel(ChannelId),
     Account(AccountId),
     Role(WorkspaceRoleId),
     Everyone,
 }
 
 /// A mention in the text of the composer: the bytes that show it, and what it names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Mention {
     pub range: Range<usize>,
     pub target: MentionTarget,
@@ -48,15 +49,19 @@ const LONGEST_LANGUAGE: usize = 32;
 pub enum Problem {
     /// The document has no text. A message without text needs a file.
     Empty,
-    /// The document is longer than 16 KiB in the form that the server stores.
+    /// The document exceeds its byte limit in the form that the server stores.
     TooLong {
         bytes: usize,
+        limit: usize,
     },
     TooManyBlocks {
         blocks: usize,
     },
     TooManyNodes {
         nodes: usize,
+    },
+    TooManyListItems {
+        items: usize,
     },
     TooManyMentions {
         mentions: usize,
@@ -179,13 +184,16 @@ impl Inlines<'_> {
             Some(MentionTarget::Role(role_id)) => {
                 self.nodes.push(Inline::Role { role_id: *role_id });
             }
+            Some(MentionTarget::Channel(channel_id)) => self.nodes.push(Inline::Channel {
+                channel_id: *channel_id,
+            }),
             Some(MentionTarget::Everyone) => self.nodes.push(Inline::Everyone),
             None => {}
         }
     }
 }
 
-const ESCAPED: &str = "\\*_~`[]()>-#.!+";
+const ESCAPED: &str = "\\*_~`[]()>-#.!+|";
 
 /// The runs of backticks of a text: the bytes at which they start, by the length of the
 /// run. A code span ends at the next run of the length of its opening run; with this
@@ -278,7 +286,7 @@ fn closing(piece: Piece<'_>, from: usize, mark: char, count: usize) -> Option<us
         if character == mark {
             let run = text[at..].chars().take_while(|c| *c == mark).count();
             let before = text[..at].chars().next_back();
-            let closes = before.is_some_and(|c| !c.is_whitespace());
+            let closes = mark == '|' || before.is_some_and(|c| !c.is_whitespace());
             let word_after = text[at + run..]
                 .chars()
                 .next()
@@ -503,6 +511,28 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                     continue;
                 }
             }
+            '|' if rest.starts_with("||") && depth < DEEPEST => {
+                let inner = at + 2;
+                if !never_closed.contains(&('|', 2)) {
+                    if let Some(end) = closing(piece, inner, '|', 2) {
+                        flush!(at);
+                        let mut inside = Inlines {
+                            targets: out.targets,
+                            nodes: Vec::new(),
+                        };
+                        parse_inline(piece.part(inner..end), marks, depth + 1, &mut inside);
+                        out.nodes.push(Inline::Spoiler {
+                            content: inside.nodes,
+                        });
+                        at = end + 2;
+                        plain = at;
+                        continue;
+                    }
+                    never_closed.push(('|', 2));
+                }
+                at += 2;
+                continue;
+            }
             '*' | '_' | '~' => {
                 let run = rest.chars().take_while(|c| *c == character).count();
                 let (count, mark) = match (character, run) {
@@ -569,6 +599,8 @@ fn inline(text: &str, targets: &[MentionTarget]) -> Vec<Inline> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineKind {
     Blank,
+    Heading(u8),
+    Small,
     Fence,
     Quote,
     Check(bool),
@@ -583,6 +615,14 @@ fn line_kind(line: &str) -> (LineKind, usize) {
     let indent = line.len() - trimmed.len();
     if trimmed.is_empty() {
         return (LineKind::Blank, line.len());
+    }
+    if trimmed.starts_with("-# ") {
+        return (LineKind::Small, indent + 3);
+    }
+    for (prefix, level) in [("### ", 3), ("## ", 2), ("# ", 1)] {
+        if trimmed.starts_with(prefix) {
+            return (LineKind::Heading(level), indent + prefix.len());
+        }
     }
     if trimmed.starts_with("```") {
         return (LineKind::Fence, indent);
@@ -625,7 +665,11 @@ pub fn parse(text: &str, mentions: &[Mention]) -> Document {
 /// The document of a text, and whether the text ends inside a code block that has no
 /// closing line.
 fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
-    if text.len() > MOST_TEXT {
+    read_with_limit(text, mentions, MOST_TEXT)
+}
+
+fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Document, bool) {
+    if text.len() > most_text {
         let content = vec![Inline::Text {
             text: clean(text),
             marks: Vec::new(),
@@ -642,6 +686,20 @@ fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
         let (kind, start) = line_kind(lines[at]);
         match kind {
             LineKind::Blank => at += 1,
+            LineKind::Heading(level) => {
+                let content = inline(lines[at][start..].trim(), &targets);
+                if !content.is_empty() {
+                    blocks.push(Block::Heading { level, content });
+                }
+                at += 1;
+            }
+            LineKind::Small => {
+                let content = inline(lines[at][start..].trim(), &targets);
+                if !content.is_empty() {
+                    blocks.push(Block::Small { content });
+                }
+                at += 1;
+            }
             LineKind::Fence => {
                 let opening = lines[at][start..].trim_end();
                 let ticks = opening.chars().take_while(|c| *c == '`').count();
@@ -720,16 +778,8 @@ fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
     (Document { blocks }, open)
 }
 
-fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
-    document.blocks.iter().flat_map(|block| {
-        let nodes: Box<dyn Iterator<Item = &Inline>> = match block {
-            Block::Paragraph { content } | Block::Quote { content } => Box::new(content.iter()),
-            Block::Code { .. } => Box::new(std::iter::empty()),
-            Block::List { items, .. } => Box::new(items.iter().flatten()),
-            Block::Checklist { items } => Box::new(items.iter().flat_map(|item| &item.content)),
-        };
-        nodes
-    })
+pub(crate) fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
+    document.inlines().map(|(node, _)| node)
 }
 
 /// True when the document has what the server takes as content: text that is not only
@@ -737,22 +787,31 @@ fn nodes_of(document: &Document) -> impl Iterator<Item = &Inline> {
 pub fn has_content(document: &Document) -> bool {
     document.blocks.iter().any(|block| match block {
         Block::Code { text, .. } => !text.trim().is_empty(),
+        Block::Forward { .. } => false,
         _ => false,
     }) || nodes_of(document).any(|node| match node {
         Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
             !text.trim().is_empty()
         }
-        Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => true,
+        Inline::Spoiler { .. } => false,
+        Inline::Channel { .. }
+        | Inline::Account { .. }
+        | Inline::Role { .. }
+        | Inline::Everyone => true,
     })
 }
 
 /// Checks a document against the limits of the server before it is sent. A message with a
 /// file can have an empty document.
 pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
+    let items = document.list_items();
+    if items > junto_client_core::protocol::message::MAX_LIST_ITEMS {
+        return Err(Problem::TooManyListItems { items });
+    }
     if !has_content(document) && !has_files {
         return Err(Problem::Empty);
     }
-    let blocks = document.blocks.len();
+    let blocks = document.content_blocks().count();
     if blocks > MOST_BLOCKS {
         return Err(Problem::TooManyBlocks { blocks });
     }
@@ -764,7 +823,10 @@ pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
     for node in nodes_of(document) {
         let mention = matches!(
             node,
-            Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone
+            Inline::Channel { .. }
+                | Inline::Account { .. }
+                | Inline::Role { .. }
+                | Inline::Everyone
         );
         if mention && !mentions.contains(&node) {
             mentions.push(node);
@@ -776,15 +838,20 @@ pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
         });
     }
     let bytes = serde_json::to_vec(document).map_or(usize::MAX, |bytes| bytes.len());
-    if bytes > MOST_BYTES {
-        return Err(Problem::TooLong { bytes });
+    let limit = if document.forward_origins() == 1 {
+        junto_client_core::protocol::message::MAX_FORWARDED_BYTES
+    } else {
+        MOST_BYTES
+    };
+    if bytes > limit {
+        return Err(Problem::TooLong { bytes, limit });
     }
     Ok(())
 }
 
 fn escape(text: &str, out: &mut String) {
     for character in text.chars() {
-        if matches!(character, '\\' | '*' | '_' | '~' | '`' | '[' | ']') {
+        if matches!(character, '\\' | '*' | '_' | '~' | '`' | '[' | ']' | '|') {
             out.push('\\');
         }
         out.push(character);
@@ -807,6 +874,7 @@ fn block_escape(line: &str) -> Option<usize> {
         }
         LineKind::Fence => Some(indent),
         LineKind::Blank | LineKind::Plain => None,
+        LineKind::Heading(_) | LineKind::Small => Some(indent),
     }
 }
 
@@ -821,7 +889,12 @@ impl Writer<'_> {
     /// is written as a space, so no line prefix or escape is put inside the mention.
     fn mention(&mut self, target: MentionTarget) {
         let start = self.text.len();
-        self.text.push('@');
+        self.text
+            .push(if matches!(target, MentionTarget::Channel(_)) {
+                '#'
+            } else {
+                '@'
+            });
         self.text
             .extend((self.name)(target).chars().map(|character| {
                 if character.is_control() {
@@ -909,6 +982,12 @@ impl Writer<'_> {
                     self.mention(MentionTarget::Account(*account_id));
                 }
                 Inline::Role { role_id } => self.mention(MentionTarget::Role(*role_id)),
+                Inline::Channel { channel_id } => self.mention(MentionTarget::Channel(*channel_id)),
+                Inline::Spoiler { content } => {
+                    self.text.push_str("||");
+                    self.inline(content);
+                    self.text.push_str("||");
+                }
                 Inline::Everyone => self.mention(MentionTarget::Everyone),
             }
         }
@@ -959,7 +1038,7 @@ impl Writer<'_> {
 
 /// The bytes of a written text that show one block, and for a list the bytes of the
 /// content of each of its items.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct WrittenBlock {
     range: Range<usize>,
     items: Vec<Range<usize>>,
@@ -967,7 +1046,7 @@ struct WrittenBlock {
 
 /// The text of the composer for a document, with its mentions and the place of each block
 /// in the text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Written {
     pub text: String,
     pub mentions: Vec<Mention>,
@@ -990,6 +1069,17 @@ pub fn written(document: &Document, name: &dyn Fn(MentionTarget) -> String) -> W
         let start = writer.text.len();
         let mut items = Vec::new();
         match block {
+            Block::Forward { verified, .. } => writer.text.push_str(if *verified {
+                "> Forwarded message"
+            } else {
+                "> Source link · Not verified"
+            }),
+            Block::Heading { level, content } => writer.lines(
+                content,
+                &format!("{} ", "#".repeat(usize::from(*level).clamp(1, 3))),
+                false,
+            ),
+            Block::Small { content } => writer.lines(content, "-# ", false),
             Block::Paragraph { content } => writer.lines(content, "", true),
             Block::Quote { content } => writer.lines(content, "> ", false),
             Block::Code { text, language } => {
@@ -1151,8 +1241,13 @@ pub fn parse_edit(
     text: &str,
     mentions: &[Mention],
 ) -> Document {
-    if text.len() > MOST_TEXT || shown.blocks.len() != original.blocks.len() {
-        return parse(text, mentions);
+    let most_text = if original.forward_origins() == 1 {
+        4 * junto_client_core::protocol::message::MAX_FORWARDED_BYTES
+    } else {
+        MOST_TEXT
+    };
+    if text.len() > most_text || shown.blocks.len() != original.blocks.len() {
+        return read_with_limit(text, mentions, most_text).0;
     }
     let unchanged = |old: &Range<usize>, start: usize| {
         let new = start..start + old.len();
@@ -1191,7 +1286,11 @@ pub fn parse_edit(
     }
     let between = |end: usize| {
         let range = middle_start..end;
-        read(&text[range.clone()], &mentions_in(mentions, &range))
+        read_with_limit(
+            &text[range.clone()],
+            &mentions_in(mentions, &range),
+            most_text,
+        )
     };
     let (mut middle, open) = between(middle_end);
     if open && after > 0 {
@@ -1210,6 +1309,13 @@ pub fn parse_edit(
     let mut blocks = original.blocks[..before].to_vec();
     blocks.append(&mut middle.blocks);
     blocks.extend_from_slice(&original.blocks[kept_after..]);
+    if blocks != original.blocks {
+        for block in &mut blocks {
+            if let Block::Forward { verified, .. } = block {
+                *verified = false;
+            }
+        }
+    }
     Document { blocks }
 }
 
@@ -1221,6 +1327,9 @@ fn one_line(content: &[Inline]) -> Vec<Inline> {
             Inline::Text { text, marks } => Inline::Text {
                 text: text.replace('\n', " "),
                 marks: marks.clone(),
+            },
+            Inline::Spoiler { content } => Inline::Spoiler {
+                content: one_line(content),
             },
             other => other.clone(),
         })
@@ -1573,7 +1682,7 @@ mod tests {
         let long = "word ".repeat(4000);
         assert!(matches!(
             check(&parse(&long, &[]), false),
-            Err(Problem::TooLong { bytes }) if bytes > MOST_BYTES
+            Err(Problem::TooLong { bytes, .. }) if bytes > MOST_BYTES
         ));
         let blocks = "p\n\n".repeat(101);
         assert_eq!(
@@ -1619,6 +1728,7 @@ mod tests {
             MentionTarget::Account(_) => "Bruno Costa".to_owned(),
             MentionTarget::Role(_) => "leads".to_owned(),
             MentionTarget::Everyone => "everyone".to_owned(),
+            MentionTarget::Channel(_) => "general".to_owned(),
         };
         let documents = [
             Document {
@@ -1902,6 +2012,34 @@ mod tests {
     }
 
     #[test]
+    fn headings_small_text_and_spoilers_round_trip_with_tokens_and_code() {
+        let input = "## Review\n-# Small `code`\nBefore ||**秘密** and @Ada and [guide](https://example.test)|| after.\n\\|\\|literal\\|\\|";
+        let start = input.find("@Ada").unwrap();
+        let target =
+            MentionTarget::Account(junto_client_core::protocol::ids::AccountId::generate());
+        let original = parse(
+            input,
+            &[Mention {
+                range: start..start + 4,
+                target,
+            }],
+        );
+        assert!(check(&original, false).is_ok());
+        let json = serde_json::to_value(&original).unwrap();
+        assert_eq!(json["blocks"][0]["kind"], "heading");
+        assert_eq!(json["blocks"][1]["kind"], "small");
+        assert_eq!(json["blocks"][2]["content"][1]["kind"], "spoiler");
+        let written = written(&original, &|_| "Ada".to_owned());
+        assert_eq!(parse(&written.text, &written.mentions), original);
+        assert!(has_content(&parse("||`code`||", &[])));
+        assert!(!has_content(&parse("|| ||", &[])));
+        assert!(matches!(
+            &parse("#### plain", &[]).blocks[0],
+            Block::Paragraph { .. }
+        ));
+    }
+
+    #[test]
     fn the_work_to_read_a_text_for_marks_grows_with_its_length() {
         // The steps that a read may take for each byte of the text. A text of 30,000
         // bytes that is searched again for each of its marks takes 5,000 and more.
@@ -1913,6 +2051,8 @@ mod tests {
             ("*a ".repeat(10_000), PLAIN),
             ("_a ".repeat(10_000), PLAIN),
             ("~~a ".repeat(7_000), PLAIN),
+            ("||a ".repeat(7_000), PLAIN),
+            ("|| ".repeat(7_000), PLAIN),
             ("**a ".repeat(7_000), PLAIN),
             // Brackets without an end, and with an end that is no link.
             ("[".repeat(30_000), PLAIN),

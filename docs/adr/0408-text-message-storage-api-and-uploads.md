@@ -50,7 +50,7 @@ Documents:
   with an optional language, ordered or unordered lists, and checkbox lists. Inline nodes
   are text with bold, italic and strikethrough marks, code, links, and explicit account,
   workspace-role or everyone mentions. Checkbox changes are author edits.
-- Documents contain at most 16 KiB of compact JSON, 100 blocks, 1,000 inline nodes and 100
+- Ordinary documents contain at most 16 KiB of compact JSON, 100 content blocks, 1,000 inline nodes and 100
   distinct mentions. Text refuses control characters except tab and newline. Unknown node
   kinds, unknown fields and repeated marks are refused. Links use HTTP, HTTPS or mailto,
   have no credentials or controls, and contain at most 2,048 bytes.
@@ -70,12 +70,23 @@ Documents:
   have a separate limit of 1,200 per session token per minute. Serializable retries count
   once.
 
+Forwarded messages:
+
+- A forward is a snapshot of a source message that the sender can currently read. The destination stores the copied body and its own attachments, preceded by one typed origin block with the source server's canonical origin and message ID. Destination readers can read the copy without access to the source. Source edits, deletion or access changes do not alter the copy. The destination server validates the origin as a client server address and never requests it.
+- The client freshly reads the selected source under its captured account, copies its content blocks, and materializes account, role, channel and broadcast references as visible text. This keeps formatting and spoilers while avoiding foreign identifiers and new notifications. Forwarding an existing copy uses that readable copy as its immediate source and replaces its origin header; it does not chase private ancestors.
+- The normal document limit remains 16 KiB. A copied document allows 256 KiB so that materializing bounded mention labels can expand a valid source; it allows the same 100 content blocks and one origin header. An origin header alone is not message content. Inline count and depth bounds remain unchanged.
+- Each file is streamed through the client from its source API to a new destination upload, using the captured source account and a destination transfer handle restricted to its captured entry/account. One upload part is retained for retry; interrupted source reads resume at the consumed byte. Destination completion checks the original size and SHA-256. Cancelling or failing the forward cancels unclaimed uploads. The account is checked again before queuing, and the stream actor rejects a queued message for another account. Existing destination drafts are preserved.
+- Only the origin caption, source navigation and explicit origin-link copy depend on the reader's own source access. Unknown servers and inaccessible or deleted sources show an unavailable origin while leaving the copied body and destination files readable. The bounded quote reader (ADR 0740), pinned to the saved entry/account, resolves that origin and is invalidated by source, permission and session boundaries. Plain copy, notices, CLI and exports include the stored body and a generic forwarding label, without exposing a source URI to a reader who cannot resolve it.
+
 Read positions and events:
 
-- The last-read position is per account and place, moves forward only and cannot pass the
-  latest position visible to that account. The snapshot supplies place, latest visible
+- The last-read position is per account and place, advances within one read revision and
+  cannot pass the latest position visible to that account. An explicit per-message unread
+  request moves it immediately before that message and increases its revision (ADR 0404).
+  Automatic progress with an older revision changes nothing. The snapshot supplies place, latest visible
   position, last-read position, unread count and mention count. An author's own messages
-  and all system lines do not count unread, except the line of a direct-message call that
+  and all system lines do not count unread, except that a manual unread boundary counts
+  own messages until progress resumes, and the line of a direct-message call that
   the account did not answer (ADR 0518). Sending a message, including a reply or direct
   message, advances the author's read position to that message in the send transaction;
   earlier messages therefore become read. Failed sends advance nothing. Counts are exact through 99 and capped at 100,
@@ -320,3 +331,63 @@ Read cost and future copies:
   policy are later work.
 - Attachment backups include the configured directory and database metadata together.
 - Files are inaccessible immediately after deletion and removed from disk by maintenance.
+
+Reaction rosters:
+
+- The reaction-people route checks current message access, including the live history
+  boundary, and reads one standard emoji. A page has at most 200 accounts, sorted by
+  account ID, with exclusive forward and backward cursors. An index begins with the
+  message and emoji, then account ID, so a rare reaction needs no scan of other emoji.
+  Its leading message ID also supports purge reads; the purge plan check accepts
+  either this index or the reaction primary key and still forbids sequential scans.
+- A deleted account has no displayed name; an unavailable account remains identified as
+  unavailable. Reading a roster requires access to the message, independently of the
+  permission to add a reaction.
+
+Channel references are `Inline::Channel { channel_id }` nodes with no embedded name. New references require the author's current ViewChannel permission; the client resolves names only from its permitted channel state and the server checks a recipient again through the channel metadata opener. Unknown/deleted/hidden references carry no name. Channel references do not notify anyone. The `everyone` mention node is presented as `@channel`; its recipient set is restricted to accounts with current channel access when added, and notification policy continues to filter mute, mention switches and quiet time (ADR 0742). Event revision 5 identifies documents with channel reference nodes.
+
+A new message passes no prior document to reference validation; an edit passes the message read in the same transaction. Looking at the just-inserted row would mistake a new reference for an unchanged one and bypass its access check. Mention delivery and notice eligibility use the captured recipient set, including on later edits; a broadcast that did not reach an account does not suppress a later explicit mention of that account.
+
+Headings (levels 1–3) and small text are line blocks. Spoilers are inline containers, so formatting, links, code and typed references inside one are concealed together. The document iterator visits nested nodes without recursive calls; the server validates all descendants against the existing 1,000-node and document-byte limits, at most eight spoiler levels, and the usual link/mention/reference policy. The client independently bounds depth, nested node count and heading levels before accepting a server message (ADR 0747).
+
+The protocol also bounds the combined items of lists and checklists to 5,500,
+including empty items. The server, composer and desktop acceptance check use this
+same count. A forwarded document's larger byte allowance must not permit a stored
+message that the desktop refuses and thereby make its history page unreadable.
+
+Forwarded documents allow 256 KiB of compact JSON. Migration 0050 raises the
+PostgreSQL JSONB text constraint to 512 KiB, allowing its added whitespace while
+the API retains the compact-wire limit. History and thread pages retain a
+contiguous prefix or suffix within 3 MiB, report more rows, and continue from
+the retained boundary. This leaves room below the client's 4 MiB response cap
+for the envelope and a thread root. Export batches use the same byte budget
+and continue from the last retained message; their JSON and HTML output keeps
+the full document. Search excerpts contain at most 512 Unicode characters.
+
+API v1 readers negotiate document extensions through Junto-Event-Revision
+(ADR 0206). Older readers get visible text in original v1 node kinds; copied
+messages are quotes with a source line. Concealed spoilers remain concealed.
+Typed documents remain in PostgreSQL and exports, and only the response is
+projected. An older editor cannot replace an extension document with the
+plaintext fallback it saw.
+
+Search still indexes spoiler contents, so an authorized reader can find the message. Its returned snippet substitutes Spoiler for each concealed subtree while retaining ordinary surrounding text. Quotes and notification excerpts likewise conceal those subtrees. Explicit whole-message copying preserves their plain text. HTML exports use native, initially closed details controls; no script is needed.
+
+Search matching and ranking use stored vectors. Message excerpts are constructed from the returned documents after the result limit, with the same spoiler masking as other excerpts; transcript hits use their stored text. Excerpt construction is bounded by the page size rather than the number of matching messages.
+
+A local forward is a server-created snapshot. In the send transaction the server
+loads the source through the sender's current message-read permission, ignores
+the submitted copied body, freezes its typed references into readable labels,
+and marks the origin verified. The destination uploads must match the source
+files in order, name, size and SHA-256; a mismatched file rolls the transaction
+back. The copy remains independent of later source edits, deletion or retention.
+The destination body remains readable without source access; origin navigation
+still requires that access.
+
+Across servers there is no federation verification. The body is a copy supplied
+by the destination sender, its source link is explicitly not verified, and it
+cannot carry the original author's attribution. The server always clears an
+incoming verification claim for a remote origin. Editing a copied document also
+clears verification; the unchanged source link is historical context only.
+Existing stored origins without the flag default to unverified. This avoids
+claiming that earlier client-supplied bodies were authenticated snapshots.

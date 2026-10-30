@@ -629,10 +629,106 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     // Text that the composer of the call window holds is in the composer of the main
     // window after the call window closed.
     call.click("open-call-chat");
+    let typing_place = junto_client_core::model::PlaceId::Channel(voice.id);
+    world
+        .run(admin.handle.live().open_messages(typing_place))
+        .unwrap();
+    admin
+        .handle
+        .live()
+        .typing(admin.handle.account().unwrap(), typing_place, 8000);
+    call.until("the detached chat reports another typer", |call| {
+        call.shows("typing-indicator")
+    });
+    assert!(!window.shows("typing-indicator"));
+    admin
+        .handle
+        .live()
+        .typing(admin.handle.account().unwrap(), typing_place, 0);
+    call.until("the detached activity stops", |call| {
+        !call.shows("typing-indicator")
+    });
+    let mut typing_notices = admin.handle.live().notices();
     call.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "Not sent yet", window, cx);
     });
-    call.click("return-call");
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    typing_notices.next().await
+                    && activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
+    call.click("composer-input");
+    call.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "Not sent yet :tada", window, cx)
+    });
+    assert!(call.shows("emoji-completion"));
+    call.press("enter");
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet 🎉 "
+    );
+    call.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "Not sent yet", window, cx));
+    call.click("composer-view-1");
+    assert!(call.shows("composer-preview"));
+    assert!(
+        call.in_shell(|shell, _, _| shell.painted_readonly_text())
+            .iter()
+            .any(|text| text.contains("Not sent yet"))
+    );
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet"
+    );
+    call.click("composer-view-0");
+    let mut closing_notices = admin.handle.live().notices();
+    call.type_into("composer-input", " ");
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet "
+    );
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    closing_notices.next().await
+                    && activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(call.simulate(|cx| cx.simulate_close()));
+    call.simulate(|cx| cx.update(|window, _| window.remove_window()));
+    drop(call);
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    closing_notices.next().await
+                    && !activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
     window.until("the call is back in the main window", |window| {
         !window
             .state
@@ -652,7 +748,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     );
     window.click_channel(ROOM);
     window.until("the text is in the main window", |window| {
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet"
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet "
     });
     window.click("leave-call");
     world.run(caller.calls.leave());

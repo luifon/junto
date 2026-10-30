@@ -390,6 +390,15 @@ impl Shell {
                 let enters = channel.voice.as_ref().is_some_and(|voice| {
                     !matches!(voice.relation, Relation::Inside | Relation::Joining)
                 });
+                let has_draft = server_id.is_some_and(|server| {
+                    !self
+                        .draft_mark(
+                            server,
+                            junto_client_core::model::PlaceId::Channel(channel_id),
+                            cx,
+                        )
+                        .is_empty()
+                });
                 let row = ChannelRow::new(
                     ("channel", index),
                     match channel.kind {
@@ -410,7 +419,16 @@ impl Shell {
                         .voice
                         .as_ref()
                         .map(channel_states)
-                        .unwrap_or_default(),
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(server_id.into_iter().flat_map(|server| {
+                            self.draft_mark(
+                                server,
+                                junto_client_core::model::PlaceId::Channel(channel_id),
+                                cx,
+                            )
+                        }))
+                        .collect(),
                 )
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     this.state.update(cx, |state, cx| {
@@ -469,7 +487,17 @@ impl Shell {
                         // The identifier and not the name: a name comes from the server
                         // and need not be the only one.
                         .debug_selector(move || format!("channel-row:{channel_id}"))
-                        .child(row)
+                        .child(
+                            div()
+                                .debug_selector(move || {
+                                    if has_draft {
+                                        format!("draft-channel:{channel_id}")
+                                    } else {
+                                        format!("channel-content:{channel_id}")
+                                    }
+                                })
+                                .child(row),
+                        )
                         .children(menu)
                         .into_any_element(),
                 );
@@ -488,8 +516,34 @@ impl Shell {
                                 .then(|| text::mention_badge(entry.mentions).into()),
                             label: text::unread_tooltip(entry.unread, entry.mentions).into(),
                         });
+                    let thread_draft = server_id.is_some_and(|server| {
+                        !self
+                            .draft_mark(
+                                server,
+                                junto_client_core::model::PlaceId::Thread {
+                                    channel_id,
+                                    root_id,
+                                },
+                                cx,
+                            )
+                            .is_empty()
+                    });
                     let row = ChannelRow::new(("thread", index * 1000 + place), Icon::Chat, title)
                         .nested()
+                        .states(
+                            server_id
+                                .map(|server| {
+                                    self.draft_mark(
+                                        server,
+                                        junto_client_core::model::PlaceId::Thread {
+                                            channel_id,
+                                            root_id,
+                                        },
+                                        cx,
+                                    )
+                                })
+                                .unwrap_or_default(),
+                        )
                         .selected(entry.open)
                         .unread(sign)
                         .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
@@ -506,7 +560,57 @@ impl Shell {
                         div()
                             .flex_none()
                             .debug_selector(move || format!("thread-row:{root_id}"))
-                            .child(row)
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        if thread_draft {
+                                            format!("draft-thread:{root_id}")
+                                        } else {
+                                            format!("thread-content:{root_id}")
+                                        }
+                                    })
+                                    .child(row),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                let draft_threads = server_id
+                    .map(|server| self.state.read(cx).draft_threads(server, channel_id))
+                    .unwrap_or_default();
+                for (root_id, title) in draft_threads
+                    .into_iter()
+                    .filter(|(root, _)| !channel.threads.iter().any(|entry| entry.root_id == *root))
+                {
+                    let Some(server_id) = server_id else {
+                        continue;
+                    };
+                    let place = junto_client_core::model::PlaceId::Thread {
+                        channel_id,
+                        root_id,
+                    };
+                    rows.push(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("draft-thread:{root_id}"))
+                            .child(
+                                ChannelRow::new(
+                                    format!("thread-draft:{root_id}"),
+                                    Icon::Chat,
+                                    title,
+                                )
+                                .nested()
+                                .states(self.draft_mark(server_id, place, cx))
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.select_channel(workspace_id, channel_id, cx)
+                                        });
+                                        this.open_thread(
+                                            server_id, channel_id, root_id, window, cx,
+                                        );
+                                    },
+                                )),
+                            )
                             .into_any_element(),
                     );
                 }
@@ -668,6 +772,11 @@ impl Shell {
                 .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
                 .into();
             let row = ChannelRow::new(("direct", index), Icon::Person, name)
+                .states(self.draft_mark(
+                    server_id,
+                    junto_client_core::model::PlaceId::Direct(conversation_id),
+                    cx,
+                ))
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .presence(faces.presence(direct.account_id))
                 .name_color(faces.color(direct.account_id))

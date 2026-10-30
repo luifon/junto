@@ -1055,6 +1055,7 @@ fn a_muted_place_shows_no_system_notification() {
     scene.alerts(&mut seen);
     // The summary of the channel says "muted".
     scene.model.message_states.push(MessageState {
+        read_revision: 0,
         place: scene.in_channel(scene.general),
         last_read: 1,
         latest: 9,

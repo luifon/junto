@@ -22,13 +22,15 @@ Messages of the server:
 - `change`: the events of one change that the connection may receive, in the order of the change, as `{"type": "change", "position": <position after the change>, "events": [{"id": <position>, "at": <time>, "event": {"type": <event type>, ...}}, ...]}` (ADR 0011). The client moves its cursor to `position` after it has applied the events. The positions are those of ADR 0010. Before the first release of the API it replaced the message `event`, which carried one event, so that a change reaches a client whole.
 - `checkpoint`: a cursor up to which the connection has received everything that it may receive (ADR 0207).
 - `resync`: the instruction to load a snapshot, with the reason. It answers a `subscribe` that the server does not serve, and it ends a subscription that the server cannot continue (ADR 0207).
-- `appearance_changed`: an empty invalidation for subscriptions opting in to `appearance` (revision 4). It moves no cursor and asks the client to reload normal permission-checked snapshot, member and profile reads (ADR 0309).
+- `appearance_changed`: an empty invalidation for subscriptions opting in to `appearance` (revision 12). It moves no cursor and asks the client to reload normal permission-checked snapshot, member and profile reads (ADR 0309).
 - `presence_changed`: an empty, ephemeral invalidation for an opted-in subscription; no cursor changes (ADR 0401).
 - `ended`: the last message of a connection whose session no longer counts, with the reason, and with the recovery when a recovery was the reason (ADR 0208).
 
 Messages of the client:
 
-- `subscribe`: the level and the cursor (ADR 0207), with optional `presence` and `appearance` defaulting to false (ADRs 0401 and 0309). It is the only client message.
+- `subscribe`: the level and the cursor (ADR 0207), with optional `presence` and `appearance` defaulting to false (ADRs 0401 and 0309).
+- `typing_watch`: up to eight places whose transient activity the client currently displays. `typing_watching` acknowledges the accepted set; it does not replay earlier activity.
+- `typing`: a place and requested lifetime in milliseconds, with zero stopping activity. The server sends `typing` with account, display name, active state and remaining lifetime. These frames have no event cursor and never change subscription checkpoints (ADR 0401).
 
 Version rule:
 
@@ -37,7 +39,7 @@ Version rule:
 - A field that exists keeps its name, its type, its meaning and, for a field with a fixed set of values, its set of values.
 - A reader ignores a field that it does not know. It skips a message whose `type` it does not know. For an event of a `change` whose type it does not know, it moves its cursor to the `id` of the event and applies nothing, and it applies the other events of the change.
 - A change that removes or changes a field, a value or a type needs a new API version (ADR 0201).
-- The messages and events have a revision within their API version (`junto_protocol::events::EVENT_REVISION`). Revision 1 is the first one with a digest; revision 2 adds `thread_root` and `thread` to `message_changed` and `notice` to `notification_changed` (ADR 0722), `watching` (ADR 0502) and `screen_shares` with the slot and the kind of each share (ADR 0510) to the participant of a call, and the events `permission_rule_set` (in place of `channel_override_set`), `channel_rules_synced`, `workspace_person_permissions_set`, `server_person_permissions_set` and `channel_history_withdrawn` (ADR 0304), and was the revision before presence. Revision 3 adds `subscribe.presence` and `presence_changed` (ADR 0401). Its digest was written again at each join of the branches of that release, before any release carried it. Revision 4 adds role colour and grouping fields, public account appearance, `subscribe.appearance` and `appearance_changed` (ADR 0309). Each addition of a message type, an event type or a field raises it by one. `docs/api/event-revisions.json` keeps the SHA-256 of `docs/api/events.json` for each revision; the generator of the documents adds the present revision when it has no digest, and refuses an event document that changed under a revision that has a digest, so that an addition cannot go out without its revision. A test compares the committed digests with the present document.
+- The messages and events have a revision within their API version (`junto_protocol::events::EVENT_REVISION`). Revision 1 is the first one with a digest; revision 2 adds `thread_root` and `thread` to `message_changed` and `notice` to `notification_changed` (ADR 0722), `watching` (ADR 0502) and `screen_shares` with the slot and the kind of each share (ADR 0510) to the participant of a call, and the events `permission_rule_set` (in place of `channel_override_set`), `channel_rules_synced`, `workspace_person_permissions_set`, `server_person_permissions_set` and `channel_history_withdrawn` (ADR 0304), and was the revision before presence. Revision 11 adds `subscribe.presence` and `presence_changed` (ADR 0401). Revision 12 adds role colour and grouping fields, public account appearance, `subscribe.appearance` and `appearance_changed` (ADR 0309). Each addition of a message type, an event type or a field raises it by one. `docs/api/event-revisions.json` keeps the SHA-256 of `docs/api/events.json` for each revision; the generator of the documents adds the present revision when it has no digest, and refuses an event document that changed under a revision that has a digest, so that an addition cannot go out without its revision. A test compares the committed digests with the present document.
 - `hello` carries `event_revision` (absent from a server before the revisions: 0). A client that reads a higher revision than its build logs it once, logs the first message and the first event of each type that it does not read (at most 64 types for a connection), and the menu of the server in the window states that the server is newer than this Junto and that an update shows every change. The client applies nothing of what it does not read, as before. Reason: before the revisions a client of an older build skipped the new events without a trace, and neither the person nor a log told that changes of the server were not shown. Tests: `events::tests::server_messages_round_trip_and_carry_their_names` (a hello without the field reads as revision 0, an unknown event and message keep their type), `stream::tests::the_view_states_the_revision_of_the_events_of_the_server`, `view::book_tests` (the release of the server states the newer revision), and the server test `openapi::the_event_document_has_the_digest_of_its_revision`.
 - The crate `junto-protocol` holds the types of every message and event and one function that reads a frame by these rules. It reads each event of a `change` on its own, so an event of an unknown type does not stop the reading of the others, and it states the length of each event in the frame.
 
@@ -59,3 +61,42 @@ Later events:
 - A difference between the event types of the code and the committed schema fails a test.
 - A program in another language can generate its types from `docs/api/events.json`.
 - The server sends no binary frames and accepts none.
+
+Revision 3 introduced the forwarded-message reference in the typed message document (ADR 0408). Revision 9 supplies the negotiated document representation described below; an event revision warning alone is insufficient for older fixed document decoders.
+
+Revision 4 adds `message_marked_unread`, with the place, optional thread root, backward
+position and read revision. The account alone receives it under current place access.
+
+Revision 5 identifies typed channel-reference inline nodes. They carry an ID and no copied name; current server permissions govern name discovery and navigation (ADR 0408, ADR 0740). The existing everyone mention node retains its wire identity while the interface names it @channel.
+
+Revision 6 identifies heading and small-text blocks and spoiler inline containers. All descendants remain subject to the document and client trust bounds (ADR 0408, ADR 0747).
+
+Revision 7 changes forwarded messages to destination-owned copies with permission-checked origin metadata (ADR 0408). Unnegotiated v1 readers receive the quoted representation described below.
+
+Revision 8 adds transient typing and watch frames. Clients send them only after a server has advertised revision 8 or later; dropping a connection discards pending activity rather than replaying it.
+
+Revision 9 negotiates document extensions without changing the fixed enum sets of
+unnegotiated API v1. Hello advertises the server revision; HTTP requests advertise
+the client's decoder through `Junto-Event-Revision`. An absent header is revision
+0. A modern reader opts into the typed extensions; an older reader receives a
+paragraph with visible text, or a quote for a forwarded copy with its source server
+and message identifier. Mention labels use current ViewAccount access and channel names use
+the reader's current ViewChannel access. Concealed spoilers become Spoiler, so a
+fallback cannot disclose them in notifications or previews. The stored document
+is unchanged. History pages are bounded again after projection because expanded
+labels can increase their bytes.
+
+`GET /api/v1/message-format` is capability metadata for an authenticated session. Before a modern write,
+the client checks its advertised revision; a missing route or an older format is
+refused locally before POST or PUT. A request-construction refusal is known not
+sent and stays in the outbox as such. The composer also refuses unsupported
+formatting when hello already identifies an older server, retaining its draft.
+The server requires the decoder revision for extension writes and refuses an
+older editor changing a document whose format it cannot read, preventing a
+plaintext fallback from overwriting concealed content or typed references.
+
+Revision 10 distinguishes server-verified local forward snapshots from unverified
+source links. A forward now requires revision 10; revision 9 and older readers
+receive the quoted legacy form, including the unverified qualification where
+applicable. This prevents an older decoder from presenting an edited or remote
+body with source-author attribution it cannot validate.

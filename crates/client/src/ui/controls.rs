@@ -492,7 +492,7 @@ impl RenderOnce for Tab {
                     colors.ink_2
                 },
             ))
-            .child(self.label)
+            .child(crate::selectable::SelectableText::unobserved(self.label))
             .when_some(self.count, |tab, count| {
                 tab.child(super::CornerCount::new(count))
             })

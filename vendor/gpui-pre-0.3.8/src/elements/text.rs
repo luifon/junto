@@ -1,3 +1,4 @@
+// Modified: expose a scoped observer of painted text layouts for read-only selection.
 use crate::{
     ActiveTooltip, AnyView, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId,
     HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
@@ -613,6 +614,26 @@ impl IntoElement for StyledText {
 #[derive(Default, Clone)]
 pub struct TextLayout(Rc<RefCell<Option<TextLayoutInner>>>);
 
+// Modified: an observer is scoped to an element's paint and restored even after a panic.
+/// Observes a read-only text layout immediately before its glyphs are painted.
+pub type TextPaintObserver = Rc<dyn Fn(&TextLayout, &str, &mut Window, &mut App)>;
+
+thread_local! {
+    static TEXT_PAINT_OBSERVER: RefCell<Option<TextPaintObserver>> = const { RefCell::new(None) };
+}
+
+/// Observes text within one painted subtree, restoring the previous observer on exit.
+pub fn with_text_paint_observer<R>(observer: Option<TextPaintObserver>, paint: impl FnOnce() -> R) -> R {
+    struct Restore(Option<TextPaintObserver>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEXT_PAINT_OBSERVER.set(self.0.take());
+        }
+    }
+    let _restore = Restore(TEXT_PAINT_OBSERVER.replace(observer));
+    paint()
+}
+
 #[derive(Clone, Copy)]
 enum TextPaintPass {
     All,
@@ -797,7 +818,17 @@ impl TextLayout {
     }
 
     fn paint(&self, text: &str, window: &mut Window, cx: &mut App) {
-        self.paint_lines(TextPaintPass::All, window, cx)
+        // Modified: selection backgrounds sit above run backgrounds and below glyphs.
+        let observer = TEXT_PAINT_OBSERVER.with_borrow(Clone::clone);
+        if let Some(observer) = observer {
+            self.paint_background(window, cx)
+                .with_context(|| format!("failed to paint {text}"))
+                .unwrap();
+            observer(self, text, window, cx);
+            self.paint_foreground(window, cx)
+        } else {
+            self.paint_lines(TextPaintPass::All, window, cx)
+        }
             .with_context(|| format!("failed to paint {text}"))
             .unwrap();
     }

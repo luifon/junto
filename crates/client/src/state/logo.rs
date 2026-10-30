@@ -439,7 +439,7 @@ impl AppState {
                 }
             }
             Notice::Reloaded { .. } => self.logos_missed(server_id, cx),
-            Notice::Ended { .. } | Notice::PresenceChanged => {}
+            Notice::Ended { .. } | Notice::PresenceChanged | Notice::Typing(_) => {}
         }
     }
 

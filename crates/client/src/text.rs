@@ -1912,8 +1912,8 @@ pub const DELETED_MESSAGE: &str = "This message was deleted.";
 pub const QUOTE_DELETED: &str = "Deleted message";
 pub const QUOTE_UNKNOWN: &str = "A message that is not loaded";
 pub const UNKNOWN_ROLE: &str = "unknown role";
-pub const MENTION_EVERYONE: &str = "@everyone";
-pub const EVERYONE: &str = "everyone";
+pub const MENTION_EVERYONE: &str = "@channel";
+pub const EVERYONE: &str = "channel";
 pub const EVERYONE_HELP: &str = "Everyone who can read this channel";
 pub const SOMEBODY: &str = "somebody";
 pub const REPLY: &str = "Reply";
@@ -2356,10 +2356,14 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
     use crate::compose::Problem;
     match problem {
         Problem::Empty => "Write a text or attach a file.".to_owned(),
-        Problem::TooLong { bytes } => format!(
+        Problem::TooManyListItems { items } => format!(
+            "The message has {items} list items. Use at most {}.",
+            junto_client_core::protocol::message::MAX_LIST_ITEMS
+        ),
+        Problem::TooLong { bytes, limit } => format!(
             "The message is too long: {} of {} that a message can have with its formatting.",
             file_size(bytes as u64),
-            file_size(crate::compose::MOST_BYTES as u64)
+            file_size(limit as u64)
         ),
         Problem::TooManyBlocks { blocks } => format!(
             "The message has {blocks} paragraphs, lists and blocks. A message can have {}.",
@@ -2375,6 +2379,8 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
         ),
     }
 }
+
+pub const SERVER_MESSAGE_UPDATE: &str = "The server needs an update to accept this message format.";
 
 /// The file dialog was answered after the composer had changed to another place or to
 /// another account.
@@ -2875,7 +2881,7 @@ pub const SEARCH_REFUSED_TITLE: &str = "The server did not take the search";
 pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search text.";
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
 pub const MESSAGE_LINK_UNAVAILABLE: &str =
-    "This message is unavailable or you do not have access to it.";
+    "This link is unavailable or you do not have access to it.";
 pub const RESULT_GONE: &str = "The message is gone, or you can no longer read it.";
 pub const SEARCH_AGAIN: &str = "Search again";
 /// The archived list of a workspace could not be read (ADR 0762).
@@ -3299,6 +3305,78 @@ pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailabl
 pub const INVITATION_EXISTING_ACCOUNT: &str =
     "Use this invitation with your existing account. It may add you to workspaces on this server.";
 pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+pub const COPY_TEXT: &str = "Copy text";
+
+pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
+
+pub const EDIT_TEXT: &str = "Edit text";
+pub const CUT: &str = "Cut";
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+pub const SELECT_ALL: &str = "Select all";
+
+pub const FORWARD_UNVERIFIED: &str = "Source link · Not verified";
+pub const FORWARD_REMOTE_UNVERIFIED: &str = "Forwarded from another server · Not verified";
+pub const FORWARDED_MESSAGE: &str = "Forwarded message";
+pub const FORWARD_MESSAGE: &str = "Forward message";
+pub const FORWARD_SEND: &str = "Forward";
+pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
+pub const FORWARD_LOADING: &str = "Loading original message…";
+pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
+pub const FORWARD_NONE: &str = "No writable destinations match.";
+
+pub const FORWARD_THREAD_LINK: &str = "Use thread link";
+
+pub const VIEW_ORIGINAL: &str = "View original";
+
+pub const MARK_UNREAD: &str = "Mark unread";
+
+pub const WHO_REACTED: &str = "Who reacted";
+pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
+pub const REACTION_PEOPLE_UNAVAILABLE: &str =
+    "These reactions are unavailable, or you do not have access to this message.";
+pub const REACTION_PEOPLE_EMPTY: &str = "Nobody has this reaction now.";
+pub const REACTION_PEOPLE_MORE: &str = "More people reacted. Open Who reacted for the full list.";
+pub const DELETED_REACTOR: &str = "Deleted account";
+pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
+pub const REACTION_PREVIOUS: &str = "Previous people";
+pub const REACTION_NEXT: &str = "Next people";
+
+pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
+
+pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
+pub const CHANNEL_REFERENCE: &str = "Channel";
+
+pub const SPOILER: &str = "Spoiler";
+pub const REVEAL_SPOILER: &str = "Reveal spoiler";
+pub const SPOILER_KEYBOARD: &str = "Reveal the next spoiler with Enter or Space";
+pub const HEADING: &str = "Heading";
+pub const SMALL_TEXT: &str = "Small text";
+
+pub const FORWARD_FILE_FAILED: &str = "The files could not be copied to this destination.";
+
+pub const FORWARD_ORIGIN_UNAVAILABLE: &str = "You cannot open the original message.";
+
+pub const COMPOSER_VIEW: &str = "Composer view";
+pub const WRITE: &str = "Write";
+pub const PREVIEW: &str = "Preview";
+pub const PREVIEW_EMPTY: &str = "Nothing to preview yet.";
+pub const PREVIEW_FIX: &str = "Fix the message to preview it.";
+
+pub const EMOJI_COMPLETION: &str = "Emoji completion";
+pub const RECENT_EMOJI: &str = "Recent emoji";
+
+pub const DRAFT: &str = "Draft";
+
+pub fn typing_people(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [name] => format!("{name} is typing…"),
+        [first, second] => format!("{first} and {second} are typing…"),
+        [first, second, third] => format!("{first}, {second} and {third} are typing…"),
+        _ => "Several people are typing…".to_owned(),
+    }
+}
 
 #[cfg(test)]
 mod tests {

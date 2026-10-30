@@ -133,6 +133,9 @@ Tests on real systems:
     bound of ADR 0730. On gpui's test platform the background tasks of gpui run on the
     thread of the test, so a piece includes them; work on the runtime of the client and
     on the threads of the media engine is not included, as in the product.
+  - Closing/reopening a main shell while its application state lives uses the same
+    window harness. Its helpers create visual contexts, draw the first frame and pump
+    tasks; the lifecycle tests do not bypass the source guard with raw context calls.
 
 - On macOS the test target `modes` measures one window per process in seven modes of the
   use and prints the memory, the processor share and the threads of each (ADR 0914).
@@ -155,3 +158,5 @@ Tests on real systems:
 - Native capture is checked separately from CI, with explicit device tests and operator-assisted checks, so an error in capture can pass CI.
 - A release needs a macOS machine, a Linux desktop with both session types, a Windows 11 virtual machine and a clean system of each kind.
 - Capture on Windows is tested in a virtual machine. Real microphones and GPUs on Windows are covered only by the physical-machine tests before a release.
+
+The media engine’s external track-permission hold control is stored only with the `test-support` feature, as is its setter. The actor always owns the operative sender; production builds do not retain a second, unread test-control field.

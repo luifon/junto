@@ -20,6 +20,7 @@ fn acme_with_ana(answered: bool) -> ServerSnapshot {
         return acme();
     };
     let place_state = MessageState {
+        read_revision: 0,
         place: MessagePlace::Direct {
             conversation_id: conversation(),
             low_account_id,

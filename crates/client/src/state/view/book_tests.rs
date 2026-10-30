@@ -11,6 +11,7 @@ use crate::state::book::{Available, UpdatesKnown};
 
 fn summary(place: MessagePlace, unread: u64, mentions: u64) -> MessageState {
     MessageState {
+        read_revision: 0,
         place,
         last_read: 1,
         latest: 9,

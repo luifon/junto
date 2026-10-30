@@ -208,7 +208,9 @@ impl AppState {
                     .iter()
                     .find(|snapshot| snapshot.id == server.id())?;
                 if snapshot.stream != StreamStatus::Live
-                    || !snapshot.server_events.is_some_and(|revision| revision >= 3)
+                    || !snapshot
+                        .server_events
+                        .is_some_and(|revision| revision >= 11)
                 {
                     return None;
                 }

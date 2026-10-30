@@ -159,7 +159,13 @@ fn inline(node: &Inline, names: &Names, out: &mut String) {
                 .map_or_else(|| role_id.to_string(), Clone::clone);
             let _ = write!(out, "<span class=\"mention\">@{}</span>", escape(&name));
         }
-        Inline::Everyone => out.push_str("<span class=\"mention\">@everyone</span>"),
+        Inline::Spoiler { content } => {
+            out.push_str("<details><summary>Spoiler</summary>");
+            inlines(content, names, out);
+            out.push_str("</details>");
+        }
+        Inline::Channel { .. } => out.push_str("<span class=\"mention\">#channel</span>"),
+        Inline::Everyone => out.push_str("<span class=\"mention\">@channel</span>"),
     }
 }
 
@@ -172,10 +178,37 @@ fn inlines(nodes: &[Inline], names: &Names, out: &mut String) {
 fn document(document: &Document, names: &Names, out: &mut String) {
     for block in &document.blocks {
         match block {
-            Block::Paragraph { content } => {
-                out.push_str("<p>");
+            Block::Forward { verified, .. } => out.push_str(if *verified { "<blockquote>Forwarded message · Original unavailable in this export</blockquote>\n" } else { "<blockquote>Source link · Not verified · Original unavailable in this export</blockquote>\n" }),
+            Block::Heading { level, content } => {
+                let level = (*level).clamp(1, 3);
+                let _ = write!(
+                    out,
+                    "<div role=\"heading\" aria-level=\"{level}\" style=\"font-size:{}em;font-weight:bold\">",
+                    match level {
+                        1 => "2",
+                        2 => "1.5",
+                        _ => "1.25",
+                    }
+                );
                 inlines(content, names, out);
-                out.push_str("</p>\n");
+                out.push_str("</div>\n");
+            }
+            Block::Small { content } => {
+                out.push_str("<div style=\"font-size:0.85em\">");
+                inlines(content, names, out);
+                out.push_str("</div>\n");
+            }
+            Block::Paragraph { content } => {
+                let tag = if junto_protocol::message::inline_nodes(content)
+                    .any(|(node, _)| matches!(node, Inline::Spoiler { .. }))
+                {
+                    "div"
+                } else {
+                    "p"
+                };
+                let _ = write!(out, "<{tag}>");
+                inlines(content, names, out);
+                let _ = writeln!(out, "</{tag}>");
             }
             Block::Quote { content } => {
                 out.push_str("<blockquote>");
@@ -306,22 +339,11 @@ pub fn mentioned(messages: &[Message]) -> (Vec<AccountId>, Vec<WorkspaceRoleId>)
         _ => {}
     };
     for message in messages {
-        for block in message.document.iter().flat_map(|text| &text.blocks) {
-            match block {
-                Block::Paragraph { content } | Block::Quote { content } => {
-                    content.iter().for_each(&mut take);
-                }
-                Block::List { items, .. } => items.iter().flatten().for_each(&mut take),
-                Block::Checklist { items } => {
-                    items
-                        .iter()
-                        .flat_map(|item| &item.content)
-                        .for_each(&mut take);
-                }
-                Block::Code { .. } => {}
-            }
+        for (node, _) in message.document.iter().flat_map(Document::inlines) {
+            take(node);
         }
     }
+
     for message in messages {
         if let Some(actor_id) = message.system.as_ref().and_then(|system| system.actor_id)
             && !accounts.contains(&actor_id)

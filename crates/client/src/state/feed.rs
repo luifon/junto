@@ -275,7 +275,8 @@ impl Eq for MessageRow {}
 impl MessageRow {
     /// The message offers at least one action: its bar and its menu have an entry.
     pub fn has_actions(&self) -> bool {
-        self.can_react
+        (!self.message.deleted && self.message.document.is_some())
+            || self.can_react
             || self.can_reply
             || self.can_thread
             || self.can_pin
@@ -449,6 +450,8 @@ impl Feed {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Names {
     pub role_colors: HashMap<WorkspaceRoleId, junto_client_core::protocol::appearance::RoleColor>,
+    pub server_id: Option<ServerId>,
+    pub channels: HashMap<ChannelId, String>,
     /// The names of departed accounts carry their mark here (ADR 0121).
     pub accounts: HashMap<AccountId, String>,
     pub roles: HashMap<WorkspaceRoleId, String>,
@@ -516,6 +519,126 @@ fn clock(at: OffsetDateTime, cycle: junto_client_core::clock::HourCycle) -> Stri
 }
 
 /// The text of a document on one line, without its formatting, up to a bound.
+/// Text for the clipboard, retaining line breaks, code indentation and list items.
+pub(crate) fn selection_text(document: &Document, names: &Names) -> String {
+    fn conceal(content: &mut [Inline]) {
+        for node in content {
+            if matches!(node, Inline::Spoiler { .. }) {
+                *node = Inline::Text {
+                    text: crate::text::SPOILER.to_owned(),
+                    marks: Vec::new(),
+                };
+            }
+        }
+    }
+    let mut visible = document.clone();
+    for block in &mut visible.blocks {
+        match block {
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => conceal(content),
+            Block::List { items, .. } => {
+                for item in items {
+                    conceal(item);
+                }
+            }
+            Block::Checklist { items } => {
+                for item in items {
+                    conceal(&mut item.content);
+                }
+            }
+            _ => {}
+        }
+    }
+    copy_text(&visible, names)
+}
+
+pub fn copy_text(document: &Document, names: &Names) -> String {
+    let inline = |nodes: &[Inline]| {
+        let mut out = String::new();
+        for (node, _) in junto_client_core::protocol::message::inline_nodes(nodes) {
+            match node {
+                Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
+                    out.push_str(text)
+                }
+                Inline::Account { account_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .accounts
+                            .get(account_id)
+                            .map_or(crate::text::UNKNOWN_PERSON, String::as_str),
+                    );
+                }
+                Inline::Role { role_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .roles
+                            .get(role_id)
+                            .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
+                    );
+                }
+                Inline::Channel { channel_id } => {
+                    out.push('#');
+                    out.push_str(
+                        names
+                            .channels
+                            .get(channel_id)
+                            .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
+                    );
+                }
+                Inline::Spoiler { .. } => {}
+                Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
+            }
+        }
+        out
+    };
+    document
+        .blocks
+        .iter()
+        .map(|block| match block {
+            Block::Forward { verified, .. } => if *verified {
+                crate::text::FORWARDED_MESSAGE
+            } else {
+                crate::text::FORWARD_UNVERIFIED
+            }
+            .to_owned(),
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => inline(content),
+            Block::Code { text, .. } => text.clone(),
+            Block::List { ordered, items } => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let prefix = if *ordered {
+                        format!("{}. ", index + 1)
+                    } else {
+                        "- ".to_owned()
+                    };
+                    prefix + &inline(item)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Block::Checklist { items } => items
+                .iter()
+                .map(|item| {
+                    format!(
+                        "- [{}] {}",
+                        if item.checked { "x" } else { " " },
+                        inline(&item.content)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
     fn inline(content: &[Inline], names: &Names, out: &mut String) {
         for node in content {
@@ -541,6 +664,16 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
                             .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
                     );
                 }
+                Inline::Channel { channel_id } => {
+                    out.push('#');
+                    out.push_str(
+                        names
+                            .channels
+                            .get(channel_id)
+                            .map_or(crate::text::UNKNOWN_CHANNEL_REFERENCE, String::as_str),
+                    );
+                }
+                Inline::Spoiler { .. } => out.push_str(crate::text::SPOILER),
                 Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
             }
         }
@@ -551,7 +684,15 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
             text.push(' ');
         }
         match block {
-            Block::Paragraph { content } | Block::Quote { content } => {
+            Block::Forward { verified, .. } => text.push_str(if *verified {
+                crate::text::FORWARDED_MESSAGE
+            } else {
+                crate::text::FORWARD_UNVERIFIED
+            }),
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => {
                 inline(content, names, &mut text);
             }
             Block::Code { text: code, .. } => text.push_str(code),
@@ -588,12 +729,7 @@ fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) 
         Inline::Everyone => true,
         _ => false,
     };
-    document.blocks.iter().any(|block| match block {
-        Block::Paragraph { content } | Block::Quote { content } => content.iter().any(named),
-        Block::Code { .. } => false,
-        Block::List { items, .. } => items.iter().flatten().any(named),
-        Block::Checklist { items } => items.iter().flat_map(|item| &item.content).any(named),
-    })
+    document.inlines().any(|(node, _)| named(node))
 }
 
 fn author_name(message: &Message, names: &Names) -> String {
@@ -1328,6 +1464,8 @@ mod tests {
             notification_settings: Vec::new(),
         };
         let names = Names {
+            server_id: None,
+            channels: HashMap::new(),
             accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
             roles: HashMap::from([(role, "Leads".to_owned())]),
             role_colors: HashMap::new(),
@@ -1565,6 +1703,7 @@ mod tests {
             Quoted::Read(Arc::new(reply.clone())),
         );
         scene.model.threads = vec![junto_client_core::protocol::message::ThreadState {
+            read_revision: 0,
             root_id: root.id,
             last_read: 1,
             latest: 2,
@@ -2140,6 +2279,7 @@ mod tests {
             waiting(2, "failed", SendState::Failed(SendFailure::NotSent)),
         ];
         scene.model.message_states = vec![MessageState {
+            read_revision: 0,
             place: scene.place,
             last_read: 1,
             latest: 2,

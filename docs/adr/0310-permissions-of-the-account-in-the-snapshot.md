@@ -21,6 +21,7 @@ Two fields of the workspace in the snapshot:
 
 One route for one channel:
 
+- `GET /api/v1/channels/{channel_id}` returns the metadata of one readable channel, active or archived. A target link can resolve its workspace by identity without listing the workspaces or changing the selection first. The route uses the same access lookup, View channel decision, read limit and session requirement as the permissions route. It adds no access-token reach. Server test: `structure::a_channel_link_lookup_reads_active_and_archived_channels_under_the_callers_permissions`.
 - `GET /api/v1/channels/{channel_id}/permissions` returns the list of the caller for one channel that the caller can see. An archived channel is not in the snapshot (ADR 0410), and the people who see it read their list from this route.
 - A channel that the caller cannot see, a deleted channel and a channel of a workspace that the caller is not a member of get `not_found`, as every route of a channel does.
 - The route needs a session. It is in the reach of no access token (ADR 0210). It counts against the limit of reads of the account (ADR 0408).

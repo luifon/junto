@@ -83,6 +83,10 @@ A Wayland compositor gives the focus to a window only for an activation token th
 - The unit tests of `logs` check the rotation and the bound of three files, the limit of the file while a rotation fails and the count of the dropped lines after it works again, that a second log of the same data directory writes no file, and the lines given before the file opens. The unit tests of `panics` check that a report names the functions of its backtrace (run by hand with `--release` and the line tables on Windows; no CI job runs a Windows release build), that a report does not make the data directory, and one report per location.
 - The native targets `frames`, `endurance`, `modes`, `rehearsal`, `native_panics` and `native_macos_windows` and the tool `junto-screens` fail when the count of the panics of the process (`panics::panics_in_this_process`) is not zero, and the library tests that open a window fail at a panic of their thread.
 
+### Read-only text selection
+
+`src/elements/text.rs` also exposes `with_text_paint_observer`, scoped to one subtree and restored by a guard when painting returns or unwinds. The observer receives each painted string and its `TextLayout` after the text backgrounds and before its foreground. Without an observer the original combined paint path remains. The client uses this to draw selection highlights and retain the positions of read-only text across the shell (ADR 0740). Remove this correction when gpui offers a scoped equivalent; run `copying::`, the message-list tests and the window suite against a replacement.
+
 ## Consequences
 
 - The workspace keeps three more corrected copies. A new version of gpui replaces them only after the tests above pass with it; the copies are removed when a pinned upstream version stops a panic in each callback of the platform and puts its state back.

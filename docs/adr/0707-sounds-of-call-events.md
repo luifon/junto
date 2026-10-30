@@ -83,6 +83,8 @@ Tests:
 
 ## Consequences
 
+The first server update that lists an own share can already list a viewer. For a person already in the call, that transition plays both the share-start and viewer-join sounds; it does not require an intermediate update with an empty viewer list. A call entry keeps its existing entry sound without announcing people already present.
+
 - The level of a sound on real speakers depends on the volume of the system and of the device; the tests check the samples, not the loudness that a person hears. Whether a person tells the sounds apart is checked by measuring their pattern; a person confirms it at the live test.
 - Each sound opens and closes the output device. On a system that is slow to open a device, a sound starts later than its event; the window does not wait for it.
 - A person who joins before the server lists the person of this device is not heard as a join.

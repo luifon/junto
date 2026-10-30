@@ -3134,7 +3134,7 @@ fn workspace_view(
 
 /// The names that the messages of a place can mention: the members of the shown workspace,
 /// the accounts whose names were read, the account itself, and the roles of the workspace.
-fn names(
+pub(super) fn names(
     server_id: ServerId,
     workspace: Option<&WorkspaceModel>,
     model: &ServerModel,
@@ -3155,6 +3155,8 @@ fn names(
             .flat_map(|workspace| workspace.roles.iter())
             .filter_map(|role| Some((role.id, role.color?)))
             .collect(),
+        server_id: Some(server_id),
+        channels: channel_names(model),
         accounts,
         roles: workspace
             .map(|workspace| workspace.roles.as_slice())
@@ -3164,6 +3166,21 @@ fn names(
             .collect(),
         departed: known.people.departures(server_id),
     }
+}
+
+pub(super) fn channel_names(model: &ServerModel) -> HashMap<ChannelId, String> {
+    model
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.channels.iter())
+        .filter(|channel| model.holds_in(channel.channel.id, WorkspacePermission::ViewChannel))
+        .map(|channel| {
+            (
+                channel.channel.id,
+                crate::text::label(&channel.channel.name),
+            )
+        })
+        .collect()
 }
 
 /// What the channels of a workspace hold that the person has not read.

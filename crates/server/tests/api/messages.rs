@@ -1223,3 +1223,253 @@ async fn message_write_rate_is_bounded_and_recovers_with_the_clock() {
         .await
         .ok::<Message>(StatusCode::OK);
 }
+
+#[tokio::test]
+async fn manual_unread_moves_back_and_rejects_an_old_read_revision() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Writer").await;
+    for kind in ["text", "voice"] {
+        let place = channel(&server, &owner, kind).await;
+        let first = send(&server, &author, &place, "first").await;
+        let second = send(&server, &author, &place, "second").await;
+        let read = format!("/api/v1/channels/{}/messages/read", place.id);
+        let before: Value = server
+            .put(&owner, &read, &json!({"position": second.position}))
+            .await
+            .ok(StatusCode::OK);
+        server
+            .put(&owner, &format!("{}/unread", msg(second.id)), &json!({}))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let reset: Value = server.get(&owner, &read).await.ok(StatusCode::OK);
+        assert_eq!(reset["last_read"], second.position - 1);
+        assert_eq!(reset["unread"], 1);
+        assert_ne!(reset["read_revision"], before["read_revision"]);
+        let stale: Value = server
+            .put(
+                &owner,
+                &read,
+                &json!({"position": second.position, "read_revision": before["read_revision"]}),
+            )
+            .await
+            .ok(StatusCode::OK);
+        assert_eq!(stale["last_read"], reset["last_read"]);
+        let read_again: Value = server
+            .put(
+                &owner,
+                &read,
+                &json!({"position": second.position, "read_revision": reset["read_revision"]}),
+            )
+            .await
+            .ok(StatusCode::OK);
+        assert_eq!(read_again["unread"], 0);
+        server
+            .put(&owner, &format!("{}/unread", msg(first.id)), &json!({}))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let reset: Value = server.get(&owner, &read).await.ok(StatusCode::OK);
+        assert_eq!(reset["unread"], 2);
+        server
+            .delete(&author, &msg(first.id))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        server
+            .put(&owner, &format!("{}/unread", msg(first.id)), &json!({}))
+            .await
+            .error(ErrorCode::NotFound);
+    }
+    server
+        .put(
+            &owner,
+            &format!("{}/unread", msg(MessageId::generate())),
+            &json!({}),
+        )
+        .await
+        .error(ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn manual_unread_is_private_and_covers_conversations_and_threads() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let conversation: Conversation = server
+        .post(
+            &author,
+            "/api/v1/conversations",
+            &json!({"account_id":reader.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let route = format!("/api/v1/conversations/{}/messages", conversation.id);
+    let sent: Message = server
+        .post(&author, &route, &text("private task"))
+        .await
+        .ok(StatusCode::CREATED);
+    let read = format!("{route}/read");
+    server
+        .put(&reader, &read, &json!({"position":sent.position}))
+        .await
+        .ok::<MessageState>(StatusCode::OK);
+    let action = format!("{}/unread", msg(sent.id));
+    server
+        .put(&owner, &action, &json!({}))
+        .await
+        .error(ErrorCode::NotFound);
+    server
+        .put(&reader, &action, &json!({}))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let state: MessageState = server.get(&reader, &read).await.ok(StatusCode::OK);
+    assert_eq!(state.unread, 1);
+    let place = channel(&server, &owner, "text").await;
+    let root = send(&server, &author, &place, "discussion").await;
+    let reply: Message = server
+        .post(
+            &author,
+            &format!("{}/thread", msg(root.id)),
+            &text("thread task"),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let read = format!("{}/thread/read", msg(root.id));
+    server
+        .put(&reader, &format!("{}/unread", msg(reply.id)), &json!({}))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let state: ThreadState = server.get(&reader, &read).await.ok(StatusCode::OK);
+    assert_eq!(state.last_read, reply.position - 1);
+    assert_eq!(state.unread, 1);
+    assert!(state.following);
+    assert_eq!(state.read_revision, 1);
+    let stale: ThreadState = server
+        .put(
+            &reader,
+            &read,
+            &json!({"position":reply.position,"read_revision":0}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(stale.last_read, state.last_read);
+}
+
+#[tokio::test]
+async fn manual_unread_can_remind_the_author_about_their_own_message() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let place = channel(&server, &owner, "text").await;
+    let sent = send(&server, &owner, &place, "my reminder").await;
+    let read = format!("/api/v1/channels/{}/messages/read", place.id);
+    server
+        .put(&owner, &format!("{}/unread", msg(sent.id)), &json!({}))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let state: MessageState = server.get(&owner, &read).await.ok(StatusCode::OK);
+    assert_eq!(state.unread, 1);
+    let read_again: MessageState = server
+        .put(
+            &owner,
+            &read,
+            &json!({"position":sent.position, "read_revision":state.read_revision}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(read_again.unread, 0);
+}
+
+#[tokio::test]
+async fn channel_references_validate_the_authors_current_access() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let author = server.join(&owner, "Writer").await;
+    let place = channel(&server, &owner, "text").await;
+    let target = channel(&server, &owner, "voice").await;
+    let route = format!("/api/v1/channels/{}/messages", place.id);
+    let body = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"channel","channel_id":target.id}]}]}});
+    let sent: Message = server
+        .post(&author, &route, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    let workspace = server.default_workspace(&owner).await;
+    let everyone = server.everyone_role(&owner, workspace.id).await;
+    server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/rules/roles/{}", target.id, everyone.id),
+            &json!({"deny":["view_channel"]}),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let denied = server.post(&author, &route, &body).await;
+    denied.error(ErrorCode::NotFound);
+    let mut edited = body.clone();
+    edited["document"]["blocks"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"text","text":" retained", "marks":[]}));
+    server
+        .put(&author, &msg(sent.id), &edited)
+        .await
+        .ok::<Message>(StatusCode::OK);
+    let missing = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"channel","channel_id":junto_protocol::ids::ChannelId::generate()}]}]}});
+    server
+        .post(&author, &route, &missing)
+        .await
+        .error(ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn formatted_marks_accept_bounded_headings_small_text_and_nested_spoilers() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let place = channel(&server, &owner, "text").await;
+    let route = format!("/api/v1/channels/{}/messages", place.id);
+    let body = json!({"document":{"blocks":[
+        {"kind":"heading","level":2,"content":[{"kind":"text","text":"Review"}]},
+        {"kind":"small","content":[{"kind":"text","text":"A note"}]},
+        {"kind":"paragraph","content":[{"kind":"spoiler","content":[{"kind":"text","text":"secret","marks":["bold"]},{"kind":"code","text":"run()"}]}]}
+    ]}});
+    let sent: Message = server
+        .post(&owner, &route, &body)
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(
+        serde_json::to_value(sent.document).unwrap()["blocks"][2]["content"][0]["kind"],
+        "spoiler"
+    );
+    let found: junto_protocol::discovery::SearchPage = server
+        .get(&owner, "/api/v1/search?q=secret")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(found.results.len(), 1);
+    assert!(found.results[0].text.contains("Spoiler"));
+    assert!(!found.results[0].text.contains("secret"));
+
+    let unsafe_link = json!({"document":{"blocks":[{"kind":"paragraph","content":[{"kind":"spoiler","content":[{"kind":"link","text":"hidden link","url":"javascript:alert(1)"}]}]}]}});
+    server
+        .post(&owner, &route, &unsafe_link)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    for level in [0, 4, 255] {
+        let mut invalid = body.clone();
+        invalid["document"]["blocks"][0]["level"] = json!(level);
+        server
+            .post(&owner, &route, &invalid)
+            .await
+            .error(ErrorCode::InvalidRequest);
+    }
+    let mut nested = json!({"kind":"text","text":"too deep"});
+    for _ in 0..9 {
+        nested = json!({"kind":"spoiler","content":[nested]});
+    }
+    server
+        .post(
+            &owner,
+            &route,
+            &json!({"document":{"blocks":[{"kind":"paragraph","content":[nested]}]}}),
+        )
+        .await
+        .error(ErrorCode::InvalidRequest);
+}

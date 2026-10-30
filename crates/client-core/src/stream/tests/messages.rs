@@ -19,6 +19,7 @@ use crate::model::{PlaceId, SendState};
 pub(super) struct Chat {
     pub(super) messages: Vec<Message>,
     pub(super) last_read: u64,
+    pub(super) read_revision: u64,
     /// The read positions that the client sent, in their order.
     pub(super) marked: Vec<u64>,
     /// The documents of the messages that the client sent, in their order.
@@ -85,6 +86,7 @@ impl Chat {
             .filter(|held| held.position > self.last_read && held.author_id != Some(own))
             .count() as u64;
         Some(MessageState {
+            read_revision: self.read_revision,
             place,
             last_read: self.last_read,
             latest: self.messages.last().map_or(0, |held| held.position),
@@ -161,7 +163,12 @@ impl Chat {
                 let body: MarkRead =
                     serde_json::from_slice(request.body.as_ref()?.as_slice()).unwrap();
                 self.marked.push(body.position);
-                self.last_read = self.last_read.max(body.position);
+                if body
+                    .read_revision
+                    .is_none_or(|revision| revision == self.read_revision)
+                {
+                    self.last_read = self.last_read.max(body.position);
+                }
                 if let Some(answer) = self.mark_answer.take() {
                     return Some(json(200, &answer));
                 }
@@ -791,6 +798,40 @@ async fn a_reload_keeps_the_open_timeline_until_its_page_has_arrived() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_queued_forward_for_an_old_account_is_discarded() {
+    let room = room().await;
+    let rig = &room.rig;
+    let pending = crate::model::PendingMessage::new(
+        rig.live.shared.next_number(),
+        room.place,
+        document("private copy"),
+        None,
+        Vec::new(),
+        time(),
+    );
+    assert!(rig.live.shared.send(crate::live::Command::Enqueue {
+        account_id: AccountId::generate(),
+        pending: Box::new(pending),
+    }));
+    rig.live
+        .send_message(room.place, document("current account"), None)
+        .unwrap();
+    soon("the current account's send", async {
+        loop {
+            if room.chat(|chat| !chat.posted.is_empty()) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        room.chat(|chat| chat.posted.clone()),
+        [serde_json::to_string(&Some(document("current account"))).unwrap()]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn messages_are_sent_in_their_order_and_a_lost_answer_is_resolved_by_the_history() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);
@@ -1124,6 +1165,7 @@ async fn the_answer_to_a_read_position_does_not_replace_a_newer_summary() {
     // The server made its answer before a fourth message arrived, and the answer is late.
     let fourth = room.held(4, "four");
     let old = MessageState {
+        read_revision: 0,
         place: fourth.place,
         last_read: 3,
         latest: 3,
@@ -1193,6 +1235,7 @@ async fn the_answer_to_a_read_position_does_not_replace_what_an_event_told_meanw
     // device was made before that.
     let first = room.held(1, "");
     let old = MessageState {
+        read_revision: 0,
         place: first.place,
         last_read: 2,
         latest: 3,
@@ -1283,6 +1326,110 @@ async fn a_read_position_of_a_new_message_moves_the_latest_position_before_the_s
     gate.add_permits(64);
     rig.model_when("the summary of the server", |model| {
         model.message_state(place) == Some(&expected)
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn manual_unread_cancels_pending_progress_and_pauses_automatic_reads() {
+    let room = room().await;
+    let rig = &room.rig;
+    let place = room.place;
+    let gate = rig.http.hold("/messages/read");
+    rig.live.mark_seen(place, 3);
+    soon("the old progress waits", async {
+        while rig.http.count("/messages/read") == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    room.chat(|chat| {
+        chat.last_read = 1;
+        chat.read_revision = 1;
+    });
+    room.peer
+        .event(
+            41,
+            Event::MessageMarkedUnread {
+                place: room.held(1, "").place,
+                thread_root: None,
+                position: 1,
+                read_revision: 1,
+            },
+        )
+        .await;
+    rig.model_when("the backward boundary", |model| model.cursor.position == 41)
+        .await;
+    gate.add_permits(64);
+    rig.live.mark_seen(place, 3);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(room.chat(|chat| chat.last_read), 1);
+    assert!(room.chat(|chat| chat.marked.is_empty()));
+    rig.live.mark_read(place, 3);
+    rig.model_when("explicit reading resumes", |model| {
+        model
+            .message_state(place)
+            .is_some_and(|state| state.last_read == 3 && state.read_revision == 1)
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_revision_guards_work_before_presence_and_appearance_extensions() {
+    for revision in [4, 7, 8, 10, 11, 12] {
+        let room = room_at(revision).await;
+        let (rig, place) = (&room.rig, room.place);
+        room.chat(|chat| {
+            chat.last_read = 1;
+            chat.read_revision = 1;
+        });
+        rig.live.mark_read(place, 3);
+        let model = rig
+            .model_when("the newer unread boundary returns", |model| {
+                model
+                    .message_state(place)
+                    .is_some_and(|state| state.read_revision == 1)
+            })
+            .await;
+        assert_eq!(
+            room.chat(|chat| chat.last_read),
+            1,
+            "server revision {revision}"
+        );
+        assert_eq!(model.message_state(place).unwrap().last_read, 1);
+        assert_eq!(room.chat(|chat| chat.marked.clone()), [3]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn manual_unread_survives_a_snapshot_that_replaces_a_missed_event() {
+    let room = room().await;
+    let rig = &room.rig;
+    let place = room.place;
+    room.chat(|chat| {
+        chat.last_read = 1;
+        chat.read_revision = 1;
+    });
+    let state = room.chat(|chat| chat.state().unwrap());
+    rig.set_snapshot(41, |snapshot| snapshot.messages = vec![state]);
+    room.peer
+        .send(&ServerMessage::Resync {
+            reason: ResyncReason::TooFarBehind,
+        })
+        .await;
+    rig.model_when("the replacement snapshot", |model| {
+        model.cursor.position == 41
+    })
+    .await;
+    rig.live.mark_seen(place, 3);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(room.chat(|chat| chat.last_read), 1);
+    assert!(room.chat(|chat| chat.marked.is_empty()));
+    rig.live.mark_read(place, 3);
+    rig.model_when("explicit reading after reload", |model| {
+        model
+            .message_state(place)
+            .is_some_and(|state| state.last_read == 3 && state.read_revision == 1)
     })
     .await;
 }

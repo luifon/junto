@@ -10,6 +10,23 @@ ADR 0401 and ADR 0408 define what a message holds: a typed document, replies, re
 
 ## Decision
 
+An edit keeps its composer and persistent draft while the request is pending or
+refused. Acceptance clears the submitted draft only while the same owner, place,
+edit generation and saved contents still own that composer. A late acceptance
+cannot clear text written afterwards or a draft saved by another window. The
+refused-edit window test restarts the application before retrying the edit.
+
+Thread roots and pinned message copies use the same context-menu trigger and
+menu component as timeline messages. They offer copy text, copy message link,
+forward and mark unread, plus applicable read controls. Their menu state names
+the presentation so an original row and its copy cannot draw duplicate menus.
+Message mutation controls and the hover action bar remain on timeline rows.
+
+The composer keeps unsupported formatted text when the event hello identifies
+an older server and states that the server needs an update. The API repeats the
+capability check before a formatted write, including when no stream hello was
+available, and sends no document to an unsupported endpoint (ADR 0206).
+
 Derivation:
 
 - A function without side effects (ADR 0730) derives the rows of a list from a timeline: day separators, the line of the first unread message, messages, system lines, the waiting messages, and a row at each end that states whether the history goes on.
@@ -84,14 +101,148 @@ Places:
 
 - System lines that repeat are joined in the list (ADR 0408 joins some on the server): consecutive lines of one kind of a call (a person who joins, leaves, joins by invitation, starts or stops sharing) of different people within 5 minutes of the first are one line that names them all ("Ada, Ben and Cy joined the call", more than three as "and 2 others"); a person who left and joined again within a minute is one line ("Ada left the call and joined again"), which no other line joins. A line between them, such as a message or a day, keeps them apart. The line of a rename names both names, and the end of a call its length. Tests: `state::feed::tests::consecutive_lines_of_several_people_are_one_line_and_a_quick_return_is_one_line`, `state::feed::tests::a_rename_names_both_names_and_the_end_of_a_call_its_length`, the window test `system_lines::a_pin_and_a_rename_are_lines_of_the_chat_and_renames_in_a_row_are_one_line` the window tests `system_lines::the_answer_to_a_request_to_enter_a_locked_call_is_a_line_with_who_answered_and_who_asked`, `system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed` and `system_lines::repeated_lines_of_a_call_are_one_line_and_a_reconnect_neither_repeats_nor_loses_a_line` (the lines of a call while the event stream is cut are joined and neither repeated nor lost after the reconnect), and the live tests `live::lines::the_chat_of_a_voice_channel_tells_what_happened_in_its_call`, `live::lines::the_chat_of_a_voice_channel_tells_why_meeting_mode_ended` (the presenter stopped sharing, the presenter left) and `live::lines::a_move_by_a_moderator_is_a_line_in_the_chat_of_each_voice_channel`. The window tests read the text of each line from the feed the window drew and require its element to be drawn; the painted-text recorder of the tests does not record styled text.
 
+### Forwarding
+
+The message menu opens a destination chooser with a name filter over the writable channels, voice chats, conversations and known threads of saved accounts. A pasted message link selects its thread after a permission-checked read, so a thread outside the loaded lists can be chosen. The chooser binds the source and selected destination to their saved entries/accounts, cancels a pending preparation when closed, and rechecks them before sending. Sending uses the existing outbox and preserves the destination's draft and uploads. It selects the destination; a thread opens its panel.
+
+The forwarded card groups the stored copied body beneath its origin caption, with ordinary destination attachment controls. Selection, code copying and spoilers use the same renderer as ordinary messages. Only the caption's View original and Copy original link actions depend on a fresh source read under the reader's own account. An unavailable source changes the caption without hiding or changing the copied body and files (ADR 0408). The quote reader resolves this origin in both windows, pending messages and pins, with its ordinary concurrency, owner and weight bounds. Window tests in `forwarding::` cover channels, conversations, thread links, cross-server copies and files, readers without source access, forwarding an existing copy, immutable copied text, access loss, source deletion, code whitespace and preservation of a destination draft.
+
+### Context menus
+
+Messages and composers use the shared `ContextMenuExt` triggers and `Menu::popup` placement of ADR 0731. The shell owns their layer and restores focus on close. Messages retain Enter and Space activation in addition to the shared right-click, Menu key and Shift+F10. The composer disables the text area's native context menu and uses the same shared menu for Cut, Copy, Paste and Select all. The current input capabilities and clipboard determine availability. Actions dispatch through the text area's own focus handle after the shell's menu handler returns, preventing recursive updates of the shell and retaining selection, tokens, undo history and picture-paste handling. The deferred dispatch checks the original account and place again. Both composer panes use this path, also in a detached call window. Window tests in `context_menus::` cover pointer and keyboard editing and a message popup at the lower edge of a small window.
+
+### Links to messages
+
+The shared `junto-client-core::links` module parses and formats application addresses. A message address is `junto://message?server=<percent-encoded canonical origin>&id=<message UUID>`. The origin has the scheme, the lower-case host and a nondefault port, with no path or trailing slash. The parser rejects ambiguous, repeated or unknown parameters, credentials, paths, fragments, malformed percent escapes and addresses above 4096 bytes. Additional target kinds belong to the same enum and parser.
+
+The message menu copies this address and shows Copied. `AppState::open_message_link` is the one entry point for a message address: an unknown server returns false so the scheme router can open the add-server form with its origin. A saved server reads the message through the current account's API before jumping to its channel, direct conversation or thread. The read is bound to that account and its answer is discarded after another navigation, account change or link request. A missing, deleted, inaccessible or mismatched message gives the same plain refusal. A link to an older message uses the existing read-around-position path. A channel jump closes a previously open thread.
+
+Scheme registration and URL delivery are separate from this message entry point. Tests in `links::tests` cover canonical round trips and rejected addresses; window tests in `message_links::` cover copying, older channel history, thread and direct targets, permission refusal and unknown origins.
+
+### Selection and copying
+
+The shell wraps read-only text in one `SelectableText` element. It observes the text layouts that gpui paints, uses their byte positions for mouse selection, and paints the selected range behind the glyphs. Dragging can select text across message rows; double-click selects a word and triple-click selects a text block. Cmd/Ctrl+C writes the selection to the system clipboard. Fields and action labels disable this observer so that editable text keeps its own selection. A change of account, server, place or open layer clears the selection; an overlay covers the text beneath it.
+
+The same element serves messages, threads, search results, transcripts, profiles, settings, administration, diagnostics and other read-only text. Hovering text offers a Copy text control. A named link copies its address, an inline code span copies its code, and values whose label includes explanatory words supply the underlying value. Rich text maps display padding, decorative presence marks and fallback emoji back to their source text. Presence changes therefore do not enter copied text or change its history-selection offsets. Each code block has its own copy control, preserving indentation and line breaks. The message menu and action bar copy the whole message as plain text, retaining code, list and checklist structure and human-readable mention names. A copy control shows Copied for two seconds.
+
+Concealed spoilers create no profile or channel activation targets until their content is revealed.
+
+The scoped text-layout observer is the only gpui change for selection (ADR 0757). It avoids a separate selectable version of every text label and uses the layout that was actually painted, including clipping and wrapping. Tests in `app::copying` exercise cross-row dragging, rich Unicode text, native field selection, code-block whitespace, named-link targets and a value in settings.
+
 ## Consequences
+
+Hovering another text value updates the copy target immediately. The blank gap to a copy control can keep the previous target reachable, but does not take priority over text under the pointer.
+
+The floating copy control opens above its text when there is insufficient room below, instead of being clamped over the bottom controls. The pointer corridor uses the union of the text and the actual control bounds, so either placement remains reachable at the current interface scale. The meeting-notice window test checks that Dismiss still activates after hovering its text.
 
 - The composer shows marks while the person types, not formatted text.
 - The syntax colours follow regular expressions and no grammar: a name is coloured by its form, not by its meaning. A language that the library does not know, and a block without a language, stay without colours.
 - A picture above the bounds of the server for pictures is a file row, and so are HEIC, AVIF and every other format (ADR 0408).
-- The name of a channel in a text is plain text: the document of the server has no channel reference.
+- Typed channel references use the permission-checked target opener and the current readable channel names.
 - The list draws the rows in view and a margin of 800 pixels, so the time of a frame does not grow with the loaded messages: measured with the window code and the renderer without a display in a release build on the development machine, a frame without a change and a frame after a scroll of 40 rows take 2.6 to 2.8 milliseconds with 50 and with 10,000 loaded messages (longest 4.8). A frame after a new message derives the rows again and takes 5.3 milliseconds with 50 messages and 9.1 milliseconds with 10,000 (longest 9.9). A debug build is about ten times slower. `junto-screens` repeats the measurement (`JUNTO_SCREENS_ONLY=frames`).
 - A system line of an action that this build does not know is drawn as a line without detail.
 - A finished recording is a card in the chat of its voice channel (ADR 0744).
 - Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already. The `image` crate of the client has its `gif` feature for the GIF pictures of messages; gpui builds the same decoder, so no crate was added.
+
+Message context menus include Mark unread. It uses the server's explicit backward read
+boundary, including for thread replies. Both windows pause automatic reading of an
+open place after its unread event; the header's Mark as read control or reopening the
+place resumes reading. Thread headers provide the same explicit read control.
+
+Reaction chips show live reactor names on hover. Who reacted beside the chips and in
+the existing message menu opens the full roster, with an emoji selector and pages of
+50 people, previous/next controls, retry and an empty state. Chip presses keep their
+reaction-toggle action. Both windows share at most eight roster pages, pinned to the
+saved entry/account; late responses are discarded after eviction or replacement. Message,
+profile and access changes clear their old names before rereading; owner changes discard
+them. A roster and tooltip recheck current place access before drawing names.
+
+A reply quote is a focusable link. A pointer press, Enter or Space opens its original
+through the shared message-link reader, which checks the current account and loads the
+original's place and older history when necessary. Thread and conversation replies,
+pinned messages and pending replies use the same quote renderer. A deleted or
+inaccessible original has the same plain refusal as a missing message. A stale quote
+cannot act for a replacement account, and the quote's keyboard action does not open its
+parent message menu. Read-only selection still suppresses activation after a drag.
+
+## Channel references and channel-wide mentions
+
+A `#` at a word boundary offers visible channels as completion tokens in every composer. The document stores a channel ID without a copied name; editing preserves the token and the current permission-filtered server model supplies the displayed name. An unknown target shows a generic channel label. Activation uses the shared target opener (ADR 0714), which reads fresh server permissions, including archived targets, and gives the same refusal for hidden and missing targets. A token cannot make the recipient's client disclose a channel name that its server state does not contain. The server checks a newly inserted channel reference against the author's current view access, including edits; unchanged references survive edits after access is lost.
+
+`@channel` is the visible name of the existing `everyone` wire node and token identity. The existing MentionEveryone permission and notification switches remain, with current channel visibility filtering recipients when the mention is created. Existing stored mentions render with the new visible name. Role/account mentions and direct-conversation restrictions stay as in ADR 0408. No bare junto URL recognition is added here; that belongs to the shared link component.
+
+## Headings, small text and spoilers
+
+`# `, `## ` and `### ` at a line start make three heading sizes; `-# ` makes small text. `||…||` conceals inline content, including formatted text, code, links and mentions. A backslash escapes a pipe, and code spans/blocks treat their contents literally. The toolbar offers Heading, Small text and Spoiler in every composer; it wraps at narrow widths instead of clipping controls.
+
+The shared paragraph renderer paints a Spoiler control instead of the hidden subtree. A press reveals that subtree; Enter or Space reveals the next spoiler in the focused paragraph, with a focus ring. Reveal state belongs to that rendered paragraph and is reset when that paragraph's content or account owner changes; it never changes a message or sends the composer. Pending, forwarded, pinned, channel, direct and thread messages use the same renderer. Editing writes the typed structure back to marks and preserves tokens. Quotes and notice excerpts use a safe plain preview; explicit whole-message copying retains the complete text, and code keeps its whitespace. Search preserves matching on hidden words but masks them in its excerpt (ADR 0408).
+
+
+### Composer preview
+
+Each main and thread composer, including a voice chat in either call window, offers Write and Preview tabs. Preview and Send share the same parser and edit-preservation path, including typed mention and channel tokens. The preview uses the ordinary message renderer for headings, small text, spoilers, links, code, lists and quotes; checklist controls cannot change an unsent draft. Its scroll area is at most 30 percent of the window height and 210 design pixels, leaving room for history at the largest interface scale. It keeps the reply/edit banner, attachments and Send/Save control. Code headers shorten or elide the language label before the compact Copy control, whose tooltip states Copy text. Invalid documents show the ordinary limit reason before rendering rather than building an unbounded preview.
+
+Switching tabs retains the text-area entity, selection, undo history and tokens, and never submits or changes the draft. Preview takes focus away from the hidden editor; returning to Write restores that editor's focus. Successful submission returns to Write and focuses the cleared editor. Navigation resets the view to Write while retaining the place's draft. The main and thread view modes are independent. Window tests cover formatted send equivalence, conversation replies/files/edits, typed thread references, invalid text, and the detached call composer; screen checks include the small window at 150 percent.
+
+
+### Emoji completion and recent choices
+
+A colon after whitespace or at the start of a composer opens up to eight emoji candidates. Queries match the table's shortcodes and normalized English names, including available skin-tone variants; exact names rank first. The active popup keeps a font-measurement snapshot as the full picker does. Arrow keys choose, Tab or Enter inserts without sending, Escape closes, and a pointer selects a row. Typing a closing colon after a complete exact query inserts that emoji; undo can restore the literal shortcode without immediately converting it again. URLs, escaped colons and inline/fenced code do not start completion. Main and thread inputs keep independent byte ranges, including Unicode prefixes; the same composer runs in the detached call window.
+
+The installation remembers at most 24 canonical emoji in use order without duplicates. Completion choices, composer picker choices, Unicode emoji in submitted message text and added reactions use the same list. Both picker targets open with Recent emoji first, followed by the first category in the same scroll area; category selection and search keep their ordinary lists. The three newest available choices also appear in message hover actions and the existing message menu when adding reactions is permitted. These actions use the ordinary reaction route and recheck their captured owner. Current font support filters visible choices; choosing a recent entry moves it to the front. The action bar wraps inside the message width.
+
+The bounded versioned file `emoji-history.json` belongs to the local installation (ADR 0710). The client core owns validation and atomic storage; the application uses its ordered background-write queue and shutdown drain. A newer file format is preserved. A write failure is kept with the interface-settings failures until a later save succeeds.
+
+## Persistent drafts
+
+Unsent text, Unicode, typed reference spans, reply targets and original edit documents stay with the saved server/account/place, including separate thread and main composers and detached-call chat. A shared application book owns their latest snapshots, so closing a shell while the application lives and opening it again restores the same drafts. Local composer navigation cannot replace a newer shared snapshot with an old cached draft. Identical call-window handovers are taken once. An unchanged composer never overwrites a newer shared snapshot from another window. Saved thread drafts stay reachable as local nested rows even when their panels are closed and the person does not follow those threads. This does not change the server follow choice. A pencil and Draft label appear on channel, voice-channel, conversation and followed-thread rows that hold unsent text, reply/edit state or files.
+
+Changes update the shared book immediately and coalesce a private atomic write after 300 milliseconds. A shell release and the application quit callback capture both composers and flush accepted snapshots before the existing shutdown write drain. Success clears the text/reply/edit snapshot; file removal and send clear their saved sources. Account changes hide other accounts' drafts without deleting them; removing a saved server removes its drafts. Restoration sets input values without submitting them or opening completion. Draft write and recovery errors remain visible through the settings error notice. Saved files recover only when their place is shown, so startup does not read every cached picture or start every draft upload. After persistence, attachment bookkeeping retains private file references rather than picture buffers; late write results cannot replace a newer draft revision. Failed recovered files stay in the ordinary attachment controls until removed. Newer file versions remain untouched (ADR 0710).
+
+
+## Typing activity
+
+A fixed-height line above each composer shows one name, two names, or several people typing, in name order. Main and thread places are independent; voice chat and detached call chat use the same component. The viewing account is omitted. Each displayed entry belongs to the current saved-server generation and account, expires locally after the remaining server lifetime, and is cleared on stream reset. At most 256 entries are held. A 250-millisecond cleanup timer runs only while activity is displayed.
+
+Actual input edits, including pasted text and formatting or emoji insertions, update local activity. Draft restoration does not. Source keys distinguish windows and panes; a two-second coalescing interval is shared for the same owner/place. Preview, blur, navigation, clear, send and shell release stop the corresponding source. A restored draft remains silent until edited. Activity uses the existing live connection without an outbox; losing a connection relies on connection cleanup and finite expiry (ADR 0401).
+
+Typing start and stop commands are queued in order for the next application update. A call-window close can hand its drafts over while AppState is already borrowed; stopping activity must not read or update that entity recursively. The close test checks an explicit inactive event as well as the transferred text.
+
+Archived messages keep Copy text, Copy link, Forward, Mark unread and Who reacted because none changes their source content. Forward still needs a writable destination. Their menu omits content mutations; reactions and checklists cannot change archived messages. The window regression checks both the retained actions and absence of source changes.
+
+The forward header shows a source author's name only for a verified snapshot
+whose origin matches the delivering saved server. An edited local copy says
+Source link · Not verified; a remote copy says Forwarded from another server ·
+Not verified. Both retain only the source-access-checked navigation. The
+composer clears verification when its copied document changes, and the server
+independently enforces the same rule (ADR 0408).
+
+History selection anchors its endpoints to a pane, message position and identifier,
+and UTF-8 byte offsets in its visible text. The selection keeps the intervening
+text when the virtual list stops painting it and when earlier pages arrive.
+Painted fragments map back to those offsets after display padding is removed;
+headers and action labels are outside the body range. A pointer held within
+32 pixels of a list edge advances that list on display frames until release.
+The first step normalizes the tail sentinel to the physical scrollbar offset
+before moving it; subtracting from the past-the-last-row sentinel would lay out
+at the bottom again and let the history resume tail following on every frame.
+Scrolling does not change the anchor's identity. Channel, account, thread and
+layer changes reset the selection; a changed selected message invalidates it.
+Selected text is capped at the timeline's 16 MiB memory bound; extension and
+edge scrolling stop at that bound. The registry retains current loaded rows and
+the selected interval, discarding unselected old rows when the feed changes.
+Cached row/name revisions hold their Arcs, so allocator address reuse cannot
+mistake new rows for the old revision.
+
+Selection across messages follows visible content and substitutes Spoiler for a
+concealed subtree. Explicit whole-message copy continues to include the full
+body. The 90-message window regression drags backwards over several screens,
+checks partial Unicode endpoints and every intervening row, then copies again
+with neither endpoint painted.
+
+The unread-reminder restart window check waits for the selected server to show
+its channel lists before looking up that channel's counters. Opening a client
+returns before its asynchronous snapshot is applied; the absence of a row during
+that loading phase is not a read-position result. The persisted boundary and
+cross-device assertions run after this explicit readiness condition.

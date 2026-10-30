@@ -14,6 +14,7 @@ use crate::support::TestServer;
 
 impl Window {
     /// The unread messages and mentions of the row of a channel.
+    #[track_caller]
     fn unread_of(&mut self, channel_id: ChannelId) -> (u64, u64) {
         self.channels()
             .into_iter()
@@ -185,4 +186,123 @@ fn two_windows_of_one_account_show_one_read_position(
             .unread,
         0
     );
+}
+
+#[gpui::test]
+fn manual_unread_stays_unread_in_active_windows_and_on_the_other_device(
+    cx: &mut TestAppContext,
+    second_cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (directory, mut first) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (_second_directory, mut second) = linked_window(second_cx, &world, &server, &mut first);
+    let channel = first.selected_channel();
+    let message = admin.send(&world, channel, document("come back to this work"));
+    for window in [&mut first, &mut second] {
+        window.until_message("come back to this work");
+        window.activate();
+        window.until("the message is read", |window| {
+            window.unread_of(channel) == (0, 0)
+        });
+    }
+    first.right_click_named(format!("message:{}", message.id));
+    first.click("message-mark-unread");
+    for window in [&mut first, &mut second] {
+        window.until(
+            "the explicit unread position reaches this device",
+            |window| window.unread_of(channel) == (1, 0),
+        );
+    }
+    admin.send(&world, channel, document("later work also stays unread"));
+    for window in [&mut first, &mut second] {
+        window.until_message("later work also stays unread");
+        window.until("new messages keep the explicit unread boundary", |window| {
+            window.unread_of(channel) == (2, 0)
+        });
+    }
+    first.close();
+    let mut first = crate::harness::open(cx, directory.path());
+    first.until_ready();
+    first.until("the unread reminder survives a restart", |window| {
+        window.unread_of(channel) == (2, 0)
+    });
+    first.click_channel("general");
+    first.click("mark-as-read");
+    for window in [&mut first, &mut second] {
+        window.until(
+            "an explicit read clears the unread signs on both devices",
+            |window| window.unread_of(channel) == (0, 0),
+        );
+    }
+}
+
+#[gpui::test]
+fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::message::SendMessage;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let direct = window.open_conversation_with(admin.handle.account().unwrap(), "Ada");
+    let sent = world
+        .run(admin.handle.api().send_message(
+            direct,
+            &SendMessage {
+                document: document("a private reminder"),
+                reply_to: None,
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until_message("a private reminder");
+    window.activate();
+    window.until("the direct message is read", |window| {
+        window.feed().is_some_and(|feed| feed.unread == 0)
+    });
+    window.right_click_named(format!("message:{}", sent.id));
+    window.click("message-mark-unread");
+    window.until("the direct message is unread again", |window| {
+        window.feed().is_some_and(|feed| feed.unread == 1)
+    });
+    assert_eq!(
+        world
+            .run(window.handle().api().message_state(direct))
+            .unwrap()
+            .last_read,
+        sent.position - 1
+    );
+    window.click("mark-as-read");
+    window.until("the direct message is explicitly read", |window| {
+        window.feed().is_some_and(|feed| feed.unread == 0)
+    });
+    window.click_channel("general");
+    let root = admin.send(&world, window.selected_channel(), document("a discussion"));
+    let reply = admin.reply(&world, root.id, document("a reply reminder"));
+    window.until_message("a discussion");
+    window.right_click_named(format!("message:{}", root.id));
+    window.click("message-thread");
+    window.until("the thread reply is drawn", |window| {
+        window.replies().contains(&"a reply reminder".to_owned())
+    });
+    window.right_click_named(format!("message:{reply}"));
+    window.click("message-mark-unread");
+    window.until("the thread is unread again", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.feed.as_ref())
+            .is_some_and(|feed| feed.unread == 1)
+    });
+    window.click("thread-mark-as-read");
+    window.until("the thread is explicitly read", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.feed.as_ref())
+            .is_some_and(|feed| feed.unread == 0)
+    });
 }

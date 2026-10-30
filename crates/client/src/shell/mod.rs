@@ -12,11 +12,14 @@ mod camera;
 mod channels;
 mod composer;
 mod contacts;
+mod copying;
 mod decode;
 pub mod detached;
 mod direct;
+pub(crate) mod draft_storage;
 mod edges;
 mod feed;
+mod forwarding;
 mod invited;
 mod join;
 mod keybinds;
@@ -24,7 +27,9 @@ pub mod linking;
 mod links;
 mod main_area;
 mod member_search;
+mod message_links;
 mod moving;
+mod reaction_people;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
@@ -101,6 +106,9 @@ pub(crate) enum Layer {
     PersonMenu(room::PersonMenuOpen),
     /// The menu of a message, at the message.
     MessageMenu(feed::MessageMenuOpen),
+    ComposerMenu(feed::ComposerMenuOpen),
+    Forward(Box<forwarding::ForwardDialog>),
+    ReactionPeople(Box<reaction_people::People>),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
@@ -182,6 +190,13 @@ impl Pane {
             (Self::Thread, "go-to-end") => "thread-go-to-end",
             (Self::Thread, "composer") => "thread-composer",
             (Self::Thread, "composer-input") => "thread-composer-input",
+            (Self::Thread, "composer-view") => "thread-composer-view",
+            (Self::Thread, "composer-preview") => "thread-composer-preview",
+            (Self::Thread, "emoji-completion") => "thread-emoji-completion",
+            (Self::Thread, "emoji-candidate") => "thread-emoji-candidate",
+            (Self::Thread, "format-heading") => "thread-format-heading",
+            (Self::Thread, "format-small") => "thread-format-small",
+            (Self::Thread, "format-spoiler") => "thread-format-spoiler",
             (Self::Thread, "send-message") => "thread-send-message",
             (Self::Thread, "messages-state") => "thread-messages-state",
             (Self::Thread, "no-messages") => "thread-no-messages",
@@ -393,6 +408,9 @@ pub struct Shell {
     pub(crate) viewer_reads: u64,
     /// The tokens of the code blocks that the window drew.
     pub(crate) code_tokens: feed::CodeTokens,
+    pub(crate) text_selection: crate::selectable::TextSelection,
+    pub(crate) copied_text: u64,
+    pub(crate) copied_shown: bool,
     pub(crate) composer: composer::Composer,
     /// The list and the composer of the thread of the side panel.
     pub(crate) thread_feed: feed::FeedList,
@@ -529,6 +547,7 @@ impl Shell {
         let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
         let (transcript_edit, transcript_subscription) =
             transcript_edit::TranscriptEdit::new(window, cx);
+        draft_storage::register(cx.entity().downgrade(), cx);
         let own_entity = cx.entity_id();
         let (account, account_subscriptions) = account::AccountUi::new(window, cx);
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
@@ -536,6 +555,7 @@ impl Shell {
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
+                this.save_composers(cx);
                 this.state.update(cx, |state, cx| {
                     state.close_switcher(own_entity, cx);
                     state.close_profile(own_entity, cx);
@@ -615,6 +635,7 @@ impl Shell {
                         .update(cx, |state, cx| state.set_window_active(active, cx));
                 }
                 if !window.is_window_active() {
+                    this.text_selection.stop_drag();
                     this.keys.modifiers = Modifiers::none();
                     this.keys.down = None;
                     this.keys.talks = false;
@@ -796,7 +817,7 @@ impl Shell {
             main_taken: None,
             #[cfg(feature = "test-support")]
             draws: 0,
-            view_stale: false,
+            view_stale: true,
             derived_since_drawing: false,
             #[cfg(feature = "test-support")]
             derivations: 0,
@@ -833,6 +854,9 @@ impl Shell {
             message_pictures: feed::MessagePictures::default(),
             viewer_reads: 0,
             code_tokens: feed::CodeTokens::default(),
+            text_selection: crate::selectable::TextSelection::default(),
+            copied_text: 0,
+            copied_shown: false,
             composer,
             thread_feed,
             thread_composer,
@@ -1615,8 +1639,25 @@ impl Render for Shell {
             self.take_state(window, cx);
         }
         self.derived_since_drawing = false;
+        self.selection_context();
+        self.text_selection
+            .focus(if matches!(self.layer, Layer::None) {
+                self.focus.clone()
+            } else {
+                self.layer_focus.clone()
+            });
         if self.detached {
-            return self.render_detached(window, cx);
+            let detached = self.render_detached(window, cx);
+            return crate::selectable::SelectableText::new(
+                div()
+                    .relative()
+                    .size_full()
+                    .child(detached)
+                    .children(self.render_copy_control(window, cx))
+                    .children(self.render_message_link_refusal(cx)),
+                self.text_selection.clone(),
+            )
+            .into_any_element();
         }
         let settings = self.state.read(cx).settings();
         let view: ShellView = match &self.view {
@@ -1627,6 +1668,7 @@ impl Render for Shell {
                 view
             }
         };
+        self.selection_context();
         #[cfg(feature = "test-support")]
         {
             self.drawn = Some(view.clone());
@@ -1716,7 +1758,10 @@ impl Render for Shell {
             ))
             .children(self.edge_drag_tracking(cx))
             .when(!matches!(self.layer, Layer::None), |body| {
-                body.child(self.render_layer(&view, window, cx))
+                body.child(crate::selectable::SelectableText::cover(
+                    self.render_layer(&view, window, cx),
+                    self.text_selection.clone(),
+                ))
             });
         // The cut of a chosen picture lies over the layer that chose the picture.
         let picture_crop = self.state.read(cx).picture_crop();
@@ -1728,7 +1773,7 @@ impl Render for Shell {
             Some(crop) => body.child(self.render_picture_crop(crop, window, cx)),
             None => body,
         };
-        div()
+        let shell = div()
             .id("shell")
             .key_context("Shell")
             .track_focus(&self.focus)
@@ -1756,6 +1801,7 @@ impl Render for Shell {
             })
             .child(body)
             .children(self.render_panic_notice(cx))
+            .children(self.render_message_link_refusal(cx))
             .when(frame, |shell| {
                 shell.children(title_bar::resize_bands(window, cx))
             })
@@ -1768,6 +1814,8 @@ impl Render for Shell {
                 window,
                 cx,
             ))
+            .children(self.render_copy_control(window, cx));
+        crate::selectable::SelectableText::new(shell, self.text_selection.clone())
             .into_any_element()
     }
 }
@@ -1871,6 +1919,14 @@ impl Shell {
         let stale = match &self.layer {
             Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
+            Layer::Forward(dialog) => {
+                self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
+            }
+            Layer::ReactionPeople(dialog) => !self
+                .state
+                .read(cx)
+                .reaction_people_owner_matches(&dialog.key),
+            Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view, self.state.read(cx).client()),
             // The list of devices belongs to the sound settings of the call.
             Layer::DeviceMenu(_) => {
@@ -2006,6 +2062,7 @@ impl Shell {
             | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
             | Layer::MessageMenu(_)
+            | Layer::ComposerMenu(_)
             | Layer::ChannelMenu(_)
             | Layer::GroupMenu(_)
             | Layer::WorkspaceMenu(..)
@@ -2019,6 +2076,8 @@ impl Shell {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }
             Layer::Notify => self.render_notify_dialog(view, cx),
+            Layer::Forward(_) => self.render_forward_dialog(window, cx),
+            Layer::ReactionPeople(_) => self.render_reaction_people(window, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),

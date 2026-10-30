@@ -438,7 +438,10 @@ impl Shell {
         let invitations = self.render_invitation_cards(&view, cards_top, 0.0, window, cx);
         let body = body
             .when(!matches!(self.layer, super::Layer::None), |body| {
-                body.child(self.render_layer(&view, window, cx))
+                body.child(crate::selectable::SelectableText::cover(
+                    self.render_layer(&view, window, cx),
+                    self.text_selection.clone(),
+                ))
             })
             .children(invitations)
             .map(|body| Self::presses_and_escape(body, cx))

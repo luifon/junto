@@ -229,6 +229,7 @@ pub(super) fn with_directs(closed: bool) -> (Vec<ServerSnapshot>, ConversationId
             model.outbox = vec![Arc::new(pending)];
         }
         let unread = |conversation: &Conversation, unread: u64| MessageState {
+            read_revision: 0,
             place: direct_place(conversation),
             last_read: 2,
             latest: 3,
@@ -323,6 +324,7 @@ fn draw_followed(studio: &mut Studio) -> Result<(), String> {
     let (unread, _) = with_thread(|model, _| {
         let (_, root, _) = general_with_thread();
         model.threads = vec![ThreadState {
+            read_revision: 0,
             root_id: root.id,
             last_read: 22,
             latest: 24,
@@ -355,6 +357,7 @@ fn draw_followed(studio: &mut Studio) -> Result<(), String> {
     let followed: Vec<ThreadState> = std::iter::once(root_id)
         .chain(roots.iter().map(|root| root.id))
         .map(|root_id| ThreadState {
+            read_revision: 0,
             root_id,
             last_read: 24,
             latest: 24,
@@ -439,6 +442,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let (unread, _) = with_thread(|model, _| {
         let (_, root, _) = general_with_thread();
         model.threads = vec![ThreadState {
+            read_revision: 0,
             root_id: root.id,
             last_read: 22,
             latest: 24,

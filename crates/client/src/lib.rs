@@ -9,6 +9,7 @@ pub mod app_badge;
 pub mod assets;
 pub mod compose;
 pub mod dialog_parent;
+pub(crate) mod drafts;
 pub mod emoji;
 pub mod highlight;
 pub mod images;
@@ -21,6 +22,7 @@ pub mod permissions;
 pub mod picture;
 #[cfg(target_os = "linux")]
 pub mod renderer;
+pub(crate) mod selectable;
 pub mod shell;
 pub mod state;
 #[cfg(windows)]

@@ -1571,6 +1571,7 @@ pub(super) mod calls {
         };
         let root = super::super::panel_tests::message(place, 2, own, "Who takes notes?");
         model.threads = vec![ThreadState {
+            read_revision: 0,
             root_id: root.id,
             last_read: 2,
             latest: 4,

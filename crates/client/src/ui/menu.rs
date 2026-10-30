@@ -4,8 +4,8 @@
 
 use gpui::{
     AnyElement, App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, ParentElement, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    KeyDownEvent, MouseButton, ParentElement, Pixels, Point, RenderOnce, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_base::FocusTrapElement as _;
 
@@ -15,6 +15,27 @@ use crate::theme::{theme, u};
 
 type CloseHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// The pointer and keyboard triggers of a target's context menu.
+pub trait ContextMenuExt: InteractiveElement {
+    fn on_context_menu(self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        let handler = std::rc::Rc::new(handler);
+        let by_click = handler.clone();
+        self.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+            cx.stop_propagation();
+            by_click(window, cx);
+        })
+        .on_key_down(move |event, window, cx| {
+            let keys = &event.keystroke;
+            if keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift) {
+                cx.stop_propagation();
+                handler(window, cx);
+            }
+        })
+    }
+}
+
+impl<T: InteractiveElement> ContextMenuExt for T {}
 
 #[derive(IntoElement)]
 pub struct Menu {
@@ -72,6 +93,18 @@ impl Menu {
         self
     }
 
+    /// Floats beside its target, within the window, above scrolled content.
+    pub fn popup(self, offset: Point<Pixels>) -> AnyElement {
+        gpui::deferred(
+            gpui::anchored()
+                .offset(offset)
+                .snap_to_window_with_margin(gpui::px(8.0))
+                .child(self),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
+
     /// Runs when Escape is pressed in the menu and when a click lands outside it.
     pub fn on_close(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_close = Some(Box::new(handler));
@@ -95,6 +128,18 @@ impl RenderOnce for Menu {
         let items =
             super::reveal::inner_handle(&self.id, &"menu-items".into(), window, cx).tab_stop(false);
         let layer = items.clone();
+        let margin = u(8.0).to_pixels(window.rem_size());
+        let available = window.viewport_size();
+        let scroll = window
+            .use_keyed_state((self.id.clone(), "scroll"), cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let revealed = window
+            .use_keyed_state((self.id.clone(), "revealed"), cx, |_, _| {
+                std::rc::Rc::new(std::cell::RefCell::new(super::reveal::Revealed::default()))
+            })
+            .read(cx)
+            .clone();
         let frame = div()
             .id(self.id)
             .role(Role::Menu)
@@ -113,7 +158,10 @@ impl RenderOnce for Menu {
             } else {
                 metrics.menu_width
             })))
-            .overflow_hidden()
+            .max_w((available.width - margin * 2.0).max(gpui::px(0.0)))
+            .max_h((available.height - margin * 2.0).max(gpui::px(0.0)))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
             .border_1()
             .typeface(theme.types.control, &theme)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -153,7 +201,8 @@ impl RenderOnce for Menu {
                 .ink(colors.ink)
         };
         frame
-            .children(self.header)
+            .child(super::reveal::start())
+            .children(self.header.map(|header| div().flex_none().child(header)))
             .child(
                 div()
                     .id("menu-items")
@@ -163,6 +212,7 @@ impl RenderOnce for Menu {
                     .flex_none()
                     .children(self.children),
             )
+            .child(super::reveal::end(&scroll, revealed))
             .focus_trap("menu-trap", &self.focus)
     }
 }
@@ -257,7 +307,8 @@ impl MenuItem {
 }
 
 impl RenderOnce for MenuItem {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = super::reveal::handle(&self.id, window, cx);
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
@@ -275,7 +326,9 @@ impl RenderOnce for MenuItem {
             .py(u(5.0))
             .px(u(12.0))
             .line_height(u(19.0))
-            .focusable()
+            .relative()
+            .track_focus(&focus)
+            .children(super::reveal::report(&focus, window))
             .tab_stop(true)
             .focus(move |style| style.bg(Hsla::from(colors.limestone_lo)))
             .focus_visible(move |style| style.shadow(ring))
@@ -384,3 +437,6 @@ pub fn menu_separator(cx: &App) -> impl IntoElement + use<> {
         .my(u(4.0))
         .bg(Hsla::from(theme(cx).colors.rule_soft))
 }
+
+#[cfg(test)]
+mod tests;

@@ -34,18 +34,30 @@ mod call_notices;
 mod calls;
 mod channel_calls;
 mod channel_history;
+mod channel_references;
 mod channel_use;
+mod composer_preview;
 mod composing;
 mod contacts;
+mod context_menus;
+mod copying;
 mod data_directory;
 mod departures;
+mod drafts;
+mod emoji_completion;
 mod event_alerts;
 mod files;
 mod flows;
+mod formatting_marks;
+mod forwarding;
 mod glossary;
 mod gpui_panics;
 mod keybinds;
+mod message_copy_actions;
+mod message_links;
 mod rule_changes;
+mod target_links;
+mod typing;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]
@@ -73,8 +85,11 @@ mod permissions;
 mod pictures;
 mod presence;
 mod profile_cards;
+mod reaction_people;
 mod recordings;
 mod recovery;
+mod reply_quotes;
+mod review_corrections;
 mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.

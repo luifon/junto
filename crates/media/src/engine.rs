@@ -383,6 +383,7 @@ pub struct Engine {
     main_picture: watch::Receiver<Option<MainPicture>>,
     small_pictures: watch::Receiver<HashMap<ShareId, Arc<VideoPicture>>>,
     /// Holds the track permissions of the room back while it holds `true` (a test sets it).
+    #[cfg(feature = "test-support")]
     permissions_held: Arc<watch::Sender<bool>>,
 }
 
@@ -547,6 +548,7 @@ impl Engine {
             levels: levels_seen,
             main_picture,
             small_pictures,
+            #[cfg(feature = "test-support")]
             permissions_held,
         }
     }

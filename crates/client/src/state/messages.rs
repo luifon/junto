@@ -90,6 +90,7 @@ pub fn measure(sources: Vec<UploadSource>) -> Vec<Measured> {
                     .filter(std::fs::Metadata::is_file)
                     .map(|metadata| metadata.len()),
                 UploadSource::Bytes { bytes, .. } => Some(bytes.len() as u64),
+                UploadSource::Remote { attachment, .. } => Some(attachment.bytes),
             };
             Measured { source, bytes }
         })
@@ -133,6 +134,7 @@ impl AppState {
         for key in gone {
             self.open_places.remove(&key);
             self.anchors.remove(&key);
+            self.unread_pauses.remove(&key);
             if let Some(server) = self.client.server(key.0) {
                 server.live().release_messages(key.1);
             }
@@ -206,66 +208,110 @@ impl AppState {
     /// messages do not hold: the message that a reply answers, and the last reply of a
     /// thread. What the rows of those places do not name any more is put away, and at
     /// most [`QUOTE_READS`] reads are on their way.
-    pub(super) fn ask_missing_quotes(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let server = shown
-            .server
-            .and_then(|server_id| self.client.server(server_id));
-        let model = server
-            .as_ref()
-            .and_then(|server| server.live().view().model);
+    pub(super) fn ask_missing_quotes(&mut self, _shown: Shown, cx: &mut Context<Self>) {
+        let servers = self.client.servers();
+        let origins: std::collections::HashMap<_, _> = servers
+            .iter()
+            .map(|server| (server.entry().address.origin().clone(), server.id()))
+            .collect();
         let mut named = std::collections::HashSet::new();
-        let mut held = false;
-        if let Some(model) = &model {
-            for place in shown.place().into_iter().chain(shown.thread_place()) {
-                if let Some(timeline) = model.timeline(place) {
-                    held = true;
-                    named.extend(feed::named_quotes(timeline));
+        fn forwards(
+            document: &Document,
+            origins: &std::collections::HashMap<
+                junto_client_core::protocol::origin::Origin,
+                ServerId,
+            >,
+            named: &mut std::collections::HashSet<(ServerId, MessageId)>,
+        ) {
+            for block in &document.blocks {
+                if let Block::Forward {
+                    server, message_id, ..
+                } = block
+                    && let Some(server_id) = origins.get(server)
+                {
+                    named.insert((*server_id, *message_id));
                 }
             }
         }
-        let (Some(server_id), Some(server), true) = (shown.server, server, held) else {
-            self.known.quoted.clear();
-            self.asked_quotes.clear();
-            return;
-        };
-        let wanted = |(of, message_id): &(ServerId, MessageId)| {
-            *of == server_id && named.contains(message_id)
-        };
-        self.known.quoted.retain(|key, _| wanted(key));
-        self.asked_quotes.retain(|key, _| wanted(key));
-        let on_their_way = self
+        for server in &servers {
+            let Some(model) = server.live().view().model else {
+                continue;
+            };
+            for timeline in &model.timelines {
+                if !self
+                    .open_places
+                    .contains_key(&(server.id(), timeline.place))
+                {
+                    continue;
+                }
+                named.extend(
+                    feed::named_quotes(timeline)
+                        .into_iter()
+                        .map(|id| (server.id(), id)),
+                );
+                for message in timeline.messages.iter().chain(timeline.root.iter()) {
+                    if let Some(document) = &message.document {
+                        forwards(document, &origins, &mut named);
+                    }
+                }
+            }
+            for pending in &model.outbox {
+                if self.open_places.contains_key(&(server.id(), pending.place)) {
+                    forwards(&pending.document, &origins, &mut named);
+                }
+            }
+            for pins in &model.pins {
+                for message in pins.messages.loaded().into_iter().flatten() {
+                    if let Some(document) = &message.document {
+                        forwards(document, &origins, &mut named);
+                    }
+                }
+            }
+        }
+        self.known.quoted.retain(|key, _| named.contains(key));
+        self.asked_quotes.retain(|key, _| named.contains(key));
+        let flying = self
             .asked_quotes
             .keys()
             .filter(|key| !self.known.quoted.contains_key(key))
             .count();
-        let mut missing: Vec<MessageId> = named
+        let mut missing: Vec<_> = named
             .into_iter()
-            .filter(|message_id| !self.asked_quotes.contains_key(&(server_id, *message_id)))
+            .filter(|key| !self.asked_quotes.contains_key(key))
             .collect();
         missing.sort_unstable();
-        missing.truncate(QUOTE_READS.saturating_sub(on_their_way));
-        for message_id in missing {
+        missing.truncate(QUOTE_READS.saturating_sub(flying));
+        for (server_id, message_id) in missing {
+            let Some(server) = self.client.server(server_id) else {
+                continue;
+            };
+            let Some(owner) = server.owner() else {
+                continue;
+            };
             let key = (server_id, message_id);
             self.quote_asks += 1;
             let number = self.quote_asks;
             self.asked_quotes.insert(key, number);
-            let api = server.api();
+            let api = server.api_for(owner.account_id);
             cx.spawn(async move |this, cx| {
                 let read = api.message(message_id).await;
                 let _ = this.update(cx, |this, cx| {
-                    // The message changed, or the window shows another place: this answer
-                    // is not the one that was asked for last.
-                    if this.asked_quotes.get(&key) != Some(&number) {
+                    if this.asked_quotes.get(&key) != Some(&number)
+                        || this.owner(server_id) != Some(owner)
+                    {
                         return;
                     }
                     match read {
-                        Ok(message) => feed::hold_quote(&mut this.known.quoted, key, message),
+                        Ok(message) if message.id == message_id => {
+                            feed::hold_quote(&mut this.known.quoted, key, message)
+                        }
+                        Ok(_) => {
+                            this.known.quoted.insert(key, feed::Quoted::NotHeld);
+                        }
                         Err(error) => match feed::quote_without_answer(&error) {
                             Some(quoted) => {
                                 this.known.quoted.insert(key, quoted);
                             }
-                            // No answer: the message is asked for again with a later
-                            // change.
                             None => {
                                 this.asked_quotes.remove(&key);
                                 return;
@@ -307,7 +353,7 @@ impl AppState {
     }
 
     /// The account that this device has on a server.
-    fn account_of(&self, server_id: ServerId) -> Option<AccountId> {
+    pub(crate) fn account_of(&self, server_id: ServerId) -> Option<AccountId> {
         match self.client.server(server_id)?.access().state {
             AccessState::LoggedIn { account_id, .. } => Some(account_id),
             _ => None,
@@ -369,6 +415,8 @@ impl AppState {
             }
             self.open_places.retain(|key, _| key.0 != server_id);
             self.anchors.retain(|key, _| key.0 != server_id);
+            self.unread_pauses.retain(|key| key.0 != server_id);
+            self.reaction_people_forget(server_id);
             if self
                 .open_pins
                 .as_ref()
@@ -533,6 +581,7 @@ impl AppState {
                     self.sent_uploads.insert((server_id, id), uploads);
                 }
                 self.pending.message_refused = None;
+                self.removed_draft_files(server_id, place, cx);
                 self.show_uploads();
                 cx.notify();
                 true
@@ -581,6 +630,22 @@ impl AppState {
         });
     }
 
+    pub(crate) fn confirm_edit(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        document: Document,
+        cx: &mut Context<Self>,
+    ) -> futures_channel::oneshot::Receiver<bool> {
+        let (answer, receive) = futures_channel::oneshot::channel();
+        self.ask_messages(server_id, cx, move |api| async move {
+            let result = api.edit_message(message_id, document).await;
+            let _ = answer.send(result.is_ok());
+            result
+        });
+        receive
+    }
+
     pub fn delete_message(
         &mut self,
         server_id: ServerId,
@@ -601,6 +666,9 @@ impl AppState {
         add: bool,
         cx: &mut Context<Self>,
     ) {
+        if add {
+            self.remember_emoji(&emoji, cx);
+        }
         self.ask_messages(server_id, cx, move |api| async move {
             if add {
                 api.add_reaction(message_id, &emoji).await
@@ -684,10 +752,52 @@ impl AppState {
     /// client of the server sends a position once for the account that it has, and
     /// leaves out one that the account has read already (ADR 0721), so the window keeps
     /// no record of its own.
+    pub fn mark_seen(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
+        if !self.unread_pauses.contains(&(server_id, place))
+            && let Some(server) = self.client.server(server_id)
+        {
+            server.live().mark_seen(place, position);
+        }
+    }
+
     pub fn mark_read(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
+        self.unread_pauses.remove(&(server_id, place));
         if let Some(server) = self.client.server(server_id) {
             server.live().mark_read(place, position);
         }
+    }
+
+    pub fn mark_message_unread(
+        &mut self,
+        server_id: ServerId,
+        id: MessageId,
+        place: PlaceId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let Some(owner) = server.owner() else {
+            return;
+        };
+        if self.open_places.contains_key(&(server_id, place)) {
+            self.unread_pauses.insert((server_id, place));
+        }
+        let api = server.api_for(owner.account_id);
+        cx.spawn(async move |this, cx| {
+            let result = api.mark_unread(id).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.owner(server_id) != Some(owner) {
+                    return;
+                }
+                if result.is_err() {
+                    this.unread_pauses.remove(&(server_id, place));
+                    this.message_link_failed = Some(this.navigations);
+                }
+                this.changed(cx);
+            });
+        })
+        .detach();
     }
 
     /// Moves the read position of a place to its latest message.
@@ -696,7 +806,12 @@ impl AppState {
             .client
             .server(server_id)
             .and_then(|server| server.live().view().model)
-            .and_then(|model| model.message_state(place).map(|state| state.latest));
+            .and_then(|model| match place {
+                PlaceId::Thread { root_id, .. } => {
+                    model.thread_state(root_id).map(|state| state.latest)
+                }
+                _ => model.message_state(place).map(|state| state.latest),
+            });
         if let Some(latest) = latest {
             self.mark_read(server_id, place, latest);
         }
@@ -751,14 +866,48 @@ impl AppState {
                 refused.push(AttachRefusal::Unreadable { name });
                 continue;
             };
+            let kept = source.clone();
             let upload = transfers.upload(place, source);
+            self.remember_attachment_source((server_id, owner, place), upload.id, kept);
             self.watch_upload(&upload, cx);
             self.upload_owners.insert(server_id, owner);
             self.uploads.entry(key).or_default().push(upload);
         }
         self.show_uploads();
+        self.schedule_drafts(cx);
         cx.notify();
         refused
+    }
+
+    pub(super) fn recover_attachments(
+        &mut self,
+        desk: crate::drafts::Desk,
+        sources: Vec<(UploadSource, super::drafts::DraftSource)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account_of(desk.0) != Some(desk.1) {
+            return;
+        }
+        let Some(server) = self.client.server(desk.0) else {
+            return;
+        };
+        let Some(owner) = server.owner().filter(|owner| owner.account_id == desk.1) else {
+            return;
+        };
+        let transfers = server.transfers().for_owner(owner);
+        for (source, saved) in sources {
+            let upload = transfers.upload(desk.2, source);
+            self.remember_recovered_source(desk, upload.id, saved);
+            self.watch_upload(&upload, cx);
+            self.uploads
+                .entry((desk.0, desk.2))
+                .or_default()
+                .push(upload);
+        }
+        self.upload_owners.insert(desk.0, desk.1);
+        self.show_uploads();
+        self.schedule_drafts(cx);
+        cx.notify();
     }
 
     /// Takes a file out of the next message of a place and ends its upload.
@@ -777,6 +926,7 @@ impl AppState {
                 held.id != upload
             });
         }
+        self.forget_attachment_source(server_id, place, upload, cx);
         self.show_uploads();
         cx.notify();
     }

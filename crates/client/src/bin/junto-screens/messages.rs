@@ -301,6 +301,7 @@ fn daily_chat() -> Made {
 
 pub(crate) fn state(channel: u32, unread: u64, mentions: u64) -> MessageState {
     MessageState {
+        read_revision: 0,
         place: place(channel),
         last_read: 0,
         latest: 9,
@@ -455,6 +456,161 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let general_place = PlaceId::Channel(general_id());
 
     // View A of the design: a text channel with its messages.
+    for (name, scale, width, height) in [
+        ("messages-formatting-marks", 100, 1180.0, 800.0),
+        ("messages-formatting-marks-150", 150, 720.0, 600.0),
+    ] {
+        let mut marks = Made::new(GENERAL);
+        marks.message(
+            "Ana",
+            2,
+            "# Review
+## Scope
+### Details
+-# A small note with **emphasis**.
+The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
+\\||These marks are literal\\||.",
+        );
+        studio.draw(
+            Screen::new(name, with_timeline(marks.timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+        )?;
+    }
+    for (name, scale, width, height) in [
+        ("messages-composer-preview", 100, 1180.0, 800.0),
+        ("messages-composer-preview-150", 150, 720.0, 600.0),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline())).scale(scale).size(width, height),
+            |shell, window, cx| {
+                prepare(shell, none(), cx);
+                shell.type_message(Pane::Main, "## Review plan\n-# A quiet note\nA **strong** result with ||a spoiler||.\n```rust\nfn ship() { ready(); }\n```", window, cx);
+            },
+            |shell, window, cx| shell.show_composer_preview(Pane::Main, true, window, cx),
+        )?;
+    }
+    studio.draw_answered(
+        Screen::new(
+            "messages-emoji-completion",
+            with_timeline(general().timeline()),
+        ),
+        |shell, _, cx| prepare(shell, none(), cx),
+        |shell, window, cx| shell.type_message(Pane::Main, "Thanks :thumb", window, cx),
+    )?;
+    for (name, scale, width, height) in [
+        ("messages-emoji-recents", 100, 1180.0, 800.0),
+        ("messages-emoji-recents-150", 150, 720.0, 600.0),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+            |shell, window, cx| {
+                shell.state().clone().update(cx, |state, cx| {
+                    for emoji in ["👍", "🎉", "✅", "❤️"] {
+                        state.remember_emoji(emoji, cx);
+                    }
+                });
+                shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+            },
+        )?;
+    }
+    studio.draw_answered(
+        Screen::new("messages-draft", with_timeline(general().timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+        |shell, window, cx| {
+            shell.type_message(Pane::Main, "A draft kept for this channel", window, cx)
+        },
+    )?;
+    for (name, scale, width, height, names) in [
+        ("messages-typing", 100, 1180.0, 800.0, vec!["Ana"]),
+        (
+            "messages-typing-several-150",
+            150,
+            720.0,
+            600.0,
+            vec!["Ana", "Bruno", "Carla"],
+        ),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+            move |shell, _, cx| {
+                let people = names
+                    .iter()
+                    .map(|name| (person(name), (*name).to_owned()))
+                    .collect();
+                shell.state().clone().update(cx, |state, cx| {
+                    let server = state.view().selected.map(|selected| selected.id);
+                    if let Some(server) = server {
+                        state.use_typing_fixture(server, PlaceId::Channel(id(GENERAL)), people, cx);
+                    }
+                });
+            },
+        )?;
+    }
+    let mut forwarded = Made::new(GENERAL);
+    let copy = forwarded.message("Ana", 2, "## Delivery plan\nA copied **work item** remains readable when its origin is unavailable.\n```rust\nfn ship() {\n    ready();\n}\n```");
+    if let Some(document) = &mut copy.document {
+        document.blocks.insert(
+            0,
+            junto_client_core::protocol::message::Block::Forward {
+                server: junto_client_core::protocol::origin::Origin::parse(
+                    "https://source.example.test",
+                )
+                .map_err(|error| error.to_string())?,
+                message_id: id(9901),
+                verified: false,
+            },
+        );
+    }
+    copy.attachments
+        .push(file(7, "delivery-plan.txt", 2048, None));
+    studio.draw(
+        Screen::new("messages-forward-copy", with_timeline(forwarded.timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
+
+    let mut references = Made::new(GENERAL);
+    let row = references.message(
+        "Ana",
+        2,
+        "Please see the voice channel and notify this channel.",
+    );
+    row.document = Some(Document {
+        blocks: vec![junto_client_core::protocol::message::Block::Paragraph {
+            content: vec![
+                junto_client_core::protocol::message::Inline::Text {
+                    text: "Please see ".to_owned(),
+                    marks: Vec::new(),
+                },
+                junto_client_core::protocol::message::Inline::Channel {
+                    channel_id: id(DAILY),
+                },
+                junto_client_core::protocol::message::Inline::Text {
+                    text: " and notify ".to_owned(),
+                    marks: Vec::new(),
+                },
+                junto_client_core::protocol::message::Inline::Everyone,
+                junto_client_core::protocol::message::Inline::Text {
+                    text: ".".to_owned(),
+                    marks: Vec::new(),
+                },
+            ],
+        }],
+    });
+    studio.draw(
+        Screen::new(
+            "messages-channel-references",
+            with_timeline(references.timeline()),
+        ),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
     studio.draw(
         Screen::new("messages-text-channel", with_timeline(general().timeline())),
         |shell, _, cx| prepare(shell, none(), cx),
@@ -467,6 +623,42 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         .scale(150),
         |shell, _, cx| prepare(shell, none(), cx),
     )?;
+    for (name, scale, width, height) in [
+        ("messages-reaction-people", 100, 1180.0, 800.0),
+        ("messages-reaction-people-150", 150, 720.0, 600.0),
+    ] {
+        let made = general();
+        let message = made
+            .messages
+            .first()
+            .map(|message| message.id)
+            .unwrap_or_else(MessageId::generate);
+        studio.draw(
+            Screen::new(name, with_timeline(made.timeline()))
+                .scale(scale)
+                .size(width, height),
+            move |shell, window, cx| {
+                prepare(shell, none(), cx);
+                let people = ["Luca", "Ana", "Bruno", "Carla", "Marta"]
+                    .into_iter()
+                    .map(
+                        |name| junto_client_core::protocol::message::ReactionPerson {
+                            id: person(name),
+                            name: Some(name.to_owned()),
+                            departed: false,
+                        },
+                    )
+                    .collect();
+                shell.show_reaction_people_fixture(
+                    (server_id, general_place, message),
+                    "👍".to_owned(),
+                    people,
+                    window,
+                    cx,
+                );
+            },
+        )?;
+    }
     // The viewer of the pictures of a message (ADR 0740): the one picture of a message, and
     // the second of the three pictures of a message at the scale of 150 in a smaller window.
     let viewed = general();
@@ -579,6 +771,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             vec![
                 acme_with(|model| {
                     model.message_states.push(MessageState {
+                        read_revision: 0,
                         place: place(GENERAL),
                         last_read: 4,
                         latest: 8,

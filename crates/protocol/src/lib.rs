@@ -32,6 +32,7 @@ pub mod snapshot;
 pub mod structure;
 pub mod structure_file;
 pub mod transcript;
+pub mod typing;
 
 pub use junto_authz::{ServerPermission, WorkspacePermission};
 

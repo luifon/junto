@@ -928,6 +928,71 @@ impl Window {
         self.window_of(handle)
     }
 
+    /// Reopens the main shell without ending its application state.
+    pub fn reopen_shell(mut self, cx: &mut TestAppContext) -> Window {
+        let old = self.shell.downgrade();
+        self.cx.update(|window, _| window.remove_window());
+        let Self {
+            cx: old_cx,
+            shell,
+            state,
+            sound,
+            tones,
+            capture,
+            camera,
+            permission,
+            _checked,
+            panics,
+            ..
+        } = self;
+        drop(shell);
+        for _ in 0..3 {
+            TestAppContext::update(&old_cx, |_| {});
+        }
+        assert!(old.upgrade().is_none(), "the removed shell remains alive");
+        old_cx.run_until_parked();
+        let built: std::rc::Rc<std::cell::RefCell<Option<Entity<Shell>>>> = std::rc::Rc::default();
+        let (slot, shown) = (built.clone(), state.clone());
+        let handle = cx.add_window(move |window, cx| {
+            let shell = gpui::AppContext::new(cx, |cx| Shell::new(shown, window, cx));
+            *slot.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let mut window = Self {
+            cx: VisualTestContext::from_window(handle.into(), cx),
+            shell: built.borrow_mut().take().unwrap(),
+            state,
+            sound,
+            tones,
+            capture,
+            camera,
+            permission,
+            _checked,
+            panics,
+            held: Held::default(),
+            clock_held: false,
+            holding: 0,
+        };
+        window.holding(|window| draw_from_a_task(&mut window.cx));
+        window.frame();
+        window.run_tasks();
+        window
+    }
+
+    /// Opens another main shell of the same application state.
+    pub fn another_shell(&mut self, cx: &mut TestAppContext) -> Window {
+        let state = self.state.clone();
+        let handle = cx.add_window(move |window, cx| {
+            let shell = gpui::AppContext::new(cx, |cx| Shell::new(state, window, cx));
+            Root::new(shell, window, cx)
+        });
+        let mut window = self.window_of(handle.into());
+        window.holding(|window| draw_from_a_task(&mut window.cx));
+        window.frame();
+        window.run_tasks();
+        window
+    }
+
     /// Another window of the application, which draws a shell of the same state: the call
     /// window, or a main window that the test opened itself.
     #[track_caller]

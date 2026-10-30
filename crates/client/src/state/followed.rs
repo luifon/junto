@@ -1015,7 +1015,7 @@ impl AppState {
                 _ => followed.event(server_id, None),
             },
             Notice::Reloaded { .. } => followed.missed(server_id),
-            Notice::Ended { .. } | Notice::PresenceChanged => false,
+            Notice::Ended { .. } | Notice::PresenceChanged | Notice::Typing(_) => false,
         };
         if changed {
             self.followed_changed(cx);
@@ -1200,6 +1200,7 @@ mod tests {
 
     fn state(root_id: MessageId, unread: u64) -> ThreadState {
         ThreadState {
+            read_revision: 0,
             root_id,
             last_read: 4,
             latest: 4 + unread,

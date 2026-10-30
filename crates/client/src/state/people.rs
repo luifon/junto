@@ -1122,29 +1122,11 @@ fn document_people(
     document: &junto_client_core::protocol::message::Document,
     people: &mut Vec<AccountId>,
 ) {
-    use junto_client_core::protocol::message::{Block, Inline};
-    let mut content = |nodes: &[Inline]| {
-        people.extend(nodes.iter().filter_map(|node| match node {
-            Inline::Account { account_id } => Some(*account_id),
-            _ => None,
-        }))
-    };
-    for block in &document.blocks {
-        match block {
-            Block::Paragraph { content: nodes } | Block::Quote { content: nodes } => content(nodes),
-            Block::List { items, .. } => {
-                for item in items {
-                    content(item);
-                }
-            }
-            Block::Checklist { items } => {
-                for item in items {
-                    content(&item.content);
-                }
-            }
-            Block::Code { .. } => {}
-        }
-    }
+    use junto_client_core::protocol::message::Inline;
+    people.extend(document.inlines().filter_map(|(node, _)| match node {
+        Inline::Account { account_id } => Some(*account_id),
+        _ => None,
+    }));
 }
 
 fn message_people(row: &MessageRow, people: &mut Vec<AccountId>) {
@@ -1578,6 +1560,25 @@ impl AppState {
         }
         self.people_followed.call = call_people;
         self.people_followed.view = view.wanted_people.clone();
+        for ((server_id, _), quote) in &self.known.quoted {
+            let super::feed::Quoted::Read(message) = quote else {
+                continue;
+            };
+            let wanted = self.people_followed.view.entry(*server_id).or_default();
+            wanted.accounts.extend(message.author_id);
+            if let Some(document) = &message.document {
+                wanted
+                    .accounts
+                    .extend(
+                        crate::compose::nodes_of(document).filter_map(|node| match node {
+                            junto_client_core::protocol::message::Inline::Account {
+                                account_id,
+                            } => Some(*account_id),
+                            _ => None,
+                        }),
+                    );
+            }
+        }
         self.want_people(cx);
     }
 
@@ -1693,7 +1694,7 @@ impl AppState {
                 }
             }
             Notice::Reloaded { .. } => self.people_missed(server_id, cx),
-            Notice::Ended { .. } | Notice::PresenceChanged => {}
+            Notice::Ended { .. } | Notice::PresenceChanged | Notice::Typing(_) => {}
         }
     }
 

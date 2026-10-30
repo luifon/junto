@@ -82,6 +82,9 @@ impl Link {
         }
     }
 
+    pub fn id(&self) -> u64 {
+        self.id
+    }
     /// Resolves when the log can hold events that the connection has not read.
     pub async fn news(&self) {
         self.news.notified().await;
@@ -239,6 +242,7 @@ pub struct PresenceLink {
 }
 
 pub struct Streams {
+    typing: super::typing::Activity,
     limits: Mutex<Arc<StreamLimits>>,
     registry: Mutex<Registry>,
     event_reads: Arc<Semaphore>,
@@ -255,6 +259,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Streams {
     pub fn new(limits: &StreamLimits) -> Self {
         Self {
+            typing: super::typing::Activity::default(),
             limits: Mutex::new(Arc::new(limits.clone())),
             registry: Mutex::new(Registry::default()),
             event_reads: Arc::new(Semaphore::new(limits.concurrent_deliveries.max(1))),
@@ -401,6 +406,42 @@ impl Streams {
             .collect()
     }
 
+    pub fn typing(&self) -> &super::typing::Activity {
+        &self.typing
+    }
+    pub fn typing_changed(
+        &self,
+        source: super::typing::Source,
+        place: junto_protocol::typing::TypingPlace,
+        name: String,
+        active: bool,
+        lifetime_ms: u32,
+    ) {
+        let registry = lock(&self.registry);
+        if registry
+            .by_account
+            .get(&source.account)
+            .into_iter()
+            .flatten()
+            .any(|link| {
+                link.id == source.connection
+                    && link.device_id == source.device
+                    && link.session_id == source.session
+                    && !link.is_replaced()
+                    && !link.is_stopping()
+                    && (!active || link.level.load(Ordering::SeqCst) != NOT_SUBSCRIBED)
+            })
+        {
+            self.typing.update(
+                source,
+                place,
+                name,
+                active,
+                lifetime_ms,
+                std::time::Instant::now(),
+            );
+        }
+    }
     pub fn calls(&self) -> &CallRegistry {
         &self.calls
     }
@@ -524,6 +565,7 @@ impl Streams {
                 registry.by_account.remove(&link.account_id);
             }
         }
+        self.typing.close(link.id);
         drop(registry);
         self.presence_changed(link.account_id, link.visible.load(Ordering::SeqCst));
     }

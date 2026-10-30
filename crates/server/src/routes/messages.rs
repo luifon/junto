@@ -9,7 +9,11 @@ use crate::{
     messages::{self, Place, Purpose, document},
     read, store, transact,
 };
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use junto_authz::{Request, ServerPermission, WorkspacePermission};
 use junto_protocol::{
     error::ErrorCode,
@@ -155,7 +159,8 @@ async fn history(
         if !ascending {
             ids.reverse();
         }
-        let messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let mut messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let has_more = messages::page::bound(&mut messages, ascending)? || has_more;
         Ok(MessagePage { messages, has_more })
     })
 }
@@ -164,11 +169,10 @@ pub(super) async fn send(
     bearer: &Bearer,
     target: Target,
     body: &SendMessage,
+    client_revision: u32,
 ) -> ApiResult<Message> {
-    let named = messages::threads::named(&document::validate(&body.document)?);
-    if !document::has_content(&body.document) && body.attachments.is_empty() {
-        return Err(ApiError::invalid("a message needs text or an attachment"));
-    }
+    super::message_format::require(&body.document, client_revision)?;
+    document::validate(&body.document)?;
     let id = MessageId::generate();
     let now = app.now();
     let mut counted = false;
@@ -177,6 +181,14 @@ pub(super) async fn send(
         let place = target.open(connection, &access, Purpose::Change).await?;
         place.require_open()?;
         place.require_send(&access, matches!(target, Target::Thread(_)))?;
+        let (copied, source) =
+            messages::forwarding::prepare(connection, app, &access, &body.document).await?;
+        let mut body: SendMessage = body.clone();
+        body.document = copied;
+        let named = messages::threads::named(&document::validate(&body.document)?);
+        if !document::has_content(&body.document) && body.attachments.is_empty() {
+            return Err(ApiError::invalid("a message needs text or an attachment"));
+        }
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
             let (parent, _) = messages::get(connection, &access, reply, Purpose::Change).await?;
@@ -258,7 +270,7 @@ pub(super) async fn send(
             .execute(&mut *connection)
             .await?;
         }
-        messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        messages::mentions(connection, &access, &place, id, &body.document, None, now).await?;
         if let Some((root, candidates, before)) = &followers {
             messages::threads::tell_new_followers(
                 connection,
@@ -271,6 +283,9 @@ pub(super) async fn send(
             .await?;
         }
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
+        if let Some(source) = &source {
+            messages::forwarding::verify_files(connection, source, id).await?;
+        }
         messages::created(connection, now, place.value, id, position as u64).await?;
         messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
@@ -333,9 +348,12 @@ pub async fn edit_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<EditMessage>,
 ) -> ApiResult<Json<Message>> {
-    let named = messages::threads::named(&document::validate(&body.document)?);
+    let client_revision = super::message_format::revision(&headers);
+    super::message_format::require(&body.document, client_revision)?;
+    document::validate(&body.document)?;
     let now = app.now();
     let mut counted = false;
     transact!(app, |connection| {
@@ -346,6 +364,9 @@ pub async fn edit_message(
         }
         place.require_open()?;
         place.edit(&access, &message)?;
+        if let Some(document) = &message.document {
+            super::message_format::require(document, client_revision)?;
+        }
         place.require_send(&access, message.thread_root.is_some())?;
         rate(&app, &access, &mut counted)?;
         if !document::has_content(&body.document) && message.attachments.is_empty() {
@@ -354,13 +375,25 @@ pub async fn edit_message(
         if message.document.as_ref() == Some(&body.document) {
             return Ok(message);
         }
+        let body = EditMessage {
+            document: messages::forwarding::edited(connection, &access, &body.document).await?,
+        };
+        let named = messages::threads::named(&document::validate(&body.document)?);
         // An account that the edit names follows the thread of a reply by the rule.
         let before = match message.thread_root {
             Some(root) => messages::threads::following_among(connection, root, &named).await?,
             None => Vec::new(),
         };
-        let recipients =
-            messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        let recipients = messages::mentions(
+            connection,
+            &access,
+            &place,
+            id,
+            &body.document,
+            message.document.as_ref(),
+            now,
+        )
+        .await?;
         if let Some(root) = message.thread_root {
             messages::threads::tell_new_followers(
                 connection,
@@ -607,7 +640,7 @@ async fn advance_read(
 ) -> ApiResult<()> {
     let changed = sqlx::query(
         "insert into message_reads(place_id,account_id,position) values($1,$2,$3)
-         on conflict(place_id,account_id) do update set position=excluded.position
+         on conflict(place_id,account_id) do update set position=excluded.position,manual_unread=false
          where message_reads.position<excluded.position",
     )
     .bind(place.id)
@@ -653,7 +686,15 @@ async fn mark(
         if position > head {
             return Err(ApiError::invalid("read position is beyond the history"));
         }
-        advance_read(connection, app.now(), &access, &place, position).await?;
+        let revision: i64 = sqlx::query_scalar("insert into message_reads(place_id,account_id,position) values($1,$2,0)
+            on conflict(place_id,account_id) do update set position=message_reads.position returning read_revision")
+            .bind(place.id).bind(access.account_id).fetch_one(&mut *connection).await?;
+        if body
+            .read_revision
+            .is_none_or(|expected| expected == revision as u64)
+        {
+            advance_read(connection, app.now(), &access, &place, position).await?;
+        }
         messages::state(connection, &access, &place, app.now()).await
     })
 }
@@ -674,11 +715,21 @@ pub async fn send_channel_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<ChannelId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Channel(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Channel(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 #[utoipa::path(put,path="/api/v1/channels/{channel_id}/messages/read",tag="messages",params(("channel_id"=ChannelId,Path)),request_body=MarkRead,security(("session"=[])),responses((status=200,body=MessageState),ApiError))]
@@ -709,11 +760,21 @@ pub async fn send_conversation_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<ConversationId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Direct(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Direct(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 #[utoipa::path(put,path="/api/v1/conversations/{conversation_id}/messages/read",tag="messages",params(("conversation_id"=ConversationId,Path)),request_body=MarkRead,security(("session"=[])),responses((status=200,body=MessageState),ApiError))]
@@ -758,4 +819,119 @@ pub async fn conversation_message_state(
         messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)
+}
+
+#[utoipa::path(put,path="/api/v1/messages/{message_id}/unread",tag="messages",params(("message_id"=MessageId,Path)),security(("session"=[])),responses((status=204),ApiError))]
+pub async fn mark_unread(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+) -> ApiResult<StatusCode> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        let (place, message) = messages::get(connection, &access, id, Purpose::Read).await?;
+        if message.deleted || message.position == 0 {
+            return Err(ApiError::not_found());
+        }
+        rate(&app, &access, &mut counted)?;
+        let position = message.position.saturating_sub(1) as i64;
+        let revision: i64 = if let Some(root) = message.thread_root {
+            let revision = sqlx::query_scalar("insert into thread_reads(root_id,account_id,position,read_revision,following,follow_setting,manual_unread)
+                values($1,$2,$3,1,true,true,true) on conflict(root_id,account_id) do update
+                set position=excluded.position,read_revision=thread_reads.read_revision+1,following=true,follow_setting=true,manual_unread=true
+                returning read_revision")
+                .bind(root).bind(access.account_id).bind(position).fetch_one(&mut *connection).await?;
+            sqlx::query("update message_mention_accounts set unread=true where account_id=$1 and thread_root=$2 and position>$3")
+                .bind(access.account_id).bind(root).bind(position).execute(&mut *connection).await?;
+            sqlx::query("update notifications n set read_at=null from messages m where n.message_id=m.id and n.account_id=$1
+                and m.thread_root=$2 and m.position>$3")
+                .bind(access.account_id).bind(root).bind(position).execute(&mut *connection).await?;
+            revision
+        } else {
+            let revision = sqlx::query_scalar("insert into message_reads(place_id,account_id,position,read_revision,manual_unread)
+                values($1,$2,$3,1,true) on conflict(place_id,account_id) do update
+                set position=excluded.position,read_revision=message_reads.read_revision+1,manual_unread=true returning read_revision")
+                .bind(place.id).bind(access.account_id).bind(position).fetch_one(&mut *connection).await?;
+            sqlx::query("update notifications n set read_at=null from messages m where n.message_id=m.id and n.account_id=$1
+                and m.place_id=$2 and m.thread_root is null and m.position>$3")
+                .bind(access.account_id).bind(place.id).bind(position).execute(&mut *connection).await?;
+            revision
+        };
+        events::tell_account(
+            connection,
+            app.now(),
+            access.account_id,
+            &Event::MessageMarkedUnread {
+                place: message.place,
+                thread_root: message.thread_root,
+                position: position as u64,
+                read_revision: revision as u64,
+            },
+        )
+        .await?;
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ReactionPeopleQuery {
+    pub emoji: String,
+    pub after: Option<AccountId>,
+    pub before: Option<AccountId>,
+    pub limit: Option<u32>,
+}
+
+#[utoipa::path(get,path="/api/v1/messages/{message_id}/reactions",tag="messages",params(("message_id"=MessageId,Path),ReactionPeopleQuery),security(("session"=[])),responses((status=200,body=ReactionPeople),ApiError))]
+pub async fn reaction_people(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+    ApiQuery(query): ApiQuery<ReactionPeopleQuery>,
+) -> ApiResult<Json<ReactionPeople>> {
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) || query.after.is_some() && query.before.is_some() {
+        return Err(ApiError::invalid(
+            "use limit 1 to 200 and at most one reaction cursor",
+        ));
+    }
+    let emoji = emojis::get(&query.emoji)
+        .filter(|_| query.emoji.len() <= 64)
+        .ok_or_else(|| ApiError::invalid("a reaction is one standard emoji"))?
+        .as_str();
+    let backwards = query.before.is_some();
+    let (compare, order) = if backwards {
+        ("<", "desc")
+    } else {
+        (">", "asc")
+    };
+    let cursor = query
+        .before
+        .or(query.after)
+        .unwrap_or_else(|| AccountId::from_uuid(uuid::Uuid::nil()));
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        let (_, message) = messages::get(connection, &access, id, Purpose::Live(app.streams.live_since(access.account_id, access.device_id, access.session_id))).await?;
+        if message.deleted { return Err(ApiError::not_found()); }
+        super::search::read_rate(&app, &access, &mut counted)?;
+        let rows: Vec<(AccountId, Option<String>, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select r.account_id,case when a.status='deleted' then null else a.name end,a.status<>'active'
+             from message_reactions r join accounts a on a.id=r.account_id
+             where r.message_id=$1 and r.emoji=$2 and r.account_id {compare} $3
+             order by r.account_id {order} limit $4")))
+            .bind(id).bind(emoji).bind(cursor).bind(i64::from(limit))
+            .fetch_all(&mut *connection).await?;
+        let mut people: Vec<ReactionPerson> = rows.into_iter().map(|(id, name, departed)| ReactionPerson { id, name, departed }).collect();
+        if backwards { people.reverse(); }
+        let (previous_before, next_after) = if let (Some(first), Some(last)) = (people.first(), people.last()) {
+            let (before, after): (bool, bool) = sqlx::query_as(
+                "select exists(select 1 from message_reactions where message_id=$1 and emoji=$2 and account_id<$3),
+                        exists(select 1 from message_reactions where message_id=$1 and emoji=$2 and account_id>$4)")
+                .bind(id).bind(emoji).bind(first.id).bind(last.id).fetch_one(&mut *connection).await?;
+            (before.then_some(first.id), after.then_some(last.id))
+        } else { (None, None) };
+        Ok(ReactionPeople { people, next_after, previous_before })
+    }).map(Json)
 }

@@ -12,9 +12,8 @@ use junto_protocol::message::{Block, Document, Inline, Message};
 pub const MOST_BLOCKS: usize = 100;
 /// The inline nodes of the document of one message (ADR 0408).
 pub const MOST_INLINE_NODES: usize = 1_000;
-/// The items of the lists of the document of one message. ADR 0408 states no number: its
-/// 16 KiB of compact JSON hold fewer than 5,500 items.
-pub const MOST_LIST_ITEMS: usize = 5_500;
+/// The items of all lists of one message (ADR 0408).
+pub const MOST_LIST_ITEMS: usize = junto_protocol::message::MAX_LIST_ITEMS;
 /// The files of one message: the highest limit that a server can be set to (ADR 0408).
 pub const MOST_FILES: usize = 100;
 /// The different emoji of the reactions of one message (ADR 0408).
@@ -38,14 +37,17 @@ const NODE: usize = 64;
 const ITEM: usize = 24;
 
 fn inline(nodes: &[Inline]) -> usize {
-    nodes
-        .iter()
-        .map(|node| {
+    junto_protocol::message::inline_nodes(nodes)
+        .map(|(node, _)| {
             NODE + match node {
                 Inline::Text { text, marks } => text.len() + marks.len(),
                 Inline::Code { text } => text.len(),
                 Inline::Link { text, url } => text.len() + url.len(),
-                Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => 0,
+                Inline::Spoiler { .. }
+                | Inline::Channel { .. }
+                | Inline::Account { .. }
+                | Inline::Role { .. }
+                | Inline::Everyone => 0,
             }
         })
         .sum()
@@ -57,7 +59,11 @@ fn document(document: &Document) -> usize {
         .iter()
         .map(|block| {
             NODE + match block {
-                Block::Paragraph { content } | Block::Quote { content } => inline(content),
+                Block::Forward { server, .. } => server.as_str().len() + 16,
+                Block::Heading { content, .. }
+                | Block::Small { content }
+                | Block::Paragraph { content }
+                | Block::Quote { content } => inline(content),
                 Block::Code { text, language } => {
                     text.len() + language.as_ref().map_or(0, String::len)
                 }
@@ -75,29 +81,7 @@ fn document(document: &Document) -> usize {
 
 /// The inline nodes of a document, as the server counts them.
 fn inline_nodes(document: &Document) -> usize {
-    document
-        .blocks
-        .iter()
-        .map(|block| match block {
-            Block::Paragraph { content } | Block::Quote { content } => content.len(),
-            Block::Code { .. } => 0,
-            Block::List { items, .. } => items.iter().map(Vec::len).sum(),
-            Block::Checklist { items } => items.iter().map(|item| item.content.len()).sum(),
-        })
-        .sum()
-}
-
-/// The items of the lists of a document.
-fn list_items(document: &Document) -> usize {
-    document
-        .blocks
-        .iter()
-        .map(|block| match block {
-            Block::List { items, .. } => items.len(),
-            Block::Checklist { items } => items.len(),
-            Block::Paragraph { .. } | Block::Quote { .. } | Block::Code { .. } => 0,
-        })
-        .sum()
+    document.inlines().take(MOST_INLINE_NODES + 1).count()
 }
 
 /// The weight of a message: the bytes of its texts, and a fixed weight for the message
@@ -133,9 +117,12 @@ pub fn fits(message: &Message) -> bool {
     message.attachments.len() <= MOST_FILES
         && message.reactions.len() <= MOST_REACTIONS
         && message.document.as_ref().is_none_or(|document| {
-            document.blocks.len() <= MOST_BLOCKS
+            document.content_blocks().count() <= MOST_BLOCKS
+                && document.forward_origins() <= 1
                 && inline_nodes(document) <= MOST_INLINE_NODES
-                && list_items(document) <= MOST_LIST_ITEMS
+                && document.list_items() <= MOST_LIST_ITEMS
+                && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
+                && document.blocks.iter().all(|block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)))
         })
         && weight(message) <= MOST_MESSAGE_WEIGHT
 }

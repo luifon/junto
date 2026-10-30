@@ -11,11 +11,13 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 ## Decision
 
 - The integration tests of the server start the real router on a local port and call it over HTTP.
+- The authorization matrix includes every documented authenticated operation, including metadata, unread positions and reaction rosters. A route with required query parameters receives valid parameters, so authentication and permission tests reach the intended check.
 - They run against a real PostgreSQL. The script `tools/with-test-postgres.sh` starts one in Docker on a free local port, passes its address in `JUNTO_TEST_DATABASE_URL`, runs a command, and removes the container with its volume. The container has the name `junto-dev-postgres`, or the name in `JUNTO_TEST_POSTGRES_CONTAINER`, so that two checkouts on one machine can run their tests at the same time. It is the one script for a temporary PostgreSQL; the tests of the client use it too.
 - Each test creates its own database and applies the migrations to it, so tests run in parallel and do not share state.
 - A test without `JUNTO_TEST_DATABASE_URL` fails with a message that names the script. It is not skipped.
 - A test replaces the clock (ADR 0008) and moves the time forward to test expiry.
 - A test that shortens a time limit applies it only to the step that it examines, and prepares under the normal limits. For the time limit of a request and the time limits of the database, the test prepares on one server process and sends the examined step to a second process on the same database that has the short limit. For the time limits of the event stream, the test replaces the limits of the running server after its preparation. Only tests replace limits at run time.
+- The oversized-change test prepares its uncommitted events before subscribing, then commits and reads the result. Bulk fixture insertion must not consume the idle lifetime of a client that has not started reading.
 - Bulk test data (an insert from `generate_series`, or a loop of inserts) is written through `TestServer::test_data`, a connection with separate finite limits: 120 seconds per statement, 10 seconds waiting for a lock and 60 seconds idle in a transaction. The connection opens within 15 seconds and sets these limits in its startup options. Preparing thousands of rows is not a request; under load a single such insert exceeded the statement time limit (`57014`). The queries and requests under test keep every time limit, and the fixture size and the assertions stay unchanged.
 - A live event stream opens after its bulk fixture and deferred event-position triggers are prepared. The oversized-change test runs `SET CONSTRAINTS events_position_at_commit IMMEDIATE` inside its uncommitted fixture transaction, checks that the change holds 70,001 events, opens and subscribes the stream, then commits. Preparing that change had exceeded the heartbeat idle period while the test client was not reading. The commit and snapshot-resynchronization assertion keep the normal stream limits.
 - A test waits for a condition and not for a fixed time when it needs something to have happened. For the admission check, the server states whether a check runs or a room waits for one.
@@ -47,3 +49,12 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - A machine under load makes a test slower and does not change its result: no preparation step runs under a shortened time limit.
 - A live test runs against the media server behaviour of the deployment: a room stays 60 seconds after its last person left, and a camera layer above the lowest is forwarded again after two seconds with packets. A new setting of LiveKit that changes media behaviour goes into `deploy/livekit-common.yaml`; a form that has it alone fails the check of the deployment.
 - The CI jobs on macOS and Windows run the window tests against the PostgreSQL build of their system of the same version, without Docker (ADR 0916 on macOS, ADR 0912 on Windows); the other tests that need PostgreSQL run in CI on Linux only.
+
+The oversized live-change fixture assigns its deferred event positions inside the
+uncommitted preparation transaction before opening the stream. It verifies that
+the subscription still starts at the earlier committed cursor, then commits the
+70,001-event change and requires SkippedEvent resynchronization. Preparing only
+the insert left all per-row deferred bookkeeping after subscription, consuming
+the connection lifetime while the test client was not polling it. The event
+count, live commit, resynchronization assertion and every server limit remain
+unchanged.

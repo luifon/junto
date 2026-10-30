@@ -507,6 +507,7 @@ fn a_change_of_the_follow_choice_changes_the_thread_and_reads_the_lists_again() 
     let mut scene = scene();
     let (root_id, other) = (MessageId::generate(), MessageId::generate());
     let state = |root_id| ThreadState {
+        read_revision: 0,
         root_id,
         last_read: 2,
         latest: 9,

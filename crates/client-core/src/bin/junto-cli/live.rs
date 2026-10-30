@@ -1010,6 +1010,20 @@ fn event_details(event: &Event) -> String {
             workspace_id,
             channel_id,
         } => format!("workspace={workspace_id} channel={channel_id}"),
+        Event::MessageMarkedUnread {
+            place,
+            thread_root,
+            position,
+            read_revision,
+        } => {
+            let thread = thread_root
+                .map(|root| format!(" thread={root}"))
+                .unwrap_or_default();
+            format!(
+                "{}{thread} position={position} read_revision={read_revision}",
+                message_place(place)
+            )
+        }
         Event::MessageRead { place, position } => {
             format!("{} position={position}", message_place(place))
         }
@@ -1081,6 +1095,24 @@ fn pair(place: &CallPlace) -> String {
 
 fn notice_line(notice: &Notice) -> String {
     match notice {
+        Notice::Typing(Some(activity)) => {
+            use junto_protocol::typing::TypingPlace;
+            let target = match activity.place {
+                TypingPlace::Channel { channel_id } => format!("channel={channel_id}"),
+                TypingPlace::Direct { conversation_id } => {
+                    format!("conversation={conversation_id}")
+                }
+                TypingPlace::Thread {
+                    channel_id,
+                    root_id,
+                } => format!("channel={channel_id} thread={root_id}"),
+            };
+            format!(
+                "typing {target} account={} active={} expires_ms={}",
+                activity.account_id, activity.active, activity.expires_in_ms
+            )
+        }
+        Notice::Typing(None) => "typing cleared".to_owned(),
         Notice::Event { id, event, .. } => {
             let line = format!("event {id} {} {}", event.name(), event_details(event));
             line.trim_end().to_owned()

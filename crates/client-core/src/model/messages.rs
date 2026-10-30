@@ -16,7 +16,9 @@ use crate::api::{ApiError, ErrorCategory};
 
 /// A place that holds messages: a channel, a direct conversation, or the thread under one
 /// message of a channel (ADR 0403).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum PlaceId {
     Channel(ChannelId),
     Direct(ConversationId),
@@ -29,6 +31,34 @@ pub enum PlaceId {
 }
 
 impl PlaceId {
+    pub const fn typing_place(self) -> junto_protocol::typing::TypingPlace {
+        use junto_protocol::typing::TypingPlace;
+        match self {
+            Self::Channel(channel_id) => TypingPlace::Channel { channel_id },
+            Self::Direct(conversation_id) => TypingPlace::Direct { conversation_id },
+            Self::Thread {
+                channel_id,
+                root_id,
+            } => TypingPlace::Thread {
+                channel_id,
+                root_id,
+            },
+        }
+    }
+    pub const fn from_typing(place: junto_protocol::typing::TypingPlace) -> Self {
+        use junto_protocol::typing::TypingPlace;
+        match place {
+            TypingPlace::Channel { channel_id } => Self::Channel(channel_id),
+            TypingPlace::Direct { conversation_id } => Self::Direct(conversation_id),
+            TypingPlace::Thread {
+                channel_id,
+                root_id,
+            } => Self::Thread {
+                channel_id,
+                root_id,
+            },
+        }
+    }
     /// The channel or the direct conversation that the server names.
     pub const fn of(place: &MessagePlace) -> Self {
         match place {
@@ -464,6 +494,7 @@ impl PendingMessage {
 
 fn empty_state(place: MessagePlace) -> MessageState {
     MessageState {
+        read_revision: 0,
         place,
         last_read: 0,
         latest: 0,

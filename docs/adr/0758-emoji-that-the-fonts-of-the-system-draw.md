@@ -63,3 +63,5 @@ A bundled colour emoji font was considered and is not used:
 - The emoji of the first versions stay in one colour on Linux with DejaVu Sans until gpui's Linux text system keeps a requested face without the letter m, or the client carries a copy of `gpui-pre-wgpu` in `vendor/` with that correction (`vendor/README.md`, ADR 0733).
 - A later bundled font needs copies of the three gpui crates in `vendor/`, with their corrections in `vendor/README.md` and ADR 0733, and its size counts against the measurements of ADR 0914.
 - Not replaced: the text of a display name, a channel name and other labels of the interface, and the text that a person types into the composer. An emoji there that the fonts do not draw is drawn as the fonts draw it.
+
+Shortcode completion uses the same font-support filter and holds its measurement snapshot for the lifetime of the popup. It can offer named skin-tone variants as well as base entries; recent picker and quick-reaction choices are filtered against the current measurement (ADR 0740).

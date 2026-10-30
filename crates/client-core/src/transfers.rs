@@ -167,15 +167,44 @@ async fn held_bytes(
 }
 
 /// What a person attaches to a message.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum UploadSource {
     /// A file of this device.
     File(PathBuf),
+    Remote {
+        api: Box<ServerApi>,
+        attachment: Box<Attachment>,
+    },
     /// Bytes that the application holds, such as a pasted picture.
     Bytes { name: String, bytes: Arc<Vec<u8>> },
 }
 
+impl std::fmt::Debug for UploadSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => f.debug_tuple("File").field(path).finish(),
+            Self::Bytes { name, bytes } => f
+                .debug_struct("Bytes")
+                .field("name", name)
+                .field("bytes", &bytes.len())
+                .finish(),
+            Self::Remote { attachment, .. } => f
+                .debug_struct("Remote")
+                .field("attachment", &attachment.id)
+                .field("bytes", &attachment.bytes)
+                .finish(),
+        }
+    }
+}
+
 impl UploadSource {
+    pub fn remote(api: ServerApi, attachment: Attachment) -> Self {
+        Self::Remote {
+            api: Box::new(api),
+            attachment: Box::new(attachment),
+        }
+    }
+
     /// The name that the server gets: the last part of the path, without the characters
     /// that the server refuses.
     pub fn name(&self) -> String {
@@ -185,6 +214,7 @@ impl UploadSource {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             Self::Bytes { name, .. } => name.clone(),
+            Self::Remote { attachment, .. } => attachment.name.clone(),
         };
         upload_name(&name)
     }
@@ -394,6 +424,7 @@ fn read_part(source: &UploadSource, offset: u64, length: usize) -> std::io::Resu
             file.read_exact(&mut part)?;
             Ok(part)
         }
+        UploadSource::Remote { .. } => Err(std::io::ErrorKind::InvalidInput.into()),
         UploadSource::Bytes { bytes, .. } => {
             let start = usize::try_from(offset).unwrap_or(usize::MAX);
             bytes
@@ -401,6 +432,108 @@ fn read_part(source: &UploadSource, offset: u64, length: usize) -> std::io::Resu
                 .map(<[u8]>::to_vec)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
         }
+    }
+}
+
+struct RemoteReader {
+    api: ServerApi,
+    attachment: Attachment,
+    body: Option<FileBody>,
+    position: u64,
+    carry: Vec<u8>,
+    last: Option<(u64, Vec<u8>)>,
+    waits: Waits,
+}
+
+impl RemoteReader {
+    fn new(api: ServerApi, attachment: Attachment) -> Self {
+        Self {
+            api,
+            attachment,
+            body: None,
+            position: 0,
+            carry: Vec::new(),
+            last: None,
+            waits: Waits::new(),
+        }
+    }
+
+    async fn read(&mut self, offset: u64, length: usize) -> Result<Vec<u8>, TransferFailure> {
+        if let Some((at, bytes)) = &self.last
+            && *at == offset
+            && bytes.len() == length
+        {
+            return Ok(bytes.clone());
+        }
+        if self.position != offset {
+            self.position = offset;
+            self.carry.clear();
+            self.body = None;
+        }
+        let mut part = Vec::with_capacity(length);
+        let mut idle = 0;
+        while part.len() < length {
+            if !self.carry.is_empty() {
+                let take = self.carry.len().min(length - part.len());
+                part.extend_from_slice(&self.carry[..take]);
+                drop(self.carry.drain(..take));
+                self.position += take as u64;
+                continue;
+            }
+            if self.body.is_none() {
+                match self
+                    .api
+                    .attachment_file(self.attachment.id, self.position)
+                    .await
+                {
+                    Ok(opened) => {
+                        if (opened.partial && opened.starts_at != Some(self.position))
+                            || (!opened.partial && self.position != 0)
+                        {
+                            return Err(TransferFailure::Corrupt);
+                        }
+                        self.body = Some(opened);
+                    }
+                    Err(error) if passes(&error) => {
+                        self.waits.wait(&error).await;
+                        continue;
+                    }
+                    Err(error) => return Err(TransferFailure::of(&error)),
+                }
+            }
+            let next = match self.body.as_mut() {
+                Some(body) => body.body.next().await,
+                None => return Err(TransferFailure::Stopped),
+            };
+            match next {
+                Some(Ok(bytes)) if !bytes.is_empty() => {
+                    if bytes.len() as u64 > self.attachment.bytes.saturating_sub(self.position) {
+                        return Err(TransferFailure::Corrupt);
+                    }
+                    self.carry = bytes.to_vec();
+                    idle = 0;
+                    self.waits.reset();
+                }
+                Some(Err(error)) => {
+                    self.body = None;
+                    idle += 1;
+                    if idle >= IDLE_TRIES {
+                        return Err(TransferFailure::Interrupted);
+                    }
+                    self.waits.wait(&ApiError::Unreachable(error)).await;
+                }
+                _ => {
+                    self.body = None;
+                    idle += 1;
+                    if idle >= IDLE_TRIES {
+                        return Err(TransferFailure::Interrupted);
+                    }
+                    self.waits.pause().await;
+                }
+            }
+        }
+        self.last = Some((offset, part.clone()));
+        Ok(part)
     }
 }
 
@@ -418,6 +551,9 @@ async fn upload(
     let (bytes, sha256) = blocking(move || match &measured {
         UploadSource::File(path) => measure(std::fs::File::open(path)?),
         UploadSource::Bytes { bytes, .. } => measure(bytes.as_slice()),
+        UploadSource::Remote { attachment, .. } => {
+            Ok((attachment.bytes, attachment.sha256.clone()))
+        }
     })
     .await?;
     if bytes == 0 {
@@ -471,6 +607,13 @@ async fn upload(
     let mut most = offset;
     let mut idle = 0u8;
     let mut refusals = 0u8;
+    let mut remote = match &source {
+        UploadSource::Remote { api, attachment } => Some(Box::new(RemoteReader::new(
+            api.as_ref().clone(),
+            attachment.as_ref().clone(),
+        ))),
+        _ => None,
+    };
     while offset < bytes {
         tell(&|progress| {
             progress.sent = offset;
@@ -479,8 +622,13 @@ async fn upload(
         let length = usize::try_from(bytes - offset)
             .unwrap_or(usize::MAX)
             .min(CHUNK_BYTES);
-        let part_of = source.clone();
-        let part = blocking(move || read_part(&part_of, offset, length)).await?;
+        let part = match &mut remote {
+            Some(reader) => reader.read(offset, length).await?,
+            None => {
+                let part_of = source.clone();
+                blocking(move || read_part(&part_of, offset, length)).await?
+            }
+        };
         let sent = offset + length as u64;
         match api.put_chunk(attachment_id, offset, part).await {
             // The answer to a part holds the bytes up to its end.
@@ -1136,6 +1284,15 @@ pub struct Transfers {
 }
 
 impl Transfers {
+    /// Restricts new transfers and messages to the account and saved entry of a flow.
+    pub fn for_owner(&self, expected: Owner) -> Self {
+        let owned = self.owned.clone();
+        Self {
+            owned: Arc::new(move || owned().filter(|(owner, _)| *owner == expected)),
+            ..self.clone()
+        }
+    }
+
     /// Starts the upload of a file for a message of `place`. The upload runs until it is
     /// complete, fails or is cancelled, also when the returned value is dropped. It
     /// belongs to the owner of its start: each of its requests is made for that account,
@@ -1223,6 +1380,7 @@ impl Transfers {
         reply_to: Option<MessageId>,
         uploads: &[Upload],
     ) -> Option<u64> {
+        let (owner, _) = (self.owned)()?;
         let files = uploads
             .iter()
             .map(|upload| {
@@ -1239,9 +1397,9 @@ impl Transfers {
             })
             .collect::<Vec<_>>();
         let waits = files.iter().any(|file| file.attachment_id.is_none());
-        let id = self
-            .live
-            .enqueue_message(place, document, reply_to, files)?;
+        let id =
+            self.live
+                .enqueue_message_for(owner.account_id, place, document, reply_to, files)?;
         if waits {
             let uploads = uploads.to_vec();
             let live = self.live.clone();
@@ -1482,6 +1640,58 @@ mod tests {
             height: None,
             frames: None,
         }
+    }
+
+    #[tokio::test]
+    async fn forwarded_file_reads_resume_and_replay_one_part() {
+        use super::recordings::tests::{cut, owner, played_as, ranged, starts};
+        let wanted = attached(AttachmentId::generate(), "plan.txt", b"abcdefghij");
+        let (files, transfers) = played_as(owner(), vec![cut(b"abcd"), ranged(b"efghij", 4)]);
+        let (_, api) = (transfers.owned)().unwrap();
+        let mut reader = RemoteReader::new(api, wanted);
+        assert_eq!(reader.read(0, 6).await.unwrap(), b"abcdef");
+        assert_eq!(reader.read(0, 6).await.unwrap(), b"abcdef");
+        assert_eq!(reader.read(6, 4).await.unwrap(), b"ghij");
+        assert_eq!(starts(&files), [0, 4]);
+    }
+
+    #[tokio::test]
+    async fn forwarded_file_refuses_a_range_that_starts_at_the_wrong_byte() {
+        use super::recordings::tests::{owner, played_as, whole};
+        let wanted = attached(AttachmentId::generate(), "plan.txt", b"abcdefghij");
+        let (_, transfers) = played_as(owner(), vec![whole(b"abcdefghij")]);
+        let (_, api) = (transfers.owned)().unwrap();
+        let mut reader = RemoteReader::new(api, wanted);
+        assert_eq!(reader.read(4, 6).await, Err(TransferFailure::Corrupt));
+    }
+
+    #[tokio::test]
+    async fn a_forward_transfer_cannot_start_under_a_different_account() {
+        use super::recordings::tests::{owner, played_as};
+        let current = owner();
+        let mut previous = current;
+        previous.account_id = junto_protocol::ids::AccountId::generate();
+        let (files, transfers) = played_as(current, Vec::new());
+        let pinned = transfers.for_owner(previous);
+        let upload = pinned.upload(
+            PlaceId::Channel(junto_protocol::ids::ChannelId::generate()),
+            UploadSource::Bytes {
+                name: "private.txt".to_owned(),
+                bytes: Arc::new(b"private".to_vec()),
+            },
+        );
+        assert_eq!(upload.finished().await, Err(TransferFailure::Stopped));
+        assert_eq!(files.sent.load(Ordering::Relaxed), 0);
+        assert!(
+            pinned
+                .send(
+                    PlaceId::Channel(junto_protocol::ids::ChannelId::generate()),
+                    Document { blocks: Vec::new() },
+                    None,
+                    &[]
+                )
+                .is_none()
+        );
     }
 
     #[tokio::test]

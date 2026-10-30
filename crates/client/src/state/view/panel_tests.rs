@@ -65,6 +65,7 @@ fn timeline(place: PlaceId, messages: Vec<Message>) -> Timeline {
 
 fn summary(place: MessagePlace, unread: u64, mentions: u64) -> MessageState {
     MessageState {
+        read_revision: 0,
         place,
         last_read: 1,
         latest: 9,
@@ -349,6 +350,7 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
     model.timelines.push(Arc::new(replies));
     // The other thread holds something unread, and its root was read.
     model.threads = vec![ThreadState {
+        read_revision: 0,
         root_id: other_root.id,
         last_read: 4,
         latest: 6,

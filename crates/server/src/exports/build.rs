@@ -849,7 +849,8 @@ impl Job {
             .fetch_all(&mut *connection)
             .await?;
         let ids: Vec<MessageId> = rows.iter().map(|(id, _)| *id).collect();
-        let read = messages::load_messages(&mut *connection, &access, &place, &ids).await?;
+        let mut read = messages::load_messages(&mut *connection, &access, &place, &ids).await?;
+        let shortened = messages::page::bound(&mut read, true)?;
         let names = self.names(&mut *connection, &read).await?;
         let mut json = Vec::new();
         let mut page_html = String::new();
@@ -861,11 +862,11 @@ impl Job {
                 .map_err(|error| ApiError::internal(&error))?;
             page_html.push_str(&html::message(message, &names));
         }
-        let full = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= page;
-        let last = rows
+        let full = shortened || i64::try_from(rows.len()).unwrap_or(i64::MAX) >= page;
+        let last = read
             .last()
             .filter(|_| full)
-            .map(|(id, position)| (*position, id.as_uuid()));
+            .map(|message| (message.position as i64, message.id.as_uuid()));
         let plan = Plan::Messages {
             json,
             html: page_html.into_bytes(),

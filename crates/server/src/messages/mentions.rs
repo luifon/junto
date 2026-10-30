@@ -11,7 +11,7 @@ use junto_protocol::{
     ids::{AccountId, MessageId, WorkspaceRoleId},
     message::{Document, Inline, MessagePlace},
 };
-use sqlx::{PgConnection, types::Json};
+use sqlx::PgConnection;
 use time::OffsetDateTime;
 
 #[derive(sqlx::FromRow)]
@@ -28,41 +28,27 @@ pub async fn mentions(
     place: &Place,
     id: MessageId,
     doc: &Document,
+    previous: Option<&Document>,
     now: OffsetDateTime,
 ) -> ApiResult<Vec<AccountId>> {
     let mut added_recipients = Vec::new();
-    let previous: Option<Json<Document>> =
-        sqlx::query_scalar("select document from messages where id=$1")
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await?;
     let was_mentioned: bool =
         sqlx::query_scalar("select exists(select 1 from message_mentions where message_id=$1)")
             .bind(id)
             .fetch_one(&mut *connection)
             .await?;
-    let old_nodes = previous
-        .as_ref()
-        .filter(|_| was_mentioned)
-        .map(|document| document::validate(&document.0))
+    let stored_nodes = previous
+        .map(document::validate)
         .transpose()?
         .unwrap_or_default();
+    let old_nodes = if was_mentioned {
+        stored_nodes.clone()
+    } else {
+        Vec::new()
+    };
     let nodes = document::validate(doc)?;
     let prior_recipients: Vec<AccountId> = sqlx::query_scalar(
-        "select distinct a.id
-             from accounts a
-             join message_mentions mm on mm.message_id=$1
-             where mm.account_id=a.id or mm.everyone
-           or exists(select 1
-             from member_roles mr
-             where mr.account_id=a.id
-             and mr.role_id=mm.role_id)
-           or exists(select 1
-             from workspace_roles r
-             join workspace_members wm on wm.workspace_id=r.workspace_id
-             where r.id=mm.role_id
-             and r.is_everyone
-             and wm.account_id=a.id)",
+        "select distinct unnest(recipients) from message_mentions where message_id=$1",
     )
     .bind(id)
     .fetch_all(&mut *connection)
@@ -78,6 +64,17 @@ pub async fn mentions(
         .bind(id)
         .execute(&mut *connection)
         .await?;
+    let mut channels = std::collections::HashSet::new();
+    for node in &nodes {
+        if let Inline::Channel { channel_id } = node
+            && channels.insert(*channel_id)
+            && !stored_nodes.contains(node)
+        {
+            Place::channel(connection, access, *channel_id).await?;
+        }
+    }
+    let added_channel_mention =
+        nodes.contains(&&Inline::Everyone) && !old_nodes.contains(&&Inline::Everyone);
     let mut distinct = std::collections::HashSet::new();
     for node in nodes {
         let (account, role, everyone) = match node {
@@ -184,6 +181,26 @@ pub async fn mentions(
             .execute(&mut *connection)
             .await?;
     }
+    if added_channel_mention {
+        let candidates: Vec<AccountId> = sqlx::query_scalar(
+            "select unnest(recipients) from message_mentions where message_id=$1 and everyone",
+        )
+        .bind(id)
+        .fetch_all(&mut *connection)
+        .await?;
+        let allowed: Vec<_> =
+            crate::access::visibility::load(connection, &candidates, Some(&[place.id]), false)
+                .await?
+                .into_iter()
+                .filter(|(_, places)| places.ids().contains(&place.id))
+                .map(|(account, _)| account)
+                .collect();
+        sqlx::query("update message_mentions set recipients=$2 where message_id=$1 and everyone")
+            .bind(id)
+            .bind(allowed)
+            .execute(&mut *connection)
+            .await?;
+    }
     sqlx::query("delete from message_mention_accounts where message_id=$1")
         .bind(id)
         .execute(&mut *connection)
@@ -223,6 +240,7 @@ pub async fn mentions(
              join message_mentions mm on mm.message_id=$1
              where wm.workspace_id=$2
              and a.status='active'
+             and wm.account_id=any(mm.recipients)
              and wm.account_id<>$3
              and not(wm.account_id=any($4))
              and (mm.account_id=wm.account_id or mm.everyone

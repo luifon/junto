@@ -123,9 +123,12 @@ impl Shell {
                                     .line_height(u(16.0))
                                     .ink(colors.ink_2)
                                     .truncate()
-                                    .child(paint_text(
-                                        text::book::server_version(&release.version).into(),
-                                        None,
+                                    .child(crate::selectable::SelectableText::value(
+                                        paint_text(
+                                            text::book::server_version(&release.version).into(),
+                                            None,
+                                        ),
+                                        release.version.to_string(),
                                     )),
                             )
                             .when_some(release.newer, |column, newer| {

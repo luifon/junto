@@ -4,7 +4,8 @@
 use junto_protocol::ids::{AccountId, AttachmentId, MessageId};
 use junto_protocol::message::{
     AttachmentLimits, ContactPage, Conversation, Document, EditMessage, MarkRead, Message,
-    MessagePage, MessageState, OpenConversation, SendMessage, SetReaction, StartUpload, Upload,
+    MessagePage, MessageState, OpenConversation, ReactionPeople, SendMessage, SetReaction,
+    StartUpload, Upload,
 };
 
 use super::client::read_json;
@@ -105,6 +106,30 @@ fn emoji_segment(emoji: &str) -> String {
 }
 
 impl ServerApi {
+    async fn check_document_format(&self, document: &Document) -> Result<(), ApiError> {
+        let required = document.required_revision();
+        if required == 0 {
+            return Ok(());
+        }
+        let format: junto_protocol::message::DocumentFormat =
+            self.get("/message-format".into()).await.map_err(|error| {
+                ApiError::Request(
+                    if error.code() == Some(junto_protocol::error::ErrorCode::NotFound) {
+                        "The server needs an update to accept this message format.".to_owned()
+                    } else {
+                        format!(
+                            "The message format could not be checked; nothing was sent: {error}"
+                        )
+                    },
+                )
+            })?;
+        if format.event_revision < required {
+            return Err(ApiError::Request(
+                "The server needs an update to accept this message format.".into(),
+            ));
+        }
+        Ok(())
+    }
     // History and writes.
 
     /// One page of the messages of a place, in the order of their positions. For a
@@ -143,6 +168,7 @@ impl ServerApi {
         place: PlaceId,
         message: &SendMessage,
     ) -> Result<Changed<Message>, ApiError> {
+        self.check_document_format(&message.document).await?;
         let sent: Changed<Message> = self
             .change(Method::Post, messages_of(place), Some(message))
             .await?;
@@ -162,6 +188,7 @@ impl ServerApi {
         message_id: MessageId,
         document: Document,
     ) -> Result<Message, ApiError> {
+        self.check_document_format(&document).await?;
         let path = format!("/messages/{message_id}");
         bounded(
             self.send(Method::Put, path, &EditMessage { document })
@@ -195,6 +222,54 @@ impl ServerApi {
         self.act(Method::Delete, path).await
     }
 
+    pub async fn reaction_people(
+        &self,
+        id: MessageId,
+        emoji: &str,
+        after: Option<AccountId>,
+        before: Option<AccountId>,
+        limit: u32,
+    ) -> Result<ReactionPeople, ApiError> {
+        let mut query = vec![("emoji", emoji.to_owned()), ("limit", limit.to_string())];
+        if let Some(after) = after {
+            query.push(("after", after.to_string()));
+        }
+        if let Some(before) = before {
+            query.push(("before", before.to_string()));
+        }
+        let response = self
+            .call(
+                Method::Get,
+                format!("/messages/{id}/reactions"),
+                query,
+                None,
+            )
+            .await?;
+        let page: ReactionPeople = read_json(&response)?;
+        if page.people.len() > limit.min(200) as usize
+            || page
+                .people
+                .iter()
+                .any(|person| person.name.as_ref().is_some_and(|name| name.len() > 1024))
+            || page.people.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || page.people.iter().any(|person| {
+                after.is_some_and(|id| person.id <= id) || before.is_some_and(|id| person.id >= id)
+            })
+            || page
+                .next_after
+                .is_some_and(|id| page.people.last().is_none_or(|person| person.id != id))
+            || page
+                .previous_before
+                .is_some_and(|id| page.people.first().is_none_or(|person| person.id != id))
+        {
+            return Err(ApiError::InvalidResponse {
+                status: 200,
+                reason: "invalid reaction people page",
+            });
+        }
+        Ok(page)
+    }
+
     // Read positions.
 
     /// The read position of the account in a channel or a direct conversation, with the
@@ -208,7 +283,37 @@ impl ServerApi {
     /// [`ServerApi::mark_thread_read`].
     pub async fn mark_read(&self, place: PlaceId, position: u64) -> Result<MessageState, ApiError> {
         let path = format!("{}/read", messages_of(place));
-        self.send(Method::Put, path, &MarkRead { position }).await
+        self.send(
+            Method::Put,
+            path,
+            &MarkRead {
+                position,
+                read_revision: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn mark_unread(&self, id: MessageId) -> Result<(), ApiError> {
+        self.act(Method::Put, format!("/messages/{id}/unread"))
+            .await
+    }
+
+    pub(crate) async fn mark_read_at_revision(
+        &self,
+        place: PlaceId,
+        position: u64,
+        revision: u64,
+    ) -> Result<MessageState, ApiError> {
+        self.send(
+            Method::Put,
+            format!("{}/read", messages_of(place)),
+            &MarkRead {
+                position,
+                read_revision: Some(revision),
+            },
+        )
+        .await
     }
 
     // Direct conversations.

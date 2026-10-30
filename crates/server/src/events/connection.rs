@@ -109,6 +109,9 @@ enum Step {
 
 struct Connection<S> {
     app: AppState,
+    typing: tokio::sync::broadcast::Receiver<super::typing::Signal>,
+    typing_watches: std::collections::HashSet<junto_protocol::typing::TypingPlace>,
+    typing_asked: VecDeque<(junto_protocol::typing::TypingPlace, u32)>,
     who: Opened,
     link: Arc<Link>,
     inbound: Arc<Inbound>,
@@ -164,6 +167,9 @@ pub async fn run<S>(
         event_revision: junto_protocol::events::EVENT_REVISION,
     };
     let mut connection = Connection {
+        typing: app.streams.typing().subscribe(),
+        typing_watches: Default::default(),
+        typing_asked: VecDeque::new(),
         who,
         link: registration.link().clone(),
         inbound,
@@ -288,6 +294,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 }
                 () = std::future::ready(()), if continues => {}
                 () = tokio::time::sleep_until(not_before), if waits_for_retry => {}
+                activity = self.typing.recv() => {
+                    if let Ok(activity) = activity
+                        && self.subscription.is_some_and(|subscription| subscription.level == Level::Full)
+                        && self.typing_watches.contains(&activity.place)
+                    {
+                        let (app, who) = (self.app.clone(), self.who);
+                        match self.read(Lane::Events, async move { super::typing::delivered(&app, who, activity).await }).await {
+                            Read::Done(Some(activity)) => {
+                                let frame = match text(&ServerMessage::Typing { activity }) { Ok(frame) => frame, Err(end) => return end };
+                                match self.put(frame).await { Ok(Put::Written) => {}, Ok(_) => check_session = true, Err(end) => return end }
+                            }
+                            Read::Interrupted => check_session = true,
+                            _ => {},
+                        }
+                    }
+                }
                 () = link.news() => self.pending = true,
                 changed = presence.changed(), if self.presence_enabled => {
                     if changed.is_err() { return End::Close(CloseCode::Stopping); }
@@ -379,6 +401,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 starts: None,
             });
             return Ok(Step::Again);
+        }
+        if let Some((place, lifetime_ms)) = self.typing_asked.pop_front() {
+            let (app, who, id) = (self.app.clone(), self.who, self.link.id());
+            return Ok(
+                match self
+                    .read(Lane::Events, async move {
+                        super::typing::changed(&app, who, id, place, lifetime_ms).await
+                    })
+                    .await
+                {
+                    Read::Interrupted => Step::Interrupted,
+                    _ => Step::Again,
+                },
+            );
         }
         if self.pending && self.subscription.is_some() && !held {
             return self.deliver().await;
@@ -708,27 +744,53 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             }
             Some(Ok(Message::Text(text))) => text,
         };
-        let Ok(ClientMessage::Subscribe {
-            level,
-            cursor,
-            presence,
-            appearance,
-        }) = serde_json::from_str(&message)
-        else {
-            return Err(End::Close(CloseCode::InvalidMessage));
-        };
-        self.unsubscribe();
-        for control in &mut self.control {
-            control.starts = None;
+        match serde_json::from_str(&message) {
+            Ok(ClientMessage::Subscribe {
+                level,
+                cursor,
+                presence,
+                appearance,
+            }) => {
+                self.unsubscribe();
+                self.typing_watches.clear();
+                self.typing_asked.clear();
+                for control in &mut self.control {
+                    control.starts = None;
+                }
+                self.presence_enabled = presence;
+                self.appearance_enabled = appearance;
+                if !appearance {
+                    self.appearance_dirty = false;
+                    self.control.retain(|control| {
+                        !matches!(control.message, ServerMessage::AppearanceChanged {})
+                    });
+                }
+                self.asked = Some((level, cursor));
+            }
+            Ok(ClientMessage::TypingWatch { places })
+                if places.len() <= junto_protocol::typing::MOST_TYPING_PLACES =>
+            {
+                self.typing_watches = places.iter().copied().collect();
+                self.typing = self.app.streams.typing().subscribe();
+                self.control.retain(|control| {
+                    !matches!(control.message, ServerMessage::TypingWatching { .. })
+                });
+                self.control.push_back(Control {
+                    message: ServerMessage::TypingWatching { places },
+                    starts: None,
+                });
+            }
+            Ok(ClientMessage::Typing { place, lifetime_ms })
+                if self.subscription.is_some() || lifetime_ms == 0 =>
+            {
+                self.typing_asked.retain(|(held, _)| *held != place);
+                if self.typing_asked.len() >= junto_protocol::typing::MOST_TYPING_PLACES {
+                    self.typing_asked.pop_front();
+                }
+                self.typing_asked.push_back((place, lifetime_ms));
+            }
+            _ => return Err(End::Close(CloseCode::InvalidMessage)),
         }
-        self.presence_enabled = presence;
-        self.appearance_enabled = appearance;
-        if !appearance {
-            self.appearance_dirty = false;
-            self.control
-                .retain(|control| !matches!(control.message, ServerMessage::AppearanceChanged {}));
-        }
-        self.asked = Some((level, cursor));
         Ok(())
     }
 

@@ -656,7 +656,17 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     scene.window.until("the meeting has ended", |window| {
         !window.shows("meeting-bar")
     });
-    assert!(!scene.window.shows("call-told"));
+    assert!(
+        !scene.window.shows("call-told"),
+        "{:?}",
+        scene
+            .window
+            .state
+            .read_with(&scene.window.cx, |state, _| state
+                .pending()
+                .call_told
+                .clone())
+    );
     // In the next meeting the person keeps the block until the end. The own setting is
     // "open", so the people hear the person again, and the person is told.
     let started = Instant::now();
@@ -677,8 +687,18 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     // larger; the person moves the pointer to the notice before the press.
     let told = scene.window.cx.debug_bounds("call-told").unwrap();
     scene.window.move_pointer(told.center());
+    let copy = scene.window.cx.debug_bounds("copy-text-value");
+    let dismiss = scene.window.cx.debug_bounds("dismiss-call-told");
     scene.window.click("dismiss-call-told");
-    assert!(!scene.window.shows("call-told"));
+    assert!(
+        !scene.window.shows("call-told"),
+        "copy {copy:?}; dismiss {dismiss:?}; clipboard {:?}",
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+    );
 
     // The person presents: Ada stops sharing, the person shares and turns meeting mode
     // on. The server accepts it when its check has seen the share; a refusal before

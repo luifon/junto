@@ -13,6 +13,8 @@ pub mod arrangement;
 pub mod book;
 pub mod clock;
 pub mod console;
+pub mod drafts;
+pub mod emoji_history;
 pub mod events;
 pub mod flow;
 pub mod global_keys;

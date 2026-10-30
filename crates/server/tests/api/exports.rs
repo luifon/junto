@@ -186,6 +186,43 @@ fn messages_of(entries: &[zip::Entry]) -> Vec<Message> {
     serde_json::from_slice(&entry(entries, "messages.json").content).unwrap()
 }
 
+#[tokio::test]
+async fn large_forwarded_documents_are_exported_without_skipping_byte_limited_pages() {
+    let desk = Desk::open().await;
+    let server = &desk.server;
+    let mut expected = Vec::new();
+    for index in 0..20 {
+        let document = json!({"blocks": [
+            {"kind":"forward", "server":"https://source.example.test", "message_id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f"},
+            {"kind":"paragraph", "content":[{"kind":"text", "text":format!("entry {index} {}", "界".repeat(70_000))}]}
+        ]});
+        let sent: Message = server
+            .post(
+                &desk.owner,
+                &format!("/api/v1/channels/{}/messages", desk.channel.id),
+                &json!({"document":document}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        expected.push(sent);
+    }
+    let export = requested(server, &desk.owner, desk.channel.id).await;
+    build(server).await;
+    assert_eq!(
+        export_of(server, &desk.owner, export.id).await.state,
+        ExportState::Ready
+    );
+    let found = entries(server, &desk.owner, export.id).await;
+    let actual: Vec<_> = messages_of(&found)
+        .into_iter()
+        .filter(|message| message.author_id.is_some())
+        .collect();
+    assert_eq!(actual, expected);
+    let html = page_of(&found);
+    assert!(html.contains("entry 0 ") && html.contains("entry 19 "));
+    assert_eq!(html.matches(&"界".repeat(70_000)).count(), 20);
+}
+
 fn page_of(entries: &[zip::Entry]) -> String {
     String::from_utf8(entry(entries, "messages.html").content.clone()).unwrap()
 }

@@ -6,8 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, PathPromptOptions, Role, ScrollHandle, SharedString,
+    AnyElement, Context, Entity, ExternalPaths, FocusHandle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_base::input::{
@@ -16,7 +16,7 @@ use gpui_base::input::{
 };
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId};
+use junto_client_core::protocol::ids::{MessageId, ServerId};
 use junto_client_core::protocol::message::{Document, Message};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{UploadSource, UploadStage};
@@ -30,8 +30,8 @@ use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Field, FieldKind, ScrollArea, StyleExt, float_shadow,
-    focus_ring_inside, icon, ledge, tooltip,
+    Button, ButtonKind, ContextMenuExt, Dialog, Field, FieldKind, ScrollArea, Segmented, StyleExt,
+    float_shadow, focus_ring_inside, icon, ledge, tooltip,
 };
 
 /// The rows of the text area: it grows with the text up to this number.
@@ -53,9 +53,17 @@ struct Draft {
 pub(crate) struct MentionPicker {
     /// The byte of the text at which the `@` stands.
     start: usize,
+    channel: bool,
     query: String,
     /// The candidate that Enter takes.
     chosen: usize,
+}
+
+struct EmojiCompletion {
+    query: crate::emoji::completion::Query,
+    chosen: usize,
+    drawings: Drawings,
+    closed_ready: bool,
 }
 
 /// A key of the text area that the composer can take before it.
@@ -79,7 +87,7 @@ pub(crate) struct Candidate {
 
 /// A place of a server and the account that writes there. The text that one account
 /// left in a place is not shown to another account of the same server.
-type Desk = (ServerId, AccountId, PlaceId);
+type Desk = crate::drafts::Desk;
 
 /// The message that the composer changes.
 #[derive(Clone)]
@@ -87,7 +95,7 @@ pub(crate) struct Editing {
     pub(crate) message_id: MessageId,
     /// The document at the start of the edit, and the text that the composer got for it.
     /// What the person does not change is taken from the document (ADR 0740).
-    original: Arc<(Document, compose::Written)>,
+    pub(super) original: Arc<(Document, compose::Written)>,
 }
 
 /// Files attached to the next message of a place whose sizes are being read.
@@ -104,20 +112,28 @@ struct Attaching {
 pub(crate) struct Composer {
     pub(crate) input: Entity<TextareaState>,
     /// The place whose text the input holds, and the account that writes there.
-    place: Option<Desk>,
+    pub(super) place: Option<Desk>,
+    pub(super) saved: std::cell::RefCell<Option<crate::drafts::SavedDraft>>,
+    typing_source: gpui::EntityId,
+    typing: Option<(junto_client_core::Owner, PlaceId)>,
     /// The composer has held the text of a place before.
     placed: bool,
     pub(crate) reply_to: Option<MessageId>,
     pub(crate) editing: Option<Editing>,
+    edit_generation: u64,
     drafts: HashMap<Desk, Draft>,
     /// Why the message was not sent as it is.
     pub(crate) problem: Option<String>,
+    preview: bool,
+    preview_focus: FocusHandle,
+    preview_scroll: ScrollHandle,
     /// Files whose sizes are read on a background thread, in the order in which they were
     /// attached. They go into the draft in that order, and a new message of their place
     /// is not sent before they are in it.
     attaching: VecDeque<Attaching>,
     next_attaching: u64,
     pub(crate) mention: Option<MentionPicker>,
+    emoji_completion: Option<EmojiCompletion>,
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
     emoji_scroll: ScrollHandle,
@@ -126,8 +142,15 @@ pub(crate) struct Composer {
     emoji_drawings: Drawings,
 }
 
+pub(crate) struct Mode {
+    pub compact: bool,
+    pub permanent: bool,
+    pub writing: Writing,
+}
+
 fn token_id(target: MentionTarget) -> String {
     match target {
+        MentionTarget::Channel(channel_id) => format!("channel:{channel_id}"),
         MentionTarget::Account(account_id) => format!("account:{account_id}"),
         MentionTarget::Role(role_id) => format!("role:{role_id}"),
         MentionTarget::Everyone => "everyone".to_owned(),
@@ -136,6 +159,7 @@ fn token_id(target: MentionTarget) -> String {
 
 fn token_target(id: &str) -> Option<MentionTarget> {
     match id.split_once(':') {
+        Some(("channel", id)) => id.parse().ok().map(MentionTarget::Channel),
         Some(("account", id)) => id.parse().ok().map(MentionTarget::Account),
         Some(("role", id)) => id.parse().ok().map(MentionTarget::Role),
         None if id == "everyone" => Some(MentionTarget::Everyone),
@@ -161,14 +185,17 @@ fn mentions_of(content: &InputContent) -> Vec<Mention> {
 /// `@` stands at the start of the text or after white space, and no line ends after it.
 fn mention_query(text: &str, cursor: usize) -> Option<(usize, String)> {
     let before = text.get(..cursor)?;
-    let start = before.rfind('@')?;
+    let start = before.rfind(['@', '#'])?;
     let query = &before[start + 1..];
     let opens = before[..start]
         .chars()
         .next_back()
         .is_none_or(char::is_whitespace);
-    (opens && query.chars().count() <= 32 && !query.contains('\n'))
-        .then(|| (start, query.to_owned()))
+    (opens
+        && !query.starts_with(char::is_whitespace)
+        && query.chars().count() <= 32
+        && !query.contains('\n'))
+    .then(|| (start, query.to_owned()))
 }
 
 /// The other participant of a direct conversation, when the query finds the name. A
@@ -313,20 +340,29 @@ impl Composer {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let input = gpui::AppContext::new(cx, |cx| {
             TextareaState::new(window, cx)
+                .context_menu(false)
                 .auto_grow(1, MOST_ROWS)
                 .submit_on_enter(true)
         });
         Self {
             input,
             place: None,
+            saved: Default::default(),
+            typing_source: cx.entity_id(),
+            typing: None,
             placed: false,
             reply_to: None,
             editing: None,
+            edit_generation: 0,
             drafts: HashMap::new(),
             problem: None,
+            preview: false,
+            preview_focus: cx.focus_handle(),
+            preview_scroll: ScrollHandle::new(),
             attaching: VecDeque::new(),
             next_attaching: 0,
             mention: None,
+            emoji_completion: None,
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
             emoji_scroll: ScrollHandle::new(),
@@ -417,6 +453,13 @@ impl Composer {
             let shown = self.input.read(cx).content();
             let empty =
                 shown.text().trim().is_empty() && self.reply_to.is_none() && self.editing.is_none();
+            if shown == draft.content
+                && self.reply_to == draft.reply_to
+                && self.editing.as_ref().map(|edit| edit.message_id)
+                    == draft.editing.as_ref().map(|edit| edit.message_id)
+            {
+                return;
+            }
             let content = if empty {
                 self.reply_to = draft.reply_to;
                 self.editing = draft.editing;
@@ -443,6 +486,8 @@ impl Composer {
 impl Shell {
     /// The call window gives the texts of its composer to another window (ADR 0772).
     pub(crate) fn hand_over_drafts(&mut self, to: HandTo, cx: &mut gpui::App) {
+        self.typing_activity(Pane::Main, false, cx);
+        self.typing_activity(Pane::Thread, false, cx);
         let taken = self.composer.take_all(cx);
         if taken.is_empty() {
             return;
@@ -537,6 +582,11 @@ impl Shell {
             window,
             cx,
         );
+        for pane in [Pane::Main, Pane::Thread] {
+            if self.pane_writing(pane).refused.is_some() || self.shown_archived().is_some() {
+                self.typing_activity(pane, false, cx);
+            }
+        }
     }
 
     fn pen_follows(
@@ -547,33 +597,42 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if shown != self.pen(pane).place {
+            self.typing_activity(pane, false, cx);
+        }
+        self.save_composer(pane, cx);
+        let restored = shown.and_then(|desk| self.state.read(cx).saved_draft(desk).cloned());
+        let generation = shown.and_then(|desk| self.state.read(cx).draft_entry_generation(desk.0));
         let pen = self.pen_mut(pane);
-        if shown == pen.place {
+        if shown == pen.place
+            && pen
+                .saved
+                .borrow()
+                .as_ref()
+                .is_none_or(|saved| Some(saved.entry_generation) == generation)
+        {
             return;
         }
-        if let Some((server_id, account_id, _)) = shown {
-            // The server has another account now: the texts of the one before are gone.
-            pen.drafts
-                .retain(|(server, account, _), _| *server != server_id || *account == account_id);
-        }
-        let content = pen.input.read(cx).content();
+        pen.edit_generation = pen.edit_generation.wrapping_add(1);
         if let Some(before) = pen.place.take() {
-            let draft = Draft {
-                content,
-                reply_to: pen.reply_to.take(),
-                editing: pen.editing.take(),
-            };
-            let empty = draft.content.text().trim().is_empty()
-                && draft.reply_to.is_none()
-                && draft.editing.is_none();
-            if empty {
-                pen.drafts.remove(&before);
-            } else {
-                pen.drafts.insert(before, draft);
-            }
+            pen.drafts.remove(&before);
+            pen.reply_to = None;
+            pen.editing = None;
         }
         let first = shown.is_some() && !std::mem::replace(&mut pen.placed, true);
-        let held = shown.and_then(|place| pen.drafts.remove(&place));
+        if let Some(place) = shown {
+            pen.drafts.remove(&place);
+        }
+        let held = restored.map(|draft| Draft {
+            content: draft.content(),
+            reply_to: draft.reply,
+            editing: draft
+                .editing
+                .map(|(message_id, document, written)| Editing {
+                    message_id,
+                    original: Arc::new((document, written)),
+                }),
+        });
         let (content, reply_to, editing) = match held {
             Some(draft) => (draft.content, draft.reply_to, draft.editing),
             // What was put into the composer before the window had a place stays.
@@ -589,23 +648,91 @@ impl Shell {
             input.set_placeholder(placeholder, window, cx);
         });
         pen.place = shown;
+        pen.preview = false;
+        pen.preview_scroll = ScrollHandle::new();
         pen.reply_to = reply_to;
         pen.editing = editing;
+        pen.saved.replace(None);
         if !first {
             pen.problem = None;
             pen.mention = None;
+            pen.emoji_completion = None;
+        }
+        self.save_composer(pane, cx);
+    }
+
+    pub(super) fn typing_activity(&mut self, pane: Pane, active: bool, cx: &mut gpui::App) {
+        let active = active
+            && !self.pen(pane).preview
+            && !self.pen(pane).input.read(cx).value().trim().is_empty();
+        let wanted = active
+            .then(|| {
+                self.pen(pane).place.and_then(|(server, account, place)| {
+                    self.state
+                        .read(cx)
+                        .owner(server)
+                        .filter(|owner| owner.account_id == account)
+                        .map(|owner| (owner, place))
+                })
+            })
+            .flatten();
+        let previous = self.pen_mut(pane).typing.take();
+        let source = (self.pen(pane).typing_source, pane == Pane::Thread);
+        let stopped = previous.filter(|held| Some(*held) != wanted);
+        self.pen_mut(pane).typing = wanted;
+        if stopped.is_some() || wanted.is_some() {
+            let state = self.state.clone();
+            // A call-window handover can run inside an update of the application state.
+            cx.defer(move |cx| {
+                state.update(cx, |state, _| {
+                    if let Some((owner, place)) = stopped {
+                        state.typing_activity(source, owner, place, false);
+                    }
+                    if let Some((owner, place)) = wanted {
+                        state.typing_activity(source, owner, place, true);
+                    }
+                })
+            });
         }
     }
 
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
     pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
+        self.typing_activity(pane, true, cx);
+        self.save_composer(pane, cx);
+        let drawings = Drawings::current(cx);
         let pen = self.pen_mut(pane);
         pen.problem = None;
         let (value, cursor) = {
             let input = pen.input.read(cx);
             (input.value(), input.cursor())
         };
+        let previous = pen.emoji_completion.take();
+        let emoji_query = crate::emoji::completion::query(&value, cursor).filter(|query| {
+            !pen.input.read(cx).content().tokens().iter().any(|span| {
+                let range = span.range();
+                query.start < range.end && cursor > range.start
+            })
+        });
+        pen.emoji_completion = emoji_query.map(|query| {
+            let matching = previous
+                .as_ref()
+                .filter(|before| before.query.start == query.start);
+            let closed_ready = query.closed
+                && matching
+                    .is_some_and(|before| !before.query.closed && before.query.text == query.text);
+            EmojiCompletion {
+                chosen: matching
+                    .filter(|before| before.query.text == query.text)
+                    .map_or(0, |before| before.chosen),
+                drawings: matching
+                    .map_or_else(|| drawings.clone(), |before| before.drawings.clone()),
+                query,
+                closed_ready,
+            }
+        });
         let query = mention_query(&value, cursor);
         let open = pen.mention.take();
         pen.mention = query.map(|(start, query)| MentionPicker {
@@ -614,9 +741,72 @@ impl Shell {
                 _ => 0,
             },
             start,
+            channel: value.as_bytes().get(start) == Some(&b'#'),
             query,
         });
         cx.notify();
+    }
+
+    fn emoji_candidates(&self, pane: Pane, cx: &gpui::App) -> Vec<&'static emojis::Emoji> {
+        self.pen(pane)
+            .emoji_completion
+            .as_ref()
+            .map_or_else(Vec::new, |open| {
+                crate::emoji::completion::candidates(
+                    &open.query.text,
+                    self.state.read(cx).recent_emoji(),
+                    &open.drawings,
+                )
+            })
+    }
+
+    fn take_emoji_completion(
+        &mut self,
+        pane: Pane,
+        emoji: &'static emojis::Emoji,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.pen_mut(pane).emoji_completion.take() else {
+            return;
+        };
+        let input = self.pen(pane).input.read(cx);
+        if crate::emoji::completion::query(&input.value(), input.cursor()).as_ref()
+            != Some(&open.query)
+        {
+            self.composer_changed(pane, cx);
+            return;
+        }
+        self.pen_mut(pane).input.update(cx, |input, cx| {
+            let end = input.cursor();
+            input.set_selected_range(open.query.start..end, cx);
+            input.replace(
+                format!(
+                    "{}{}",
+                    emoji.as_str(),
+                    if open.query.closed { "" } else { " " }
+                ),
+                window,
+                cx,
+            );
+            input.focus(window, cx);
+        });
+        self.composer_changed(pane, cx);
+        self.state
+            .update(cx, |state, cx| state.remember_emoji(emoji.as_str(), cx));
+        cx.notify();
+    }
+
+    fn complete_closed_emoji(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let emoji = self
+            .pen(pane)
+            .emoji_completion
+            .as_ref()
+            .filter(|open| open.closed_ready)
+            .and_then(|open| crate::emoji::completion::exact(&open.query.text));
+        if let Some(emoji) = emoji {
+            self.take_emoji_completion(pane, emoji, window, cx);
+        }
     }
 
     /// The entries of the mention picker of a pane. A message of a channel mentions the
@@ -626,6 +816,34 @@ impl Shell {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
+        if open.channel {
+            let Some(feed) = self.composer_feed(pane) else {
+                return Vec::new();
+            };
+            let mut found: Vec<_> = feed
+                .names
+                .channels
+                .iter()
+                .filter_map(|(id, name)| {
+                    let candidate = Candidate {
+                        target: MentionTarget::Channel(*id),
+                        color: None,
+                        name: name.clone(),
+                        detail: text::CHANNEL_REFERENCE,
+                    };
+                    rank(&candidate, &open.query.to_lowercase()).map(|rank| (rank, candidate))
+                })
+                .collect();
+            found.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()))
+            });
+            return found
+                .into_iter()
+                .take(MOST_CANDIDATES)
+                .map(|(_, candidate)| candidate)
+                .collect();
+        }
         match self.composer_place(pane).map(|(_, place)| place) {
             Some(PlaceId::Direct(conversation_id)) => view
                 .lists()
@@ -663,7 +881,15 @@ impl Shell {
         let Some(open) = self.pen_mut(pane).mention.take() else {
             return;
         };
-        let token = InlineToken::new(token_id(candidate.target), format!("@{}", candidate.name));
+        let prefix = if matches!(candidate.target, MentionTarget::Channel(_)) {
+            '#'
+        } else {
+            '@'
+        };
+        let token = InlineToken::new(
+            token_id(candidate.target),
+            format!("{prefix}{}", candidate.name),
+        );
         self.pen_mut(pane).input.update(cx, |input, cx| {
             let end = input.cursor();
             if input
@@ -687,6 +913,27 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.pen(pane).emoji_completion.is_some() {
+            let found = self.emoji_candidates(pane, cx);
+            if let Some(open) = &mut self.pen_mut(pane).emoji_completion {
+                match step {
+                    Step::Down if !found.is_empty() => {
+                        open.chosen = (open.chosen + 1) % found.len()
+                    }
+                    Step::Up if !found.is_empty() => {
+                        open.chosen = (open.chosen + found.len() - 1) % found.len()
+                    }
+                    Step::Tab if !found.is_empty() => {
+                        let emoji = found[open.chosen.min(found.len() - 1)];
+                        self.take_emoji_completion(pane, emoji, window, cx);
+                    }
+                    Step::Escape => self.pen_mut(pane).emoji_completion = None,
+                    _ => return false,
+                }
+                cx.notify();
+                return true;
+            }
+        }
         if self.pen_mut(pane).mention.is_some() {
             let found = self.mention_candidates(pane);
             if !found.is_empty() {
@@ -853,11 +1100,14 @@ impl Shell {
     }
 
     /// Files are being attached to the next message of the place that the composer shows.
-    fn attaching_here(&self, pane: Pane) -> bool {
+    fn attaching_here(&self, pane: Pane, cx: &gpui::App) -> bool {
         let pen = self.pen(pane);
         pen.attaching
             .iter()
             .any(|entry| Some(entry.asked) == pen.place)
+            || pen
+                .place
+                .is_some_and(|desk| self.state.read(cx).recovering_draft_files(desk))
     }
 
     /// Attaches the files at these paths, as the file dialog and a drop do.
@@ -980,11 +1230,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).reply_to = Some(message_id);
         self.pen_mut(pane).editing = None;
         self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
+        self.save_composer(pane, cx);
         cx.notify();
     }
 
@@ -1050,9 +1303,15 @@ impl Shell {
                 .get(&role_id)
                 .cloned()
                 .unwrap_or_else(|| text::UNKNOWN_ROLE.to_owned()),
+            MentionTarget::Channel(id) => names
+                .channels
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| text::UNKNOWN_CHANNEL_REFERENCE.to_owned()),
             MentionTarget::Everyone => text::EVERYONE.to_owned(),
         };
         let shown = compose::written(document, &name);
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         let mut content = InputContent::new(shown.text.clone());
         for mention in &shown.mentions {
             let token = InlineToken::new(
@@ -1063,6 +1322,7 @@ impl Shell {
                 content = with;
             }
         }
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = Some(Editing {
             message_id,
             original: Arc::new((document.clone(), shown)),
@@ -1075,11 +1335,13 @@ impl Shell {
             input.set_selected_range(end..end, cx);
             input.focus(window, cx);
         });
+        self.save_composer(pane, cx);
         cx.notify();
     }
 
     /// Ends a reply or an edit without sending.
     fn cancel_compose_state(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         if self.pen_mut(pane).editing.take().is_some() {
             self.pen_mut(pane)
                 .input
@@ -1087,12 +1349,53 @@ impl Shell {
         }
         self.pen_mut(pane).reply_to = None;
         self.pen_mut(pane).problem = None;
+        self.save_composer(pane, cx);
+        cx.notify();
+    }
+
+    fn composer_document(&self, pane: Pane, cx: &Context<Self>) -> Document {
+        let content = self.pen(pane).input.read(cx).content();
+        match &self.pen(pane).editing {
+            Some(editing) => {
+                let (original, shown) = editing.original.as_ref();
+                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
+            }
+            None => compose::parse(content.text(), &mentions_of(&content)),
+        }
+    }
+
+    pub fn show_composer_preview(
+        &mut self,
+        pane: Pane,
+        preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if preview {
+            self.typing_activity(pane, false, cx);
+        }
+        let pen = self.pen_mut(pane);
+        pen.preview = preview;
+        pen.mention = None;
+        pen.emoji_completion = None;
+        if preview {
+            pen.preview_focus.focus(window, cx);
+        } else {
+            pen.input.update(cx, |input, cx| input.focus(window, cx));
+        }
         cx.notify();
     }
 
     /// Sends what the composer holds: a new message, or the new text of the message that
     /// is edited. A text that the server would refuse is not sent, and the reason is told.
     pub fn submit_message(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(open) = &self.pen(pane).emoji_completion {
+            let found = self.emoji_candidates(pane, cx);
+            if let Some(emoji) = found.get(open.chosen.min(found.len().saturating_sub(1))) {
+                self.take_emoji_completion(pane, emoji, window, cx);
+                return;
+            }
+        }
         if self.pen_mut(pane).mention.is_some() {
             let found = self.mention_candidates(pane);
             if let Some(open) = &self.pen_mut(pane).mention
@@ -1106,17 +1409,26 @@ impl Shell {
         let Some((server_id, place)) = self.composer_place(pane) else {
             return;
         };
-        let content = self.pen_mut(pane).input.read(cx).content();
-        let editing = self.pen_mut(pane).editing.clone();
-        let document = match &editing {
-            Some(editing) => {
-                let (original, shown) = editing.original.as_ref();
-                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
-            }
-            None => compose::parse(content.text(), &mentions_of(&content)),
-        };
-        let editing = editing.map(|editing| editing.message_id);
-        if editing.is_none() && self.attaching_here(pane) {
+        let document = self.composer_document(pane, cx);
+        let required = document.required_revision();
+        if required > 0
+            && self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.live().view().server_events)
+                .is_some_and(|revision| revision < required)
+        {
+            self.pen_mut(pane).problem = Some(text::SERVER_MESSAGE_UPDATE.into());
+            cx.notify();
+            return;
+        }
+        let editing = self
+            .pen(pane)
+            .editing
+            .as_ref()
+            .map(|editing| editing.message_id);
+        if editing.is_none() && self.attaching_here(pane, cx) {
             self.pen_mut(pane).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
             cx.notify();
             return;
@@ -1155,30 +1467,83 @@ impl Shell {
             cx.notify();
             return;
         }
+        let used_emoji = crate::emoji::completion::used(&document);
         let reply_to = self.pen_mut(pane).reply_to;
-        let sent = self.state.update(cx, |state, cx| match editing {
-            Some(message_id) => {
-                state.edit_message(server_id, message_id, document, cx);
-                true
-            }
-            None => state.send_message(server_id, place, document, reply_to, cx),
+        if let Some(message_id) = editing {
+            self.typing_activity(pane, false, cx);
+            self.save_composer(pane, cx);
+            self.state.update(cx, |state, cx| state.flush_drafts(cx));
+            let pen = self.pen_mut(pane);
+            pen.edit_generation = pen.edit_generation.wrapping_add(1);
+            let generation = pen.edit_generation;
+            let desk = pen.place;
+            let saved = pen.saved.borrow().clone();
+            let owner = self.state.read(cx).owner(server_id);
+            let receive = self.state.update(cx, |state, cx| {
+                state.confirm_edit(server_id, message_id, document, cx)
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let accepted = receive.await.unwrap_or(false);
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let pen = this.pen(pane);
+                    if !accepted
+                        || this.state.read(cx).owner(server_id) != owner
+                        || pen.place != desk
+                        || pen.edit_generation != generation
+                        || pen.saved.borrow().as_ref() != saved.as_ref()
+                        || desk.is_none_or(|desk| {
+                            this.state.read(cx).saved_draft(desk) != saved.as_ref()
+                        })
+                    {
+                        return;
+                    }
+                    this.clear_submitted_composer(pane, window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state
+                            .remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
+                    });
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+        let sent = self.state.update(cx, |state, cx| {
+            state.send_message(server_id, place, document, reply_to, cx)
         });
         if !sent {
             self.pen_mut(pane).problem = Some(text::NOT_SENT.to_owned());
             cx.notify();
             return;
         }
+        self.state.update(cx, |state, cx| {
+            state.remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
+        });
+        self.clear_submitted_composer(pane, window, cx);
+        self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
+        cx.notify();
+    }
+
+    fn clear_submitted_composer(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.typing_activity(pane, false, cx);
+        let was_preview = self.pen(pane).preview;
+        self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = None;
         self.pen_mut(pane).reply_to = None;
         self.pen_mut(pane).problem = None;
-        self.pen_mut(pane)
-            .input
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        // The person sent a message: the list shows its end.
-        if editing.is_none() {
-            self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
-        }
-        cx.notify();
+        self.pen_mut(pane).input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            if was_preview {
+                input.focus(window, cx);
+            }
+        });
+        self.save_composer(pane, cx);
+        self.state.update(cx, |state, cx| state.flush_drafts(cx));
     }
 
     /// Opens the emoji picker: for a reaction to a message, or for the text of a composer.
@@ -1192,6 +1557,8 @@ impl Shell {
             .emoji_find
             .update(cx, |find, cx| find.set_value("", window, cx));
         self.composer.emoji_drawings = Drawings::of(cx);
+        self.composer.emoji_group = 0;
+        self.composer.emoji_scroll = ScrollHandle::new();
         self.open_layer(Layer::Emoji(target), window, cx);
         self.focus_field(&self.composer.emoji_find.clone(), window, cx);
     }
@@ -1214,6 +1581,8 @@ impl Shell {
             }
             (EmojiTarget::React(_), None) => {}
             (EmojiTarget::Compose(pane), _) => {
+                self.state
+                    .update(cx, |state, cx| state.remember_emoji(emoji, cx));
                 self.pen_mut(pane).input.update(cx, |input, cx| {
                     input.insert(emoji, window, cx);
                     input.focus(window, cx);
@@ -1245,6 +1614,21 @@ impl Shell {
             Some(group) => emoji_shown(group, &find, &drawings),
             None => Vec::new(),
         };
+        let recent: Vec<_> = if !searching && self.composer.emoji_group == 0 {
+            self.state
+                .read(cx)
+                .recent_emoji()
+                .iter()
+                .filter_map(|value| emojis::get(value))
+                .filter(|emoji| drawings.drawing(emoji) != Drawing::Broken)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let shown: Vec<_> = shown
+            .into_iter()
+            .filter(|emoji| !recent.iter().any(|held| held.as_str() == emoji.as_str()))
+            .collect();
         let ring_width = theme.metrics.focus_ring;
         let radius = theme.metrics.radius;
         let groups: Vec<_> = offered
@@ -1298,6 +1682,40 @@ impl Shell {
                     .child(sign)
             })
             .collect();
+        let recent_cells: Vec<_> = recent
+            .iter()
+            .enumerate()
+            .map(|(index, emoji)| {
+                let emoji = *emoji;
+                let sign = emoji.as_str();
+                div()
+                    .id(("recent-emoji", index))
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(emoji.name()))
+                    .debug_selector(move || format!("recent-emoji:{sign}"))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(u(34.0))
+                    .rounded(u(radius))
+                    .text_size(u(21.0))
+                    .line_height(u(26.0))
+                    .cursor_pointer()
+                    .focusable()
+                    .tab_stop(true)
+                    .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                    .focus_visible(move |style| {
+                        style.shadow(focus_ring_inside(colors.terracotta_deep, ring_width))
+                    })
+                    .tooltip(tooltip(emoji.name()))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.take_emoji(sign, window, cx)),
+                    )
+                    .child(sign)
+                    .into_any_element()
+            })
+            .collect();
         Dialog::new(text::EMOJI, self.layer_focus())
             .selector("emoji-picker")
             .on_close(Self::handler(cx, |this, window, cx| {
@@ -1323,7 +1741,9 @@ impl Shell {
                     .ink(colors.ink_2)
                     .debug_selector(|| "emoji-group-name".to_owned())
                     .child(crate::ui::paint_text(
-                        if searching {
+                        if !recent.is_empty() {
+                            text::RECENT_EMOJI
+                        } else if searching {
                             text::EMOJI_FOUND
                         } else {
                             open.and_then(|index| emojis::Group::iter().nth(index))
@@ -1333,28 +1753,52 @@ impl Shell {
                         None,
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .mt(u(4.0))
-                    .h(u(260.0))
-                    .child(if shown.is_empty() {
-                        div()
-                            .typeface(theme.types.small, &theme)
-                            .ink(colors.ink_2)
-                            .child(if none_drawn {
-                                text::NO_EMOJI_FONT
-                            } else {
-                                text::NO_EMOJI_FOUND
-                            })
-                            .into_any_element()
-                    } else {
-                        ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
-                            .child(div().flex().flex_wrap().gap(u(2.0)).children(cells))
-                            .into_any_element()
-                    }),
-            )
+            .child(div().flex().flex_col().mt(u(4.0)).h(u(260.0)).child(
+                if shown.is_empty() && recent.is_empty() {
+                    div()
+                        .typeface(theme.types.small, &theme)
+                        .ink(colors.ink_2)
+                        .child(if none_drawn {
+                            text::NO_EMOJI_FONT
+                        } else {
+                            text::NO_EMOJI_FOUND
+                        })
+                        .into_any_element()
+                } else {
+                    ScrollArea::new("emoji-list", &self.composer.emoji_scroll, text::EMOJI)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .children((!recent.is_empty()).then(|| {
+                                    div()
+                                        .id("emoji-recents")
+                                        .debug_selector(|| "emoji-recents".to_owned())
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .gap(u(2.0))
+                                                .children(recent_cells),
+                                        )
+                                        .child(
+                                            div()
+                                                .py(u(6.0))
+                                                .text_size(u(12.5))
+                                                .ink(colors.ink_2)
+                                                .child(
+                                                    open.and_then(|index| {
+                                                        emojis::Group::iter().nth(index)
+                                                    })
+                                                    .map_or("", |group| group_tab(group).0),
+                                                ),
+                                        )
+                                }))
+                                .child(div().flex().flex_wrap().gap(u(2.0)).children(cells)),
+                        )
+                        .into_any_element()
+                },
+            ))
             .into_any_element()
     }
 
@@ -1365,11 +1809,16 @@ impl Shell {
         &mut self,
         pane: Pane,
         draft: &[DraftFile],
-        compact: bool,
-        permanent: bool,
-        writing: Writing,
+        mode: Mode,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Mode {
+            compact,
+            permanent,
+            writing,
+        } = mode;
+        let preview = self.pen(pane).preview;
         let theme = theme(cx);
         let faces = self.shown_faces();
         let colors = theme.colors;
@@ -1389,10 +1838,10 @@ impl Shell {
         });
         let tool = |id: &'static str, label: &'static str, mark: AnyElement| {
             div()
-                .id(id)
+                .id(pane.id(id))
                 .role(Role::Button)
                 .aria_label(label)
-                .debug_selector(move || id.to_owned())
+                .debug_selector(move || pane.id(id).to_owned())
                 .flex()
                 .flex_none()
                 .items_center()
@@ -1430,108 +1879,176 @@ impl Shell {
             .flex_none()
             .items_center()
             .gap(u(1.0))
-            .h(u(28.0))
+            .flex_wrap()
+            .min_h(u(28.0))
+            .py(u(3.0))
             .px(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
-            .child(
-                tool(
-                    "format-bold",
-                    text::BOLD,
-                    letter("B", FontWeight::EXTRA_BOLD),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "**", "**", window, cx)
-                })),
-            )
-            .child(
-                tool(
-                    "format-italic",
-                    text::ITALIC,
-                    div()
-                        .italic()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("I")
-                        .into_any_element(),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "*", "*", window, cx)
-                })),
-            )
-            .child(
-                tool(
-                    "format-strike",
-                    text::STRIKETHROUGH,
-                    div().line_through().child("S").into_any_element(),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "~~", "~~", window, cx)
-                })),
-            )
-            .child(divider())
-            .child(
-                tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(cx.listener(
-                    move |this, _, window, cx| this.wrap_selection(pane, "`", "`", window, cx),
-                )),
-            )
-            .child(
-                tool(
-                    "format-code-block",
-                    text::CODE_BLOCK,
-                    shown(Icon::CodeBlock),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.wrap_selection(pane, "```\n", "\n```", window, cx);
-                })),
-            )
-            .child(divider())
-            .child(
-                tool("format-link", text::LINK, shown(Icon::Link)).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.wrap_selection(pane, "[", "](https://)", window, cx);
-                    },
-                )),
-            )
-            .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
-                cx.listener(move |this, _, window, cx| this.prefix_lines(pane, "- ", window, cx)),
-            ))
-            .child(
-                tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(cx.listener(
-                    move |this, _, window, cx| this.prefix_lines(pane, "> ", window, cx),
-                )),
-            )
-            .child(divider())
-            .child(if writing.attach {
-                tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
-                    .on_click(cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)))
-                    .into_any_element()
-            } else {
-                // Not available: the control states why (ADR 0790).
-                let refused = text::not_permitted(WorkspacePermission::AttachFiles);
-                div()
-                    .id("attach-file-refused")
-                    .role(Role::Button)
-                    .aria_label(text::ATTACH_FILE)
-                    .aria_description(refused)
-                    .debug_selector(|| "attach-file-refused".to_owned())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .w(u(26.0))
-                    .h(u(22.0))
-                    .rounded(u(radius_small))
-                    .cursor_not_allowed()
-                    .tooltip(tooltip(refused))
-                    .child(icon(Icon::Clip, 15.0, colors.ink_3))
-                    .into_any_element()
+            .when(!preview, |tools| {
+                tools
+                    .child(
+                        tool(
+                            "format-bold",
+                            text::BOLD,
+                            letter("B", FontWeight::EXTRA_BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "**", "**", window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-italic",
+                            text::ITALIC,
+                            div()
+                                .italic()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("I")
+                                .into_any_element(),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "*", "*", window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-strike",
+                            text::STRIKETHROUGH,
+                            div().line_through().child("S").into_any_element(),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "~~", "~~", window, cx)
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(
+                        tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.wrap_selection(pane, "`", "`", window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        tool(
+                            "format-code-block",
+                            text::CODE_BLOCK,
+                            shown(Icon::CodeBlock),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "```\n", "\n```", window, cx);
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(tool("format-link", text::LINK, shown(Icon::Link)).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.wrap_selection(pane, "[", "](https://)", window, cx);
+                        }),
+                    ))
+                    .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.prefix_lines(pane, "- ", window, cx)
+                        }),
+                    ))
+                    .child(
+                        tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.prefix_lines(pane, "> ", window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        tool(
+                            "format-heading",
+                            text::HEADING,
+                            letter("H", FontWeight::BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.prefix_lines(pane, "# ", window, cx),
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-small",
+                            text::SMALL_TEXT,
+                            letter("t", FontWeight::NORMAL),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.prefix_lines(pane, "-# ", window, cx),
+                        )),
+                    )
+                    .child(
+                        tool(
+                            "format-spoiler",
+                            text::SPOILER,
+                            letter("||", FontWeight::BOLD),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.wrap_selection(pane, "||", "||", window, cx)
+                            },
+                        )),
+                    )
+                    .child(divider())
+                    .child(if writing.attach {
+                        tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)),
+                            )
+                            .into_any_element()
+                    } else {
+                        // Not available: the control states why (ADR 0790).
+                        let refused = text::not_permitted(WorkspacePermission::AttachFiles);
+                        div()
+                            .id("attach-file-refused")
+                            .role(Role::Button)
+                            .aria_label(text::ATTACH_FILE)
+                            .aria_description(refused)
+                            .debug_selector(|| "attach-file-refused".to_owned())
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .w(u(26.0))
+                            .h(u(22.0))
+                            .rounded(u(radius_small))
+                            .cursor_not_allowed()
+                            .tooltip(tooltip(refused))
+                            .child(icon(Icon::Clip, 15.0, colors.ink_3))
+                            .into_any_element()
+                    })
+                    .child(
+                        tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
+                            }),
+                        ),
+                    )
             })
             .child(
-                tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
-                    },
-                )),
+                div().flex_none().ml_auto().w(u(150.0)).child(
+                    Segmented::new(
+                        pane.id("composer-view"),
+                        text::COMPOSER_VIEW,
+                        [text::WRITE.into(), text::PREVIEW.into()],
+                    )
+                    .selector(pane.id("composer-view"))
+                    .selected(Some(usize::from(preview)))
+                    .on_select({
+                        let select = cx.listener(move |this, selected: &usize, window, cx| {
+                            this.show_composer_preview(pane, *selected == 1, window, cx)
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                ),
             );
 
         // The state above the box: a reply or an edit, with the control that ends it.
@@ -1595,7 +2112,7 @@ impl Shell {
 
         // The files of the next message, each with the state of its upload.
         let place = self.composer_place(pane);
-        let attaching = self.attaching_here(pane);
+        let attaching = self.attaching_here(pane, cx);
         let files = (!draft.is_empty() || attaching).then(|| {
             div()
                 .flex()
@@ -1707,10 +2224,23 @@ impl Shell {
                 }))
         });
 
+        let preview_document = preview.then(|| self.composer_document(pane, cx));
+        let preview_problem = preview_document.as_ref().and_then(|document| {
+            let has_files = !draft.is_empty()
+                || self.pen(pane).editing.as_ref().is_some_and(|edit| {
+                    self.held_message(pane, edit.message_id)
+                        .is_some_and(|message| !message.attachments.is_empty())
+                });
+            compose::check(document, has_files)
+                .err()
+                .filter(|problem| *problem != compose::Problem::Empty)
+                .map(text::compose_problem)
+        });
         let problem = self
             .pen(pane)
             .problem
             .clone()
+            .or(preview_problem.clone())
             .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
                 let sentence = SharedString::from(sentence);
@@ -1760,84 +2290,151 @@ impl Shell {
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
-        let picker = (self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
+        let picker =
+            (!preview && self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
+                div()
+                    .id("mention-picker")
+                    .role(Role::ListBox)
+                    .aria_label(text::MENTION_SOMEONE)
+                    .debug_selector(|| "mention-picker".to_owned())
+                    .absolute()
+                    .bottom_full()
+                    .left_0()
+                    .mb(u(4.0))
+                    .w(u(280.0))
+                    .py(u(4.0))
+                    .rounded(u(theme.metrics.radius_menu))
+                    .border_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .bg(Hsla::from(colors.travertine_hi))
+                    .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
+                    .occlude()
+                    .children(found.iter().enumerate().map(|(index, candidate)| {
+                        let taken = candidate.clone();
+                        let person = match candidate.target {
+                            MentionTarget::Account(account_id) => Some(account_id),
+                            _ => None,
+                        };
+                        div()
+                            .id(("candidate", index))
+                            .role(Role::ListBoxOption)
+                            .aria_label(SharedString::from(candidate.name.clone()))
+                            .aria_selected(index == chosen)
+                            .debug_selector(move || format!("candidate:{index}"))
+                            .flex()
+                            .items_center()
+                            .gap(u(8.0))
+                            .h(u(30.0))
+                            .px(u(10.0))
+                            .cursor_pointer()
+                            .when(index == chosen, |row| {
+                                row.bg(Hsla::from(colors.limestone_lo))
+                            })
+                            .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.take_candidate(pane, &taken, window, cx);
+                            }))
+                            .child(match person {
+                                Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
+                                    .radius(2.0)
+                                    .into_any_element(),
+                                None => icon(Icon::People, 15.0, colors.ink_2).into_any_element(),
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(u(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .ink(colors.ink)
+                                    .child(match person {
+                                        Some(account) => super::people::person_name(
+                                            &faces,
+                                            account,
+                                            candidate.name.clone(),
+                                            "mention-candidate-name",
+                                        ),
+                                        None => crate::ui::role_name(
+                                            candidate.name.clone(),
+                                            candidate.color,
+                                            &theme,
+                                        )
+                                        .into_any_element(),
+                                    }),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(u(12.5))
+                                    .ink(colors.ink_3)
+                                    .child(candidate.detail),
+                            )
+                    }))
+            });
+
+        let emoji_found = self.emoji_candidates(pane, cx);
+        let emoji_chosen = self.pen(pane).emoji_completion.as_ref().map_or(0, |open| {
+            open.chosen.min(emoji_found.len().saturating_sub(1))
+        });
+        let emoji_picker = (!preview
+            && self.pen(pane).emoji_completion.is_some()
+            && !emoji_found.is_empty())
+        .then(|| {
             div()
-                .id("mention-picker")
+                .id(pane.id("emoji-completion"))
+                .debug_selector(move || pane.id("emoji-completion").to_owned())
                 .role(Role::ListBox)
-                .aria_label(text::MENTION_SOMEONE)
-                .debug_selector(|| "mention-picker".to_owned())
+                .aria_label(text::EMOJI_COMPLETION)
                 .absolute()
                 .bottom_full()
                 .left_0()
                 .mb(u(4.0))
                 .w(u(280.0))
+                .max_w_full()
                 .py(u(4.0))
                 .rounded(u(theme.metrics.radius_menu))
                 .border_1()
-                .border_color(Hsla::from(colors.rule))
-                .bg(Hsla::from(colors.travertine_hi))
+                .border_color(colors.rule)
+                .bg(colors.travertine_hi)
                 .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
                 .occlude()
-                .children(found.iter().enumerate().map(|(index, candidate)| {
-                    let taken = candidate.clone();
-                    let person = match candidate.target {
-                        MentionTarget::Account(account_id) => Some(account_id),
-                        _ => None,
-                    };
+                .children(emoji_found.iter().enumerate().map(|(index, emoji)| {
+                    let emoji = *emoji;
                     div()
-                        .id(("candidate", index))
+                        .id(("emoji-candidate", index))
                         .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(candidate.name.clone()))
-                        .aria_selected(index == chosen)
-                        .debug_selector(move || format!("candidate:{index}"))
+                        .aria_label(SharedString::from(emoji.name()))
+                        .aria_selected(index == emoji_chosen)
+                        .debug_selector(move || format!("{}:{index}", pane.id("emoji-candidate")))
                         .flex()
                         .items_center()
                         .gap(u(8.0))
-                        .h(u(30.0))
+                        .h(u(32.0))
                         .px(u(10.0))
                         .cursor_pointer()
-                        .when(index == chosen, |row| {
-                            row.bg(Hsla::from(colors.limestone_lo))
-                        })
+                        .when(index == emoji_chosen, |row| row.bg(colors.limestone_lo))
                         .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.take_candidate(pane, &taken, window, cx);
+                            this.take_emoji_completion(pane, emoji, window, cx)
                         }))
-                        .child(match person {
-                            Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
-                                .radius(2.0)
-                                .into_any_element(),
-                            None => icon(Icon::People, 15.0, colors.ink_2).into_any_element(),
-                        })
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(u(14.0))
-                                .font_weight(FontWeight::BOLD)
-                                .ink(colors.ink)
-                                .child(match person {
-                                    Some(account) => super::people::person_name(
-                                        &faces,
-                                        account,
-                                        candidate.name.clone(),
-                                        "mention-candidate-name",
-                                    ),
-                                    None => crate::ui::role_name(
-                                        candidate.name.clone(),
-                                        candidate.color,
-                                        &theme,
-                                    )
-                                    .into_any_element(),
-                                }),
-                        )
-                        .child(div().flex_1())
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(u(12.5))
-                                .ink(colors.ink_3)
-                                .child(candidate.detail),
+                                .w(u(24.0))
+                                .text_size(u(20.0))
+                                .child(emoji.as_str()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(u(13.0))
+                                .child(SharedString::from(format!(
+                                    ":{}:",
+                                    crate::emoji::completion::label(emoji)
+                                ))),
                         )
                 }))
         });
@@ -1865,6 +2462,61 @@ impl Shell {
                 .font_weight(FontWeight::BOLD)
                 .child(context.token().label().clone())
         });
+        let preview_body = preview_document.map(|document| {
+            let names = self
+                .composer_feed(pane)
+                .map(|feed| feed.names.clone())
+                .unwrap_or_default();
+            let blocks = if preview_problem.is_some() {
+                vec![
+                    div()
+                        .ink(colors.ink_3)
+                        .child(text::PREVIEW_FIX)
+                        .into_any_element(),
+                ]
+            } else if document.blocks.is_empty() {
+                vec![
+                    div()
+                        .ink(colors.ink_3)
+                        .child(text::PREVIEW_EMPTY)
+                        .into_any_element(),
+                ]
+            } else {
+                self.document(&document, None, &names, &theme, window, cx)
+            };
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .id(pane.id("composer-preview"))
+                        .debug_selector(move || pane.id("composer-preview").to_owned())
+                        .role(Role::Group)
+                        .aria_label(text::PREVIEW)
+                        .text_size(u(14.5))
+                        .line_height(u(21.0))
+                        .ink(colors.ink)
+                        .track_focus(&self.pen(pane).preview_focus)
+                        .min_w_0()
+                        .min_h(u(32.0))
+                        .max_h(
+                            u(210.0)
+                                .to_pixels(window.rem_size())
+                                .min(window.viewport_size().height * 0.3),
+                        )
+                        .overflow_y_scroll()
+                        .track_scroll(&self.pen(pane).preview_scroll)
+                        .pr(u(12.0))
+                        .children(blocks),
+                )
+                .child(crate::ui::scroll_bar(
+                    &self.pen(pane).preview_scroll,
+                    false,
+                    cx,
+                ))
+                .into_any_element()
+        });
         let frame = div()
             .relative()
             .rounded(u(theme.metrics.radius))
@@ -1882,8 +2534,9 @@ impl Shell {
                     .pl(u(11.0))
                     .pr(u(6.0))
                     .py(u(6.0))
-                    .child(
-                        div()
+                    .child(match preview_body {
+                        Some(body) => body,
+                        None => div()
                             .id(pane.id("composer-input"))
                             .role(Role::TextInput)
                             .aria_label(match pane {
@@ -1896,8 +2549,14 @@ impl Shell {
                             .text_size(u(14.5))
                             .line_height(u(21.0))
                             .ink(colors.ink)
-                            .child(input),
-                    )
+                            .relative()
+                            .on_context_menu(Self::handler(cx, move |this, window, cx| {
+                                this.open_composer_menu(pane, window, cx);
+                            }))
+                            .child(crate::selectable::SelectableText::unobserved(input))
+                            .children(self.render_composer_menu(pane, cx))
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .id(pane.id("send-message"))
@@ -1933,7 +2592,8 @@ impl Shell {
                             )),
                     ),
             )
-            .children(picker);
+            .children(picker)
+            .children(emoji_picker);
 
         div()
             .id(pane.id("composer"))
@@ -1989,6 +2649,28 @@ impl Shell {
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 style.bg(Hsla::from(colors.terracotta_wash))
             })
+            .child(
+                div().h(u(20.0)).min_w_0().children(
+                    self.composer_feed(pane)
+                        .filter(|feed| feed.loaded && feed.failed.is_none())
+                        .map(|feed| self.state.read(cx).typing_names(feed.server_id, feed.place))
+                        .filter(|names| !names.is_empty())
+                        .map(|names| {
+                            div()
+                                .debug_selector(move || {
+                                    if pane == Pane::Main {
+                                        "typing-indicator".to_owned()
+                                    } else {
+                                        "thread-typing-indicator".to_owned()
+                                    }
+                                })
+                                .text_size(u(12.0))
+                                .ink(colors.ink_3)
+                                .truncate()
+                                .child(text::typing_people(&names))
+                        }),
+                ),
+            )
             .children(permanence)
             .children(banner)
             .children(files)
@@ -2008,11 +2690,18 @@ impl Shell {
             input,
             window,
             move |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this.composer_changed(pane, cx),
+                InputEvent::Change => {
+                    this.composer_changed(pane, cx);
+                    this.complete_closed_emoji(pane, window, cx);
+                }
                 InputEvent::PressEnter { shift: false, .. } => {
                     this.submit_message(pane, window, cx)
                 }
-                InputEvent::PressEnter { .. } | InputEvent::Focus | InputEvent::Blur => {
+                InputEvent::Blur => {
+                    this.typing_activity(pane, false, cx);
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } | InputEvent::Focus => {
                     cx.notify();
                 }
             },
@@ -2124,6 +2813,8 @@ mod tests {
         // An address is no mention.
         assert_eq!(mention_query("mail ana@example", 16), None);
         assert_eq!(mention_query("no sign", 7), None);
+        assert_eq!(mention_query("#gen", 4), Some((0, "gen".to_owned())));
+        assert_eq!(mention_query("# heading", 9), None);
         assert_eq!(mention_query("@one\n two", 9), None);
         // The cursor stands before the sign.
         assert_eq!(mention_query("ab @c", 2), None);
@@ -2135,6 +2826,7 @@ mod tests {
         let role_id = junto_client_core::protocol::ids::WorkspaceRoleId::generate();
         for target in [
             MentionTarget::Account(account_id),
+            MentionTarget::Channel(junto_client_core::protocol::ids::ChannelId::generate()),
             MentionTarget::Role(role_id),
             MentionTarget::Everyone,
         ] {

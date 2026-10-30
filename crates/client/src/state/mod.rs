@@ -9,7 +9,10 @@ pub mod account;
 pub mod admin;
 pub mod book;
 mod call_keys;
+mod drafts;
+mod emoji;
 mod history;
+mod typing;
 pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
@@ -17,6 +20,7 @@ pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod followed;
+pub(crate) mod forwarding;
 pub mod linking;
 pub mod logo;
 mod message_links;
@@ -31,6 +35,7 @@ pub mod picture_crop;
 pub mod presence;
 pub mod profile;
 mod progress;
+pub(crate) mod reaction_people;
 pub mod receipts;
 pub mod recorded;
 mod recorded_work;
@@ -39,6 +44,7 @@ pub mod search;
 mod searching;
 pub mod startup;
 pub mod switcher;
+mod target_links;
 mod threads;
 pub mod transcript_work;
 mod tray;
@@ -507,6 +513,11 @@ pub struct AppState {
     media_fixture: Option<MediaSnapshot>,
     timing: Timing,
     settings: InterfaceSettings,
+    drafts: drafts::Drafts,
+    typing: typing::Activity,
+    recent_emoji: Vec<String>,
+    recent_emoji_error: Option<String>,
+    recent_emoji_writes: u64,
     /// The interface scale of this start, from a start argument. It is not stored.
     scale_of_this_start: Option<u32>,
     /// The result of the last change of the profile name, until the window has taken it.
@@ -594,6 +605,8 @@ pub struct AppState {
     navigations: u64,
     message_link_asks: u64,
     message_link_failed: Option<u64>,
+    unread_pauses: HashSet<(ServerId, PlaceId)>,
+    reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), u64>,
@@ -790,6 +803,14 @@ impl AppState {
                 InterfaceSettings::default()
             }
         };
+        let (recent_emoji, recent_emoji_error) = match client.emoji_history().load() {
+            Ok(recent) => (recent, None),
+            Err(error) => (
+                Vec::new(),
+                Some(text::flow_error(&FlowError::Storage(error.to_string()))),
+            ),
+        };
+        let drafts = drafts::Drafts::load(&client);
         theme::apply(settings.theme, cx);
         let keybinds = client.settings().load_keybinds().unwrap_or_else(|error| {
             tracing::warn!(%error, "the key bindings were not read");
@@ -1009,6 +1030,11 @@ impl AppState {
             media_fixture: None,
             timing,
             settings,
+            drafts,
+            typing: typing::Activity::default(),
+            recent_emoji,
+            recent_emoji_error,
+            recent_emoji_writes: 0,
             scale_of_this_start: None,
             name_result: None,
             settings_failed: HashMap::new(),
@@ -1050,6 +1076,8 @@ impl AppState {
             navigations: 0,
             message_link_asks: 0,
             message_link_failed: None,
+            unread_pauses: HashSet::new(),
+            reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
@@ -2017,6 +2045,7 @@ impl AppState {
         *self.reloads.entry(server_id).or_default() += 1;
         self.forget_quotes(server_id, None, cx);
         self.search_after_reload(server_id, cx);
+        self.reaction_people_changed(server_id, None, cx);
         self.changed(cx);
     }
 
@@ -2028,6 +2057,10 @@ impl AppState {
     }
 
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        if let Notice::Typing(activity) = notice {
+            self.heard_typing(server_id, activity.as_ref(), cx);
+            return;
+        }
         self.people_noticed(server_id, notice, cx);
         self.followed_noticed(server_id, notice, cx);
         self.logos_noticed(server_id, notice, cx);
@@ -2038,6 +2071,7 @@ impl AppState {
             // The state was replaced: every message can have changed meanwhile, and the
             // state holds every change of the settings that the server took.
             Notice::Reloaded { .. } => {
+                self.heard_typing(server_id, None, cx);
                 self.reloaded(server_id, cx);
                 return;
             }
@@ -2045,7 +2079,11 @@ impl AppState {
                 self.presence_invalidated(server_id, false, cx);
                 return;
             }
-            Notice::Ended { .. } => return,
+            Notice::Ended { .. } => {
+                self.heard_typing(server_id, None, cx);
+                return;
+            }
+            Notice::Typing(_) => return,
         };
         if matches!(
             event.as_ref(),
@@ -2079,8 +2117,51 @@ impl AppState {
         ) {
             self.invalidate_profiles(server_id, cx);
         }
+        self.reaction_people_changed(server_id, Some(event.as_ref()), cx);
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
+        } else if matches!(
+            event.as_ref(),
+            Event::PermissionsChanged { .. }
+                | Event::ChannelHistoryWithdrawn { .. }
+                | Event::ChannelDeleted { .. }
+                | Event::ChannelArchived { .. }
+                | Event::WorkspaceDeleted { .. }
+                | Event::AccountDepartureChanged { .. }
+        ) {
+            self.forget_quotes(server_id, None, cx);
+        }
+        if let Event::MessageMarkedUnread {
+            place, thread_root, ..
+        } = event.as_ref()
+        {
+            let place = match (place, thread_root) {
+                (
+                    junto_client_core::protocol::message::MessagePlace::Channel {
+                        channel_id, ..
+                    },
+                    Some(root_id),
+                ) => PlaceId::Thread {
+                    channel_id: *channel_id,
+                    root_id: *root_id,
+                },
+                _ => PlaceId::of(place),
+            };
+            if self.open_places.contains_key(&(server_id, place)) {
+                self.unread_pauses.insert((server_id, place));
+            }
+        }
+        match event.as_ref() {
+            Event::MessageRead { place, .. } => {
+                self.unread_pauses.remove(&(server_id, PlaceId::of(place)));
+            }
+            Event::ThreadRead { root_id, .. } => {
+                self.unread_pauses.retain(|(server, place)| {
+                    *server != server_id
+                        || !matches!(place, PlaceId::Thread { root_id: of, .. } if of == root_id)
+                });
+            }
+            _ => {}
         }
         self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {
@@ -2471,6 +2552,8 @@ impl AppState {
             .iter()
             .find_map(|setting| self.settings_failed.get(setting))
             .map(String::as_str)
+            .or(self.recent_emoji_error.as_deref())
+            .or(self.drafts.error.as_deref())
     }
 
     /// Runs `work` on a background thread after every write that was asked for before,
@@ -2667,6 +2750,7 @@ impl AppState {
                         let told = this.update(cx, |this, cx| match &notice {
                             Ok(notice) => this.noticed(id, notice, cx),
                             Err(_) => {
+                                this.heard_typing(id, None, cx);
                                 this.account_noticed(id, None, cx);
                                 this.recordings_noticed(id, None, cx);
                                 this.people_missed(id, cx);
@@ -2711,6 +2795,7 @@ impl AppState {
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
+        self.keep_typing_owners();
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
@@ -2821,7 +2906,9 @@ impl AppState {
         self.set_tray_mentions(for_person, cx);
         self.follow_tray();
         self.ask_missing_quotes(shown, cx);
+        self.reconcile_draft_entries(cx);
         self.end_uploads_of_other_accounts();
+        self.restore_draft_files(cx);
         self.drop_sent_uploads();
         cx.notify();
     }
@@ -3018,6 +3105,9 @@ impl AppState {
         match result {
             // The key has an account: the server stays, and its state shows the account.
             Ok(()) | Err(junto_client_core::manager::RemoveError::HasAccount) => {
+                if self.client.server(server_id).is_none() {
+                    self.forget_server_drafts(server_id, cx);
+                }
                 self.pending.remove_failed.remove(&server_id);
             }
             Err(error) => {

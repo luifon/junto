@@ -350,7 +350,7 @@ fn the_switches_of_role_and_everyone_mentions_turn_those_mentions_off(cx: &mut T
             == [
                 "editors, @Editors",
                 "first step, @Luca",
-                "all of you, @everyone",
+                "all of you, @channel",
                 "second step, @Luca",
                 "third step, @Luca",
             ]

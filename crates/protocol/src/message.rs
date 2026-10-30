@@ -3,6 +3,7 @@ use crate::ids::{
     AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId, WorkspaceId,
     WorkspaceRoleId,
 };
+use crate::origin::Origin;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -32,6 +33,19 @@ pub struct Document {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
+    Heading {
+        level: u8,
+        content: Vec<Inline>,
+    },
+    Small {
+        content: Vec<Inline>,
+    },
+    Forward {
+        server: Origin,
+        message_id: MessageId,
+        #[serde(default)]
+        verified: bool,
+    },
     Paragraph {
         content: Vec<Inline>,
     },
@@ -62,6 +76,10 @@ pub struct CheckItem {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Inline {
+    Spoiler {
+        #[cfg_attr(feature = "openapi", schema(no_recursion))]
+        content: Vec<Inline>,
+    },
     Text {
         text: String,
         #[serde(default)]
@@ -74,6 +92,9 @@ pub enum Inline {
         text: String,
         url: String,
     },
+    Channel {
+        channel_id: ChannelId,
+    },
     Account {
         account_id: AccountId,
     },
@@ -82,6 +103,104 @@ pub enum Inline {
     },
     Everyone,
 }
+pub const MAX_INLINE_DEPTH: usize = 8;
+pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
+pub const MAX_LIST_ITEMS: usize = 5_500;
+pub const DOCUMENT_REVISION: u32 = 9;
+pub const FORWARD_SNAPSHOT_REVISION: u32 = 10;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DocumentFormat {
+    pub event_revision: u32,
+}
+
+pub struct InlineNodes<'a> {
+    stack: Vec<(std::slice::Iter<'a, Inline>, usize)>,
+}
+
+pub fn inline_nodes(content: &[Inline]) -> InlineNodes<'_> {
+    InlineNodes {
+        stack: vec![(content.iter(), 0)],
+    }
+}
+
+impl<'a> Iterator for InlineNodes<'a> {
+    type Item = (&'a Inline, usize);
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (nodes, depth) = self.stack.last_mut()?;
+            let depth = *depth;
+            if let Some(node) = nodes.next() {
+                if let Inline::Spoiler { content } = node {
+                    self.stack.push((content.iter(), depth + 1));
+                }
+                return Some((node, depth));
+            }
+            self.stack.pop();
+        }
+    }
+}
+
+impl Document {
+    pub fn required_revision(&self) -> u32 {
+        if self.forward_origins() > 0 {
+            return FORWARD_SNAPSHOT_REVISION;
+        }
+        if self.blocks.iter().any(|block| {
+            matches!(
+                block,
+                Block::Heading { .. } | Block::Small { .. } | Block::Forward { .. }
+            )
+        }) || self
+            .inlines()
+            .any(|(node, _)| matches!(node, Inline::Spoiler { .. } | Inline::Channel { .. }))
+        {
+            DOCUMENT_REVISION
+        } else {
+            0
+        }
+    }
+
+    pub fn list_items(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(|block| match block {
+                Block::List { items, .. } => items.len(),
+                Block::Checklist { items } => items.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    pub fn content_blocks(&self) -> impl Iterator<Item = &Block> {
+        self.blocks
+            .iter()
+            .filter(|block| !matches!(block, Block::Forward { .. }))
+    }
+
+    pub fn forward_origins(&self) -> usize {
+        self.blocks.len() - self.content_blocks().count()
+    }
+
+    pub fn inlines(&self) -> impl Iterator<Item = (&Inline, usize)> {
+        self.blocks.iter().flat_map(|block| {
+            let contents: Box<dyn Iterator<Item = &[Inline]>> = match block {
+                Block::Heading { content, .. }
+                | Block::Small { content }
+                | Block::Paragraph { content }
+                | Block::Quote { content } => Box::new(std::iter::once(content.as_slice())),
+                Block::List { items, .. } => Box::new(items.iter().map(Vec::as_slice)),
+                Block::Checklist { items } => {
+                    Box::new(items.iter().map(|item| item.content.as_slice()))
+                }
+                Block::Forward { .. } | Block::Code { .. } => Box::new(std::iter::empty()),
+            };
+            contents.flat_map(inline_nodes)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -187,6 +306,8 @@ pub struct MessagePage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MessageState {
+    #[serde(default)]
+    pub read_revision: u64,
     pub place: MessagePlace,
     pub last_read: u64,
     pub latest: u64,
@@ -206,6 +327,8 @@ pub struct MessageState {
 #[serde(deny_unknown_fields)]
 pub struct MarkRead {
     pub position: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_revision: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -301,6 +424,8 @@ pub struct ThreadPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ThreadState {
+    #[serde(default)]
+    pub read_revision: u64,
     pub root_id: MessageId,
     pub last_read: u64,
     pub latest: u64,
@@ -342,4 +467,20 @@ pub struct UnreadThreads {
     pub more: bool,
     /// Opaque continuation for the next unread-thread page.
     pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReactionPerson {
+    pub id: AccountId,
+    pub name: Option<String>,
+    pub departed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReactionPeople {
+    pub people: Vec<ReactionPerson>,
+    pub next_after: Option<AccountId>,
+    pub previous_before: Option<AccountId>,
 }
