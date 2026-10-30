@@ -845,7 +845,8 @@ async fn review_l6_unknown_unassignment_is_not_found() {
 
 #[tokio::test]
 async fn review_m1_bulk_creation_at_the_real_change_limit() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let before: StructureExport = server
         .get(&owner, "/api/v1/structure")
@@ -854,6 +855,11 @@ async fn review_m1_bulk_creation_at_the_real_change_limit() {
     let changes:Vec<_>=(0..junto_protocol::structure_file::MOST_CHANGES).map(|n|json!({"change":"create_server_role","id":junto_protocol::ids::StructureId::generate(),"name":format!("role {n}"),"permissions":[]})).collect();
     let audits = server.count("audit_entries").await;
     let events = server.count("events").await;
+    let (mut held, request_role) = crate::messages_queries::measure_requests(&server).await;
+    let observer = &mut **held.first_mut().unwrap();
+    let statements_before = crate::messages_queries::statements(observer, request_role).await;
+    let load_before = std::fs::read_to_string("/proc/loadavg");
+    let started = std::time::Instant::now();
     server
         .post(
             &owner,
@@ -862,6 +868,26 @@ async fn review_m1_bulk_creation_at_the_real_change_limit() {
         )
         .await
         .ok::<junto_protocol::structure_file::StructureApplied>(StatusCode::OK);
+    let elapsed = started.elapsed();
+    let load_after = std::fs::read_to_string("/proc/loadavg");
+    let counts = crate::messages_queries::since(
+        crate::messages_queries::statements(observer, request_role).await,
+        statements_before,
+    );
+    let statements: i64 = counts.values().sum();
+    let shifts: i64 = counts
+        .iter()
+        .filter(|(query, _)| query.starts_with("update server_roles"))
+        .map(|(_, calls)| calls)
+        .sum();
+    let inserts: i64 = counts
+        .iter()
+        .filter(|(query, _)| query.starts_with("insert into server_roles"))
+        .map(|(_, calls)| calls)
+        .sum();
+    eprintln!(
+        "ROLE BATCH server elapsed={elapsed:?} load_before={load_before:?} load_after={load_after:?} statements={statements} shifts={shifts} inserts={inserts}"
+    );
     assert_eq!(server.count("audit_entries").await - audits, 200);
     assert_eq!(server.count("events").await - events, 470);
     let roles: Vec<ServerRole> = server
@@ -873,6 +899,368 @@ async fn review_m1_bulk_creation_at_the_real_change_limit() {
         roles.iter().map(|r| r.position).collect::<Vec<_>>(),
         (1..=200).collect::<Vec<_>>()
     );
+    server.require_no_statement_eviction(evictions).await;
+    assert!(
+        shifts <= 1 && inserts <= 1 && statements <= 3000,
+        "role batch writes and request statements: {counts:#?}"
+    );
+}
+
+#[tokio::test]
+async fn workspace_role_batches_write_each_final_position_once() {
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await.id;
+    let before: StructureExport = server
+        .get(&owner, "/api/v1/structure")
+        .await
+        .ok(StatusCode::OK);
+    let changes: Vec<_> = (0..200).map(|n| json!({"change":"create_workspace_role","id":junto_protocol::ids::StructureId::generate(),"workspace":workspace,"name":format!("role {n}"),"permissions":[]})).collect();
+    let audits = server.count("audit_entries").await;
+    let events = server.count("events").await;
+    let (mut held, request_role) = crate::messages_queries::measure_requests(&server).await;
+    let observer = &mut **held.first_mut().unwrap();
+    let statements_before = crate::messages_queries::statements(observer, request_role).await;
+    let load_before = std::fs::read_to_string("/proc/loadavg");
+    let started = std::time::Instant::now();
+    server
+        .post(
+            &owner,
+            "/api/v1/structure/changes",
+            &json!({"revision":before.revision,"changes":changes}),
+        )
+        .await
+        .ok::<junto_protocol::structure_file::StructureApplied>(StatusCode::OK);
+    let elapsed = started.elapsed();
+    let load_after = std::fs::read_to_string("/proc/loadavg");
+    let counts = crate::messages_queries::since(
+        crate::messages_queries::statements(observer, request_role).await,
+        statements_before,
+    );
+    let statements: i64 = counts.values().sum();
+    let shifts: i64 = counts
+        .iter()
+        .filter(|(query, _)| query.starts_with("update workspace_roles"))
+        .map(|(_, calls)| calls)
+        .sum();
+    let inserts: i64 = counts
+        .iter()
+        .filter(|(query, _)| query.starts_with("insert into workspace_roles"))
+        .map(|(_, calls)| calls)
+        .sum();
+    eprintln!(
+        "ROLE BATCH workspace elapsed={elapsed:?} load_before={load_before:?} load_after={load_after:?} statements={statements} shifts={shifts} inserts={inserts}"
+    );
+    assert_eq!(server.count("audit_entries").await - audits, 200);
+    assert_eq!(server.count("events").await - events, 470);
+    let roles: Vec<WorkspaceRole> = server
+        .get(&owner, &format!("/api/v1/workspaces/{workspace}/roles"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|role| role.is_everyone)
+            .map(|role| role.position)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+    assert_eq!(
+        roles
+            .into_iter()
+            .filter(|role| !role.is_everyone)
+            .map(|role| role.position)
+            .collect::<Vec<_>>(),
+        (1..=200).collect::<Vec<_>>()
+    );
+    server.require_no_statement_eviction(evictions).await;
+    assert!(
+        shifts <= 1 && inserts <= 1 && statements <= 3000,
+        "workspace batch writes and request statements: {counts:#?}"
+    );
+}
+
+fn role_creation(
+    workspace: Option<junto_protocol::ids::WorkspaceId>,
+    id: junto_protocol::ids::StructureId,
+    name: &str,
+) -> serde_json::Value {
+    if let Some(workspace) = workspace {
+        json!({"change":"create_workspace_role","id":id,"workspace":workspace,"name":name,"permissions":[]})
+    } else {
+        json!({"change":"create_server_role","id":id,"name":name,"permissions":[]})
+    }
+}
+
+fn normalize_role_ids(
+    value: &mut serde_json::Value,
+    names: &std::collections::BTreeMap<String, String>,
+) {
+    match value {
+        serde_json::Value::String(value) => {
+            if let Some(name) = names.get(value) {
+                *value = name.clone();
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_role_ids(value, names);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                normalize_role_ids(value, names);
+            }
+        }
+        _ => {}
+    }
+    if let Some(positions) = value
+        .get_mut("positions")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        positions.sort_by_key(|position| position["role_id"].to_string());
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct RoleBatchObservation {
+    appearance: std::collections::BTreeMap<String, (Option<String>, bool)>,
+    events: Vec<serde_json::Value>,
+    audits: Vec<serde_json::Value>,
+    positions: std::collections::BTreeMap<String, i64>,
+}
+
+async fn role_batch_observation(workspace_scope: bool, batched: bool) -> RoleBatchObservation {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = if workspace_scope {
+        Some(server.default_workspace(&owner).await.id)
+    } else {
+        None
+    };
+    let path = workspace.map_or_else(
+        || "/api/v1/server-roles".to_owned(),
+        |id| format!("/api/v1/workspaces/{id}/roles"),
+    );
+    let mut existing = Vec::new();
+    for name in ["base-a", "base-b"] {
+        existing.push(
+            server
+                .post(&owner, &path, &json!({"name":name,"permissions":[]}))
+                .await
+                .ok::<serde_json::Value>(StatusCode::CREATED),
+        );
+    }
+    server.patch(&owner, &format!("{path}/positions"), &json!({"positions":[{"role_id":existing[0]["id"],"position":7},{"role_id":existing[1]["id"],"position":i32::MAX-1}]})).await.empty(StatusCode::NO_CONTENT);
+    let prefix = if workspace_scope {
+        "workspace_role"
+    } else {
+        "server_role"
+    };
+    let kinds = vec![
+        format!("{prefix}_created"),
+        format!("{prefix}_positions_shifted"),
+    ];
+    let previous: i64 = sqlx::query_scalar("select count(*) from events where kind=any($1)")
+        .bind(&kinds)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    let before: StructureExport = server
+        .get(&owner, "/api/v1/structure")
+        .await
+        .ok(StatusCode::OK);
+    let mut changes = Vec::new();
+    for index in 0..3 {
+        let mut creation = role_creation(
+            workspace,
+            junto_protocol::ids::StructureId::generate(),
+            &format!("added-{index}"),
+        );
+        creation["color"] = json!(match index {
+            0 => Some("#123456"),
+            1 => None,
+            _ => Some("#AABBCC"),
+        });
+        creation["hoist"] = json!(index != 1);
+        changes.push(creation);
+        if !batched && index < 2 {
+            changes.push(if let Some(workspace) = workspace {
+                json!({"change":"reorder_workspace_roles","workspace":workspace,"positions":[]})
+            } else {
+                json!({"change":"reorder_server_roles","positions":[]})
+            });
+        }
+    }
+    server
+        .post(
+            &owner,
+            "/api/v1/structure/changes",
+            &json!({"revision":before.revision,"changes":changes}),
+        )
+        .await
+        .ok::<junto_protocol::structure_file::StructureApplied>(StatusCode::OK);
+    let roles: Vec<serde_json::Value> = server.get(&owner, &path).await.ok(StatusCode::OK);
+    let mut names: std::collections::BTreeMap<_, _> = roles
+        .iter()
+        .map(|role| {
+            (
+                role["id"].as_str().unwrap().to_owned(),
+                role["name"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    if let Some(workspace) = workspace {
+        names.insert(workspace.to_string(), "workspace".to_owned());
+    }
+    let positions = roles
+        .iter()
+        .filter(|role| role["position"].as_i64().unwrap() > 0)
+        .map(|role| {
+            (
+                role["name"].as_str().unwrap().to_owned(),
+                role["position"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    let mut events: Vec<serde_json::Value> = sqlx::query_scalar(
+        "select payload from events where kind=any($1) order by position,ordinal offset $2",
+    )
+    .bind(kinds)
+    .bind(previous)
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    let mut audits: Vec<serde_json::Value> =
+        sqlx::query_scalar("select event from audit_entries where action=$1")
+            .bind(format!("{prefix}_created"))
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    audits.retain(|event| {
+        event["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("added-"))
+    });
+    for value in events.iter_mut().chain(&mut audits) {
+        normalize_role_ids(value, &names);
+    }
+    audits.sort_by_key(serde_json::Value::to_string);
+    let appearance = roles
+        .iter()
+        .map(|role| {
+            (
+                role["name"].as_str().unwrap().to_owned(),
+                (
+                    role["color"].as_str().map(str::to_owned),
+                    role["hoist"].as_bool().unwrap(),
+                ),
+            )
+        })
+        .collect();
+    RoleBatchObservation {
+        appearance,
+        events,
+        audits,
+        positions,
+    }
+}
+
+#[tokio::test]
+async fn role_batches_keep_sequential_events_audits_and_overflow_compaction() {
+    for workspace in [false, true] {
+        let sequential = role_batch_observation(workspace, false).await;
+        let batched = role_batch_observation(workspace, true).await;
+        assert_eq!(batched, sequential);
+        assert_eq!(
+            batched.appearance["added-0"],
+            (Some("#123456".to_owned()), true)
+        );
+        assert_eq!(batched.appearance["added-1"], (None, false));
+        assert_eq!(
+            batched.appearance["added-2"],
+            (Some("#AABBCC".to_owned()), true)
+        );
+        assert_eq!(batched.events.len(), 6);
+        assert_eq!(batched.audits.len(), 3);
+        assert_eq!(
+            batched.positions,
+            [
+                ("base-a", 4),
+                ("base-b", 5),
+                ("added-0", 3),
+                ("added-1", 2),
+                ("added-2", 1)
+            ]
+            .into_iter()
+            .map(|(name, position)| (name.to_owned(), position))
+            .collect()
+        );
+    }
+}
+
+#[tokio::test]
+async fn role_batches_roll_back_a_late_alias_name_or_capacity_error() {
+    for workspace_scope in [false, true] {
+        let server = TestServer::start_with(|config| {
+            config.limits.most_server_roles = 2;
+            config.limits.most_roles_per_workspace = 3;
+        })
+        .await;
+        let owner = server.owner().await;
+        let workspace = if workspace_scope {
+            Some(server.default_workspace(&owner).await.id)
+        } else {
+            None
+        };
+        let before: StructureExport = server
+            .get(&owner, "/api/v1/structure")
+            .await
+            .ok(StatusCode::OK);
+        let audits = server.count("audit_entries").await;
+        let events = server.count("events").await;
+        for bad in 0..3 {
+            let first = junto_protocol::ids::StructureId::generate();
+            let second = junto_protocol::ids::StructureId::generate();
+            let third = if bad == 0 {
+                first
+            } else {
+                junto_protocol::ids::StructureId::generate()
+            };
+            let changes = [
+                role_creation(workspace, first, "one"),
+                role_creation(workspace, second, "two"),
+                role_creation(workspace, third, if bad == 1 { "" } else { "three" }),
+            ];
+            let reply = server
+                .post(
+                    &owner,
+                    "/api/v1/structure/changes",
+                    &json!({"revision":before.revision,"changes":changes}),
+                )
+                .await;
+            reply.error(match bad {
+                0 => ErrorCode::Conflict,
+                1 => ErrorCode::InvalidRequest,
+                _ => ErrorCode::LimitReached,
+            });
+            assert!(
+                reply.text().contains("change 3 (create_"),
+                "{}",
+                reply.text()
+            );
+            assert_eq!(
+                server
+                    .get(&owner, "/api/v1/structure")
+                    .await
+                    .ok::<StructureExport>(StatusCode::OK),
+                before
+            );
+            assert_eq!(server.count("audit_entries").await, audits);
+            assert_eq!(server.count("events").await, events);
+        }
+    }
 }
 
 #[tokio::test]

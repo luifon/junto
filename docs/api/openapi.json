@@ -16045,6 +16045,14 @@
       "CallToken": {
         "type": "string"
       },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "channel_topics": {
+            "type": "boolean"
+          }
+        }
+      },
       "Category": {
         "type": "object",
         "required": [
@@ -20197,6 +20205,9 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
           },
           "logo_path": {
             "type": [

@@ -3662,3 +3662,58 @@ fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_
         assert!(audit_head(&row, Default::default()).contains("Ada with an access token"));
     }
 }
+
+#[gpui::test]
+fn administration_people_have_identity_actions_without_leaving_the_page(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let code = invite(&world, &owner, Vec::new());
+    let (_device, member) = joined(&world, &server, &code, "Bruno");
+    let other = logged_in(&member);
+    let workspace = default_workspace(&world, &owner);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some()
+    });
+    window.until("the account identity appears", |window| {
+        window.shows_named(format!("admin-identity:{other}"))
+    });
+    window.right_click_named(format!("admin-identity:{other}"));
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        other.to_string()
+    );
+    assert!(server_page!(&mut window, People).is_some());
+    open_page(&mut window, "admin-nav-members", |window| {
+        server_page!(window, Members).is_some()
+    });
+    window.until("the member identity appears", |window| {
+        window.shows_named(format!("admin-identity:{other}"))
+    });
+    window.right_click_named(format!("member-row-{other}"));
+    assert!(window.shows("context-action:Copy account ID"));
+    assert!(window.shows_named(format!(
+        "context-action:{}",
+        junto_client::text::DIRECT_CALL
+    )));
+    window.press("escape");
+    world
+        .run(owner.api().remove_workspace_member(
+            workspace,
+            other,
+            &junto_client_core::api::Statement::default(),
+        ))
+        .unwrap();
+    window.until("the account can be added again", |window| {
+        window.shows_named(format!("member-addable-{other}"))
+    });
+    window.right_click_named(format!("admin-identity:{other}"));
+    window.click("context-action:Copy name");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Bruno"
+    );
+    assert!(server_page!(&mut window, Members).is_some());
+}

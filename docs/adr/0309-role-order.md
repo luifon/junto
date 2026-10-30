@@ -43,6 +43,18 @@ roles, and other server roles contribute no position.
   relative authority has not changed. A role manager above everyone can edit it but cannot
   assign, delete or move it. Channel overrides do
   not use role order, as Discord does; ADR 0304's grant ceiling still applies.
+- Consecutive role creations in one structure request, within one server or workspace
+  scope, compute their final positions before writing roles. Existing roles get at most
+  one set-based position update and the new roles one set-based insert. Repeatedly shifting
+  newly created roles wrote 19,900 rows for 200 creations and could exhaust the normal
+  request deadline under concurrent work. The batch retains each change's name, identifier,
+  grant, capacity and rank checks and numbered errors. Capacity includes prior pending
+  creations. New roles have no assignments, so the workspace permission scope is unchanged;
+  shifting or compacting existing roles keeps an actor above everyone above every new role.
+  The batch finishes before another kind of change or another creation scope is applied.
+  It emits the same per-creation audit and absolute-position events, including compaction
+  when a further shift would exceed the integer limit. Event payloads describe the sequential
+  steps even though the database writes final positions once. Everyone stays at zero.
 - Voice microphone blocks and their removal, sound blocks and their removal, disconnect,
   moves (both channels and completion), meeting start/end and presenter unblocking,
   lowering another hand, entry decisions and invitations do not use role order, as
@@ -120,3 +132,5 @@ An administrator cannot edit its own highest role or remove an equal administrat
 Giving a lower role to a higher member is allowed; giving one's highest role to anyone
 is not. The owner remains able to repair any arrangement. Role order is independent of the
 permission evaluation and is decided by one function in `junto-authz`.
+
+Batched role creation carries the same color and hoist values as sequential creation in both server and workspace scopes. The one insert per batch binds those appearance fields with each role; the sequential-versus-batched observation compares persisted appearance as well as positions, events and audits, including integer-limit compaction.

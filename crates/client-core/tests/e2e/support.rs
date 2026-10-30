@@ -622,6 +622,7 @@ pub struct Seen {
 
 #[derive(Default)]
 struct ProxyState {
+    json_answers: Vec<(String, String, Vec<u8>)>,
     faults: Vec<(String, Vec<Fault>)>,
     /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
@@ -728,6 +729,17 @@ impl FaultProxy {
             released,
             task,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn answer_json(&self, method: &str, end: &str, body: Vec<u8>) {
+        let mut state = self.state.lock().unwrap();
+        state
+            .json_answers
+            .retain(|(of, path, _)| of != method || path != end);
+        state
+            .json_answers
+            .push((method.to_owned(), end.to_owned(), body));
     }
 
     /// Ends every connection of the event stream that passes through the proxy, without a
@@ -1070,6 +1082,23 @@ async fn serve(
         if released.changed().await.is_err() {
             return Ok(());
         }
+    }
+    let json_answer = state
+        .lock()
+        .unwrap()
+        .json_answers
+        .iter()
+        .find(|(of, end, _)| *of == method && bare.ends_with(end.as_str()))
+        .map(|(_, _, body)| body.clone());
+    if let Some(body) = json_answer {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        answered(200, &body);
+        client.write_all(head.as_bytes()).await?;
+        client.write_all(&body).await?;
+        return client.shutdown().await;
     }
     if fault == Some(Fault::Cut) {
         return Ok(());

@@ -54,3 +54,105 @@ fn a_manager_edits_and_clears_a_topic_and_a_member_reads_and_copies_it(
         !window.shows("channel-topic")
     });
 }
+
+#[gpui::test]
+fn older_servers_do_not_offer_topic_editing_and_refuse_direct_topic_writes(
+    cx: &mut TestAppContext,
+) {
+    use crate::support::FaultProxy;
+    use junto_client_core::protocol::structure::UpdateChannel;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    proxy.answer_json("GET", "/api/server", serde_json::to_vec(&serde_json::json!({
+        "server_id": owner.id(), "name": "Example Studio", "logo_path": null, "api_versions": [1]
+    })).unwrap());
+    world.run(owner.connect()).unwrap();
+    window.settle();
+    let channel = window.selected_channel();
+    let name = window.channel_names()[0].clone();
+    open_channel_settings(&mut window, &name, channel);
+    assert!(window.shows("channel-rename"));
+    assert!(!window.shows("channel-topic-edit"));
+    let server_id = window.handle().id();
+    let before = proxy
+        .seen(&format!("/api/v1/channels/{channel}"))
+        .iter()
+        .filter(|request| request.method == "PATCH")
+        .count();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.update_channel(
+            server_id,
+            channel,
+            UpdateChannel {
+                topic: Some("Lost topic".into()),
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    window.settle();
+    assert_eq!(
+        proxy
+            .seen(&format!("/api/v1/channels/{channel}"))
+            .iter()
+            .filter(|request| request.method == "PATCH")
+            .count(),
+        before
+    );
+    assert_eq!(
+        window
+            .admin()
+            .unwrap()
+            .refused(junto_client::state::admin::AskKind::UpdateChannel(channel)),
+        Some("This server does not support channel topics. Upgrade the server to edit a topic.")
+    );
+}
+
+#[gpui::test]
+fn a_success_response_without_a_topic_keeps_the_editor_open_and_states_the_refusal(
+    cx: &mut TestAppContext,
+) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    let channel = window.selected_channel();
+    let mut old = serde_json::to_value(world.run(owner.api().channel(channel)).unwrap()).unwrap();
+    old.as_object_mut().unwrap().remove("topic");
+    proxy.answer_json(
+        "PATCH",
+        &format!("/channels/{channel}"),
+        serde_json::to_vec(&old).unwrap(),
+    );
+    let name = window.channel_names()[0].clone();
+    open_channel_settings(&mut window, &name, channel);
+    window.click("channel-topic-edit");
+    window.type_into("channel-topic-input", "A topic the old server discards");
+    window.click("admin-form-send");
+    window.until("the unsupported topic response is refused", |window| {
+        window.shows("channel-topic-refused")
+    });
+    assert!(window.shows("channel-topic-input"));
+    assert_eq!(
+        window
+            .admin()
+            .unwrap()
+            .refused(junto_client::state::admin::AskKind::UpdateChannel(channel)),
+        Some("This server does not support channel topics. Upgrade the server to edit a topic.")
+    );
+    assert!(
+        proxy
+            .seen(&format!("/api/v1/channels/{channel}"))
+            .iter()
+            .any(|request| request.method == "PATCH"
+                && request
+                    .answer
+                    .as_ref()
+                    .is_some_and(|(status, _)| *status == 200))
+    );
+}

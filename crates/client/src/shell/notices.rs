@@ -973,10 +973,13 @@ impl Shell {
                     .icon(Icon::Gear)
                     .selector("channel-edit")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_channel_settings(
-                            workspace_id,
-                            channel_id,
-                            crate::state::admin::ChannelPage::Overview,
+                        this.open_admin(
+                            crate::state::admin::AdminOpen::Channel {
+                                server_id,
+                                workspace_id,
+                                channel_id,
+                                page: crate::state::admin::ChannelPage::Overview,
+                            },
                             window,
                             cx,
                         );
@@ -1094,6 +1097,41 @@ impl Shell {
                         this.close_layer(window, cx);
                         this.state.update(cx, |state, cx| {
                             state.select_conversation(server_id, conversation_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if direct.departure.is_none()
+            && let Some(owner) = self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner())
+        {
+            items.insert(
+                1,
+                MenuItem::new("direct-call", text::DIRECT_CALL)
+                    .icon(Icon::Phone)
+                    .selector("direct-call")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let state = this.state.read(cx);
+                        let current = state
+                            .server(server_id)
+                            .is_some_and(|server| server.owner() == Some(owner))
+                            && state.view().lists().is_some_and(|lists| {
+                                lists.directs.iter().any(|row| {
+                                    row.id == conversation_id
+                                        && row.account_id == account_id
+                                        && row.departure.is_none()
+                                })
+                            });
+                        if !current {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.start_direct_call(server_id, account_id, cx)
                         });
                     }))
                     .into_any_element(),

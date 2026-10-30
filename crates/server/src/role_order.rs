@@ -15,6 +15,9 @@ use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::events::{self, log::Affected};
 
+mod creations;
+pub(crate) use creations::{Creation, Insertions};
+
 const MOST_REORDERED_ROLES: usize = 250;
 const HIGHEST_REORDER_POSITION: i32 = i32::MAX;
 const POSITIONS_PER_EVENT: usize = 128;

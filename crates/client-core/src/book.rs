@@ -169,6 +169,8 @@ pub struct ServerEntry {
     pub logo_path: Option<String>,
     /// The API versions that the server reported at the last contact.
     pub api_versions: Vec<u32>,
+    #[serde(default)]
+    pub capabilities: junto_protocol::server::Capabilities,
     pub connection_mode: ConnectionMode,
     pub membership: Membership,
     pub last_cursor: Option<EventCursor>,
@@ -201,6 +203,7 @@ impl ServerEntry {
             name: String::new(),
             logo_path: None,
             api_versions: Vec::new(),
+            capabilities: Default::default(),
             connection_mode,
             membership: Membership::None,
             last_cursor: None,
@@ -223,6 +226,7 @@ impl ServerEntry {
             .filter(|path| self.address.logo_url(path).is_some())
             .map(str::to_owned);
         self.api_versions = known_versions(&info.api_versions);
+        self.capabilities = info.capabilities.clone();
     }
 
     fn check(&self) -> Result<(), String> {
@@ -643,6 +647,9 @@ pub(crate) mod testing {
             name: name.to_owned(),
             logo_path: None,
             api_versions: vec![1],
+            capabilities: junto_protocol::server::Capabilities {
+                channel_topics: true,
+            },
         }
     }
 

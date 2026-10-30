@@ -49,7 +49,11 @@ impl Shell {
             .update(cx, |state, cx| state.type_contacts(&part, cx));
     }
 
-    pub(crate) fn render_new_direct(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_new_direct(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let Some(view) = self.state.read(cx).contacts_view() else {
             return div().into_any_element();
@@ -113,12 +117,31 @@ impl Shell {
                     .update(cx, |state, cx| state.choose_contact(account_id, cx));
                 this.close_layer(window, cx);
             }));
-            list = list.child(
-                div()
-                    .flex_none()
-                    .debug_selector(move || format!("contact-{account_id}"))
-                    .child(choice),
-            );
+            let identity = div()
+                .id(("contact-identity", account_id.as_uuid().as_u128() as u64))
+                .flex_none()
+                .debug_selector(move || format!("contact-{account_id}"))
+                .child(choice);
+            let identity = if let Some(owner) = self
+                .state
+                .read(cx)
+                .server(view.server_id)
+                .and_then(|server| server.owner())
+            {
+                let open = self.identity_context(
+                    owner,
+                    super::account_menus::AccountTarget {
+                        account_id,
+                        name: row.name.clone(),
+                        departed: false,
+                    },
+                    super::account_menus::AccountSource::Contacts,
+                );
+                self.bind_identity_context(identity, "contacts", open, window, cx)
+            } else {
+                identity
+            };
+            list = list.child(identity);
         }
         // The state of the read follows the rows, so an answer moves no row (ADR 0730).
         let list = list.children(status.map(|status| div().flex_none().pt(u(6.0)).child(status)));

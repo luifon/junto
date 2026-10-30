@@ -1387,7 +1387,13 @@ impl Shell {
         };
         column = column.child(self.mode_row(&[Mode::RenameChannel], name_line));
         let topic = page.topic.clone();
-        let topic_line = if self.admin.mode == Some(Mode::EditChannelTopic) {
+        let topic_line = if !self.state.read(cx).channel_topics_supported(view.server_id) {
+            line(&theme).child(line_text(
+                text::CHANNEL_TOPIC,
+                Some(text::TOPIC_UNSUPPORTED.into()),
+                &theme,
+            ))
+        } else if self.admin.mode == Some(Mode::EditChannelTopic) {
             self.render_topic_form(view, channel_id, &theme, cx)
         } else {
             line(&theme)

@@ -627,3 +627,49 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
     assert!(channels.size.height >= gpui::px(28.0), "{channels:?}");
     assert!(bounds(&mut window, ada_row).bottom() <= list.bottom());
 }
+
+#[gpui::test]
+fn a_contact_identity_menu_keeps_its_chooser_and_ends_with_a_replaced_result(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let account = admin.handle.account().unwrap();
+    window.search_contacts("Ada");
+    window.until_offered(account);
+    window.right_click_named(format!("contact-{account}"));
+    assert!(window.shows("row-context-menu"));
+    assert!(window.shows("new-direct-dialog"));
+    assert!(window.shows_named(format!(
+        "context-action:{}",
+        junto_client::text::DIRECT_CALL
+    )));
+    window.click_named("context-action:Copy account ID".to_owned());
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        account.to_string()
+    );
+    assert!(window.shows("new-direct-dialog"));
+    window.right_click_named(format!("contact-{account}"));
+    window.press("escape");
+    assert!(window.shows("new-direct-dialog"));
+    window.right_click_named(format!("contact-{account}"));
+    window.in_shell(|shell, window, cx| shell.type_contact_part("Nobody", window, cx));
+    window.until("the replacement result is empty", |window| {
+        window.shows("contacts-none")
+    });
+    assert!(!window.shows("row-context-menu"));
+    window.in_shell(|shell, window, cx| shell.type_contact_part("Ada", window, cx));
+    window.until_offered(account);
+    assert!(!window.shows("row-context-menu"));
+    window.right_click_named(format!("contact-{account}"));
+    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.until("the captured person's conversation opens", |window| {
+        window
+            .conversation_with()
+            .is_some_and(|(id, _)| id == account)
+    });
+    assert!(!window.shows("new-direct-dialog"));
+}

@@ -29,5 +29,8 @@ pub async fn get_server_info(State(app): State<AppState>) -> ApiResult<Json<Serv
         name,
         logo_path,
         api_versions: vec![API_VERSION],
+        capabilities: junto_protocol::server::Capabilities {
+            channel_topics: true,
+        },
     }))
 }

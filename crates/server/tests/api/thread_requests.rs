@@ -344,7 +344,7 @@ async fn the_list_of_followed_threads_is_read_by_an_index() {
     }
     sqlx::query("update thread_reads set latest = 1, latest_id = root_id where account_id = $1")
         .bind(owner.account_id)
-        .execute(&server.db)
+        .execute(&mut server.test_data().await)
         .await
         .unwrap();
     analyze(&server.db, &["thread_reads", "messages"]).await;

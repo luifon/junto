@@ -21,7 +21,16 @@ fn direct_conversation_starts_outgoing_call_and_carries_sound(cx: &mut TestAppCo
             .lists()
             .is_some_and(|lists| lists.conversation.is_some())
     });
-    window.click("start-direct-call");
+    let conversation = window
+        .view()
+        .lists()
+        .unwrap()
+        .conversation
+        .as_ref()
+        .unwrap()
+        .id;
+    window.right_click_named(format!("direct-row:{conversation}"));
+    window.click("direct-call");
     window.until("outgoing call shown", |window| {
         window.shows("outgoing-direct-call")
     });
@@ -802,4 +811,103 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         window.view().call.is_none() && window.shows("start-direct-call")
     });
     world.run(caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn an_incoming_caller_identity_keeps_the_current_dialog_and_expires_with_the_ring(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Incoming identity");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::direct(
+            admin.handle.account().unwrap(),
+            window.view().person.account_id.unwrap(),
+        ),
+    };
+    enter(&world, &caller, target);
+    window.until("the ring is visible", |window| {
+        window.shows("incoming-direct-call")
+    });
+    let invitation = window.view().invitations[0].clone();
+    window
+        .in_shell(|shell, window, cx| shell.open(junto_client::shell::Open::Settings, window, cx));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        admin.handle.account().unwrap().to_string()
+    );
+    assert!(window.shows("settings-dialog"));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.press("escape");
+    assert!(window.shows("settings-dialog"));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.decline_invitation(&invitation, cx)
+    });
+    window.until("the ring and its identity menu disappear", |window| {
+        !window.shows("incoming-direct-call") && !window.shows("row-context-menu")
+    });
+    world.run(caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn an_account_menu_starts_a_direct_call_with_its_captured_person(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Account call");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let other = admin.handle.account().unwrap();
+    let own = window.view().person.account_id.unwrap();
+    window.click("members-button");
+    window.until("the call target is in the list", |window| {
+        window.shows_member("Ada")
+    });
+    window.right_click_named(format!("member-row:{other}"));
+    window.click_named(format!(
+        "context-action:{}",
+        junto_client::text::DIRECT_CALL
+    ));
+    window.until("the target receives the ring", |_| {
+        admin
+            .handle
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.incoming_invitations().next().is_some())
+    });
+    let invitation = admin
+        .handle
+        .live()
+        .view()
+        .model
+        .unwrap()
+        .incoming_invitations()
+        .next()
+        .unwrap()
+        .clone();
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::direct(own, other),
+    };
+    assert_eq!(invitation.place, target.place);
+    assert_eq!(invitation.invited_by, own);
+    world
+        .run(caller.calls.join_invited(target, invitation.id))
+        .unwrap();
+    window.until("the direct call is active", |window| {
+        window.shows("active-direct-call")
+    });
+    world.run(caller.calls.leave());
+    window.until("the direct call ends", |window| {
+        window.view().call.is_none()
+    });
 }

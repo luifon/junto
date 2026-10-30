@@ -187,3 +187,74 @@ fn thread_preview_is_independent_and_invalid_text_keeps_its_draft(cx: &mut TestA
         too_long
     );
 }
+
+#[gpui::test]
+fn preview_mention_menus_follow_the_current_document_in_both_composers(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let account = admin.handle.account().unwrap();
+    let root = admin.send(
+        &world,
+        window.selected_channel(),
+        crate::messages::document("a discussion"),
+    );
+    window.until_message("a discussion");
+    for pane in [Pane::Main, Pane::Thread] {
+        if pane == Pane::Thread {
+            window.right_click_named(format!("message:{}", root.id));
+            window.click("message-thread");
+            window.until("the thread composer opens", |window| {
+                window.shows("thread-composer-input")
+            });
+        }
+        let input = if pane == Pane::Main {
+            "composer-input"
+        } else {
+            "thread-composer-input"
+        };
+        let preview = if pane == Pane::Main {
+            "composer-view-1"
+        } else {
+            "thread-composer-view-1"
+        };
+        window.type_into(input, "@Ada");
+        window.until("the account can be mentioned", |window| {
+            window.shows("candidate:0")
+        });
+        window.click("candidate:0");
+        let draft = window.in_shell(|shell, _, cx| shell.composer_text(pane, cx));
+        window.click(preview);
+        let bounds = window.cx.debug_bounds("profile-text").unwrap();
+        let point = gpui::point(bounds.left() + gpui::px(8.0), bounds.center().y);
+        window.press_at_count(point, gpui::MouseButton::Right, 1);
+        assert!(window.shows_named(format!("account-copy-id:{account}")));
+        window.click_named(format!("account-copy-id:{account}"));
+        assert_eq!(
+            window.cx.read_from_clipboard().unwrap().text().unwrap(),
+            account.to_string()
+        );
+        assert_eq!(
+            window.in_shell(|shell, _, cx| shell.composer_text(pane, cx)),
+            draft
+        );
+        window.press_at_count(point, gpui::MouseButton::Right, 1);
+        assert!(window.shows("account-menu"));
+        window.in_shell(|shell, window, cx| {
+            shell.type_message(pane, "the changed draft", window, cx)
+        });
+        assert!(!window.shows("account-menu"));
+        assert_eq!(
+            window.in_shell(|shell, _, cx| shell.composer_text(pane, cx)),
+            "the changed draft"
+        );
+        window.in_shell(|shell, window, cx| shell.show_composer_preview(pane, false, window, cx));
+        if pane == Pane::Thread {
+            assert_eq!(
+                window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+                "the changed draft"
+            );
+        }
+    }
+}

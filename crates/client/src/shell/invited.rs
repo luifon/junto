@@ -40,7 +40,7 @@ impl Shell {
         view: &ShellView,
         top: f32,
         left: f32,
-        window: &gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if view.invitations.len() <= MOST_CARDS {
@@ -97,7 +97,7 @@ impl Shell {
             } else {
                 None
             };
-            self.render_invitation_card(invited, server, cx)
+            self.render_invitation_card(invited, server, window, cx)
         }));
         // A part of the window narrower than a card and its margins, such as the main area
         // beside the channel column at a large scale, takes the cards over the whole window.
@@ -142,6 +142,7 @@ impl Shell {
         &mut self,
         invited: &Invited,
         server: Option<String>,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -212,6 +213,96 @@ impl Shell {
             this.state
                 .update(cx, |state, cx| state.decline_invitation(&declined, cx));
         }));
+        let identity = div().id(id("invitation-identity")).flex().min_w_0().child(
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .child(
+                    super::people::avatar(
+                        &self.faces(invited.target.server_id),
+                        invited.caller,
+                        36.0,
+                    )
+                    .radius(2.0),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(u(6.0))
+                                .typeface(theme.types.control_strong, &theme)
+                                .ink(colors.terracotta_deep)
+                                .child(icon(
+                                    if direct {
+                                        Icon::PhoneIncoming
+                                    } else {
+                                        Icon::Invite
+                                    },
+                                    14.0,
+                                    colors.terracotta_deep,
+                                ))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .typeface(theme.types.body, &theme)
+                                .line_height(u(20.0))
+                                .ink(colors.ink)
+                                .child(super::people::person_element(
+                                    &self.faces(invited.target.server_id),
+                                    invited.caller,
+                                    by,
+                                    "invitation-caller",
+                                    super::people::name_in_sentence(
+                                        sentence.clone(),
+                                        0..by.len(),
+                                        self.faces(invited.target.server_id).color(invited.caller),
+                                        colors.travertine,
+                                        false,
+                                    ),
+                                )),
+                        ),
+                ),
+        );
+        let owner = self
+            .state
+            .read(cx)
+            .server(invited.target.server_id)
+            .and_then(|server| server.owner());
+        let identity = if let Some(owner) = owner {
+            let open = self.identity_context(
+                owner,
+                super::account_menus::AccountTarget {
+                    account_id: invited.caller,
+                    name: by.to_owned(),
+                    departed: false,
+                },
+                super::account_menus::AccountSource::Invitation(invited.id),
+            );
+            let invitation = invited.id;
+            let ring =
+                crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+            self.bind_identity_context(
+                identity
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .debug_selector(move || format!("invitation-identity:{invitation}")),
+                "invitation",
+                open,
+                window,
+                cx,
+            )
+        } else {
+            identity
+        };
         let card = div()
             .id(id("invitation-card"))
             .role(Role::AlertDialog)
@@ -229,65 +320,7 @@ impl Shell {
             .border_1()
             .border_color(Hsla::from(colors.terracotta))
             .shadow(float_shadow(colors.shadow_deep, 6.0, 24.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(u(10.0))
-                    .child(
-                        super::people::avatar(
-                            &self.faces(invited.target.server_id),
-                            invited.caller,
-                            36.0,
-                        )
-                        .radius(2.0),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(u(6.0))
-                                    .typeface(theme.types.control_strong, &theme)
-                                    .ink(colors.terracotta_deep)
-                                    .child(icon(
-                                        if direct {
-                                            Icon::PhoneIncoming
-                                        } else {
-                                            Icon::Invite
-                                        },
-                                        14.0,
-                                        colors.terracotta_deep,
-                                    ))
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .typeface(theme.types.body, &theme)
-                                    .line_height(u(20.0))
-                                    .ink(colors.ink)
-                                    .child(super::people::person_element(
-                                        &self.faces(invited.target.server_id),
-                                        invited.caller,
-                                        by,
-                                        "invitation-caller",
-                                        super::people::name_in_sentence(
-                                            sentence.clone(),
-                                            0..by.len(),
-                                            self.faces(invited.target.server_id)
-                                                .color(invited.caller),
-                                            colors.travertine,
-                                            false,
-                                        ),
-                                    )),
-                            ),
-                    ),
-            )
+            .child(identity)
             .child(
                 div()
                     .flex()

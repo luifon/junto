@@ -3424,6 +3424,8 @@ pub const EXPAND_CATEGORY: &str = "Expand category";
 pub const CHANNEL_TOPIC: &str = "Topic";
 pub const EDIT_TOPIC: &str = "Edit topic";
 pub const COPY_TOPIC: &str = "Copy topic";
+pub const TOPIC_UNSUPPORTED: &str =
+    "This server does not support channel topics. Upgrade the server to edit a topic.";
 pub const TOPIC_EMPTY: &str = "No topic";
 pub const TOPIC_SAVED: &str = "Topic saved";
 pub const TOPIC_TOO_LONG: &str = "A topic has at most 1024 characters.";

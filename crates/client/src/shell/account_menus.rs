@@ -25,6 +25,11 @@ pub(crate) struct AccountTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
+    Hidden,
+    InviteChoice,
+    Presenter,
+    RaisedHand,
+    MeetingWaiting,
     Tile,
     Share {
         id: junto_media::engine::ShareId,
@@ -62,6 +67,29 @@ pub(crate) enum AccountSource {
         quoted: MessageId,
         account: AccountId,
     },
+    Mentions {
+        parent: super::feed::DocumentSource,
+        document: std::sync::Arc<junto_client_core::protocol::message::Document>,
+    },
+    Profile,
+    MentionCandidate {
+        pane: super::Pane,
+        query: String,
+        place: junto_client_core::model::PlaceId,
+    },
+    Transcript {
+        recording: junto_client_core::protocol::ids::RecordingId,
+        line: u32,
+        preview: bool,
+    },
+    Invitation(junto_client_core::protocol::ids::CallInvitationId),
+    Contacts,
+    Members(junto_client_core::protocol::ids::WorkspaceId),
+    AdminPeople,
+    AdminMembers {
+        workspace: junto_client_core::protocol::ids::WorkspaceId,
+        addable: bool,
+    },
     Message(MessageId),
     Pending(u64),
     Search(crate::state::search::ResultTarget),
@@ -91,6 +119,9 @@ impl OpenAccountMenu {
         let Some(source) = &self.source else {
             return true;
         };
+        if let Some(present) = self.identity_source_present(view, state) {
+            return present;
+        }
         match source {
             AccountSource::Typing { place, account, .. } => {
                 return self.people.len() == 1
@@ -112,6 +143,47 @@ impl OpenAccountMenu {
                     && self.people.len() == 1
                     && self.people[0].account_id == source.account
                     && source.is_readable(state);
+            }
+            AccountSource::Mentions {
+                parent,
+                document: shown,
+            } => {
+                use super::feed::DocumentSource;
+                use junto_client_core::protocol::message::{Document, Inline};
+                let current = |document: &Document| {
+                    document == shown.as_ref()
+                        && self.people.iter().all(|person| {
+                            document.inlines().any(|(inline, _)| {
+                                matches!(inline, Inline::Account { account_id } if *account_id == person.account_id)
+                            })
+                        })
+                };
+                if matches!(parent, DocumentSource::Composer(_)) {
+                    return view
+                        .selected
+                        .as_ref()
+                        .is_some_and(|server| server.id == self.owner.entry.server_id)
+                        && current(shown);
+                }
+                let message = |row: &crate::state::feed::MessageRow| {
+                    matches!(parent, DocumentSource::Message(id) if row.message.id == *id)
+                        && !row.message.deleted
+                        && row.message.document.as_ref().is_some_and(current)
+                };
+                let held = |feed: &crate::state::feed::Feed| {
+                    feed.server_id == self.owner.entry.server_id && feed.rows.iter().any(|row| match row {
+                        FeedRow::Message(row) => message(row),
+                        FeedRow::Waiting(row) => matches!(parent, DocumentSource::Pending(id) if row.pending.id == *id) && current(&row.pending.document),
+                        _ => false,
+                    })
+                };
+                let workspace = view.workspace();
+                let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+                return view.selected.as_ref().is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && (view.lists().and_then(|lists| lists.feed.as_ref()).is_some_and(held)
+                        || thread.and_then(|thread| thread.feed.as_ref()).is_some_and(held)
+                        || thread.and_then(|thread| thread.root.as_ref()).is_some_and(message)
+                        || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(message))));
             }
             AccountSource::CallOccupant {
                 seat,
@@ -144,6 +216,13 @@ impl OpenAccountMenu {
                                         .iter()
                                         .any(|person| person.account_id == *account_id)
                                 })
+                            }
+                            CallSurface::Hidden
+                            | CallSurface::InviteChoice
+                            | CallSurface::Presenter
+                            | CallSurface::RaisedHand
+                            | CallSurface::MeetingWaiting => {
+                                self.additional_call_present(*surface, panel, *account_id)
                             }
                             _ => panel
                                 .people
@@ -237,6 +316,14 @@ impl OpenAccountMenu {
                             })
                     });
             }
+            AccountSource::Profile
+            | AccountSource::MentionCandidate { .. }
+            | AccountSource::Transcript { .. }
+            | AccountSource::Invitation(_)
+            | AccountSource::Contacts
+            | AccountSource::Members(_)
+            | AccountSource::AdminPeople
+            | AccountSource::AdminMembers { .. } => return false,
             AccountSource::Message(_) | AccountSource::Pending(_) => {}
         }
         let held = |feed: Option<&crate::state::feed::Feed>| {
@@ -393,7 +480,7 @@ impl Shell {
         })
     }
 
-    fn call_account_menu(
+    pub(super) fn call_account_menu(
         &self,
         account_id: AccountId,
         name: String,
@@ -473,9 +560,31 @@ impl Shell {
         view: &crate::state::view::ShellView,
         cx: &App,
     ) -> bool {
+        let feed = |pane| match pane {
+            super::Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
+            super::Pane::Thread => view
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .and_then(|thread| thread.feed.as_ref()),
+        };
         match &open.source {
+            Some(AccountSource::Mentions {
+                parent: super::feed::DocumentSource::Composer(pane),
+                document,
+            }) => {
+                return feed(*pane).is_some_and(|feed| {
+                    feed.server_id == open.owner.entry.server_id
+                        && feed.loaded
+                        && feed.failed.is_none()
+                        && self
+                            .composer_feed(*pane)
+                            .is_some_and(|held| held.place == feed.place)
+                }) && self
+                    .composer_preview_document(*pane, cx)
+                    .is_some_and(|current| current == **document);
+            }
             Some(AccountSource::Typing { pane, place, .. }) => {
-                return self.composer_feed(*pane).is_some_and(|feed| {
+                return feed(*pane).is_some_and(|feed| {
                     feed.server_id == open.owner.entry.server_id
                         && feed.place == *place
                         && feed.loaded
@@ -506,6 +615,9 @@ impl Shell {
         let Some(panel) = &lists.call else {
             return false;
         };
+        if let Some(visible) = self.additional_call_visible(*surface, *account_id, view, cx) {
+            return visible;
+        }
         match surface {
             CallSurface::Share { .. } => self.detached || !self.state.read(cx).is_call_detached(),
             CallSurface::Tile => {
@@ -520,6 +632,7 @@ impl Shell {
                     && lists.notices.is_none()
                     && self.call_panel_shown(self.call_panel_overlay, cx)
             }
+            _ => false,
         }
     }
 
@@ -545,17 +658,7 @@ impl Shell {
         let mut accounts = std::collections::HashSet::new();
         open.people
             .retain(|person| accounts.insert(person.account_id));
-        if !open.people.is_empty()
-            && self.view.as_ref().is_some_and(|view| {
-                open.source_is_present(view, self.state.read(cx))
-                    && self.account_source_visible(&open, view, cx)
-            })
-            && self
-                .state
-                .read(cx)
-                .server(open.owner.entry.server_id)
-                .is_some_and(|server| server.owner() == Some(open.owner))
-        {
+        if !open.people.is_empty() && self.account_context_current(&open, cx) {
             self.open_layer(Layer::AccountMenu(Box::new(open.clone())), window, cx);
             self.start_call_menu_volume(&open, cx);
         }
@@ -568,12 +671,26 @@ impl Shell {
         cx: &App,
     ) -> bool {
         matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
-            && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx)) && self.account_source_visible(open, view, cx)))
-            && self
-                .state
-                .read(cx)
-                .server(owner.entry.server_id)
-                .is_some_and(|server| server.owner() == Some(owner))
+            && self.account_context_current(open, cx))
+    }
+
+    pub(super) fn account_context_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        if state
+            .server(open.owner.entry.server_id)
+            .and_then(|server| server.owner())
+            != Some(open.owner)
+        {
+            return false;
+        }
+        let view = if self.detached {
+            state.call_view()
+        } else {
+            state.view()
+        };
+        open.source_is_present(&view, state)
+            && self.identity_source_visible(open, &view, cx)
+            && self.account_source_visible(open, &view, cx)
     }
 
     pub(super) fn render_account_menu(
@@ -596,55 +713,24 @@ impl Shell {
             let account = person.account_id;
             let owner = open.owner;
             items.push(menu_label(text::label(&person.name), false, cx).into_any_element());
-            for (id, label, value) in [
-                ("account-copy-name", text::COPY_NAME, person.name.clone()),
-                (
-                    "account-copy-id",
-                    text::COPY_ACCOUNT_ID,
-                    account.to_string(),
-                ),
-            ] {
-                let person = person.clone();
+            for (id, action) in self.identity_actions(&open, person, cx) {
                 let selector = format!("{id}:{account}");
+                let shell = cx.entity().downgrade();
+                let person = person.clone();
+                let handler = action.handler.clone();
                 items.push(
                     div()
                         .debug_selector(move || selector)
-                        .child(MenuItem::new((id, index), label).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                if this.account_menu_current(owner, &person, cx) {
-                                    this.close_layer(window, cx);
-                                    this.copy_text(value.clone(), cx);
+                        .child(MenuItem::new((id, index), action.label).on_click(
+                            move |event, window, cx| {
+                                if shell.upgrade().is_some_and(|shell| {
+                                    shell.read(cx).account_menu_current(owner, &person, cx)
+                                }) && let Some(handler) = &handler
+                                {
+                                    handler(event, window, cx);
                                 }
                             },
-                        )))
-                        .into_any_element(),
-                );
-            }
-            if account != owner.account_id && !person.departed {
-                let person = person.clone();
-                items.push(
-                    div()
-                        .debug_selector(move || format!("account-message:{account}"))
-                        .child(
-                            MenuItem::new(
-                                ("account-message", index),
-                                text::message_person(&person.name),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    if this.account_menu_current(owner, &person, cx) {
-                                        this.close_layer(window, cx);
-                                        this.state.update(cx, |state, cx| {
-                                            state.open_conversation(
-                                                owner.entry.server_id,
-                                                account,
-                                                cx,
-                                            )
-                                        });
-                                    }
-                                },
-                            )),
-                        )
+                        ))
                         .into_any_element(),
                 );
             }

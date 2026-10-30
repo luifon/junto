@@ -1498,11 +1498,11 @@ fn thread_preview_people_and_the_thread_have_separate_context_targets(cx: &mut T
     );
     assert!(!window.shows("message-menu"));
     window.right_click_named(format!("thread-chip:{root}"));
-    window.click("context-action:Copy link");
+    window.click("thread-copy-link");
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(copied.starts_with("junto://thread?") && copied.contains(&root.to_string()));
     window.right_click_named(format!("thread-chip:{root}"));
-    window.click("context-action:Open the thread");
+    window.click("thread-open");
     window.until("the thread is open", |window| window.shows("thread-panel"));
     window.click("close-thread");
     window.right_click_named(format!("thread-person:{root}:{ada}"));
@@ -1597,4 +1597,180 @@ fn category_settings_from_a_header_keep_the_server_permission_check(cx: &mut Tes
         matches!(window.admin().map(|view| view.scope), Some(Scope::Category(settings)) if settings.category_id == category.id && matches!(settings.page.rules, Listed::Failed(_)))
     });
     assert!(!window.shows("rules-add"));
+}
+
+#[gpui::test]
+fn a_mention_menu_closes_when_the_document_removes_or_replaces_its_account(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let own = window.own_account();
+    let other = admin.handle.account().unwrap();
+    for replacement in [
+        document("No mention remains"),
+        crate::notices::mention("", other),
+        junto_client_core::protocol::message::Document {
+            blocks: vec![junto_client_core::protocol::message::Block::Paragraph {
+                content: vec![junto_client_core::protocol::message::Inline::Spoiler {
+                    content: vec![junto_client_core::protocol::message::Inline::Account {
+                        account_id: own,
+                    }],
+                }],
+            }],
+        },
+    ] {
+        let message = admin.send(
+            &world,
+            window.selected_channel(),
+            crate::notices::mention("", own),
+        );
+        window.until_message("@Rin");
+        let bounds = window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("message:{}", message.id)))
+            .unwrap();
+        window.press_at_count(
+            gpui::point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)),
+            gpui::MouseButton::Right,
+            1,
+        );
+        assert!(window.shows_named(format!("account-copy-id:{own}")));
+        world
+            .run(
+                admin
+                    .handle
+                    .api()
+                    .edit_message(message.id, replacement.clone()),
+            )
+            .unwrap();
+        window.until("the replacement document is visible", |window| {
+            window.messages().iter().any(|row| {
+                row.message.id == message.id && row.message.document.as_ref() == Some(&replacement)
+            })
+        });
+        assert!(!window.shows("account-menu"));
+        assert!(!window.shows_named(format!("account-copy-id:{own}")));
+    }
+}
+
+#[gpui::test]
+fn account_member_and_direct_menus_expose_the_existing_direct_call_flow(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let account = admin.handle.account().unwrap();
+    let message = admin.send(
+        &world,
+        window.selected_channel(),
+        document("An identity with a call"),
+    );
+    window.until_message("An identity with a call");
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{}", message.id)))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(bounds.left() + px(65.0), bounds.top() + px(10.0)),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows_named(format!("account-call:{account}")));
+    window.press("escape");
+    window.click("members-button");
+    window.until("the member is shown", |window| window.shows_member("Ada"));
+    window.right_click_named(format!("member-row:{account}"));
+    assert!(window.shows_named(format!(
+        "context-action:{}",
+        junto_client::text::DIRECT_CALL
+    )));
+    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.until("the direct conversation is open", |window| {
+        window
+            .view()
+            .lists()
+            .and_then(|lists| lists.conversation.as_ref())
+            .is_some_and(|direct| direct.account_id == account)
+    });
+    let direct = window
+        .view()
+        .lists()
+        .unwrap()
+        .conversation
+        .as_ref()
+        .unwrap()
+        .id;
+    window.right_click_named(format!("direct-row:{direct}"));
+    assert!(window.shows("direct-call"));
+}
+
+#[gpui::test]
+fn a_read_only_administration_member_row_still_has_identity_actions(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let account = admin.handle.account().unwrap();
+    window.open_administration();
+    crate::admin_pages::open_page(&mut window, "admin-nav-members", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Server {
+                page: junto_client::state::admin::view::ServerPage::Members(_),
+                ..
+            })
+        )
+    });
+    window.until("the read-only member row is visible", |window| {
+        window.shows_named(format!("member-row-{account}"))
+    });
+    assert!(!window.shows_named(format!("member-remove-{account}")));
+    assert!(!window.shows_named(format!("member-roles-toggle-{account}")));
+    window.right_click_named(format!("member-row-{account}"));
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        account.to_string()
+    );
+    assert!(window.admin().is_some());
+}
+
+#[gpui::test]
+fn profile_and_mention_completion_identities_copy_without_choosing_a_mention(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let own = window.own_account();
+    window.right_click_named("profile-name".to_owned());
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        own.to_string()
+    );
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@Ada", window, cx);
+        shell.focus_composer(Pane::Main, window, cx);
+    });
+    window.until("the mention suggestion appears", |window| {
+        window.shows("candidate:0")
+    });
+    window.right_click_named("candidate:0".to_owned());
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        admin.handle.account().unwrap().to_string()
+    );
+    assert!(window.shows("mention-picker"));
+    window.right_click_named("candidate:0".to_owned());
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@Nobody", window, cx);
+    });
+    assert!(!window.shows("row-context-menu"));
+    assert!(!window.shows("mention-picker"));
 }

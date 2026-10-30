@@ -196,7 +196,7 @@ impl Shell {
         view: &ShellView,
         narrow: bool,
         theme: &Theme,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -275,7 +275,13 @@ impl Shell {
             }
             match part {
                 BookPart::Server(index) => {
-                    servers.push(self.render_server(*index, &view.servers[*index], theme, cx));
+                    servers.push(self.render_server(
+                        *index,
+                        &view.servers[*index],
+                        theme,
+                        window,
+                        cx,
+                    ));
                 }
                 BookPart::Group(group) => {
                     let row = &view.groups[*group];
@@ -285,7 +291,7 @@ impl Shell {
                             .servers
                             .iter()
                             .map(|index| {
-                                self.render_server(*index, &view.servers[*index], theme, cx)
+                                self.render_server(*index, &view.servers[*index], theme, window, cx)
                             })
                             .collect();
                         servers.push(
@@ -409,6 +415,7 @@ impl Shell {
         index: usize,
         row: &ServerRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
@@ -525,6 +532,7 @@ impl Shell {
                         ),
                 )
             });
+        let head = self.bind_server_context(head, "server-row", server_id, window, cx);
         let head = self.drop_target(head, DropTarget::Server(server_id), theme, cx);
         let open_menu = match &self.layer {
             Layer::WorkspaceMenu(open_server, open) if *open_server == server_id => Some(*open),
@@ -610,7 +618,7 @@ impl Shell {
         view: &ShellView,
         narrow: bool,
         theme: &Theme,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -630,7 +638,13 @@ impl Shell {
             }
             match part {
                 BookPart::Server(index) => {
-                    icons.push(self.render_server_icon(*index, &view.servers[*index], theme, cx));
+                    icons.push(self.render_server_icon(
+                        *index,
+                        &view.servers[*index],
+                        theme,
+                        window,
+                        cx,
+                    ));
                 }
                 BookPart::Group(group) => {
                     let row = &view.groups[*group];
@@ -642,7 +656,13 @@ impl Shell {
                             .servers
                             .iter()
                             .map(|index| {
-                                self.render_server_icon(*index, &view.servers[*index], theme, cx)
+                                self.render_server_icon(
+                                    *index,
+                                    &view.servers[*index],
+                                    theme,
+                                    window,
+                                    cx,
+                                )
                             })
                             .collect();
                         icons.push(
@@ -718,6 +738,7 @@ impl Shell {
         index: usize,
         row: &ServerRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
@@ -836,6 +857,7 @@ impl Shell {
                         .bg(Hsla::from(colors.ochre)),
                 )
             });
+        let icon = self.bind_server_context(icon, "server-icon", server_id, window, cx);
         let icon = self.drop_target(icon, DropTarget::Server(server_id), theme, cx);
         // The menu of a workspace that the hover menu opened stays at the tile of its server.
         let workspace_menu = match &self.layer {

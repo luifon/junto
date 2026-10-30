@@ -1255,9 +1255,13 @@ fn recording_links_open_the_recording_under_history_permissions_and_support_arch
     let id = world.run(server.record(voice, &[&admin.handle, &luca]));
     world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
     window.click_channel("general");
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.open_recording_link(&origin, id, cx)
-    }));
+    crate::target_links::open_rendered(
+        &mut window,
+        junto_client_core::links::AppLink::Recording {
+            server: origin.clone(),
+            id,
+        },
+    );
     window.until(
         "the linked recording is in its transcript panel",
         |window| {
@@ -1392,19 +1396,19 @@ fn transcript_row_menus_copy_text_and_recording_links_and_open_at_the_line(
             .card_detail(id)
             .is_some_and(|detail| detail.transcript.held == 1)
     });
-    window.right_click_named("transcript-line:0".to_owned());
+    window.right_click_named("transcript-spoken:0".to_owned());
     window.click_named("context-action:Copy text".to_owned());
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         said
     );
     assert!(window.shows("copied-confirmation"));
-    window.right_click_named("transcript-line:0".to_owned());
+    window.right_click_named("transcript-spoken:0".to_owned());
     window.click_named("context-action:Open transcript".to_owned());
     window.until("the transcript opens at its selected line", |window| {
         window.shows_named("marked-line:0".to_owned())
     });
-    window.right_click_named(format!("transcript-context:panel:{id}:0"));
+    window.right_click_named("transcript-spoken:0".to_owned());
     window.click_named("context-action:Copy recording link".to_owned());
     assert_eq!(
         links::parse(&window.cx.read_from_clipboard().unwrap().text().unwrap()),
@@ -1450,4 +1454,61 @@ fn externally_delivered_recording_opens_its_transcript(cx: &mut TestAppContext) 
             .panel()
             .is_some_and(|(_, open, _, _)| open.id == recording && open.lines.lines.len() == 1)
     });
+}
+
+#[gpui::test]
+fn transcript_microphone_and_shared_audio_owner_identities_have_their_own_menus(
+    cx: &mut TestAppContext,
+) {
+    let Scene {
+        world,
+        server,
+        admin,
+        mut window,
+        luca,
+        ada,
+        voice,
+        _directory,
+        ..
+    } = scene(cx);
+    let id = world.run(server.record(voice, &[&admin.handle, &luca]));
+    world.run(server.transcribe(
+        id,
+        &[
+            spoken(ada, None, 100, "A microphone line"),
+            spoken(ada, Some(1), 200, "A shared voice"),
+        ],
+    ));
+    window.click_channel("Daily");
+    window.until("both transcript lines are available", |window| {
+        window
+            .card_detail(id)
+            .is_some_and(|detail| detail.transcript.held == 2)
+    });
+    for line in [0, 1] {
+        window.right_click_named(format!("transcript-identity:card:{id}:{line}"));
+        window.click("context-action:Copy account ID");
+        assert_eq!(
+            window.cx.read_from_clipboard().unwrap().text().unwrap(),
+            ada.to_string()
+        );
+        window.right_click_named(format!("transcript-identity:card:{id}:{line}"));
+        window.click("context-action:Copy name");
+        assert_eq!(
+            window.cx.read_from_clipboard().unwrap().text().unwrap(),
+            "Ada"
+        );
+    }
+    window.right_click_named("transcript-spoken:0".to_owned());
+    window.click("context-action:Open transcript");
+    window.until("the panel is open", |window| window.panel().is_some());
+    window.right_click_named(format!("transcript-identity:panel:{id}:0"));
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        ada.to_string()
+    );
+    window.right_click_named(format!("transcript-identity:panel:{id}:0"));
+    window.press("escape");
+    assert!(window.panel().is_some());
 }

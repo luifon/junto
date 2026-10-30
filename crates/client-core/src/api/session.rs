@@ -667,8 +667,25 @@ impl ServerApi {
         channel_id: ChannelId,
         change: &UpdateChannel,
     ) -> Result<Channel, ApiError> {
-        self.send(Method::Patch, format!("/channels/{channel_id}"), change)
-            .await
+        let response = self
+            .call(
+                Method::Patch,
+                format!("/channels/{channel_id}"),
+                Vec::new(),
+                Some(encode(change)?),
+            )
+            .await?;
+        if let Some(topic) = &change.topic {
+            let body: serde_json::Value = read_json(&response)?;
+            let expected = topic.replace("\r\n", "\n").replace('\r', "\n");
+            if body.get("topic").and_then(serde_json::Value::as_str) != Some(expected.trim()) {
+                return Err(ApiError::InvalidResponse {
+                    status: response.status,
+                    reason: "channel topics are not supported",
+                });
+            }
+        }
+        read_json(&response)
     }
 
     /// Changes the category and the position of channels of one workspace, all or none.

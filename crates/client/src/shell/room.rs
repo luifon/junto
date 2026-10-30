@@ -264,8 +264,15 @@ impl Shell {
                         .clone()
                         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned());
                     let more = meeting.hands.len() - 1;
-                    Some(
-                        request
+                    let identity = self.call_identity_target(
+                        format!("meeting-hand-person:{account_id}").into(),
+                        account_id,
+                        name.clone(),
+                        super::account_menus::CallSurface::RaisedHand,
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(8.0))
                             .child(super::people::avatar(&faces, account_id, 22.0).radius(2.0))
                             .child(
                                 div()
@@ -286,7 +293,12 @@ impl Shell {
                                             true,
                                         ),
                                     )),
-                            )
+                            ),
+                        cx,
+                    );
+                    Some(
+                        request
+                            .child(identity)
                             .when(more > 0, |request| {
                                 request
                                     .child(div().text_size(u(13.0)).child(text::more_hands(more)))
@@ -328,23 +340,30 @@ impl Shell {
                         .clone()
                         .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned());
                     Some(
-                        request
-                            .id("meeting-allowed")
-                            .debug_selector(|| "meeting-allowed".to_owned())
-                            .child(super::people::person_element(
-                                &faces,
-                                account_id,
-                                &name,
-                                "meeting-allowed-person",
-                                super::people::name_in_sentence(
-                                    format!("{name}{}", text::MAY_SPEAK_NOT_OPEN),
-                                    0..name.len(),
-                                    faces.color(account_id),
-                                    colors.cypress,
-                                    true,
-                                ),
-                            ))
-                            .into_any_element(),
+                        self.call_identity_target(
+                            format!("meeting-waiting-person:{account_id}").into(),
+                            account_id,
+                            name.clone(),
+                            super::account_menus::CallSurface::MeetingWaiting,
+                            request
+                                .id("meeting-allowed")
+                                .debug_selector(|| "meeting-allowed".to_owned())
+                                .child(super::people::person_element(
+                                    &faces,
+                                    account_id,
+                                    &name,
+                                    "meeting-allowed-person",
+                                    super::people::name_in_sentence(
+                                        format!("{name}{}", text::MAY_SPEAK_NOT_OPEN),
+                                        0..name.len(),
+                                        faces.color(account_id),
+                                        colors.cypress,
+                                        true,
+                                    ),
+                                ))
+                                .into_any_element(),
+                            cx,
+                        ),
                     )
                 }
                 (None, None) => None,
@@ -402,40 +421,67 @@ impl Shell {
             .ink(colors.call_text)
             .whitespace_nowrap()
             .child(icon(Icon::Hand, 17.0, colors.call_text))
-            .child(div().flex_none().child(if meeting.by_self {
-                strong(line, text::MEETING_IS_ON.len()).into_any_element()
-            } else {
-                super::people::person_element(
-                    &faces,
+            .child(
+                self.call_identity_target(
+                    format!("meeting-presenter-person:{}", meeting.presenter_id).into(),
                     meeting.presenter_id,
-                    meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON),
-                    "meeting-presenter",
-                    {
-                        let name = meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON);
-                        let prefix = text::MEETING_IS_ON.len();
-                        let start = prefix + " · ".len();
-                        StyledText::new(line).with_highlights([
-                            (
-                                0..prefix,
-                                gpui::HighlightStyle {
-                                    font_weight: Some(gpui::FontWeight::BOLD),
-                                    color: Some(colors.call_text_hi.into()),
-                                    ..Default::default()
+                    meeting
+                        .presenter
+                        .clone()
+                        .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                    super::account_menus::CallSurface::Presenter,
+                    div()
+                        .flex_none()
+                        .debug_selector({
+                            let account = meeting.presenter_id;
+                            move || format!("meeting-presenter:{account}")
+                        })
+                        .child(if meeting.by_self {
+                            strong(line, text::MEETING_IS_ON.len()).into_any_element()
+                        } else {
+                            super::people::person_element(
+                                &faces,
+                                meeting.presenter_id,
+                                meeting.presenter.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+                                "meeting-presenter",
+                                {
+                                    let name = meeting
+                                        .presenter
+                                        .as_deref()
+                                        .unwrap_or(text::UNKNOWN_PERSON);
+                                    let prefix = text::MEETING_IS_ON.len();
+                                    let start = prefix + " · ".len();
+                                    StyledText::new(line).with_highlights([
+                                        (
+                                            0..prefix,
+                                            gpui::HighlightStyle {
+                                                font_weight: Some(gpui::FontWeight::BOLD),
+                                                color: Some(colors.call_text_hi.into()),
+                                                ..Default::default()
+                                            },
+                                        ),
+                                        (
+                                            start..start + name.len(),
+                                            gpui::HighlightStyle {
+                                                color: faces.color(meeting.presenter_id).map(
+                                                    |color| {
+                                                        crate::theme::role_ink(
+                                                            color,
+                                                            colors.cypress,
+                                                        )
+                                                        .into()
+                                                    },
+                                                ),
+                                                ..Default::default()
+                                            },
+                                        ),
+                                    ])
                                 },
-                            ),
-                            (
-                                start..start + name.len(),
-                                gpui::HighlightStyle {
-                                    color: faces.color(meeting.presenter_id).map(|color| {
-                                        crate::theme::role_ink(color, colors.cypress).into()
-                                    }),
-                                    ..Default::default()
-                                },
-                            ),
-                        ])
-                    },
-                )
-            }))
+                            )
+                        }),
+                    cx,
+                ),
+            )
             .child(
                 div()
                     .flex_1()
@@ -728,19 +774,12 @@ impl Shell {
                         )
                         .into_any_element(),
                 };
-                div()
-                    .id(("invite-row", index))
-                    .role(Role::ListItem)
-                    .aria_label(member.name.clone())
+                let identity = div()
                     .flex()
-                    .flex_none()
+                    .flex_1()
+                    .min_w_0()
                     .items_center()
                     .gap(u(9.0))
-                    .py(u(5.0))
-                    .px(u(10.0))
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(Hsla::from(colors.rule_soft))
-                    })
                     .child(super::people::avatar(&faces, account_id, 26.0).radius(2.0))
                     .child(
                         div()
@@ -770,7 +809,34 @@ impl Shell {
                                         .child(text::in_channel(place)),
                                 )
                             }),
-                    )
+                    );
+                let identity = self.call_identity_target(
+                    format!("invite-person:{account_id}").into(),
+                    account_id,
+                    member.name.clone(),
+                    super::account_menus::CallSurface::InviteChoice,
+                    div()
+                        .debug_selector(move || format!("invite-choice:{account_id}"))
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(identity),
+                    cx,
+                );
+                div()
+                    .id(("invite-row", index))
+                    .role(Role::ListItem)
+                    .aria_label(member.name.clone())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(9.0))
+                    .py(u(5.0))
+                    .px(u(10.0))
+                    .when(index > 0, |row| {
+                        row.border_t_1().border_color(Hsla::from(colors.rule_soft))
+                    })
+                    .child(identity)
                     .child(action)
                     .into_any_element()
             })
@@ -807,7 +873,8 @@ impl Shell {
                     .border_color(Hsla::from(colors.rule))
                     .bg(Hsla::from(colors.travertine_hi))
                     .shadow(float_shadow(colors.shadow, 8.0, 22.0))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                        if matches!(&this.layer, super::Layer::AccountMenu(open) if matches!(open.source, Some(super::account_menus::AccountSource::CallOccupant { surface: super::account_menus::CallSurface::InviteChoice, .. }))) && crate::ui::over_focused_menu(event.position, window, cx) { return; }
                         this.invite_open = false;
                         this.invite_closed_by_press = true;
                         cx.notify();

@@ -190,9 +190,7 @@ pub(crate) async fn create(
     ceiling: u32,
 ) -> ApiResult<()> {
     let permissions: ServerPermissions = role.permissions.iter().copied().collect();
-    access.require(Request::ManageServerRoles {
-        granting: permissions,
-    })?;
+    require_creation(access, role)?;
     let existing: i64 = sqlx::query_scalar(
         "select count(*) from (select position from server_roles order by position limit $1) roles",
     )
@@ -217,6 +215,21 @@ pub(crate) async fn create(
     .bind(role.hoist)
     .execute(&mut *connection)
     .await?;
+    announce_creation(connection, access, now, role).await
+}
+
+pub(crate) fn require_creation(access: &Access, role: &ServerRole) -> ApiResult<()> {
+    access.require(Request::ManageServerRoles {
+        granting: role.permissions.iter().copied().collect(),
+    })
+}
+
+pub(crate) async fn announce_creation(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &ServerRole,
+) -> ApiResult<()> {
     audit::record(
         connection,
         now,

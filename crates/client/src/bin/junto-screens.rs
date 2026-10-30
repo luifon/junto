@@ -537,6 +537,9 @@ impl Transport for OneServer {
                 name: "Harbor".to_owned(),
                 logo_path: None,
                 api_versions: vec![SupportedVersions::THIS_BUILD.current()],
+                capabilities: junto_client_core::protocol::server::Capabilities {
+                    channel_topics: true,
+                },
             };
             let body = serde_json::to_vec(&info).map_err(|error| {
                 TransportError::new(TransportErrorKind::Interrupted, error.to_string())

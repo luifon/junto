@@ -8,6 +8,11 @@ use crate::support::TestServer;
 #[tokio::test]
 async fn a_channel_topic_is_stored_readable_and_changed_only_by_its_managers() {
     let server = TestServer::start().await;
+    let info: Value = server
+        .send::<Value>(reqwest::Method::GET, "/api/server", None, None, None)
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(info["capabilities"]["channel_topics"], true);
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;

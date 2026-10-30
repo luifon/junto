@@ -1,9 +1,9 @@
 use super::{ContextMenuExt, Menu, MenuItem};
 use crate::{assets::Icon, text};
 use gpui::{
-    App, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, Render, SharedString, Stateful, Styled, WeakFocusHandle, Window,
-    canvas, div, prelude::FluentBuilder,
+    App, Bounds, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Point, Render, SharedString, Stateful, Styled,
+    WeakFocusHandle, Window, canvas, div, prelude::FluentBuilder,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -91,8 +91,24 @@ pub fn bind_action_menu(
     window: &mut Window,
     cx: &mut App,
 ) -> Stateful<Div> {
-    let id: ElementId = id.into();
-    let popup = window.use_keyed_state((id, "actions"), cx, |_, cx| Popup {
+    bind_menu(frame, id.into(), actions, false, window, cx)
+}
+
+pub fn bind_lazy_action_menu<T: 'static>(
+    frame: Stateful<Div>,
+    id: impl Into<ElementId>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+    make: impl FnOnce(&mut Window, &mut Context<T>) -> Vec<RowAction>,
+) -> Stateful<Div> {
+    let id = id.into();
+    let shown = popup_state(&id, window, cx).read(cx).shown;
+    let actions = if shown { make(window, cx) } else { Vec::new() };
+    bind_menu(frame, id, actions, true, window, cx)
+}
+
+fn popup_state(id: &ElementId, window: &mut Window, cx: &mut App) -> Entity<Popup> {
+    window.use_keyed_state((id.clone(), "actions"), cx, |_, cx| Popup {
         focus: cx.focus_handle(),
         return_focus: None,
         shown: false,
@@ -100,8 +116,19 @@ pub fn bind_action_menu(
         position: Point::default(),
         bounds: Rc::new(Cell::new(Bounds::default())),
         placement: Default::default(),
-    });
-    let has_actions = !actions.is_empty();
+    })
+}
+
+fn bind_menu(
+    frame: Stateful<Div>,
+    id: ElementId,
+    actions: Vec<RowAction>,
+    lazy: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let popup = popup_state(&id, window, cx);
+    let has_actions = lazy || !actions.is_empty();
     let bounds = popup.update(cx, |popup, cx| {
         let changed = popup.actions.len() != actions.len()
             || popup
@@ -110,7 +137,9 @@ pub fn bind_action_menu(
                 .zip(&actions)
                 .any(|(old, new)| !old.same_presentation(new));
         popup.actions = actions;
-        if popup.shown && changed {
+        if popup.shown && popup.actions.is_empty() {
+            popup.close(window, cx);
+        } else if popup.shown && changed {
             cx.notify();
         }
         popup.bounds.clone()

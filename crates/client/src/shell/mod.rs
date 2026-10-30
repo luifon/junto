@@ -9,11 +9,13 @@ pub mod admin;
 mod arrange;
 mod book;
 pub mod call;
+mod call_identity_targets;
 mod call_menus;
 mod camera;
 mod channels;
 mod composer;
 mod contacts;
+mod context_targets;
 mod copying;
 mod decode;
 pub mod detached;
@@ -24,6 +26,8 @@ mod feed;
 mod file_links;
 mod files;
 mod forwarding;
+mod identity_menus;
+mod identity_sources;
 mod invited;
 mod join;
 mod keybinds;
@@ -37,7 +41,9 @@ mod reaction_people;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
+mod own_identity_targets;
 mod panic_notice;
+mod pending_menus;
 mod people;
 mod permissions;
 mod person_drag;
@@ -1568,6 +1574,7 @@ impl Shell {
     fn keep_focus_in_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.layer, Layer::None)
             && !self.active_layer_focus().contains_focused(window, cx)
+            && !crate::ui::has_focused_menu(window, cx)
         {
             self.active_layer_focus().focus(window, cx);
         }
@@ -1993,9 +2000,15 @@ impl Shell {
                     this.copy_text(action.text.clone(), cx);
                 }),
             )
-            .on_action(cx.listener(|_, action: &crate::ui::OpenLink, _, cx| {
-                crate::opening::open_link(&action.link, cx);
-            }))
+            .on_action(
+                cx.listener(|this, action: &crate::ui::OpenLink, window, cx| {
+                    if let Some(link) = junto_client_core::links::parse(action.link.as_str()) {
+                        this.open_app_link(link, window, cx);
+                    } else {
+                        crate::opening::open_link(&action.link, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(
                 |this, action: &account_menus::OpenAccountMenu, window, cx| {
                     this.open_account_menu(action.clone(), window, cx);
@@ -2273,7 +2286,7 @@ impl Shell {
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::Profile => self.render_profile(cx),
             Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
-            Layer::NewDirect => self.render_new_direct(cx),
+            Layer::NewDirect => self.render_new_direct(window, cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),

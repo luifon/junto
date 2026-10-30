@@ -1,7 +1,7 @@
 //! The structure of the server as one document, and changes of it in one transaction
 //! (ADR 0204, ADR 0211).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use junto_authz::{Request, ServerPermission, ServerPermissions, WorkspacePermissions};
 use junto_protocol::call::UpdateCallSettings;
@@ -411,10 +411,32 @@ pub async fn apply(
         )));
     }
     let mut created = Vec::new();
-    for (index, change) in request.changes.iter().enumerate() {
-        apply_one(app, &mut *connection, access, now, change, &mut created)
-            .await
-            .map_err(|error| error.in_change(index + 1, change.name()))?;
+    let mut index = 0;
+    while index < request.changes.len() {
+        let change = &request.changes[index];
+        let count = creation_scope(change).map_or(1, |scope| {
+            request.changes[index..]
+                .iter()
+                .take_while(|change| creation_scope(change) == Some(scope))
+                .count()
+        });
+        if count > 1 {
+            create_role_batch(
+                app,
+                connection,
+                access,
+                now,
+                &request.changes[index..index + count],
+                index,
+                &mut created,
+            )
+            .await?;
+        } else {
+            apply_one(app, &mut *connection, access, now, change, &mut created)
+                .await
+                .map_err(|error| error.in_change(index + 1, change.name()))?;
+        }
+        index += count;
     }
     let revision = if request.changes.is_empty() {
         current
@@ -422,6 +444,88 @@ pub async fn apply(
         revision_of(&read(connection).await?)?
     };
     Ok(StructureApplied { revision, created })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreationScope {
+    Server,
+    Workspace(StructureId),
+}
+
+fn creation_scope(change: &StructureChange) -> Option<CreationScope> {
+    match change {
+        StructureChange::CreateServerRole { .. } => Some(CreationScope::Server),
+        StructureChange::CreateWorkspaceRole { workspace, .. } => {
+            Some(CreationScope::Workspace(*workspace))
+        }
+        _ => None,
+    }
+}
+
+async fn create_role_batch(
+    app: &AppState,
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    changes: &[StructureChange],
+    offset: usize,
+    created: &mut Vec<CreatedEntry>,
+) -> ApiResult<()> {
+    use crate::role_order::{Creation, Insertions};
+    let mut batch: Option<Insertions> = None;
+    let mut workspace = None;
+    let mut used = HashSet::new();
+    let mut entries = Vec::new();
+    for (index, change) in changes.iter().enumerate() {
+        let entry = async {
+            let (kind, id) = match change {
+                StructureChange::CreateServerRole { id, .. } => (StructureKind::ServerRole, *id),
+                StructureChange::CreateWorkspaceRole { id, .. } => (StructureKind::WorkspaceRole, *id),
+                _ => return Err(ApiError::internal(&"a role batch contains another change")),
+            };
+            require_unused(connection, kind, id).await?;
+            if used.contains(&id.as_uuid()) {
+                return Err(ApiError::conflict(format!(
+                    "the identifier {id} is in use; an identifier of a deleted channel is not used again"
+                )));
+            }
+            let role = match change {
+                StructureChange::CreateServerRole { name, permissions, color, hoist, .. } => Creation::Server(ServerRole {
+                    color: *color, hoist: *hoist, position: 1, id: ServerRoleId::generate(), name: validate::name("name", name)?,
+                    permissions: db::server_list(permissions.iter().copied().collect()),
+                }),
+                StructureChange::CreateWorkspaceRole { workspace: entry, name, permissions, color, hoist, .. } => {
+                    let workspace_id = if let Some(workspace) = workspace { workspace } else {
+                        let resolved = WorkspaceId::from_uuid(resolve(connection, StructureKind::Workspace, *entry).await?);
+                        workspace = Some(resolved);
+                        resolved
+                    };
+                    Creation::Workspace(WorkspaceRole {
+                        color: *color, hoist: *hoist, position: 1, id: WorkspaceRoleId::generate(), workspace_id,
+                        name: validate::name("name", name)?, permissions: db::workspace_list(permissions.iter().copied().collect()), is_everyone: false,
+                    })
+                }
+                _ => return Err(ApiError::internal(&"a role batch contains another change")),
+            };
+            let object = role.id();
+            let ceiling = if workspace.is_some() { app.config.limits.most_roles_per_workspace } else { app.config.limits.most_server_roles };
+            let batch = batch.get_or_insert_with(|| Insertions::new(workspace, ceiling));
+            batch.push(connection, access, role).await?;
+            used.insert(id.as_uuid());
+            used.insert(object);
+            Ok((kind, id, object))
+        }.await.map_err(|error: ApiError| error.in_change(offset + index + 1, change.name()))?;
+        entries.push(entry);
+    }
+    if let Some(batch) = batch {
+        batch.finish(connection, access, now).await?;
+    }
+    for (index, ((kind, entry, object), change)) in entries.into_iter().zip(changes).enumerate() {
+        register(connection, created, kind, entry, object)
+            .await
+            .map_err(|error| error.in_change(offset + index + 1, change.name()))?;
+    }
+    Ok(())
 }
 
 async fn workspace_of(

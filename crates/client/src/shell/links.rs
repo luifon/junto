@@ -12,12 +12,7 @@ impl Shell {
         true
     }
 
-    pub(crate) fn open_app_link(
-        &mut self,
-        link: AppLink,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn open_app_link(&mut self, link: AppLink, window: &mut Window, cx: &mut Context<Self>) {
         self.adding_number = self.adding_number.wrapping_add(1);
         self.adding = None;
         self.pending_link = None;
@@ -101,8 +96,8 @@ impl Shell {
     }
 
     fn prefill_link_server(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.expanded_while_narrow = true;
-        self.show_address_field(false, window, cx);
+        let narrow = super::logical_width(window) < crate::theme::theme(cx).metrics.narrow_below;
+        self.show_address_field(narrow, window, cx);
         self.type_address(address, window, cx);
         self.focus_address(window, cx);
     }

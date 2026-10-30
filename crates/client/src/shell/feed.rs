@@ -383,7 +383,7 @@ pub(crate) enum MessageShape {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DocumentSource {
+pub(crate) enum DocumentSource {
     Message(MessageId),
     Pending(u64),
     Composer(Pane),
@@ -2522,15 +2522,10 @@ impl Shell {
         let parent = message
             .map(|(_, message, _)| DocumentSource::Message(message.id))
             .or(parent);
-        let source = match parent {
-            Some(DocumentSource::Message(id)) => {
-                Some(super::account_menus::AccountSource::Message(id))
-            }
-            Some(DocumentSource::Pending(id)) => {
-                Some(super::account_menus::AccountSource::Pending(id))
-            }
-            _ => None,
-        };
+        let source = parent.map(|parent| super::account_menus::AccountSource::Mentions {
+            parent,
+            document: Arc::new(document.clone()),
+        });
         let owner = server_id.and_then(|server_id| {
             self.state
                 .read(cx)
@@ -3902,13 +3897,14 @@ impl Shell {
     }
 
     fn thread_chip_menu(
-        &self,
+        &mut self,
         frame: gpui::Stateful<gpui::Div>,
         feed: &Feed,
         row: &MessageRow,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        use crate::ui::ContextMenuExt as _;
         let Some(owner) = self
             .state
             .read(cx)
@@ -3920,42 +3916,55 @@ impl Shell {
         let Some(channel) = crate::state::feed::channel_of(feed.place) else {
             return frame;
         };
-        let (server_id, root) = (feed.server_id, row.message.id);
-        let mut actions = vec![crate::ui::RowAction::new(
-            text::COPY_TARGET_LINK,
-            cx.listener(move |this, _, _, cx| {
-                let state = this.state.read(cx);
-                let link = state
-                    .server(server_id)
-                    .filter(|server| server.owner() == Some(owner))
-                    .and_then(|_| state.thread_link(server_id, root));
-                if let Some(link) = link {
-                    this.copy_text(link, cx);
+        let Some(workspace) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.workspace())
+            .map(|workspace| workspace.id)
+        else {
+            return frame;
+        };
+        let (root, place) = (row.message.id, feed.place);
+        let bounds = Rc::new(Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+        let painted = bounds.clone();
+        let shell = cx.entity().downgrade();
+        let popup = match self.layer {
+            Layer::ThreadMenu(open) if open.preview_of(owner, place, root) => self
+                .view
+                .as_ref()
+                .and_then(|view| open.preview_entry(view))
+                .map(|entry| self.render_thread_menu(open, &entry, cx)),
+            _ => None,
+        };
+        frame
+            .focusable()
+            .tab_stop(true)
+            .relative()
+            .on_context_menu(move |window, cx| {
+                let position = if window.last_input_was_keyboard() {
+                    let bounds = bounds.get();
+                    gpui::point(bounds.left(), bounds.bottom())
+                } else {
+                    window.mouse_position()
+                };
+                if let Some(shell) = shell.upgrade() {
+                    shell.update(cx, |this, cx| {
+                        this.open_thread_menu_target(
+                            super::thread_menu::ThreadMenuOpen::preview(
+                                owner, workspace, channel, root, place, position,
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
                 }
-            }),
-        )];
-        if row.can_thread && row.thread_refused.is_none() {
-            actions.push(crate::ui::RowAction::new(
-                text::OPEN_THREAD,
-                cx.listener(move |this, _, window, cx| {
-                    if this
-                        .state
-                        .read(cx)
-                        .server(server_id)
-                        .is_some_and(|server| server.owner() == Some(owner))
-                    {
-                        this.open_thread(server_id, channel, root, window, cx);
-                    }
-                }),
-            ));
-        }
-        crate::ui::bind_action_menu(
-            frame.focusable().tab_stop(true),
-            SharedString::from(format!("thread-preview-menu:{server_id}:{root}")),
-            actions,
-            window,
-            cx,
-        )
+            })
+            .child(
+                gpui::canvas(move |bounds, _, _| painted.set(bounds), |_, (), _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .children(popup)
     }
 
     /// What a message of a channel shows of its thread: the count of the replies, the
@@ -4466,6 +4475,17 @@ impl Shell {
         let colors = theme.colors;
         let pending = &row.pending;
         let (server_id, id) = (feed.server_id, pending.id);
+        let context = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+            .map(|owner| super::pending_menus::PendingTarget {
+                owner,
+                place: feed.place,
+                id,
+                upload: None,
+            });
         let side = if compact { 14.0 } else { 16.0 };
         let faces = self.faces(server_id);
         let person = self.view.as_ref().and_then(|view| view.person.account_id);
@@ -4483,38 +4503,55 @@ impl Shell {
             SendState::Unconfirmed => (text::NOT_CONFIRMED.into(), true),
             SendState::Failed(failure) => (text::send_failure(failure).into(), true),
         };
-        let files = pending.files.iter().map(|file| {
-            let state: SharedString = match uploads.get(&file.upload) {
-                Some(progress) => match progress.stage {
-                    UploadStage::Reading => text::UPLOAD_READING.into(),
-                    UploadStage::Sending if progress.interrupted => text::UPLOAD_INTERRUPTED.into(),
-                    UploadStage::Sending => {
-                        text::transfer_progress(progress.sent, progress.bytes).into()
-                    }
-                    UploadStage::Checking => text::UPLOAD_CHECKING.into(),
-                    UploadStage::Complete(_) => text::UPLOAD_COMPLETE.into(),
-                    UploadStage::Failed(failure) => text::transfer_failure(failure).into(),
-                    UploadStage::Cancelled => text::DISCARD.into(),
-                },
-                None => text::file_size(file.bytes).into(),
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(u(7.0))
-                .mt(u(4.0))
-                .text_size(u(13.0))
-                .ink(colors.ink_2)
-                .child(icon(Icon::Clip, 14.0, colors.ink_2))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::BOLD)
-                        .child(SharedString::from(text::label(&file.name))),
-                )
-                .child(div().flex_none().ink(colors.ink_3).child(state))
-        });
+        let files: Vec<_> = pending
+            .files
+            .iter()
+            .enumerate()
+            .map(|(file_index, file)| {
+                let state: SharedString = match uploads.get(&file.upload) {
+                    Some(progress) => match progress.stage {
+                        UploadStage::Reading => text::UPLOAD_READING.into(),
+                        UploadStage::Sending if progress.interrupted => {
+                            text::UPLOAD_INTERRUPTED.into()
+                        }
+                        UploadStage::Sending => {
+                            text::transfer_progress(progress.sent, progress.bytes).into()
+                        }
+                        UploadStage::Checking => text::UPLOAD_CHECKING.into(),
+                        UploadStage::Complete(_) => text::UPLOAD_COMPLETE.into(),
+                        UploadStage::Failed(failure) => text::transfer_failure(failure).into(),
+                        UploadStage::Cancelled => text::DISCARD.into(),
+                    },
+                    None => text::file_size(file.bytes).into(),
+                };
+                let frame = div()
+                    .id(("waiting-file", file_index))
+                    .debug_selector(move || format!("waiting-file:{id}:{file_index}"))
+                    .focusable()
+                    .tab_stop(true)
+                    .flex()
+                    .items_center()
+                    .gap(u(7.0))
+                    .mt(u(4.0))
+                    .text_size(u(13.0))
+                    .ink(colors.ink_2)
+                    .child(icon(Icon::Clip, 14.0, colors.ink_2))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::BOLD)
+                            .child(SharedString::from(text::label(&file.name))),
+                    )
+                    .child(div().flex_none().ink(colors.ink_3).child(state));
+                if let Some(mut target) = context {
+                    target.upload = Some(file.upload);
+                    self.bind_pending_menu(frame, target, window, cx)
+                } else {
+                    frame
+                }
+            })
+            .collect();
         let body = self.document(
             (
                 Some(feed.server_id),
@@ -4526,8 +4563,10 @@ impl Shell {
             &theme,
             cx,
         );
-        div()
+        let frame = div()
             .id(("waiting", index))
+            .focusable()
+            .tab_stop(true)
             .debug_selector(move || format!("waiting:{id}"))
             .pt(u(if row.grouped { 1.0 } else { 4.0 }))
             .pb(u(4.0))
@@ -4551,16 +4590,22 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(own, 34.0).image(picture).when_some(
-                                person,
-                                |avatar, id| {
-                                    avatar.presence(faces.presence(id)).profile(
-                                        crate::ui::OpenProfile {
-                                            server: feed.server_id,
-                                            account: id,
-                                        },
-                                    )
-                                },
+                            .child(self.pending_author_identity(
+                                (context.map(|target| target.owner), id),
+                                &row.author,
+                                "avatar",
+                                Avatar::new(own, 34.0).image(picture).when_some(
+                                    person,
+                                    |avatar, id| {
+                                        avatar.presence(faces.presence(id)).profile(
+                                            crate::ui::OpenProfile {
+                                                server: feed.server_id,
+                                                account: id,
+                                            },
+                                        )
+                                    },
+                                ),
+                                cx,
                             ))
                             .into_any_element()
                     })
@@ -4579,19 +4624,29 @@ impl Shell {
                                         .gap(u(8.0))
                                         .line_height(u(19.0))
                                         .child(
-                                            div()
-                                                .font_weight(FontWeight::BOLD)
-                                                .ink(colors.ink)
-                                                .child(match person {
-                                                    Some(account) => super::people::person_name(
-                                                        &faces,
-                                                        account,
-                                                        row.author.clone(),
-                                                        "waiting-author",
-                                                    ),
-                                                    None => SharedString::from(row.author.clone())
-                                                        .into_any_element(),
-                                                }),
+                                            self.pending_author_identity(
+                                                (context.map(|target| target.owner), id),
+                                                &row.author,
+                                                "name",
+                                                div()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .ink(colors.ink)
+                                                    .child(match person {
+                                                        Some(account) => {
+                                                            super::people::person_name(
+                                                                &faces,
+                                                                account,
+                                                                row.author.clone(),
+                                                                "waiting-author",
+                                                            )
+                                                        }
+                                                        None => {
+                                                            SharedString::from(row.author.clone())
+                                                                .into_any_element()
+                                                        }
+                                                    }),
+                                                cx,
+                                            ),
                                         )
                                         .child(
                                             div()
@@ -4648,8 +4703,13 @@ impl Shell {
                                     }),
                             ),
                     ),
-            )
-            .into_any_element()
+            );
+        if let Some(target) = context {
+            self.bind_pending_menu(frame, target, window, cx)
+                .into_any_element()
+        } else {
+            frame.into_any_element()
+        }
     }
 
     pub fn open_message_menu(

@@ -608,6 +608,22 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(!meeting.by_self && !meeting.may_speak);
     assert_eq!(meeting.presenter.as_deref(), Some("Ada"));
+    scene
+        .window
+        .right_click_named(format!("meeting-presenter:{ada}"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    assert!(scene.window.shows("meeting-bar"));
+
     scene.window.right_click_named(format!("call-tile:{ada}"));
     assert!(!scene.window.shows("call-menu-allow-speak"));
     scene.window.press("escape");
@@ -655,9 +671,13 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
             && own(window).is_some_and(|own| matches!(own.microphone, Microphone::Open { .. }))
     });
     // Ada turns meeting mode off. The person had no block: nothing is told.
+    scene
+        .window
+        .right_click_named(format!("meeting-presenter:{ada}"));
+    assert!(scene.window.shows("account-menu"));
     scene.world.run(api.end_meeting(voice)).unwrap();
     scene.window.until("the meeting has ended", |window| {
-        !window.shows("meeting-bar")
+        !window.shows("meeting-bar") && !window.shows("account-menu")
     });
     assert!(
         !scene.window.shows("call-told"),
@@ -758,6 +778,23 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     });
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert_eq!(meeting.hands, [(ada, Some("Ada".to_owned()))]);
+    scene
+        .window
+        .right_click_named(format!("meeting-hand:{ada}"));
+    assert!(scene.window.shows("account-menu"));
+    assert!(scene.window.shows("call-menu-allow-speak"));
+    scene.window.click_named(format!("account-copy-name:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "Ada"
+    );
+
     // The presenter lowers the hand without letting Ada speak (ADR 0516): the block of her
     // microphone stays.
     let hand_of_ada = |window: &mut Window| {
@@ -799,6 +836,18 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     let meeting = room_view(&mut scene.window).unwrap().meeting.unwrap();
     assert!(meeting.hands.is_empty());
     assert_eq!(meeting.waiting, [(ada, Some("Ada".to_owned()))]);
+    scene.window.right_click_named("meeting-allowed".to_owned());
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
     scene.window.click("meeting-toggle");
     scene.window.until("the first meeting has ended", |window| {
         room_view(window).is_some_and(|room| room.meeting.is_none())
@@ -889,6 +938,22 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .in_shell(|shell, _, _| shell.member_picker_is_open())
     );
     assert!(scene.window.shows("member-picker"));
+    scene
+        .window
+        .right_click_named(format!("invite-choice:{ada}"));
+    scene.window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap(),
+        ada.to_string()
+    );
+    assert!(scene.window.shows("member-picker"));
+
     scene.window.click_named(format!("invite:{ada}"));
     let invitation = scene.invitation_for_ada();
     assert_eq!(

@@ -142,10 +142,32 @@ impl Shell {
                     .when_some(overline, |column, overline| {
                         column.child(
                             div()
+                                .id("server-title")
+                                .role(Role::Heading)
+                                .aria_level(2)
+                                .aria_label(overline.clone())
+                                .focus_visible({
+                                    let ring = crate::ui::focus_ring_inside(
+                                        colors.terracotta_deep,
+                                        theme.metrics.focus_ring,
+                                    );
+                                    move |style| style.shadow(ring)
+                                })
+                                .debug_selector(|| "server-title".to_owned())
                                 .typeface(theme.types.overline, &theme)
                                 .ink(colors.bronze)
                                 .truncate()
-                                .child(overline),
+                                .child(overline)
+                                .map(|frame| match view.selected.as_ref() {
+                                    Some(server) => self.bind_server_context(
+                                        frame,
+                                        "server-title",
+                                        server.id,
+                                        window,
+                                        cx,
+                                    ),
+                                    None => frame,
+                                }),
                         )
                     })
                     .child(
@@ -158,7 +180,10 @@ impl Shell {
                             .typeface(theme.types.title, &theme)
                             .ink(colors.ink)
                             .truncate()
-                            .child(title),
+                            .child(title)
+                            .map(|frame| {
+                                self.bind_workspace_title_context(frame, view, window, cx)
+                            }),
                     ),
             )
             .when(view.selected.is_some(), |header| {
@@ -252,7 +277,7 @@ impl Shell {
             .when_some(view.call.as_ref(), |column, strip| {
                 column.child(self.render_call_strip(strip, &theme, cx))
             })
-            .child(self.render_profile_strip(view, &theme, cx))
+            .child(self.render_profile_strip(view, &theme, window, cx))
     }
 
     /// The lists of the selected server: the entry of its notices, the channels of the
@@ -825,7 +850,7 @@ impl Shell {
                         .selected(entry.open)
                         .unread(sign)
                         .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
-                        .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.root_id == root_id))
+                        .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.followed() && open.root_id == root_id))
                         .when_some(account_owner, |row, owner| row.on_menu(Self::handler(cx, move |this, window, cx| {
                             this.open_thread_menu(owner, workspace_id, channel_id, root_id, window, cx);
                         })))
@@ -839,7 +864,7 @@ impl Shell {
                             this.open_thread(server_id, channel_id, root_id, window, cx);
                         }));
                     let menu = match self.layer {
-                        Layer::ThreadMenu(open) if open.root_id == root_id => {
+                        Layer::ThreadMenu(open) if open.followed() && open.root_id == root_id => {
                             Some(self.render_thread_menu(open, entry, cx))
                         }
                         _ => None,
@@ -1204,6 +1229,7 @@ impl Shell {
         &mut self,
         view: &ShellView,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
@@ -1222,19 +1248,13 @@ impl Shell {
             Some(account_id) => self.shown_faces().image(account_id),
             None => view.preset_picture.clone(),
         };
-        div()
-            .id("profile-strip")
-            .debug_selector(|| "profile-strip".to_owned())
+        let identity = div()
+            .id("profile-identity")
             .flex()
-            .flex_none()
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(u(9.0))
-            .h(u(theme.metrics.profile_strip_height))
-            .pl(u(12.0))
-            .pr(u(8.0))
-            .bg(Hsla::from(colors.limestone_lo))
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule))
             .child(Avatar::new(seed, 30.0).image(picture).when_some(
                 view.person.account_id,
                 |avatar, account| {
@@ -1293,7 +1313,50 @@ impl Shell {
                             )
                         },
                     ),
+            );
+        let owner = view
+            .selected
+            .as_ref()
+            .and_then(|server| self.state.read(cx).server(server.id)?.owner());
+        let identity = if let Some(owner) = owner {
+            let open = self.identity_context(
+                owner,
+                super::account_menus::AccountTarget {
+                    account_id: owner.account_id,
+                    name: view.person.name.clone(),
+                    departed: false,
+                },
+                super::account_menus::AccountSource::Profile,
+            );
+            let ring =
+                crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+            self.bind_identity_context(
+                identity
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring)),
+                "profile",
+                open,
+                window,
+                cx,
             )
+        } else {
+            self.bind_preset_profile_context(identity, view.person.name.clone(), window, cx)
+        };
+        div()
+            .id("profile-strip")
+            .debug_selector(|| "profile-strip".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(9.0))
+            .h(u(theme.metrics.profile_strip_height))
+            .pl(u(12.0))
+            .pr(u(8.0))
+            .bg(Hsla::from(colors.limestone_lo))
+            .border_t_1()
+            .border_color(Hsla::from(colors.rule))
+            .child(identity)
             .child(
                 div()
                     .flex()

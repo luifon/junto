@@ -800,11 +800,56 @@ impl Shell {
             )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn render_admin_identity(
+        &mut self,
+        account: AccountId,
+        name: &str,
+        pictured: bool,
+        detail: Option<SharedString>,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(open) = self.admin_identity_context(account, cx) else {
+            return line_text(name.to_owned(), detail, theme).into_any_element();
+        };
+        self.register_identity_actions(&open, cx);
+        let frame = div()
+            .id(("admin-identity", account.as_uuid().as_u128() as u64))
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(u(8.0))
+            .debug_selector(move || format!("admin-identity:{account}"))
+            .child(
+                crate::shell::people::avatar_of(
+                    &self.faces(open.owner.entry.server_id),
+                    account,
+                    name,
+                    pictured,
+                    26.0,
+                )
+                .radius(2.0),
+            )
+            .child(super::line_person(
+                &self.faces(open.owner.entry.server_id),
+                account,
+                name.to_owned(),
+                detail,
+                theme,
+            ));
+        self.bind_identity_context(frame, "admin", open, window, cx)
+            .into_any_element()
+    }
+
     fn render_account_row(
         &mut self,
         view: &AdminView,
         (row, may_set_permissions): (&AccountLine, bool),
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let server_id = view.server_id;
@@ -890,22 +935,14 @@ impl Shell {
                     .min_w_0()
                     .items_center()
                     .gap(u(8.0))
-                    .child(
-                        crate::shell::people::avatar_of(
-                            &self.faces(server_id),
-                            account_id,
-                            &row.name,
-                            false,
-                            26.0,
-                        )
-                        .radius(2.0),
-                    )
-                    .child(super::line_person(
-                        &self.faces(server_id),
+                    .child(self.render_admin_identity(
                         account_id,
-                        row.name.clone(),
+                        &row.name,
+                        false,
                         Some(txt::account_detail(&row.roles, row.created).into()),
                         theme,
+                        window,
+                        cx,
                     ));
                 for mark in account_marks(row) {
                     content = content.child(Chip::new(mark));
@@ -1134,6 +1171,7 @@ impl Shell {
                         &view,
                         (row, page.may_set_permissions),
                         &theme,
+                        window,
                         cx,
                     );
                 }
@@ -1325,18 +1363,18 @@ impl Shell {
         let view = view.clone();
         let page = page.clone();
         self.render_admin_list(
-            move |this, index, _, cx| {
+            move |this, index, window, cx| {
                 if index == 0 {
                     return this.render_members_header(&page, cx);
                 }
                 if let Some(row) = members.get(index - 1) {
-                    return this.render_member_row(&view, &page, row, cx);
+                    return this.render_member_row(&view, &page, row, window, cx);
                 }
                 let index = index - members.len() - 1;
                 if index == 0 {
                     return this.render_addable_header(&view, &page, cx);
                 }
-                this.render_addable_row(&view, &page, &addable[index - 1], cx)
+                this.render_addable_row(&view, &page, &addable[index - 1], window, cx)
             },
             window,
             cx,
@@ -1348,10 +1386,10 @@ impl Shell {
         view: &AdminView,
         page: &MembersPage,
         row: &MemberLine,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let faces = self.faces(view.server_id);
         let account_id = row.account_id;
         let modes = [Open::RemoveMember(account_id)];
         if let Some(question) = self.render_member_question(view, page, row, &theme, cx) {
@@ -1374,24 +1412,15 @@ impl Shell {
                 .into_any_element();
         }
         let roles = (!row.roles.is_empty()).then(|| SharedString::from(row.roles.join(", ")));
-        let mut content = line(&theme)
-            .child(
-                crate::shell::people::avatar_of(
-                    &faces,
-                    row.account_id,
-                    &row.name,
-                    row.pictured,
-                    26.0,
-                )
-                .radius(2.0),
-            )
-            .child(super::line_person(
-                &faces,
-                account_id,
-                row.name.clone(),
-                roles,
-                &theme,
-            ));
+        let mut content = line(&theme).child(self.render_admin_identity(
+            account_id,
+            &row.name,
+            row.pictured,
+            roles,
+            &theme,
+            window,
+            cx,
+        ));
         if row.is_self {
             content = content.child(Chip::new(txt::YOU));
         }
@@ -1477,26 +1506,18 @@ impl Shell {
         view: &AdminView,
         page: &MembersPage,
         row: &crate::state::admin::view::people::AddableLine,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
         let server_id = view.server_id;
         let workspace_id = page.workspace_id;
-        let faces = self.faces(server_id);
         let account_id = row.account_id;
         let what = AskKind::AddMember(account_id);
         let content = line(&theme)
             .child(
-                crate::shell::people::avatar_of(&faces, account_id, &row.name, false, 26.0)
-                    .radius(2.0),
+                self.render_admin_identity(account_id, &row.name, false, None, &theme, window, cx),
             )
-            .child(super::line_person(
-                &faces,
-                account_id,
-                row.name.clone(),
-                None,
-                &theme,
-            ))
             .child(row_action(
                 ("member-add", account_id.as_uuid().as_u128() as u64),
                 txt::ADD,

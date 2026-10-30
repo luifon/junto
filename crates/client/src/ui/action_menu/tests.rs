@@ -35,6 +35,7 @@ impl Render for Host {
                         .on_click(cx.listener(|this, _, _, _| this.calls += 100)),
                 )
         });
+        let actions = if step == 0 { Vec::new() } else { actions };
         let row = bind_action_menu(frame, "action-row-menu", actions, window, cx);
         div()
             .relative()
@@ -267,4 +268,108 @@ fn a_context_action_of_a_menu_row_keeps_the_enclosing_list_open(cx: &mut TestApp
     );
     settle(cx);
     assert!(host.read_with(cx, |host, _| host.closed));
+}
+
+#[gpui::test]
+fn losing_all_actions_closes_the_menu_restores_focus_and_does_not_reopen_it(
+    cx: &mut TestAppContext,
+) {
+    let (host, cx) = open(cx);
+    cx.simulate_keystrokes("menu");
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
+    host.update(cx, |host, cx| {
+        host.step = 0;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    let focus = host.read_with(cx, |host, _| host.row.clone());
+    assert!(cx.update(|window, _| focus.is_focused(window)));
+    host.update(cx, |host, cx| {
+        host.step = 1;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
+}
+
+struct LazyHost {
+    focus: FocusHandle,
+    builds: usize,
+    calls: usize,
+    available: bool,
+}
+
+impl Render for LazyHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let frame = div()
+            .id("lazy-target")
+            .debug_selector(|| "lazy-target".to_owned())
+            .track_focus(&self.focus)
+            .w(gpui::px(180.0))
+            .h(gpui::px(40.0))
+            .child("Target");
+        super::bind_lazy_action_menu(frame, "lazy-actions", window, cx, |_, cx| {
+            self.builds += 1;
+            if self.available {
+                vec![super::RowAction::new(
+                    "Inspect",
+                    cx.listener(|this, _, _, _| this.calls += 1),
+                )]
+            } else {
+                Vec::new()
+            }
+        })
+    }
+}
+
+#[gpui::test]
+fn lazy_actions_are_collected_only_while_open_and_empty_actions_end_the_opening(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| LazyHost {
+        focus: cx.focus_handle().tab_stop(true),
+        builds: 0,
+        calls: 0,
+        available: true,
+    });
+    settle(cx);
+    assert_eq!(host.read_with(cx, |host, _| host.builds), 0);
+    host.update(cx, |_, cx| cx.notify());
+    settle(cx);
+    assert_eq!(host.read_with(cx, |host, _| host.builds), 0);
+    click(cx, "lazy-target", MouseButton::Right);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
+    click(cx, "context-action:Inspect", MouseButton::Left);
+    assert_eq!(host.read_with(cx, |host, _| host.calls), 1);
+    let built = host.read_with(cx, |host, _| host.builds);
+    host.update(cx, |_, cx| cx.notify());
+    settle(cx);
+    assert_eq!(host.read_with(cx, |host, _| host.builds), built);
+    click(cx, "lazy-target", MouseButton::Right);
+    host.update(cx, |host, cx| {
+        host.available = false;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    host.update(cx, |host, cx| {
+        host.available = true;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    let focus = host.read_with(cx, |host, _| host.focus.clone());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.simulate_keystrokes("menu");
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
 }
