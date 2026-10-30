@@ -319,22 +319,22 @@ impl Shell {
             .held()
             .or(sending(view).then_some(text::admin::SENDING));
         let terms = page.terms.loaded().cloned().unwrap_or_default();
-        let list = std::iter::once(
-            Row::new(
-                "glossary-header",
-                held.is_none()
-                    || matches!(page.terms, Listed::Failed(_))
-                    || self.admin.mode == Some(Mode::AddTerm),
+        let open = |index: usize| matches!(self.admin.mode, Some(Mode::ChangeTerm(at) | Mode::RemoveTerm(at)) if at as usize == index);
+        let list =
+            std::iter::once(
+                Row::new(
+                    "glossary-header",
+                    held.is_none()
+                        || matches!(page.terms, Listed::Failed(_))
+                        || self.admin.mode == Some(Mode::AddTerm),
+                )
+                .part(),
             )
-            .part(),
-        )
-        .chain(
-            terms
-                .iter()
-                .map(|term| Row::new(format!("term-{term}"), true)),
-        )
-        .chain(std::iter::once(Row::new("glossary-footer", false).part()))
-        .collect();
+            .chain(terms.iter().enumerate().map(|(index, term)| {
+                Row::new(format!("term-{term}"), held.is_none() || open(index))
+            }))
+            .chain(std::iter::once(Row::new("glossary-footer", false).part()))
+            .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();

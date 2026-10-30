@@ -745,10 +745,7 @@ impl RenderOnce for OccupantRow {
                     .on_context_menu(move |window, cx| by_click(window, cx))
                     .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                         let keys = &event.keystroke;
-                        let opens = match keys.key.as_str() {
-                            "enter" | "space" => true,
-                            _ => false,
-                        };
+                        let opens = matches!(keys.key.as_str(), "enter" | "space");
                         if opens {
                             by_key(window, cx);
                             cx.stop_propagation();

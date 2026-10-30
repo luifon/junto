@@ -1571,14 +1571,13 @@ impl Shell {
                 });
             });
         }
-        let list = std::iter::once(Row::new("audit-header", true).part())
-            .chain(
-                page.rows
-                    .iter()
-                    .map(|row| Row::new(format!("audit-{}", row.id), true)),
-            )
-            .chain(std::iter::once(Row::new("audit-footer", true).part()))
-            .collect();
+        let list =
+            std::iter::once(Row::new("audit-header", true).part())
+                .chain(page.rows.iter().map(|row| {
+                    Row::new(format!("audit-{}", row.id), row.deleted_workspace.is_some())
+                }))
+                .chain(std::iter::once(Row::new("audit-footer", true).part()))
+                .collect();
         self.admin.list.take(Some(view), list, window, cx);
         // "Continue" and "Read again" start the view at the first entry of their read: the
         // request ends with the read.

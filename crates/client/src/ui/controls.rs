@@ -13,6 +13,7 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type SharedClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// A switch with its state as a word beside it.
 pub struct Toggle {
@@ -23,7 +24,7 @@ pub struct Toggle {
     /// Why the person cannot change the switch. A switch with a reason takes no click.
     held: Option<SharedString>,
     selector: Option<&'static str>,
-    on_click: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    on_click: Option<SharedClickHandler>,
 }
 
 impl Toggle {

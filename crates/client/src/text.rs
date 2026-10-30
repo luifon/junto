@@ -3262,6 +3262,42 @@ pub const CAMERA_RESTRICTED: &str = "This system restricts camera access, and Ju
 
 pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailable in this start. Open the installed application to enable them.";
 
+pub const COPY_TARGET_LINK: &str = "Copy link";
+
+pub const EDIT_TEXT_MENU: &str = "Edit text";
+pub const CUT_SELECTION: &str = "Cut";
+pub const COPY_SELECTION: &str = "Copy";
+pub const PASTE_TEXT: &str = "Paste";
+pub const SELECT_ALL_TEXT: &str = "Select all";
+
+pub const ROW_ACTIONS: &str = "Row actions";
+pub const COPY_TEXT: &str = "Copy text";
+
+pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
+
+pub const LINKED_FILE: &str = "File";
+pub const COPY_FILE_NAME: &str = "Copy file name";
+
+pub const COPY_RECORDING_LINK: &str = "Copy recording link";
+pub const EDIT_TEXT: &str = "Edit text";
+pub const CUT: &str = "Cut";
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+pub const SELECT_ALL: &str = "Select all";
+
+pub const LINK_ACTIONS: &str = "Link actions";
+pub const OPEN_LINK: &str = "Open link";
+
+pub const COPY_NAME: &str = "Copy name";
+pub const COPY_ACCOUNT_ID: &str = "Copy account ID";
+
+pub const ACCOUNT_ACTIONS: &str = "Account actions";
+
+pub const SELECT_SOURCE: &str = "Select source";
+pub const STOP_SHARING: &str = "Stop sharing";
+
+pub const CATEGORY_SETTINGS: &str = "Category settings";
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -3768,39 +3804,3 @@ mod tests {
         assert!(recording_request_failed("No.").ends_with(" No."));
     }
 }
-
-pub const COPY_TARGET_LINK: &str = "Copy link";
-
-pub const EDIT_TEXT_MENU: &str = "Edit text";
-pub const CUT_SELECTION: &str = "Cut";
-pub const COPY_SELECTION: &str = "Copy";
-pub const PASTE_TEXT: &str = "Paste";
-pub const SELECT_ALL_TEXT: &str = "Select all";
-
-pub const ROW_ACTIONS: &str = "Row actions";
-pub const COPY_TEXT: &str = "Copy text";
-
-pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
-
-pub const LINKED_FILE: &str = "File";
-pub const COPY_FILE_NAME: &str = "Copy file name";
-
-pub const COPY_RECORDING_LINK: &str = "Copy recording link";
-pub const EDIT_TEXT: &str = "Edit text";
-pub const CUT: &str = "Cut";
-pub const COPY: &str = "Copy";
-pub const PASTE: &str = "Paste";
-pub const SELECT_ALL: &str = "Select all";
-
-pub const LINK_ACTIONS: &str = "Link actions";
-pub const OPEN_LINK: &str = "Open link";
-
-pub const COPY_NAME: &str = "Copy name";
-pub const COPY_ACCOUNT_ID: &str = "Copy account ID";
-
-pub const ACCOUNT_ACTIONS: &str = "Account actions";
-
-pub const SELECT_SOURCE: &str = "Select source";
-pub const STOP_SHARING: &str = "Stop sharing";
-
-pub const CATEGORY_SETTINGS: &str = "Category settings";

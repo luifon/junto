@@ -34,7 +34,7 @@ enum Target {
 enum Destination {
     Thread(Channel, MessageId),
     Recording(Recording),
-    File(Message, AttachmentId),
+    File(Box<Message>, AttachmentId),
     Channel(Channel),
     Conversation(ConversationId),
 }
@@ -159,7 +159,7 @@ impl Readers {
                     }
                     PlaceId::Thread { .. } => return None,
                 }
-                Some(Destination::File(message, id))
+                Some(Destination::File(Box::new(message), id))
             }
         }
     }
@@ -318,7 +318,7 @@ impl AppState {
                         this.go_to(super::notices::Jump::to(server_id, &message), cx);
                         cx.emit(OpenFileLink {
                             owner,
-                            message,
+                            message: *message,
                             attachment_id,
                         });
                     }

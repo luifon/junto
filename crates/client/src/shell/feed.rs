@@ -4052,6 +4052,144 @@ fn system_line(row: &SystemRow, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+impl Shell {
+    pub(crate) fn open_composer_menu(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(feed) = self.pane_feed(pane) else {
+            return;
+        };
+        let (server_id, place) = (feed.server_id, feed.place);
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        else {
+            return;
+        };
+        self.focus_composer(pane, window, cx);
+        self.open_layer(
+            Layer::ComposerMenu(ComposerMenuOpen {
+                pane,
+                server_id,
+                place,
+                owner,
+            }),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn composer_menu_current(
+        &self,
+        open: ComposerMenuOpen,
+        view: &ShellView,
+        cx: &gpui::App,
+    ) -> bool {
+        let feed = match open.pane {
+            Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
+            Pane::Thread => view
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .and_then(|thread| thread.feed.as_ref()),
+        };
+        feed.is_some_and(|feed| feed.server_id == open.server_id && feed.place == open.place)
+            && self
+                .state
+                .read(cx)
+                .server(open.server_id)
+                .and_then(|server| server.owner())
+                == Some(open.owner)
+    }
+
+    pub(crate) fn render_composer_menu(
+        &self,
+        pane: Pane,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Layer::ComposerMenu(open) = self.layer else {
+            return None;
+        };
+        if open.pane != pane {
+            return None;
+        }
+        let input = self.pen(pane).input.read(cx);
+        let capabilities = input.context_menu_capabilities();
+        let copy = !capabilities.is_disabled() && capabilities.is_copyable();
+        let edit = capabilities.is_editable();
+        let select = !capabilities.is_disabled() && !input.value().is_empty();
+        let paste = edit && cx.read_from_clipboard().is_some();
+        let actions: [(&'static str, &'static str, Box<dyn gpui::Action>, bool); 4] = [
+            (
+                "composer-cut",
+                text::CUT,
+                Box::new(gpui_base::input::Cut),
+                copy && edit,
+            ),
+            (
+                "composer-copy",
+                text::COPY,
+                Box::new(gpui_base::input::Copy),
+                copy,
+            ),
+            (
+                "composer-paste",
+                text::PASTE,
+                Box::new(gpui_base::input::Paste),
+                paste,
+            ),
+            (
+                "composer-select-all",
+                text::SELECT_ALL,
+                Box::new(gpui_base::input::SelectAll),
+                select,
+            ),
+        ];
+        Some(
+            Menu::new("composer-menu", text::EDIT_TEXT, self.layer_focus())
+                .selector("composer-menu")
+                .on_close(Self::handler(cx, |this, window, cx| {
+                    this.close_layer(window, cx)
+                }))
+                .children(actions.into_iter().map(|(id, label, action, enabled)| {
+                    MenuItem::new(id, label)
+                        .selector(id)
+                        .disabled(!enabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let current = this
+                                .view
+                                .as_ref()
+                                .is_some_and(|view| this.composer_menu_current(open, view, cx));
+                            this.close_layer(window, cx);
+                            if !current {
+                                return;
+                            }
+                            this.focus_composer(pane, window, cx);
+                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
+                            let shell = cx.entity().downgrade();
+                            let action = action.boxed_clone();
+                            window.defer(cx, move |window, cx| {
+                                let current = shell.upgrade().is_some_and(|shell| {
+                                    let this = shell.read(cx);
+                                    this.view.as_ref().is_some_and(|view| {
+                                        this.composer_menu_current(open, view, cx)
+                                    })
+                                });
+                                if current {
+                                    focus.dispatch_action(action.as_ref(), window, cx);
+                                }
+                            });
+                        }))
+                }))
+                .popup(point(px(0.0), px(0.0))),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4204,143 +4342,5 @@ mod tests {
             .map(|(range, _)| &rich.text[range.clone()])
             .collect();
         assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
-    }
-}
-
-impl Shell {
-    pub(crate) fn open_composer_menu(
-        &mut self,
-        pane: Pane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(feed) = self.pane_feed(pane) else {
-            return;
-        };
-        let (server_id, place) = (feed.server_id, feed.place);
-        let Some(owner) = self
-            .state
-            .read(cx)
-            .server(server_id)
-            .and_then(|server| server.owner())
-        else {
-            return;
-        };
-        self.focus_composer(pane, window, cx);
-        self.open_layer(
-            Layer::ComposerMenu(ComposerMenuOpen {
-                pane,
-                server_id,
-                place,
-                owner,
-            }),
-            window,
-            cx,
-        );
-    }
-
-    pub(crate) fn composer_menu_current(
-        &self,
-        open: ComposerMenuOpen,
-        view: &ShellView,
-        cx: &gpui::App,
-    ) -> bool {
-        let feed = match open.pane {
-            Pane::Main => view.lists().and_then(|lists| lists.feed.as_ref()),
-            Pane::Thread => view
-                .workspace()
-                .and_then(|workspace| workspace.thread.as_ref())
-                .and_then(|thread| thread.feed.as_ref()),
-        };
-        feed.is_some_and(|feed| feed.server_id == open.server_id && feed.place == open.place)
-            && self
-                .state
-                .read(cx)
-                .server(open.server_id)
-                .and_then(|server| server.owner())
-                == Some(open.owner)
-    }
-
-    pub(crate) fn render_composer_menu(
-        &self,
-        pane: Pane,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let Layer::ComposerMenu(open) = self.layer else {
-            return None;
-        };
-        if open.pane != pane {
-            return None;
-        }
-        let input = self.pen(pane).input.read(cx);
-        let capabilities = input.context_menu_capabilities();
-        let copy = !capabilities.is_disabled() && capabilities.is_copyable();
-        let edit = capabilities.is_editable();
-        let select = !capabilities.is_disabled() && !input.value().is_empty();
-        let paste = edit && cx.read_from_clipboard().is_some();
-        let actions: [(&'static str, &'static str, Box<dyn gpui::Action>, bool); 4] = [
-            (
-                "composer-cut",
-                text::CUT,
-                Box::new(gpui_base::input::Cut),
-                copy && edit,
-            ),
-            (
-                "composer-copy",
-                text::COPY,
-                Box::new(gpui_base::input::Copy),
-                copy,
-            ),
-            (
-                "composer-paste",
-                text::PASTE,
-                Box::new(gpui_base::input::Paste),
-                paste,
-            ),
-            (
-                "composer-select-all",
-                text::SELECT_ALL,
-                Box::new(gpui_base::input::SelectAll),
-                select,
-            ),
-        ];
-        Some(
-            Menu::new("composer-menu", text::EDIT_TEXT, self.layer_focus())
-                .selector("composer-menu")
-                .on_close(Self::handler(cx, |this, window, cx| {
-                    this.close_layer(window, cx)
-                }))
-                .children(actions.into_iter().map(|(id, label, action, enabled)| {
-                    MenuItem::new(id, label)
-                        .selector(id)
-                        .disabled(!enabled)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let current = this
-                                .view
-                                .as_ref()
-                                .is_some_and(|view| this.composer_menu_current(open, view, cx));
-                            this.close_layer(window, cx);
-                            if !current {
-                                return;
-                            }
-                            this.focus_composer(pane, window, cx);
-                            let focus = this.pen(pane).input.read(cx).focus_handle(cx);
-                            let shell = cx.entity().downgrade();
-                            let action = action.boxed_clone();
-                            window.defer(cx, move |window, cx| {
-                                let current = shell.upgrade().is_some_and(|shell| {
-                                    let this = shell.read(cx);
-                                    this.view.as_ref().is_some_and(|view| {
-                                        this.composer_menu_current(open, view, cx)
-                                    })
-                                });
-                                if current {
-                                    focus.dispatch_action(action.as_ref(), window, cx);
-                                }
-                            });
-                        }))
-                }))
-                .popup(point(px(0.0), px(0.0))),
-        )
     }
 }

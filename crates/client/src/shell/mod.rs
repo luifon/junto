@@ -1356,12 +1356,12 @@ impl Shell {
         if matches!(self.layer, Layer::None) {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
-        if let Layer::ThreadMenu(open) = self.layer {
-            if !matches!(&layer, Layer::ThreadMenu(next) if next.same_target(&open)) {
-                self.state.update(cx, |state, cx| {
-                    state.end_thread_menu(open.owner, open.root_id, cx)
-                });
-            }
+        if let Layer::ThreadMenu(open) = self.layer
+            && !matches!(&layer, Layer::ThreadMenu(next) if next.same_target(&open))
+        {
+            self.state.update(cx, |state, cx| {
+                state.end_thread_menu(open.owner, open.root_id, cx)
+            });
         }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
