@@ -143,7 +143,7 @@ uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-time = { workspace = true }
+time = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # The blocking threads of the runtime of the client, on which the pictures of a call are
