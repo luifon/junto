@@ -328,6 +328,26 @@ impl Stream {
             .unwrap_or_else(|_| panic!("the stream sent nothing; so far: {:?}", self.raw))
     }
 
+    /// Reads pings and checkpoints while bounded fixture work runs. An ordinary frame
+    /// that arrives before the work finishes is kept for the caller's assertion.
+    pub async fn keep_alive_during<T>(
+        &mut self,
+        work: impl std::future::Future<Output = T>,
+    ) -> (T, Option<Frame>) {
+        let reading = Box::pin(async {
+            loop {
+                let frame = self.read().await;
+                if !matches!(&frame, Frame::Message(ServerMessage::Checkpoint { .. })) {
+                    break frame;
+                }
+            }
+        });
+        match futures_util::future::select(Box::pin(work), reading).await {
+            futures_util::future::Either::Left((result, _)) => (result, None),
+            futures_util::future::Either::Right((frame, work)) => (work.await, Some(frame)),
+        }
+    }
+
     async fn read(&mut self) -> Frame {
         loop {
             match self.socket.next().await {

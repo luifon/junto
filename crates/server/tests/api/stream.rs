@@ -420,35 +420,42 @@ async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let mut stream = server.subscribed(&owner, Level::Full).await;
-    let mut data = server.test_data().await;
-    let mut transaction = sqlx::Connection::begin(&mut data).await.unwrap();
-    let event = Event::DeviceRenamed {
-        device_id: owner.device_id,
-        name: "many".to_owned(),
-    };
-    junto_server::events::tell_account(
-        &mut transaction,
-        server.clock.now(),
-        owner.account_id,
-        &event,
-    )
-    .await
-    .unwrap();
-    // More events for one connection than the 2^16 indexes of a change, each small.
-    sqlx::query(
-        "insert into events (id, recorded_at, class, kind, audience, audience_account_id,
+    let preparing = async {
+        let mut data = server.test_data().await;
+        let mut transaction = sqlx::Connection::begin(&mut data).await.unwrap();
+        let event = Event::DeviceRenamed {
+            device_id: owner.device_id,
+            name: "many".to_owned(),
+        };
+        junto_server::events::tell_account(
+            &mut transaction,
+            server.clock.now(),
+            owner.account_id,
+            &event,
+        )
+        .await
+        .unwrap();
+        // More events for one connection than the 2^16 indexes of a change, each small.
+        sqlx::query(
+            "insert into events (id, recorded_at, class, kind, audience, audience_account_id,
                              revalidates_account_id, payload)
          select gen_random_uuid(), e.recorded_at, e.class, e.kind, e.audience,
                 e.audience_account_id, e.revalidates_account_id, e.payload
          from events e cross join generate_series(1, 70000)
          where e.position is null",
-    )
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
+        )
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    };
+    let ((), received) = stream.keep_alive_during(preparing).await;
+    let frame = match received {
+        Some(frame) => frame,
+        None => after_checkpoints(&mut stream).await,
+    };
     assert_eq!(
-        after_checkpoints(&mut stream).await,
+        frame,
         Frame::Message(ServerMessage::Resync {
             reason: ResyncReason::SkippedEvent
         })
