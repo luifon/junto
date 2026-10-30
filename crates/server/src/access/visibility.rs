@@ -73,6 +73,7 @@ struct Standing {
     channels: Vec<Channel>,
     channel_people: Vec<(ChannelId, i64, i64)>,
     directs: Vec<Direct>,
+    groups: Vec<ConversationId>,
 }
 
 fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
@@ -166,16 +167,22 @@ async fn load_for(
              c.low_account_id=a.id then c.high_account_id else c.low_account_id end where $3 and (peer.status= 'active'
              or (peer.departed_at is not null and peer.status in ('inactive', 'deleted', 'removed')))
              and (c.low_account_id=a.id or c.high_account_id=a.id) and ($2::uuid[] is null or c.id=any($2))), '[]'
-             ::jsonb)) from accounts a cross join (select owner_account_id from server_state limit 1) s cross join channels_json cj where a.id=any($1) and
+             ::jsonb), 'groups', coalesce((select jsonb_agg(m.conversation_id) from conversation_members m
+             where $4 and m.account_id=a.id and ($2::uuid[] is null or m.conversation_id=any($2))), '[]'::jsonb)) from accounts a cross join (select owner_account_id from server_state limit 1) s cross join channels_json cj where a.id=any($1) and
              a.status= 'active'")
         .bind(accounts)
         .bind(named)
         .bind(directs)
+        .bind(directs && crate::messages::groups::supported())
         .fetch_all(&mut *connection)
         .await?;
+    let mut group_candidates = std::collections::HashMap::new();
     let mut result: Vec<(AccountId, Places)> = rows
         .into_iter()
         .map(|Json(row)| {
+            if !row.groups.is_empty() {
+                group_candidates.insert(row.account_id, row.groups);
+            }
             let actor = make_actor(row.owner, row.roles, row.person)?;
             let mut scopes = std::collections::HashMap::new();
             let mut places = Places::default();
@@ -261,11 +268,12 @@ async fn load_for(
         .collect::<ApiResult<_>>()?;
     if directs && crate::messages::groups::supported() {
         for (account, places) in &mut result {
+            let Some(ids) = group_candidates.remove(account) else {
+                continue;
+            };
             let Some(access) = Access::of_account(connection, *account).await? else {
                 continue;
             };
-            let ids: Vec<ConversationId> = sqlx::query_scalar("select conversation_id from conversation_members where account_id=$1 and ($2::uuid[] is null or conversation_id=any($2))")
-                .bind(*account).bind(named).fetch_all(&mut *connection).await?;
             for id in ids {
                 match crate::messages::groups::readable(connection, &access, id).await {
                     Ok(_) => places.directs.push(id),
