@@ -48,3 +48,12 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - A machine under load makes a test slower and does not change its result: no preparation step runs under a shortened time limit.
 - A live test runs against the media server behaviour of the deployment: a room stays 60 seconds after its last person left, and a camera layer above the lowest is forwarded again after two seconds with packets. A new setting of LiveKit that changes media behaviour goes into `deploy/livekit-common.yaml`; a form that has it alone fails the check of the deployment.
 - The CI jobs on macOS and Windows run the window tests against the PostgreSQL build of their system of the same version, without Docker (ADR 0916 on macOS, ADR 0912 on Windows); the other tests that need PostgreSQL run in CI on Linux only.
+
+The oversized live-change fixture assigns its deferred event positions inside the
+uncommitted preparation transaction before opening the stream. It verifies that
+the subscription still starts at the earlier committed cursor, then commits the
+70,001-event change and requires SkippedEvent resynchronization. Preparing only
+the insert left all per-row deferred bookkeeping after subscription, consuming
+the connection lifetime while the test client was not polling it. The event
+count, live commit, resynchronization assertion and every server limit remain
+unchanged.
