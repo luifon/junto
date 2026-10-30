@@ -926,10 +926,13 @@ impl Shell {
                     .icon(Icon::Gear)
                     .selector("channel-edit")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_channel_settings(
-                            workspace_id,
-                            channel_id,
-                            crate::state::admin::ChannelPage::Overview,
+                        this.open_admin(
+                            crate::state::admin::AdminOpen::Channel {
+                                server_id,
+                                workspace_id,
+                                channel_id,
+                                page: crate::state::admin::ChannelPage::Overview,
+                            },
                             window,
                             cx,
                         );

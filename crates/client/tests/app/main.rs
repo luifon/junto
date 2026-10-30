@@ -52,6 +52,7 @@ mod glossary;
 mod gpui_panics;
 mod keybinds;
 mod message_links;
+mod review_headers;
 mod rule_changes;
 mod target_links;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that

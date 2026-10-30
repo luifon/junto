@@ -219,7 +219,9 @@ impl Shell {
                                 .icon(Icon::Gear)
                                 .detail(text::admin::OPEN_ADMINISTRATION_HELP)
                                 .selector("menu-administration")
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.select_server(server_id, cx));
                                     this.open_server_admin(
                                         crate::state::admin::AdminPage::Workspaces,
                                         window,
@@ -235,7 +237,9 @@ impl Shell {
                                 .icon(Icon::Account)
                                 .detail(text::account::OPEN_ACCOUNT_HELP)
                                 .selector("menu-account")
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.select_server(server_id, cx));
                                     this.open_account(
                                         crate::state::account::AccountPage::Profile,
                                         window,
@@ -255,6 +259,9 @@ impl Shell {
                                     .detail(text::account::LEAVE_WORKSPACE_HELP)
                                     .selector("menu-leave-workspace")
                                     .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.select_server(server_id, cx)
+                                        });
                                         this.open_departure(workspace_id, window, cx);
                                     })),
                             )

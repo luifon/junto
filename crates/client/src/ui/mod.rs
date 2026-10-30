@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
-pub use action_menu::{RowAction, bind_action_menu, collect_actions};
+pub use action_menu::{RowAction, bind_action_menu, bind_lazy_action_menu, collect_actions};
 pub use area::{COVER, KEPT, area, cover};
 #[cfg(feature = "test-support")]
 pub use area::{record_areas, take_areas};

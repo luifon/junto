@@ -2466,6 +2466,13 @@ impl AppState {
         ))
     }
 
+    pub(crate) fn view_for_server(&self, server_id: ServerId) -> ShellView {
+        let mut selection = self.selection.clone();
+        selection.server = Some(server_id);
+        self.direct
+            .filter_view(view::derive(&self.snapshots(), &selection, &self.known))
+    }
+
     /// Draws this state of the calls in place of the calls of the client. The screen tool
     /// uses it to draw a call without a media server.
     #[cfg(feature = "test-support")]

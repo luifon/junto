@@ -14,6 +14,7 @@ mod camera;
 mod channels;
 mod composer;
 mod contacts;
+mod context_targets;
 mod copying;
 mod decode;
 pub mod detached;

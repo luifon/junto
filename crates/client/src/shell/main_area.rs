@@ -597,7 +597,8 @@ impl Shell {
                                 .min_w_0()
                                 .child(div().truncate().child(name))
                                 .children(topic),
-                        ),
+                        )
+                        .map(|frame| self.bind_main_title_context(frame, view, window, cx)),
                 )
             })
             .children(after)

@@ -142,10 +142,32 @@ impl Shell {
                     .when_some(overline, |column, overline| {
                         column.child(
                             div()
+                                .id("server-title")
+                                .role(Role::Heading)
+                                .aria_level(2)
+                                .aria_label(overline.clone())
+                                .focus_visible({
+                                    let ring = crate::ui::focus_ring_inside(
+                                        colors.terracotta_deep,
+                                        theme.metrics.focus_ring,
+                                    );
+                                    move |style| style.shadow(ring)
+                                })
+                                .debug_selector(|| "server-title".to_owned())
                                 .typeface(theme.types.overline, &theme)
                                 .ink(colors.bronze)
                                 .truncate()
-                                .child(overline),
+                                .child(overline)
+                                .map(|frame| match view.selected.as_ref() {
+                                    Some(server) => self.bind_server_context(
+                                        frame,
+                                        "server-title",
+                                        server.id,
+                                        window,
+                                        cx,
+                                    ),
+                                    None => frame,
+                                }),
                         )
                     })
                     .child(
@@ -158,7 +180,10 @@ impl Shell {
                             .typeface(theme.types.title, &theme)
                             .ink(colors.ink)
                             .truncate()
-                            .child(title),
+                            .child(title)
+                            .map(|frame| {
+                                self.bind_workspace_title_context(frame, view, window, cx)
+                            }),
                     ),
             )
             .when(view.selected.is_some(), |header| {
