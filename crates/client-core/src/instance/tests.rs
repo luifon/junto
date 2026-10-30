@@ -120,6 +120,147 @@ fn an_unauthenticated_request_does_not_activate_the_window() {
 }
 
 #[test]
+fn a_partial_frame_has_one_deadline_even_while_bytes_keep_arriving() {
+    let (_root, directory) = directory();
+    let Start::Primary(first, mut receive) =
+        Instance::start(&directory, Activation::default()).unwrap()
+    else {
+        panic!()
+    };
+    let mut stream = TcpStream::connect(first.address).unwrap();
+    stream
+        .write_all(&(MAX_REQUEST as u32).to_be_bytes())
+        .unwrap();
+    let mut writing = stream.try_clone().unwrap();
+    let writer = thread::spawn(move || {
+        let end = Instant::now() + 2 * WAIT;
+        while Instant::now() < end {
+            if writing.write_all(b"x").is_err() {
+                break;
+            }
+            thread::sleep(WAIT / 4);
+        }
+    });
+    stream.set_read_timeout(Some(WAIT + WAIT / 2)).unwrap();
+    let started = Instant::now();
+    let result = stream.read(&mut [0]);
+    let elapsed = started.elapsed();
+    drop(stream);
+    writer.join().unwrap();
+    assert!(match result {
+        Ok(0) => true,
+        Err(error) => error.kind() == io::ErrorKind::ConnectionReset,
+        _ => false,
+    });
+    assert!(elapsed < WAIT + WAIT / 2);
+    assert!(receive.try_recv().is_err());
+    assert!(matches!(
+        Instance::start(&directory, Activation::default()).unwrap(),
+        Start::Forwarded
+    ));
+}
+
+#[test]
+fn shutdown_interrupts_an_accepted_partial_frame() {
+    let (_root, directory) = directory();
+    let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap()
+    else {
+        panic!()
+    };
+    let mut stream = TcpStream::connect(first.address).unwrap();
+    stream
+        .write_all(&(MAX_REQUEST as u32).to_be_bytes())
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while first.accepted.lock().unwrap().socket.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the listener must accept the partial frame"
+        );
+        thread::yield_now();
+    }
+    let (done, finished) = stopping::channel();
+    thread::spawn(move || {
+        drop(first);
+        done.send(()).unwrap();
+    });
+    let result = finished.recv_timeout(WAIT / 2);
+    drop(stream);
+    assert!(result.is_ok(), "shutdown must interrupt the socket read");
+}
+
+#[test]
+fn a_second_start_claims_the_profile_when_its_primary_exits_during_forwarding() {
+    let (_root, directory) = directory();
+    let lock = directory
+        .files()
+        .try_lock_file("desktop-instance.lock")
+        .unwrap()
+        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    directory
+        .files()
+        .write(
+            ENDPOINT,
+            &serde_json::to_vec(&Endpoint {
+                port: listener.local_addr().unwrap().port(),
+                token: [1; 32],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let other = directory.clone();
+    let starting = thread::spawn(move || Instance::start(&other, Activation::default()));
+    let stream = accept_before_deadline(&listener);
+    drop(lock);
+    drop(stream);
+    drop(listener);
+    assert!(matches!(
+        starting.join().unwrap().unwrap(),
+        Start::Primary(..)
+    ));
+}
+
+#[test]
+fn forwarding_reloads_the_endpoint_after_a_failed_handshake() {
+    let (_root, directory) = directory();
+    let Start::Primary(_first, mut receive) =
+        Instance::start(&directory, Activation::default()).unwrap()
+    else {
+        panic!()
+    };
+    let mut kept = [0; 1024];
+    let count = directory
+        .files()
+        .read_private(ENDPOINT, &mut kept)
+        .unwrap()
+        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    directory
+        .files()
+        .write(
+            ENDPOINT,
+            &serde_json::to_vec(&Endpoint {
+                port: listener.local_addr().unwrap().port(),
+                token: [1; 32],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let other = directory.clone();
+    let starting = thread::spawn(move || Instance::start(&other, Activation::default()));
+    let mut stream = accept_before_deadline(&listener);
+    directory.files().write(ENDPOINT, &kept[..count]).unwrap();
+    stream.write_all(b"no").unwrap();
+    drop(stream);
+    assert!(matches!(
+        starting.join().unwrap().unwrap(),
+        Start::Forwarded
+    ));
+    assert_eq!(receive.try_recv().unwrap(), Activation::default());
+}
+
+#[test]
 fn oversized_links_are_refused_before_claiming_the_profile() {
     let (_root, directory) = directory();
     assert!(
@@ -172,4 +313,20 @@ fn a_link_or_a_public_lock_file_is_refused() {
         Instance::start(&directory, Activation::default()),
         Err(Error::Storage(StorageError::NotPrivate { .. }))
     ));
+}
+
+fn accept_before_deadline(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10))
+            }
+            other => panic!("no activation connection before deadline: {other:?}"),
+        }
+    }
 }
