@@ -676,3 +676,81 @@ fn feed_system_ids(window: &mut Window) -> Vec<MessageId> {
         })
         .unwrap_or_default()
 }
+
+fn permanent_message_pin_controls(cx: &mut TestAppContext, in_thread: bool) {
+    use junto_client_core::protocol::structure::UpdateChannel;
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general, root) = with_root(cx, &world);
+    admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
+    let api = admin.handle.api();
+    world
+        .run(api.update_channel(
+            general,
+            &UpdateChannel {
+                permanent_messages: Some(true),
+                ..UpdateChannel::default()
+            },
+        ))
+        .unwrap();
+    let target = if in_thread {
+        let reply = admin.reply(&world, root, document("Permanent reply"));
+        window.open_thread_by_pointer(root);
+        window.until("the permanent reply offers its pin control", |window| {
+            window
+                .thread_message(reply)
+                .is_some_and(|row| row.message.permanent && row.can_pin)
+        });
+        reply
+    } else {
+        let sent = admin.send(&world, general, document("Permanent channel text"));
+        window.until_message("Permanent channel text");
+        window.until("the permanent text offers its pin control", |window| {
+            window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == sent.id && row.message.permanent && row.can_pin)
+        });
+        sent.id
+    };
+    let drawn = |window: &mut Window| {
+        if in_thread {
+            window.thread_message(target)
+        } else {
+            window
+                .messages()
+                .into_iter()
+                .find(|row| row.message.id == target)
+        }
+    };
+    window.act_on(target, "pin");
+    window.until("the permanent message is pinned", |window| {
+        drawn(window).is_some_and(|row| row.message.permanent && row.message.pinned)
+    });
+    assert_eq!(
+        world
+            .run(api.pins(general))
+            .unwrap()
+            .iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>(),
+        [target]
+    );
+    window.act_on(target, "pin");
+    window.until(
+        "the permanent message is unpinned and remains drawn",
+        |window| drawn(window).is_some_and(|row| row.message.permanent && !row.message.pinned),
+    );
+    assert!(world.run(api.pins(general)).unwrap().is_empty());
+    let kept = world.run(api.message(target)).unwrap();
+    assert!(kept.permanent && !kept.pinned);
+}
+
+#[gpui::test]
+fn a_moderator_uses_permanent_channel_text_pin_and_unpin_controls(cx: &mut TestAppContext) {
+    permanent_message_pin_controls(cx, false);
+}
+
+#[gpui::test]
+fn a_moderator_uses_permanent_thread_reply_pin_and_unpin_controls(cx: &mut TestAppContext) {
+    permanent_message_pin_controls(cx, true);
+}
