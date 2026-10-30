@@ -676,3 +676,120 @@ async fn a_current_group_reader_keeps_the_attribution_of_a_former_author() {
     let events = server.traffic(&reader, &mut stream).await;
     assert!(events.iter().any(|(_,event)| matches!(event,Event::AccountDepartureChanged { account_id,departure:Some(Departure::Deleted) } if *account_id == administrator.account_id)));
 }
+
+#[tokio::test]
+async fn concurrent_additions_keep_the_ten_member_limit() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let mut people = Vec::new();
+    for n in 0..10 {
+        people.push(server.join(&owner, &format!("Reader {n}")).await);
+    }
+    let others: Vec<_> = people[..8].iter().collect();
+    let (id, _) = create(&server, &writer, &others, "Project").await;
+    let route = format!("{GROUPS}/{id}/members");
+    let left = json!({"account_id":people[8].account_id});
+    let right = json!({"account_id":people[9].account_id});
+    let (a, b) = tokio::join!(
+        server.post(&writer, &route, &left),
+        server.post(&writer, &route, &right)
+    );
+    assert_eq!(
+        [&a, &b]
+            .iter()
+            .filter(|reply| reply.status == StatusCode::OK)
+            .count(),
+        1,
+        "exactly one of two simultaneous additions to nine members succeeds: {}, {}",
+        a.text(),
+        b.text()
+    );
+    for reply in [&a, &b] {
+        if reply.status != StatusCode::OK {
+            reply.error(ErrorCode::InvalidRequest);
+        }
+    }
+    let groups: Vec<Value> = server.get(&writer, GROUPS).await.ok(StatusCode::OK);
+    let group = groups
+        .iter()
+        .find(|group| group["id"] == json!(id))
+        .unwrap();
+    assert_eq!(group["account_ids"].as_array().unwrap().len(), 10);
+}
+
+#[tokio::test]
+async fn group_and_visibility_migrations_preserve_populated_pairs_history_and_calls() {
+    use junto_protocol::call::CallJoin;
+    let server = TestServer::start_for_calls().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let pair: Conversation = server
+        .post(
+            &writer,
+            "/api/v1/conversations",
+            &json!({"account_id":reader.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let history = format!("/api/v1/conversations/{}/messages", pair.id);
+    let written: Message = server
+        .post(&writer, &history, &text("Existing pair history"))
+        .await
+        .ok(StatusCode::CREATED);
+    let joined: CallJoin = server
+        .post(
+            &writer,
+            &format!("/api/v1/direct-calls/{}/join", reader.account_id),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let call = joined.call.id;
+    server.connect(joined);
+    server.check().await;
+    let mut transaction = server.db.begin().await.unwrap();
+    sqlx::raw_sql("drop table hidden_conversations,conversation_members,conversation_former_members; alter table calls drop constraint calls_one_place; alter table calls drop column conversation_id; alter table calls add constraint calls_pair_place check ((channel_id is null) <> (direct_low is null)); alter table conversations drop constraint conversation_kind; alter table conversations drop column name; alter table conversations alter column low_account_id set not null; alter table conversations alter column high_account_id set not null;")
+        .execute(&mut *transaction).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0051_group_conversations.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0053_hidden_conversations.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let reopened: Conversation = server
+        .post(
+            &reader,
+            "/api/v1/conversations",
+            &json!({"account_id":writer.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(reopened, pair);
+    let page: MessagePage = server.get(&reader, &history).await.ok(StatusCode::OK);
+    assert!(page.messages.iter().any(|message| message.id == written.id));
+    let snapshot = server.snapshot(&writer).await;
+    assert_eq!(snapshot.own_call.unwrap().call_id, call);
+    let (group, _) = create(&server, &writer, &[&reader, &third], "New group").await;
+    server
+        .put(
+            &reader,
+            &format!("/api/v1/conversations/{group}/visibility"),
+            &json!({"hidden":true}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        server.snapshot(&reader).await.hidden_conversations,
+        vec![group]
+    );
+}
