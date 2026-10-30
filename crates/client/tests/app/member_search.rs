@@ -24,7 +24,7 @@ fn member_search_finds_an_offscreen_member_and_clears_an_empty_result(cx: &mut T
         assert!(!bounds.intersects(&window.cx.debug_bounds("member-list").unwrap()));
     }
     window.click("member-search");
-    window.cx.simulate_input("mEMbEr 060");
+    window.simulate(|cx| cx.simulate_input("mEMbEr 060"));
     window.until("search finds a member beyond the visible rows", |window| {
         window
             .cx
@@ -35,7 +35,7 @@ fn member_search_finds_an_offscreen_member_and_clears_an_empty_result(cx: &mut T
     let own = window.own_account();
     assert!(!window.shows_named(format!("member-row:{own}")));
     window.press("secondary-a");
-    window.cx.simulate_input("No such member");
+    window.simulate(|cx| cx.simulate_input("No such member"));
     window.until("the empty result is stated", |window| {
         window.shows("member-search-empty")
     });

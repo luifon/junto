@@ -100,7 +100,7 @@ fn the_detached_window_and_view_menu_share_the_same_zoom(cx: &mut TestAppContext
             })
             .unwrap()
     });
-    detached.simulate(|cx| cx.update(|window, cx| window.dispatch_action(reset, cx)));
+    detached.send_action(reset);
     window.until("the menu resets both windows", |window| {
         window.cx.update(|window, _| window.rem_size()) == junto_client::theme::rem_size(100)
     });

@@ -115,15 +115,10 @@ fn profile_retry_closed_reads_unavailable_and_logout_keep_the_current_identity(
     });
     window.press("escape");
     let missing = AccountId::generate();
-    window.cx.update(|window, cx| {
-        window.dispatch_action(
-            Box::new(junto_client::ui::OpenProfile {
-                server: server_id,
-                account: missing,
-            }),
-            cx,
-        )
-    });
+    window.send_action(Box::new(junto_client::ui::OpenProfile {
+        server: server_id,
+        account: missing,
+    }));
     proxy.release_requests();
     window.until(
         "the closed card cannot replace the missing profile",
@@ -160,7 +155,7 @@ fn background_server_cards_and_two_windows_keep_their_owner_and_query(cx: &mut T
     let other = crate::support::logged_in(&b.handle);
     window.press("secondary-k");
     window.click("switcher-query");
-    window.cx.simulate_input("Ada");
+    window.simulate(|cx| cx.simulate_input("Ada"));
     window.until("both server contacts are listed", |window| {
         let entity = window.shell.entity_id();
         window.state.read_with(&window.cx, |state, _| {
@@ -180,15 +175,10 @@ fn background_server_cards_and_two_windows_keep_their_owner_and_query(cx: &mut T
     assert_eq!(window.view().selected.unwrap().id, mill_id);
     cx.update(|cx| junto_client::shell::detached::open(window.state.clone(), cx));
     let mut detached = window.call_window();
-    detached.cx.update(|window, cx| {
-        window.dispatch_action(
-            Box::new(junto_client::ui::OpenProfile {
-                server: mill_id,
-                account: other,
-            }),
-            cx,
-        )
-    });
+    detached.send_action(Box::new(junto_client::ui::OpenProfile {
+        server: mill_id,
+        account: other,
+    }));
     detached.until("the second card has its own server", |window| {
         ready(window, other)
     });
@@ -203,7 +193,7 @@ fn background_server_cards_and_two_windows_keep_their_owner_and_query(cx: &mut T
     window.press("escape");
     assert!(window.in_shell(|shell, window, cx| shell.layer_holds_focus(window, cx)));
     window.click("switcher-query");
-    window.cx.simulate_input(" zyx");
+    window.simulate(|cx| cx.simulate_input(" zyx"));
     window.until(
         "the original query remains editable after Escape",
         |window| {
@@ -307,15 +297,10 @@ fn a_shown_card_refreshes_public_roles_and_a_target_that_becomes_unavailable(
     let (_target_device, target) = joined(&world, &server, &code, "Target");
     let account = crate::support::logged_in(&target);
     let server_id = window.view().selected.unwrap().id;
-    window.cx.update(|window, cx| {
-        window.dispatch_action(
-            Box::new(junto_client::ui::OpenProfile {
-                server: server_id,
-                account,
-            }),
-            cx,
-        )
-    });
+    window.send_action(Box::new(junto_client::ui::OpenProfile {
+        server: server_id,
+        account,
+    }));
     window.until("the other member's card is shown", |window| {
         ready(window, account)
     });

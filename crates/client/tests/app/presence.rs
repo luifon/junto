@@ -124,7 +124,7 @@ fn system_idle_and_remote_presence_update_people_and_both_windows(cx: &mut TestA
     });
     detached.press("secondary-k");
     detached.click("switcher-query");
-    detached.cx.simulate_input("Ada");
+    detached.simulate(|cx| cx.simulate_input("Ada"));
     detached.until(
         "the other window draws the same person's status",
         |window| window.shows_named("presence-state:Idle".to_owned()),

@@ -29,7 +29,7 @@ fn action(window: &mut Window, title: &str) -> Box<dyn Action> {
 
 fn choose(window: &mut Window, title: &str) {
     let action = action(window, title);
-    window.simulate(|cx| cx.update(|window, cx| window.dispatch_action(action, cx)));
+    window.send_action(action);
 }
 
 #[gpui::test]
@@ -100,7 +100,7 @@ fn application_menu_settings_restore_the_closed_main_window(cx: &mut TestAppCont
     let settings = action(&mut window, "Settings…");
     choose(&mut window, "Close Window");
     assert!(cx.windows().is_empty());
-    cx.update(|cx| cx.dispatch_action(settings.as_ref()));
+    window.application_action(settings.as_ref());
     let handle = cx.windows()[0];
     let mut restored = window.window_of(handle);
     assert!(restored.shows("settings-dialog"));

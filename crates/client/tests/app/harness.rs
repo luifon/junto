@@ -432,6 +432,14 @@ impl Window {
         self.as_window(|window| act(&mut window.cx))
     }
 
+    pub fn send_action(&mut self, action: Box<dyn gpui::Action>) {
+        self.simulate(|cx| cx.update(|window, cx| window.dispatch_action(action, cx)));
+    }
+
+    pub fn application_action(&mut self, action: &dyn gpui::Action) {
+        self.as_window(|window| window.cx.cx.update(|cx| cx.dispatch_action(action)));
+    }
+
     /// Runs the waiting tasks of the application until none is left, without a frame of
     /// the display, as work of the window (ADR 0730).
     pub fn run_tasks(&mut self) {
@@ -725,6 +733,16 @@ impl Window {
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
         self.press_at(bounds.center(), gpui::MouseButton::Left);
+        self.settle();
+    }
+
+    pub fn click_row_padding(&mut self, selector: &'static str) {
+        self.settle();
+        let bounds = self.cx.debug_bounds(selector).unwrap();
+        self.press_at(
+            gpui::point(bounds.left() + gpui::px(4.0), bounds.center().y),
+            gpui::MouseButton::Left,
+        );
         self.settle();
     }
 

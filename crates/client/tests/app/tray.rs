@@ -87,12 +87,12 @@ fn a_mention_after_the_main_window_closes_reaches_the_notification_and_tray(
     window
         .state
         .update(cx, |state, cx| state.set_window_active(true, cx));
-    window.cx.simulate_keystrokes("secondary-w");
+    window.simulate(|cx| cx.simulate_keystrokes("secondary-w"));
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     admin.mention(&world, channel, "A new message, ", account);
     let deadline = std::time::Instant::now() + crate::harness::PATIENCE;
     loop {
-        cx.run_until_parked();
+        window.run_tasks();
         let received = window.state.read_with(cx, |state, _| {
             !state.kept_notifications().shown.is_empty() && state.kept_tray().shown().mentions == 1
         });

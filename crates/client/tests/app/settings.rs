@@ -19,7 +19,7 @@ fn bounds(window: &mut Window, selector: &'static str) -> Bounds<Pixels> {
 fn closing_the_main_window_keeps_the_client_and_the_tray_opens_it_again(cx: &mut TestAppContext) {
     let (_directory, mut window) = named(cx, "Member");
     let tray = window.state.read_with(cx, |state, _| state.kept_tray());
-    window.cx.simulate_keystrokes("secondary-w");
+    window.simulate(|cx| cx.simulate_keystrokes("secondary-w"));
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     cx.update(|cx| assert!(tray.press(junto_client::text::tray::OPEN_JUNTO, &window.state, cx)));
     assert_eq!(cx.update(|cx| cx.windows().len()), 1);
@@ -56,7 +56,7 @@ fn closing_in_the_background_can_be_disabled_and_the_choice_is_kept(cx: &mut Tes
             .contains("\"keep_running_after_close\": true")
     );
     window.click("keep-running-after-close");
-    window.cx.simulate_keystrokes("secondary-w");
+    window.simulate(|cx| cx.simulate_keystrokes("secondary-w"));
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     cx.update(|cx| junto_client::notify::bring_to_front(None, cx));
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);

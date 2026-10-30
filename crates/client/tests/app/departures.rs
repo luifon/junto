@@ -191,6 +191,12 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
     let row = crate::harness::selector(format!("direct-row:{}", conversation.id));
     other.until("the conversation is listed", |other| other.shows(row));
     other.click(row);
+    other.until(
+        "the deleted person's name opens an unavailable card",
+        |other| other.shows("profile-unavailable"),
+    );
+    other.press("escape");
+    other.click_row_padding(row);
     other.until_message("A direct line");
     assert_eq!(
         other.authors_of("A direct line"),

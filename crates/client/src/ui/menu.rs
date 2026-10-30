@@ -24,6 +24,7 @@ pub struct Menu {
     dark: bool,
     width: Option<f32>,
     children: Vec<AnyElement>,
+    header: Option<AnyElement>,
     selector: Option<&'static str>,
     on_close: Option<CloseHandler>,
 }
@@ -43,9 +44,15 @@ impl Menu {
             dark: false,
             width: None,
             children: Vec::new(),
+            header: None,
             selector: None,
             on_close: None,
         }
+    }
+
+    pub fn header(mut self, header: impl IntoElement) -> Self {
+        self.header = Some(header.into_any_element());
+        self
     }
 
     /// The menu of the server book, on basalt.
@@ -79,13 +86,15 @@ impl ParentElement for Menu {
 }
 
 impl RenderOnce for Menu {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let metrics = theme.metrics;
         let close = self.on_close.map(std::rc::Rc::new);
         let (escape, outside) = (close.clone(), close);
-        let layer = self.focus.clone();
+        let items =
+            super::reveal::inner_handle(&self.id, &"menu-items".into(), window, cx).tab_stop(false);
+        let layer = items.clone();
         let frame = div()
             .id(self.id)
             .role(Role::Menu)
@@ -144,7 +153,16 @@ impl RenderOnce for Menu {
                 .ink(colors.ink)
         };
         frame
-            .children(self.children)
+            .children(self.header)
+            .child(
+                div()
+                    .id("menu-items")
+                    .track_focus(&items)
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .children(self.children),
+            )
             .focus_trap("menu-trap", &self.focus)
     }
 }

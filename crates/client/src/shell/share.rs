@@ -1471,6 +1471,35 @@ impl Shell {
                     .get(&share.id)
                     .map(|(_, picture)| picture.clone());
                 let ring = focus_ring(colors.ochre, theme.metrics.focus_ring);
+                let title_element = if id.person == Person::Own {
+                    div()
+                        .child(crate::ui::paint_text(title.clone(), None))
+                        .into_any_element()
+                } else {
+                    let name = share.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+                    let suffix = title.strip_prefix(name).unwrap_or_default().to_owned();
+                    let background = if share.watched {
+                        colors.basalt_rule
+                    } else {
+                        colors.basalt_3
+                    };
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(super::people::person_element(
+                            &faces,
+                            share.account_id,
+                            name,
+                            "share-person-name",
+                            div()
+                                .when_some(faces.color(share.account_id), |name, color| {
+                                    name.text_color(crate::theme::role_ink(color, background))
+                                })
+                                .child(crate::ui::paint_text(name.to_owned().into(), None)),
+                        ))
+                        .child(suffix)
+                        .into_any_element()
+                };
                 div()
                     .id(("share-card", index))
                     .role(Role::RadioButton)
@@ -1515,6 +1544,12 @@ impl Shell {
                             .flex_none()
                             .items_center()
                             .justify_center()
+                            .debug_selector(move || match id.person {
+                                Person::Own => format!("share-thumbnail:own:{}", id.slot),
+                                Person::Of(account_id) => {
+                                    format!("share-thumbnail:{account_id}:{}", id.slot)
+                                }
+                            })
                             .w(u(88.0))
                             .h(u(55.0))
                             .overflow_hidden()
@@ -1539,12 +1574,7 @@ impl Shell {
                                         super::people::avatar(&faces, share.account_id, 16.0)
                                             .radius(2.0),
                                     )
-                                    .child(super::people::person_name(
-                                        &faces,
-                                        share.account_id,
-                                        title,
-                                        "share-person-name",
-                                    )),
+                                    .child(title_element),
                             )
                             .child(
                                 div()

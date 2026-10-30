@@ -13,7 +13,7 @@ fn the_switcher_opens_from_an_input_and_escape_returns_focus(cx: &mut TestAppCon
     assert!(!window.shows("quick-switcher"));
     assert!(window.shows("settings-dialog"));
     window.press("secondary-a");
-    window.cx.simulate_input("Another member");
+    window.simulate(|cx| cx.simulate_input("Another member"));
     window.settle();
     window.click("save-name");
     window.until("typing returns to the original name field", |window| {
@@ -40,7 +40,7 @@ fn choices(window: &mut Window) -> SwitchView {
 fn query(window: &mut Window, part: &str) {
     window.click("switcher-query");
     window.press("secondary-a");
-    window.cx.simulate_input(part);
+    window.simulate(|cx| cx.simulate_input(part));
     window.settle();
 }
 

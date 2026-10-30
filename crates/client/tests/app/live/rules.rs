@@ -210,10 +210,16 @@ impl Scene {
 
     /// Luca invites Ada with the keyboard, from the menu of the person.
     fn invite_ada_with_the_keyboard(&mut self) {
-        self.window.click_named(format!("occupant:{}", self.ada));
+        self.window
+            .click_row_padding(crate::harness::selector(format!("occupant:{}", self.ada)));
+        assert!(!self.window.shows("profile-card"));
         self.window.press("shift-f10");
         assert!(self.window.shows("menu-invite"));
         self.window.press("down enter");
+        assert!(
+            !self.window.shows("profile-card"),
+            "the menu must choose its invitation action"
+        );
     }
 
     /// Turns meeting mode on as the administrator. The server accepts it when its
@@ -1229,7 +1235,10 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
             .call
             .is_some_and(|call| call.target == scene.target && call.phase == Phase::Connected)
     });
-    scene.window.click_named(format!("occupant:{person}"));
+    scene
+        .window
+        .click_row_padding(crate::harness::selector(format!("occupant:{person}")));
+    assert!(!scene.window.shows("profile-card"));
     scene.window.press("shift-f10");
     assert!(scene.window.shows("menu-move"));
     scene.window.press("down enter");

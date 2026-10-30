@@ -377,7 +377,8 @@ fn main() -> ExitCode {
     let directory = match data_dir(arguments.data_dir) {
         Ok(directory) => directory,
         Err(problem) => {
-            start_failed(&problem, None);
+            let kept_in = write_start_failure(&problem);
+            start_failed(&problem, kept_in.as_deref());
             return ExitCode::FAILURE;
         }
     };
@@ -397,7 +398,8 @@ fn main() -> ExitCode {
             Ok(Start::Primary(instance, activations)) => (instance, activations),
             Ok(Start::Forwarded) => return ExitCode::SUCCESS,
             Err(problem) => {
-                start_failed(&problem, None);
+                let kept_in = write_start_failure(&problem);
+                start_failed(&problem, kept_in.as_deref());
                 return ExitCode::FAILURE;
             }
         };

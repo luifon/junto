@@ -1325,7 +1325,7 @@ impl Shell {
                         .on_close(Self::handler(cx, |this, window, cx| {
                             this.close_layer(window, cx);
                         }))
-                        .child(header)
+                        .header(header)
                         .children(items)
                         .child(footer),
                 ),

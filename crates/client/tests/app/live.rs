@@ -823,7 +823,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
     // The person picks the own share: the sound of the other share stops.
-    window.click("share-card:own:0");
+    window.click("share-thumbnail:own:0");
     window.until("the own share is watched", |window| {
         stage(window).is_some_and(|stage| stage.shares[1].watched && !stage.shares[0].watched)
     });
@@ -1079,7 +1079,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
 
     // The person picks the window: its picture and its sound, and not the sound of the
     // screen.
-    window.click_named(format!("share-card:{admin_id}:1"));
+    window.click_named(format!("share-thumbnail:{admin_id}:1"));
     window.until("the window of the administrator is watched", |window| {
         stage(window).is_some_and(|stage| {
             stage
@@ -1101,7 +1101,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
         heard(&window.sound, SYSTEM_TONE_HZ) < ABSENT_DBFS
     });
     // And back to the screen.
-    window.click_named(format!("share-card:{admin_id}:0"));
+    window.click_named(format!("share-thumbnail:{admin_id}:0"));
     window.until("the screen is watched again", |window| {
         heard(&window.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
             && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS

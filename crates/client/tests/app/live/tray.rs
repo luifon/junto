@@ -45,7 +45,7 @@ fn closing_and_reopening_the_main_window_keeps_the_real_call(cx: &mut TestAppCon
         .state
         .read_with(cx, |state, _| (state.calls().clone(), state.kept_tray()));
     let seat = calls.view().call.as_ref().unwrap().seat();
-    window.cx.simulate_keystrokes("secondary-w");
+    window.simulate(|cx| cx.simulate_keystrokes("secondary-w"));
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     assert_eq!(calls.view().call.as_ref().unwrap().seat(), seat);
     cx.update(|cx| assert!(tray.press(text::OPEN_JUNTO, &window.state, cx)));
