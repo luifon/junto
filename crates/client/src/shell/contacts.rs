@@ -231,6 +231,15 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.open_group_create(window, cx)))
                     .into_any_element(),
             );
+            footer.push(
+                Button::new("manage-group-memberships")
+                    .label(words::MANAGE)
+                    .selector("manage-group-memberships")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_group_memberships(window, cx)),
+                    )
+                    .into_any_element(),
+            );
         }
         let mut dialog = Dialog::new(
             if self.groups.mode.is_some() {

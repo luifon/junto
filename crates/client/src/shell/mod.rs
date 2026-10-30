@@ -23,6 +23,7 @@ mod direct;
 mod edges;
 mod feed;
 mod file_links;
+mod group_memberships;
 mod groups;
 mod invited;
 mod join;
@@ -154,6 +155,7 @@ pub(crate) enum Layer {
     /// holds the accounts that it lists.
     NewDirect,
     GroupConversation,
+    GroupMemberships,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
     FileLink(Box<crate::state::OpenFileLink>),
@@ -416,6 +418,7 @@ pub struct Shell {
     /// The part of a name that the chooser of a direct conversation searches.
     pub(crate) contact_part: Entity<InputState>,
     pub(crate) groups: groups::Groups,
+    memberships: group_memberships::Memberships,
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notice_list: notices::NoticeList,
@@ -872,6 +875,7 @@ impl Shell {
             fork_name,
             contact_part,
             groups,
+            memberships: group_memberships::Memberships::default(),
             contacts_scroll: ScrollHandle::new(),
             notice_list: notices::NoticeList::new(),
             badge: None,
@@ -1408,12 +1412,20 @@ impl Shell {
             self.stop_keybind_recording(cx);
         }
         self.release_viewer_picture(cx);
+        if matches!(self.layer, Layer::GroupMemberships)
+            && !matches!(layer, Layer::GroupMemberships)
+        {
+            self.memberships.reset();
+        }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::GroupMemberships) {
+            self.memberships.reset();
+        }
         self.account_volume = None;
         if let Layer::ThreadMenu(open) = self.layer {
             self.state.update(cx, |state, cx| {
@@ -2006,6 +2018,7 @@ impl Shell {
                         .mode
                         .is_some_and(|mode| !self.group_current(mode, cx))
             }
+            Layer::GroupMemberships => !self.group_memberships_current(cx),
             Layer::GroupConversation => self
                 .groups
                 .mode
@@ -2087,6 +2100,7 @@ impl Shell {
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
             Layer::GroupConversation => self.render_group_details(cx),
+            Layer::GroupMemberships => self.render_group_memberships(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
             Layer::AccountMenu(_) => self.render_account_menu(window, cx),

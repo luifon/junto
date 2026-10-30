@@ -126,6 +126,12 @@ impl ServerApi {
     ) -> Result<Vec<junto_protocol::message::GroupConversation>, ApiError> {
         self.get("/group-conversations".to_owned()).await
     }
+    pub async fn group_memberships(
+        &self,
+    ) -> Result<Vec<junto_protocol::message::GroupMembership>, ApiError> {
+        self.get("/group-conversations/memberships".to_owned())
+            .await
+    }
     pub async fn create_group(
         &self,
         name: String,

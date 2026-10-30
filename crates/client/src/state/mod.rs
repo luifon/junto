@@ -561,6 +561,7 @@ pub struct AppState {
     /// The answers to requests to enter that arrived while the request of the person had
     /// no identifier yet.
     early_entry_answers: Vec<(EntryRequestId, EntryOutcome)>,
+    group_membership_changes: HashMap<ServerId, u64>,
     /// The number of requests about a call that the person made.
     call_asks: u64,
     /// The invitations into a call that the person made on this device and that can
@@ -1028,6 +1029,7 @@ impl AppState {
             notice_readers: HashMap::new(),
             entry_asks: 0,
             early_entry_answers: Vec::new(),
+            group_membership_changes: HashMap::new(),
             call_asks: 0,
             made_invitations: HashSet::new(),
             invitations_on_the_way: 0,
@@ -2009,7 +2011,26 @@ impl AppState {
         self.noticed(server_id, notice, cx);
     }
 
+    pub(crate) fn group_membership_generation(&self, server_id: ServerId) -> u64 {
+        self.group_membership_changes
+            .get(&server_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        let membership_changed = match notice {
+            Notice::Reloaded { .. } | Notice::Ended { .. } => true,
+            Notice::Event { event, .. } => {
+                matches!(event.as_ref(), Event::GroupConversationLeft { account_id, .. }
+                if self.client.server(server_id).and_then(|server| server.account()) == Some(*account_id))
+            }
+        };
+        if membership_changed {
+            let generation = self.group_membership_changes.entry(server_id).or_default();
+            *generation = generation.wrapping_add(1);
+            cx.notify();
+        }
         self.people_noticed(server_id, notice, cx);
         self.followed_noticed(server_id, notice, cx);
         self.logos_noticed(server_id, notice, cx);

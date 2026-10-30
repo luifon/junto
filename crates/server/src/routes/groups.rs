@@ -13,7 +13,8 @@ use junto_protocol::{
     events::Event,
     ids::ConversationId,
     message::{
-        CreateGroupConversation, GroupConversation, OpenConversation, RenameGroupConversation,
+        CreateGroupConversation, GroupConversation, GroupMembership, OpenConversation,
+        RenameGroupConversation,
     },
 };
 
@@ -88,6 +89,26 @@ pub async fn list_groups(
         groups::list(connection, &access).await
     })
     .map(Json)
+}
+
+#[utoipa::path(get,path="/api/v1/group-conversations/memberships",tag="messages",security(("session"=[])),responses((status=200,body=Vec<GroupMembership>),ApiError))]
+pub async fn list_group_memberships(
+    State(app): State<AppState>,
+    bearer: Bearer,
+) -> ApiResult<Json<Vec<GroupMembership>>> {
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        if !groups::supported() || !access.allows(junto_authz::Request::DirectMessage(
+            junto_authz::Participation::Participant,
+        )) {
+            return Err(ApiError::not_found());
+        }
+        let rows: Vec<(ConversationId, String)> = sqlx::query_as(
+            "select c.id,c.name from conversations c join conversation_members m on m.conversation_id=c.id
+             where m.account_id=$1 and c.name is not null order by lower(c.name),c.id",
+        ).bind(access.account_id).fetch_all(connection).await?;
+        Ok(rows.into_iter().map(|(id,name)| GroupMembership { id,name }).collect())
+    }).map(Json)
 }
 
 #[utoipa::path(patch,path="/api/v1/group-conversations/{conversation_id}",tag="messages",params(("conversation_id"=ConversationId,Path)),request_body=RenameGroupConversation,security(("session"=[])),responses((status=200,body=GroupConversation),ApiError))]

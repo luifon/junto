@@ -361,10 +361,27 @@ async fn a_group_rechecks_contact_eligibility_and_members_can_leave_an_unavailab
             .error(ErrorCode::NotFound);
         assert!(server.snapshot(person).await.group_conversations.is_empty());
     }
+    for person in [&writer, &reader, &third] {
+        let memberships: Value = server
+            .get(person, &format!("{GROUPS}/memberships"))
+            .await
+            .ok(StatusCode::OK);
+        assert_eq!(memberships, json!([{"id": id, "name": "Project"}]));
+    }
+    let outsiders: Value = server
+        .get(&owner, &format!("{GROUPS}/memberships"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(outsiders, json!([]));
     server
         .delete(&reader, &format!("{GROUPS}/{id}/membership"))
         .await
         .empty(StatusCode::NO_CONTENT);
+    let left: Value = server
+        .get(&reader, &format!("{GROUPS}/memberships"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(left, json!([]));
     server
         .get(&writer, &message_route)
         .await

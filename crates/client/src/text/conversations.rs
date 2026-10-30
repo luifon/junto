@@ -17,3 +17,10 @@ pub const HIDE: &str = "Hide conversation";
 pub const HIDDEN: &str = "Hidden conversations";
 
 pub const OPEN_FAILED: &str = "The conversation could not be opened. Try again.";
+
+pub const MANAGE: &str = "Leave a group";
+pub const MEMBERSHIPS_TITLE: &str = "Your group conversations";
+pub const MEMBERSHIPS_HELP: &str = "Leave a group here even when its messages are unavailable.";
+pub const MEMBERSHIPS_EMPTY: &str = "You are not in any group conversations.";
+pub const MEMBERSHIPS_LOADING: &str = "Reading group conversations…";
+pub const MEMBERSHIPS_REFRESH: &str = "Refresh groups";

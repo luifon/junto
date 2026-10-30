@@ -268,3 +268,91 @@ fn a_late_group_creation_does_not_replace_a_newer_selection(cx: &mut TestAppCont
             .any(|row| row.name.as_deref() == Some("Project"))
     );
 }
+
+#[gpui::test]
+fn an_unavailable_group_can_be_left_from_the_membership_list(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_writer_device, writer) = joined(&world, &server, &code, "Writer");
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_reader_device, reader) = joined(&world, &server, &code, "Reader");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Departing");
+    let own = window.own_account();
+    let group = world
+        .run(
+            writer
+                .api()
+                .create_group("Project".to_owned(), vec![logged_in(&reader), own]),
+        )
+        .unwrap();
+    window.until("the group is listed", |window| {
+        window.shows_named(format!("direct-row:{}", group.id))
+    });
+    let workspace = window.view().workspace().unwrap().id;
+    let other = world
+        .run(admin.handle.api().create_workspace("Other".to_owned()))
+        .unwrap();
+    world
+        .run(admin.handle.api().add_workspace_member(other.id, own))
+        .unwrap();
+    world
+        .run(admin.handle.api().remove_workspace_member(
+            workspace,
+            own,
+            &junto_client_core::api::Statement::default(),
+        ))
+        .unwrap();
+    window.until("unavailable group metadata is withdrawn", |window| {
+        window
+            .view()
+            .lists()
+            .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == group.id))
+            && window.shows("new-direct")
+    });
+    window.click("new-direct");
+    window.click("manage-group-memberships");
+    window.until("the membership is listed", |window| {
+        window.shows_named(format!("membership-leave:{}", group.id))
+    });
+    let server_id = window.handle().id();
+    window.event(
+        server_id,
+        junto_client_core::protocol::events::Event::GroupConversationLeft {
+            conversation_id: group.id,
+            account_id: own,
+        },
+    );
+    window.until(
+        "a withdrawn membership closes the management source",
+        |window| !window.shows("group-memberships"),
+    );
+    window.click("new-direct");
+    window.click("manage-group-memberships");
+    window.until(
+        "a fresh membership read restores its current source",
+        |window| window.shows_named(format!("membership-leave:{}", group.id)),
+    );
+    window.click_named(format!("membership-leave:{}", group.id));
+    window.click("membership-leave-confirm");
+    window.until("membership manager closes", |window| {
+        !window.shows("group-memberships")
+    });
+    let groups = world.run(writer.api().groups()).unwrap();
+    assert!(
+        groups
+            .iter()
+            .any(|held| held.id == group.id && !held.account_ids.contains(&own))
+    );
+    assert!(
+        world
+            .run(
+                window
+                    .handle()
+                    .api()
+                    .messages(PlaceId::Direct(group.id), &Default::default())
+            )
+            .is_err()
+    );
+}

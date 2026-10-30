@@ -224,6 +224,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(groups::create_group, groups::list_groups)
     });
     add(&mut router, || routes!(groups::rename_group));
+    add(&mut router, || routes!(groups::list_group_memberships));
     add(&mut router, || routes!(groups::add_group_member));
     add(&mut router, || routes!(groups::leave_group));
     add(&mut router, || routes!(calls::join_group_call));

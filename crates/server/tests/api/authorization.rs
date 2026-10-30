@@ -505,6 +505,13 @@ async fn world() -> World {
         ),
         operation(
             Method::GET,
+            "/api/v1/group-conversations/memberships",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::GET,
             "/api/v1/group-conversations",
             &[],
             none.clone(),
