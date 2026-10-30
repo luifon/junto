@@ -355,6 +355,15 @@ including empty items. The server, composer and desktop acceptance check use thi
 same count. A forwarded document's larger byte allowance must not permit a stored
 message that the desktop refuses and thereby make its history page unreadable.
 
+Forwarded documents allow 256 KiB of compact JSON. Migration 0050 raises the
+PostgreSQL JSONB text constraint to 512 KiB, allowing its added whitespace while
+the API retains the compact-wire limit. History and thread pages retain a
+contiguous prefix or suffix within 3 MiB, report more rows, and continue from
+the retained boundary. This leaves room below the client's 4 MiB response cap
+for the envelope and a thread root. Export batches use the same byte budget
+and continue from the last retained message; their JSON and HTML output keeps
+the full document. Search excerpts contain at most 512 Unicode characters.
+
 Search still indexes spoiler contents, so an authorized reader can find the message. Its returned snippet substitutes Spoiler for each concealed subtree while retaining ordinary surrounding text. Quotes and notification excerpts likewise conceal those subtrees. Explicit whole-message copying preserves their plain text. HTML exports use native, initially closed details controls; no script is needed.
 
 Search matching and ranking use stored vectors. Message excerpts are constructed from the returned documents after the result limit, with the same spoiler masking as other excerpts; transcript hits use their stored text. Excerpt construction is bounded by the page size rather than the number of matching messages.

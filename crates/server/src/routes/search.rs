@@ -148,6 +148,7 @@ pub async fn search(
             let text = if let Some(document) = document {
                 messages::document::preview_text(&document.0)
             } else { row.try_get::<Option<String>, _>("text")?.unwrap_or_default() };
+            let text = text.chars().take(512).collect();
             results.push(SearchHit {
                 message_id: (!transcript).then(|| MessageId::from_uuid(id)),
                 recording_id: transcript.then(|| RecordingId::from_uuid(id)),

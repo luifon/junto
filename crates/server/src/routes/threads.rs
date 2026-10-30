@@ -70,10 +70,9 @@ pub async fn history(
         if !ascending {
             ids.reverse();
         }
-        let replies = MessagePage {
-            messages: messages::load_messages(connection, &access, &place, &ids).await?,
-            has_more,
-        };
+        let mut messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let has_more = messages::page::bound(&mut messages, ascending)? || has_more;
+        let replies = MessagePage { messages, has_more };
         let allowed = super::search::places(connection, &access).await?;
         let forks = sqlx::query_scalar("select channel_id from thread_forks where root_id=$1 and channel_id=any($2) order by channel_id")
             .bind(id)

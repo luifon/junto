@@ -72,3 +72,66 @@ fn composer_refuses_the_same_list_item_overflow(_cx: &mut TestAppContext) {
     });
     assert!(junto_client::compose::check(&boundary, false).is_err());
 }
+
+#[gpui::test]
+fn forwarding_unicode_mentions_above_32_kib_is_confirmed_in_the_desktop(cx: &mut TestAppContext) {
+    use junto_client::shell::Pane;
+    use junto_client_core::protocol::message::Inline;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    world
+        .run(admin.handle.api().update_profile(&"界".repeat(64)))
+        .unwrap();
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let body = Document {
+        blocks: vec![Block::Paragraph {
+            content: vec![
+                Inline::Account {
+                    account_id: admin.handle.account().unwrap(),
+                };
+                200
+            ],
+        }],
+    };
+    assert!(serde_json::to_vec(&body).unwrap().len() < 16 * 1024);
+    let source = admin.send(&world, window.selected_channel(), body);
+    let target = admin.text_channel(&world, &mut window, "delivery");
+    let server_id = window.view().selected.unwrap().id;
+    window.until("the source is loaded", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == source.id)
+    });
+    window.in_shell(|shell, window, cx| shell.open_message_menu(Pane::Main, source.id, window, cx));
+    window.click("message-forward");
+    window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
+    window.click("forward-send");
+    window.until("the forward is confirmed or refused", |window| {
+        window.messages().iter().any(|row| {
+            row.message
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.forward_origins() == 1)
+        }) || window.shows("send-again")
+    });
+    let copied = window
+        .messages()
+        .into_iter()
+        .find(|row| {
+            row.message
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.forward_origins() == 1)
+        })
+        .expect("the large forward must be confirmed");
+    assert!(serde_json::to_vec(&copied.message.document).unwrap().len() > 32_768);
+    assert_eq!(
+        world
+            .run(admin.handle.api().message(copied.message.id))
+            .unwrap()
+            .document,
+        copied.message.document
+    );
+}

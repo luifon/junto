@@ -155,7 +155,8 @@ async fn history(
         if !ascending {
             ids.reverse();
         }
-        let messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let mut messages = messages::load_messages(connection, &access, &place, &ids).await?;
+        let has_more = messages::page::bound(&mut messages, ascending)? || has_more;
         Ok(MessagePage { messages, has_more })
     })
 }

@@ -3,6 +3,7 @@ pub mod direct_calls;
 pub mod document;
 mod mentions;
 pub mod notifications;
+pub mod page;
 mod place;
 pub mod retention;
 mod store;

@@ -88,6 +88,7 @@ mod messages_content;
 mod messages_migration;
 mod messages_queries;
 mod messages_rates;
+mod messages_review;
 mod messages_storage;
 mod messages_support;
 mod messages_system;
