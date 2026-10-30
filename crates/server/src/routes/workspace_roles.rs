@@ -214,11 +214,7 @@ pub(crate) async fn create(
     let workspace_id = role.workspace_id;
     let permissions: WorkspacePermissions = role.permissions.iter().copied().collect();
     let scope = access.workspace(connection, workspace_id).await?;
-    access.require(Request::ManageWorkspaceRoles {
-        scope: &scope,
-        granting: permissions,
-        in_channels: &[],
-    })?;
+    require_creation(access, &scope, role)?;
     let existing: i64 =
         sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
             .bind(workspace_id)
@@ -241,6 +237,28 @@ pub(crate) async fn create(
     .bind(now)
     .execute(&mut *connection)
     .await?;
+    announce_creation(connection, access, now, role).await
+}
+
+pub(crate) fn require_creation(
+    access: &Access,
+    scope: &WorkspaceScope,
+    role: &WorkspaceRole,
+) -> ApiResult<()> {
+    access.require(Request::ManageWorkspaceRoles {
+        scope,
+        granting: role.permissions.iter().copied().collect(),
+        in_channels: &[],
+    })
+}
+
+pub(crate) async fn announce_creation(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &WorkspaceRole,
+) -> ApiResult<()> {
+    let workspace_id = role.workspace_id;
     audit::record(
         connection,
         now,
