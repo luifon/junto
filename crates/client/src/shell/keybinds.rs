@@ -386,8 +386,6 @@ impl Shell {
                     })
                     .kind(ButtonKind::Ghost)
                     .selector(selector("set", action))
-                    .h(u(26.0))
-                    .px(u(8.0))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.keys.recording = Some(action);
                         this.keys.recording_release = true;
@@ -406,8 +404,6 @@ impl Shell {
                         .label(text::REMOVE_KEYS)
                         .kind(ButtonKind::Ghost)
                         .selector(selector("remove", action))
-                        .h(u(26.0))
-                        .px(u(8.0))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
                                 let _ = state.change_keybinds(KeybindChange::Set(action, None), cx);
@@ -421,8 +417,6 @@ impl Shell {
                         .label(text::RESET_KEYS)
                         .kind(ButtonKind::Ghost)
                         .selector(selector("reset", action))
-                        .h(u(26.0))
-                        .px(u(8.0))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
                                 let _ = state.change_keybinds(KeybindChange::Reset(action), cx);

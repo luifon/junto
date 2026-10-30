@@ -23,7 +23,8 @@ pub enum ButtonKind {
     RailAccent,
     /// A square button of the profile strip.
     Square,
-    /// An icon without a frame, such as the close button of a panel.
+    /// An icon without a frame, such as the close button of a panel; with a label, a word
+    /// without a frame, as wide as the word.
     Ghost,
     /// The action that enters a call: a raised button with cypress text.
     Green,
@@ -415,6 +416,7 @@ impl RenderOnce for Button {
                 .min_w(u(38.0))
                 .px(u(9.0))
                 .text_size(u(13.5)),
+            ButtonKind::Ghost if self.label.is_some() => frame.h(u(26.0)).px(u(8.0)),
             ButtonKind::Ghost => frame.w(u(26.0)).h(u(26.0)),
         };
         if let Some(border) = look.border {

@@ -181,6 +181,34 @@ fn a_binding_is_recorded_its_conflict_shown_and_reset_and_a_second_start_keeps_i
 }
 
 #[gpui::test]
+fn the_buttons_of_a_binding_hold_their_labels(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open(cx, directory.path());
+    open_keybinds(&mut window);
+    let text = crate::admin_pages::drawn_text(&mut window);
+    let keys = window.cx.debug_bounds("keybind-keys-toggle_mute").unwrap();
+    let mut left = keys.right();
+    for (selector, label) in [
+        ("keybind-set-toggle_mute", "Change"),
+        ("keybind-remove-toggle_mute", "Remove"),
+    ] {
+        let button = window.cx.debug_bounds(selector).unwrap();
+        let drawn = text
+            .iter()
+            .find(|drawn| drawn.text == label && drawn.bounds.intersects(&button))
+            .unwrap_or_else(|| panic!("{label} is not drawn on {selector}"));
+        assert!(
+            drawn.bounds.left() >= button.left()
+                && drawn.bounds.right() <= button.right()
+                && drawn.bounds.left() >= left,
+            "{label} at {:?} leaves {selector} at {button:?}",
+            drawn.bounds
+        );
+        left = drawn.bounds.right();
+    }
+}
+
+#[gpui::test]
 fn a_binding_does_its_action_while_the_window_is_in_front(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");
