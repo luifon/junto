@@ -157,6 +157,168 @@ fn dragging_across_message_rows_copies_both_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn dragging_at_the_edge_selects_history_across_several_screens(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    let lines: Vec<_> = (0..90)
+        .map(|index| format!("row {index:03} café 世界"))
+        .collect();
+    for line in &lines {
+        admin.send(&world, channel, document(line));
+    }
+    window.until_message(&lines[89]);
+    window.settle();
+    let from = window
+        .in_shell(|shell, _, _| shell.readonly_text_point(&lines[89], "row 089 café".len()))
+        .unwrap();
+    let viewport = window.cx.debug_bounds("message-list").unwrap();
+    let edge = point(from.x, viewport.top() + px(2.0));
+    window.dispatch(gpui::MouseDownEvent {
+        position: from,
+        button: MouseButton::Left,
+        ..Default::default()
+    });
+    window.dispatch(gpui::MouseMoveEvent {
+        position: edge,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
+    window.until_read(
+        "dragging at the edge scrolls to the first message",
+        |window| {
+            window.shell.read_with(&window.cx, |shell, _| {
+                (
+                    shell
+                        .painted_readonly_text()
+                        .into_iter()
+                        .filter(|text| text.starts_with("row "))
+                        .collect::<Vec<_>>(),
+                    shell
+                        .readonly_text_point(&lines[0], "row 000 ".len())
+                        .is_some_and(|point| point.y > viewport.top() + px(40.0)),
+                )
+            })
+        },
+        |(_, reached)| *reached,
+    );
+    let to = window
+        .shell
+        .read_with(&window.cx, |shell, _| {
+            shell.readonly_text_point(&lines[0], "row 000 ".len())
+        })
+        .unwrap();
+    window.dispatch(gpui::MouseMoveEvent {
+        position: to,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
+    window.dispatch(gpui::MouseUpEvent {
+        position: to,
+        button: MouseButton::Left,
+        ..Default::default()
+    });
+    window.press("secondary-c");
+    let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    let mut expected = vec!["café 世界".to_owned()];
+    expected.extend_from_slice(&lines[1..89]);
+    expected.push("row 089 café".to_owned());
+    assert_eq!(copied, expected.join("\n"));
+    // The anchor remains valid when neither endpoint is painted.
+    let middle = window.feed().unwrap().rows.len() / 2;
+    window
+        .in_shell(|shell, _, cx| shell.show_feed_row(junto_client::shell::Pane::Main, middle, cx));
+    window.settle();
+    assert!(
+        window
+            .in_shell(|shell, _, _| shell.readonly_text_point(&lines[0], 0))
+            .is_none()
+    );
+    assert!(
+        window
+            .in_shell(|shell, _, _| shell.readonly_text_point(&lines[89], 0))
+            .is_none()
+    );
+    window.press("secondary-c");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        expected.join("\n")
+    );
+}
+
+#[gpui::test]
+fn history_selection_masks_concealed_text_and_a_source_edit_invalidates_it(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    admin.send(&world, channel, document("first café"));
+    let middle = admin.send(
+        &world,
+        channel,
+        junto_client::compose::parse("before ||secret|| after", &[]),
+    );
+    admin.send(&world, channel, document("last 世界"));
+    window.until_message("last 世界");
+    window.settle();
+    let from = window
+        .in_shell(|shell, _, _| shell.readonly_text_point("first café", 0))
+        .unwrap();
+    let to = window
+        .in_shell(|shell, _, _| shell.readonly_text_point("last 世界", "last 世界".len()))
+        .unwrap();
+    window.dispatch(gpui::MouseDownEvent {
+        position: from,
+        button: MouseButton::Left,
+        ..Default::default()
+    });
+    window.dispatch(gpui::MouseMoveEvent {
+        position: to,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
+    window.dispatch(gpui::MouseUpEvent {
+        position: to,
+        button: MouseButton::Left,
+        ..Default::default()
+    });
+    window.press("secondary-c");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "first café\nbefore Spoiler after\nlast 世界"
+    );
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .edit_message(middle.id, document("changed source")),
+        )
+        .unwrap();
+    window.until_message("changed source");
+    window.settle();
+    window.cx.write_to_clipboard(ClipboardItem::new_string(
+        "selection invalidated".to_owned(),
+    ));
+    window.press("secondary-c");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "selection invalidated"
+    );
+}
+
+#[gpui::test]
 fn hovering_an_adjacent_paragraph_copies_that_paragraph(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");

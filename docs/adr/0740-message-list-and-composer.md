@@ -174,7 +174,7 @@ A `#` at a word boundary offers visible channels as completion tokens in every c
 
 `# `, `## ` and `### ` at a line start make three heading sizes; `-# ` makes small text. `||…||` conceals inline content, including formatted text, code, links and mentions. A backslash escapes a pipe, and code spans/blocks treat their contents literally. The toolbar offers Heading, Small text and Spoiler in every composer; it wraps at narrow widths instead of clipping controls.
 
-The shared paragraph renderer paints a Spoiler control instead of the hidden subtree. A press reveals that subtree; Enter or Space reveals the next spoiler in the focused paragraph, with a focus ring. Reveal state belongs to that rendered paragraph and is reset when that paragraph's content or account owner changes; it never changes a message or sends the composer. Pending, forwarded, pinned, channel, direct and thread messages use the same renderer. Editing writes the typed structure back to marks and preserves tokens. Quotes and notice excerpts use a safe plain preview; explicit message/selection copying retains the complete text, and code keeps its whitespace. Search preserves matching on hidden words but masks them in its excerpt (ADR 0408).
+The shared paragraph renderer paints a Spoiler control instead of the hidden subtree. A press reveals that subtree; Enter or Space reveals the next spoiler in the focused paragraph, with a focus ring. Reveal state belongs to that rendered paragraph and is reset when that paragraph's content or account owner changes; it never changes a message or sends the composer. Pending, forwarded, pinned, channel, direct and thread messages use the same renderer. Editing writes the typed structure back to marks and preserves tokens. Quotes and notice excerpts use a safe plain preview; explicit whole-message copying retains the complete text, and code keeps its whitespace. Search preserves matching on hidden words but masks them in its excerpt (ADR 0408).
 
 
 ### Composer preview
@@ -215,3 +215,26 @@ Source link · Not verified; a remote copy says Forwarded from another server ·
 Not verified. Both retain only the source-access-checked navigation. The
 composer clears verification when its copied document changes, and the server
 independently enforces the same rule (ADR 0408).
+
+History selection anchors its endpoints to a pane, message position and identifier,
+and UTF-8 byte offsets in its visible text. The selection keeps the intervening
+text when the virtual list stops painting it and when earlier pages arrive.
+Painted fragments map back to those offsets after display padding is removed;
+headers and action labels are outside the body range. A pointer held within
+32 pixels of a list edge advances that list on display frames until release.
+The first step normalizes the tail sentinel to the physical scrollbar offset
+before moving it; subtracting from the past-the-last-row sentinel would lay out
+at the bottom again and let the history resume tail following on every frame.
+Scrolling does not change the anchor's identity. Channel, account, thread and
+layer changes reset the selection; a changed selected message invalidates it.
+Selected text is capped at the timeline's 16 MiB memory bound; extension and
+edge scrolling stop at that bound. The registry retains current loaded rows and
+the selected interval, discarding unselected old rows when the feed changes.
+Cached row/name revisions hold their Arcs, so allocator address reuse cannot
+mistake new rows for the old revision.
+
+Selection across messages follows visible content and substitutes Spoiler for a
+concealed subtree. Explicit whole-message copy continues to include the full
+body. The 90-message window regression drags backwards over several screens,
+checks partial Unicode endpoints and every intervening row, then copies again
+with neither endpoint painted.

@@ -14,7 +14,7 @@ use crate::{
 impl Shell {
     pub(crate) fn selection_context(&self) {
         self.text_selection.scope(format!(
-            "{:?}:{:?}:{:?}:{:?}",
+            "{:?}:{:?}:{:?}:{:?}:{:?}",
             self.view
                 .as_ref()
                 .and_then(|view| view.selected.as_ref().map(|server| server.id)),
@@ -22,6 +22,11 @@ impl Shell {
             self.view
                 .as_ref()
                 .and_then(|view| view.lists()?.feed.as_ref().map(|feed| feed.place)),
+            self.view.as_ref().and_then(|view| view
+                .workspace()?
+                .thread
+                .as_ref()
+                .map(|thread| thread.root_id)),
             std::mem::discriminant(&self.layer)
         ));
     }

@@ -1671,6 +1671,43 @@ impl Shell {
         }
         shown.failed = (feed.reading.older_failed, feed.reading.newer_failed);
         let state = self.list(pane).list.clone();
+        let lane = if pane == Pane::Main { 0 } else { 1 };
+        self.text_selection.history(
+            lane,
+            state.clone(),
+            feed.rows.clone(),
+            feed.names.clone(),
+            || {
+                feed.rows
+                    .iter()
+                    .filter_map(|row| {
+                        let FeedRow::Message(row) = row else {
+                            return None;
+                        };
+                        let message = &row.message;
+                        let words = if message.deleted {
+                            text::DELETED_MESSAGE.to_owned()
+                        } else {
+                            message
+                                .document
+                                .as_ref()
+                                .map(|document| {
+                                    crate::state::feed::selection_text(document, &feed.names)
+                                })
+                                .unwrap_or_default()
+                        };
+                        Some((
+                            crate::selectable::MessageKey {
+                                lane,
+                                position: message.position,
+                                id: message.id,
+                            },
+                            words,
+                        ))
+                    })
+                    .collect()
+            },
+        );
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
         // The list lays out each row as a root, where a flex row takes the width of its
@@ -3512,6 +3549,22 @@ impl Shell {
             body
         };
         let pane = Pane::of(feed.place);
+        let body = if bare {
+            body
+        } else {
+            vec![
+                self.text_selection
+                    .message(
+                        div().children(body),
+                        crate::selectable::MessageKey {
+                            lane: if pane == Pane::Main { 0 } else { 1 },
+                            position: message.position,
+                            id: message_id,
+                        },
+                    )
+                    .into_any_element(),
+            ]
+        };
         let header = (!row.grouped).then(|| {
             div()
                 .flex()

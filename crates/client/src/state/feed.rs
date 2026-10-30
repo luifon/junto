@@ -517,6 +517,40 @@ fn clock(at: OffsetDateTime) -> String {
 
 /// The text of a document on one line, without its formatting, up to a bound.
 /// Text for the clipboard, retaining line breaks, code indentation and list items.
+pub(crate) fn selection_text(document: &Document, names: &Names) -> String {
+    fn conceal(content: &mut [Inline]) {
+        for node in content {
+            if matches!(node, Inline::Spoiler { .. }) {
+                *node = Inline::Text {
+                    text: crate::text::SPOILER.to_owned(),
+                    marks: Vec::new(),
+                };
+            }
+        }
+    }
+    let mut visible = document.clone();
+    for block in &mut visible.blocks {
+        match block {
+            Block::Heading { content, .. }
+            | Block::Small { content }
+            | Block::Paragraph { content }
+            | Block::Quote { content } => conceal(content),
+            Block::List { items, .. } => {
+                for item in items {
+                    conceal(item);
+                }
+            }
+            Block::Checklist { items } => {
+                for item in items {
+                    conceal(&mut item.content);
+                }
+            }
+            _ => {}
+        }
+    }
+    copy_text(&visible, names)
+}
+
 pub fn copy_text(document: &Document, names: &Names) -> String {
     let inline = |nodes: &[Inline]| {
         let mut out = String::new();

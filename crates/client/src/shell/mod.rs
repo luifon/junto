@@ -613,6 +613,7 @@ impl Shell {
                         .update(cx, |state, cx| state.set_window_active(active, cx));
                 }
                 if !window.is_window_active() {
+                    this.text_selection.stop_drag();
                     this.keys.modifiers = Modifiers::none();
                     this.keys.down = None;
                     this.keys.talks = false;

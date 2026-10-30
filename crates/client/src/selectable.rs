@@ -1,10 +1,14 @@
-use std::{cell::RefCell, ops::Range, rc::Rc};
+mod history;
+
+pub(crate) use history::Key as MessageKey;
+use history::{Anchor, History, Paint};
+use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
-    InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, TextLayout, Window, fill, point, px, size,
-    with_text_paint_observer,
+    InspectorElementId, IntoElement, KeyDownEvent, LayoutId, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, TextLayout, Window, fill, point,
+    px, size, with_text_paint_observer,
 };
 
 #[derive(Clone)]
@@ -13,6 +17,7 @@ struct Part {
     layout: TextLayout,
     visible: Bounds<Pixels>,
     targets: Option<CopyTargets>,
+    message: Option<(MessageKey, usize)>,
 }
 
 struct TextCopy {
@@ -56,6 +61,21 @@ impl Part {
         }
         self.visible
     }
+    fn source_byte(&self, byte: usize) -> usize {
+        let mut copied = 0;
+        let mut at = 0;
+        if let Some(targets) = &self.targets {
+            for (shown, source) in &targets.replacements {
+                if shown.end <= at || shown.start >= byte {
+                    continue;
+                }
+                copied += shown.start.saturating_sub(at) + source.len();
+                at = shown.end.min(byte);
+            }
+        }
+        copied + byte.saturating_sub(at)
+    }
+
     fn copied(&self, range: Range<usize>) -> String {
         let mut out = String::new();
         let mut at = range.start;
@@ -77,6 +97,7 @@ impl Part {
 }
 
 thread_local! {
+    static MESSAGE: RefCell<Option<Rc<Paint>>> = const { RefCell::new(None) };
     static COPY_TARGETS: RefCell<Option<CopyTargets>> = const { RefCell::new(None) };
 }
 
@@ -95,6 +116,10 @@ struct Selection {
     hovered: Option<(usize, usize)>,
     focus: Option<FocusHandle>,
     control: Option<Bounds<Pixels>>,
+    history: History,
+    pointer: Option<Point<Pixels>>,
+    scrolling: bool,
+    autoscrolled: Option<Point<Pixels>>,
 }
 
 impl Selection {
@@ -114,7 +139,61 @@ impl Selection {
             })
     }
 
+    fn anchor(&self, index: usize, byte: usize) -> Option<Anchor> {
+        let part = self.parts.get(index)?;
+        let (key, offset) = part.message?;
+        Some(Anchor {
+            key,
+            byte: offset + part.source_byte(byte),
+        })
+    }
+
+    fn nearest(&self, position: Point<Pixels>) -> Option<(usize, usize)> {
+        self.hit(position)
+            .filter(|(index, _)| {
+                self.history.start.is_none() || self.parts[*index].message.is_some()
+            })
+            .or_else(|| {
+                self.parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, part)| {
+                        self.history.start.is_none_or(|start| {
+                            part.message
+                                .is_some_and(|(key, _)| key.lane == start.key.lane)
+                        })
+                    })
+                    .min_by_key(|(_, part)| (part.visible.center() - position).magnitude() as i64)
+                    .map(|(index, part)| {
+                        (
+                            index,
+                            part.layout
+                                .index_for_position(position)
+                                .unwrap_or_else(|byte| byte)
+                                .min(part.text.len()),
+                        )
+                    })
+            })
+    }
+
     fn range(&self, index: usize, len: usize) -> Range<usize> {
+        if self.history.start.is_some() {
+            let part = &self.parts[index];
+            let Some((key, offset)) = part.message else {
+                return 0..0;
+            };
+            let selected = self.history.range(key, offset + part.source_byte(len));
+            let mut from = None;
+            let mut to = 0;
+            for (byte, character) in part.text.char_indices() {
+                if selected.contains(&(offset + part.source_byte(byte))) {
+                    from.get_or_insert(byte);
+                    to = byte + character.len_utf8();
+                }
+            }
+            return from.unwrap_or(0)..to;
+        }
+
         let (Some(start), Some(end)) = (self.start, self.end) else {
             return 0..0;
         };
@@ -136,6 +215,9 @@ impl Selection {
     }
 
     fn text(&self) -> String {
+        if let Some(text) = self.history.text() {
+            return text;
+        }
         self.parts
             .iter()
             .enumerate()
@@ -169,6 +251,103 @@ impl TextSelection {
         part.visible.contains(&position).then_some(position)
     }
 
+    pub(crate) fn history(
+        &self,
+        lane: u8,
+        list: ListState,
+        rows: Arc<Vec<crate::state::feed::FeedRow>>,
+        names: Arc<crate::state::feed::Names>,
+        messages: impl FnOnce() -> Vec<(MessageKey, String)>,
+    ) {
+        let mut held = self.0.borrow_mut();
+        held.history.lists.insert(lane, list);
+        if held
+            .history
+            .revisions
+            .get(&lane)
+            .is_some_and(|(old_rows, old_names)| {
+                Arc::ptr_eq(old_rows, &rows) && Arc::ptr_eq(old_names, &names)
+            })
+        {
+            return;
+        }
+        let active = held.history.start.is_some();
+        held.history.seed(lane, messages());
+        held.history.revisions.insert(lane, (rows, names));
+        if active && held.history.start.is_none() {
+            held.start = None;
+            held.end = None;
+            held.pressed = false;
+            held.pointer = None;
+        }
+    }
+
+    pub(crate) fn message(&self, child: impl IntoElement, key: MessageKey) -> SelectableText {
+        let mut element = SelectableText::unobserved(child);
+        element.message = self.0.borrow().history.paint(key);
+        element.observed_message = true;
+        element
+    }
+
+    fn scroll(&self, window: &mut Window) {
+        let mut held = self.0.borrow_mut();
+        if held.scrolling || !held.pressed || !held.dragging || held.history.start.is_none() {
+            return;
+        }
+        let Some(pointer) = held.pointer else {
+            return;
+        };
+        let Some(start) = held.history.start else {
+            return;
+        };
+        let Some(list) = held.history.lists.get(&start.key.lane).cloned() else {
+            return;
+        };
+        let bounds = list.viewport_bounds();
+        if pointer.x < bounds.left() || pointer.x > bounds.right() {
+            return;
+        }
+        let distance = if pointer.y <= bounds.top() + px(32.0) {
+            -px(28.0)
+        } else if pointer.y >= bounds.bottom() - px(32.0) {
+            px(28.0)
+        } else {
+            return;
+        };
+        held.scrolling = true;
+        let scope = held.scope.clone();
+        drop(held);
+        let selection = self.clone();
+        window.on_next_frame(move |window, _| {
+            let mut held = selection.0.borrow_mut();
+            if held.scope != scope {
+                return;
+            }
+            held.scrolling = false;
+            if !held.pressed
+                || !held.dragging
+                || held.pointer != Some(pointer)
+                || held.history.start != Some(start)
+            {
+                return;
+            }
+            held.autoscrolled = Some(pointer);
+            drop(held);
+            let maximum = list.max_offset_for_scrollbar().y;
+            let current = list
+                .scroll_px_offset_for_scrollbar()
+                .y
+                .max(-maximum)
+                .min(px(0.0));
+            list.set_follow_mode(gpui::FollowMode::Normal);
+            list.set_offset_from_scrollbar(point(
+                px(0.0),
+                (current - distance).max(-maximum).min(px(0.0)),
+            ));
+            window.refresh();
+        });
+    }
+
     pub fn control(&self, bounds: Option<Bounds<Pixels>>) {
         self.0.borrow_mut().control = bounds;
     }
@@ -199,11 +378,20 @@ impl TextSelection {
         Some((value, part.copy_bounds(byte)))
     }
 
+    pub(crate) fn stop_drag(&self) {
+        let mut held = self.0.borrow_mut();
+        held.pressed = false;
+        held.dragging = false;
+        held.pointer = None;
+    }
+
     pub fn clear(&self) {
         let mut held = self.0.borrow_mut();
         held.start = None;
         held.end = None;
         held.hovered = None;
+        held.history.clear();
+        held.pointer = None;
     }
 }
 
@@ -214,6 +402,8 @@ pub struct SelectableText {
     selection: Option<TextSelection>,
     targets: Option<CopyTargets>,
     covered: Option<TextSelection>,
+    message: Option<Rc<Paint>>,
+    observed_message: bool,
 }
 
 impl SelectableText {
@@ -223,6 +413,8 @@ impl SelectableText {
             selection: Some(selection),
             targets: None,
             covered: None,
+            message: None,
+            observed_message: false,
         }
     }
 
@@ -232,6 +424,8 @@ impl SelectableText {
             selection: None,
             targets: None,
             covered: None,
+            message: None,
+            observed_message: false,
         }
     }
 
@@ -248,6 +442,8 @@ impl SelectableText {
                 replacements,
             })),
             covered: None,
+            message: None,
+            observed_message: false,
         }
     }
 
@@ -261,6 +457,8 @@ impl SelectableText {
             selection: None,
             targets: None,
             covered: Some(selection),
+            message: None,
+            observed_message: false,
         }
     }
 }
@@ -311,6 +509,19 @@ impl Element for SelectableText {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if self.observed_message {
+            struct Restore(Option<Rc<Paint>>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    MESSAGE.set(self.0.take());
+                }
+            }
+            if let Some(message) = &self.message {
+                message.cursor.set(0);
+            }
+            let _restore = Restore(MESSAGE.replace(self.message.clone()));
+            return self.child.paint(window, cx);
+        }
         if let Some(covered) = &self.covered {
             covered.0.borrow_mut().parts.clear();
             return self.child.paint(window, cx);
@@ -340,6 +551,8 @@ impl Element for SelectableText {
             {
                 return;
             }
+            held.history.clear();
+            held.pointer = Some(event.position);
             held.start = held.hit(event.position);
             held.end = held.start;
             held.origin = Some(event.position);
@@ -371,6 +584,10 @@ impl Element for SelectableText {
                     focus.focus(window, cx);
                 }
             }
+            held.history.start = held
+                .start
+                .and_then(|(index, byte)| held.anchor(index, byte));
+            held.history.end = held.end.and_then(|(index, byte)| held.anchor(index, byte));
             window.refresh();
         });
         let moved = selection.clone();
@@ -399,28 +616,24 @@ impl Element for SelectableText {
                     if let Some(focus) = &held.focus {
                         focus.focus(window, cx);
                     }
-                    held.end = held.hit(event.position).or_else(|| {
-                        held.parts
-                            .iter()
-                            .enumerate()
-                            .min_by_key(|(_, part)| {
-                                let distance = (part.visible.center() - event.position).magnitude();
-                                distance as i64
-                            })
-                            .map(|(index, part)| {
-                                (
-                                    index,
-                                    part.layout
-                                        .index_for_position(event.position)
-                                        .unwrap_or_else(|byte| byte)
-                                        .min(part.text.len()),
-                                )
-                            })
-                    });
+                    held.pointer = Some(event.position);
+                    held.autoscrolled = None;
+                    held.end = held.nearest(event.position);
+                    if let Some(anchor) =
+                        held.end.and_then(|(index, byte)| held.anchor(index, byte))
+                    {
+                        held.history.extend(anchor);
+                    }
                     window.refresh();
+                    drop(held);
+                    moved.scroll(window);
                     cx.stop_propagation();
                 }
             } else {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    held.pressed = false;
+                    held.pointer = None;
+                }
                 let hovered = held.hit(event.position);
                 let hover_bounds = held.hovered.and_then(|(index, byte)| {
                     held.parts.get(index).map(|part| part.copy_bounds(byte))
@@ -439,10 +652,19 @@ impl Element for SelectableText {
             }
         });
         let released = selection.clone();
-        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
             if phase == DispatchPhase::Capture {
                 let mut held = released.0.borrow_mut();
+                if held.pressed && held.dragging {
+                    held.end = held.nearest(event.position);
+                    if let Some(anchor) =
+                        held.end.and_then(|(index, byte)| held.anchor(index, byte))
+                    {
+                        held.history.extend(anchor);
+                    }
+                }
                 held.pressed = false;
+                held.pointer = None;
                 if held.dragging {
                     cx.stop_propagation();
                 }
@@ -475,7 +697,30 @@ impl Element for SelectableText {
                     return;
                 }
                 let mut held = next.0.borrow_mut();
-                let index = held.parts.len();
+                let mut part = Part {
+                    text: text.to_owned(),
+                    layout: layout.clone(),
+                    visible,
+                    targets: COPY_TARGETS.with_borrow(Clone::clone),
+                    message: None,
+                };
+                MESSAGE.with_borrow(|source| {
+                    if let Some(source) = source {
+                        let copied = part.copied(0..part.text.len());
+                        if !copied.is_empty()
+                            && let Some(offset) = source
+                                .text
+                                .get(source.cursor.get()..)
+                                .and_then(|rest| rest.find(&copied))
+                        {
+                            let offset = source.cursor.get() + offset;
+                            part.message = Some((source.key, offset));
+                            source.cursor.set(offset + copied.len());
+                        }
+                    }
+                });
+                held.parts.push(part);
+                let index = held.parts.len() - 1;
                 let range = held.range(index, text.len());
                 let color = crate::theme::theme(cx).colors.target_wash;
                 for (byte, character) in
@@ -499,12 +744,6 @@ impl Element for SelectableText {
                         color,
                     ));
                 }
-                held.parts.push(Part {
-                    text: text.to_owned(),
-                    layout: layout.clone(),
-                    visible,
-                    targets: COPY_TARGETS.with_borrow(Clone::clone),
-                });
             })),
             || self.child.paint(window, cx),
         );
@@ -516,7 +755,9 @@ impl Element for SelectableText {
             {
                 held.hovered = None;
             }
-            if let (Some(start), Some(end)) = (held.start, held.end) {
+            if held.history.start.is_none()
+                && let (Some(start), Some(end)) = (held.start, held.end)
+            {
                 let from = start.0.min(end.0);
                 let to = start.0.max(end.0);
                 if (from..=to).any(|index| {
@@ -529,6 +770,20 @@ impl Element for SelectableText {
                     held.pressed = false;
                 }
             }
+            if held.pressed
+                && held.dragging
+                && let Some(pointer) = held
+                    .autoscrolled
+                    .take()
+                    .filter(|pointer| Some(*pointer) == held.pointer)
+                && let Some(anchor) = held
+                    .nearest(pointer)
+                    .and_then(|(index, byte)| held.anchor(index, byte))
+                && !held.history.extend(anchor)
+            {
+                held.pointer = None;
+            }
         }
+        selection.scroll(window);
     }
 }
