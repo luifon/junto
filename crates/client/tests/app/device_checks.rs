@@ -312,3 +312,125 @@ fn removing_the_current_server_cancels_its_open_device_checks(cx: &mut TestAppCo
     });
     assert!(!window.shows("camera-preview-picture"));
 }
+
+#[gpui::test]
+fn a_late_microphone_permission_answer_does_not_reopen_closed_checks(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    window.permission.set(MicrophoneAccess::NotAsked);
+    window.permission.hold();
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    window.click_in_settings("test-microphone");
+    window.until("the system permission question is pending", |window| {
+        window.permission.asked() == 1
+    });
+    assert!(window.sound.opened_inputs().is_empty());
+    window.press("escape");
+    window.permission.release();
+    window.until(
+        "closed checks remain released after the permission answer",
+        |window| {
+            window.state.read_with(&window.cx, |state, _| {
+                !state.device_checks_open()
+                    && state.calls().device_check_view() == Default::default()
+                    && !state.calls().input_test_runs()
+            })
+        },
+    );
+    window.settle();
+    assert!(window.sound.opened_inputs().is_empty());
+    assert_eq!(window.camera.active(), 0);
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    assert!(!window.shows("device-test-playing"));
+    assert!(window.state.read_with(
+        &window.cx,
+        |state, _| state.calls().device_check_view().audio == AudioCheckState::Off
+    ));
+}
+
+#[gpui::test]
+fn an_actual_account_replacement_releases_checks_and_ignores_late_permission(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::{flow::access::AccessState, protocol::account::RecoverAccount};
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Reader");
+    let handle = window.handle();
+    let first_device = match handle.access().state {
+        AccessState::LoggedIn { device_id, .. } => device_id,
+        other => panic!("expected a session: {other:?}"),
+    };
+    let (_phone, phone) = crate::account::second_device(&world, &server, &handle);
+    let code = admin.invite(&world, 1);
+    let (_other_device, other) = crate::admin_pages::joined(&world, &server, &code, "Other reader");
+    let other = crate::support::logged_in(&other);
+    window.permission.set(MicrophoneAccess::NotAsked);
+    window.permission.hold();
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    window.click_in_settings("preview-camera");
+    window.until("the old account previews its camera", |window| {
+        window.camera.active() == 1 && window.shows("camera-preview-picture")
+    });
+    window.click_in_settings("test-microphone");
+    window.until(
+        "microphone permission waits for the old account",
+        |window| window.permission.asked() == 1,
+    );
+    let key = handle.device_public_key().unwrap();
+    proxy.hold_events();
+    world.run(async {
+        phone.api().remove_device(first_device).await.unwrap();
+        admin
+            .handle
+            .api()
+            .recover_account(
+                other,
+                &RecoverAccount {
+                    public_key: key,
+                    device_name: "Laptop".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let result=handle.api().own_account().await;
+        assert!(matches!(result,Err(junto_client_core::api::ApiError::AccountChanged {now,..}) if now==other),"the ended session must renew into the recovered account: {result:?}");
+    });
+    window.until_read(
+        "the same server now has another account and releases old checks",
+        |window| {
+            (
+                handle.account(),
+                window.camera.active(),
+                window.state.read_with(&window.cx, |state, _| {
+                    (
+                        state.device_checks_open(),
+                        state.calls().device_check_view(),
+                        state.calls().input_test_runs(),
+                    )
+                }),
+            )
+        },
+        |(account, cameras, (open, view, input))| {
+            *account == Some(other)
+                && *cameras == 0
+                && !*open
+                && *view == Default::default()
+                && !*input
+        },
+    );
+    proxy.release();
+    window.permission.release();
+    window.settle();
+    assert_eq!(handle.account(), Some(other));
+    assert!(window.sound.opened_inputs().is_empty());
+    assert_eq!(window.camera.active(), 0);
+    assert!(!window.shows("camera-preview-picture"));
+}
