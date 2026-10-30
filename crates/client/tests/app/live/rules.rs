@@ -3163,3 +3163,65 @@ fn call_member_rows_offer_account_and_call_actions_and_keep_their_source_scope(
         window.view().call.is_none()
     });
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn an_early_entry_answer_still_notifies_after_the_request_response(cx: &mut TestAppContext) {
+    let mut scene = make_scene(cx, Proxied::Window);
+    enter(&scene.world, &scene.caller, scene.target);
+    scene
+        .world
+        .run(scene.admin.handle.api().lock_call(scene.voice))
+        .unwrap();
+    scene
+        .window
+        .until("the lock is shown", |window| voice_of(window).locked);
+    scene.window.click_channel(ROOM);
+    let path = format!("/channels/{}/call/entry-requests", scene.voice);
+    scene
+        .proxy
+        .as_ref()
+        .unwrap()
+        .hold_answer_ending("POST", &path);
+    scene.window.click("ask-to-enter");
+    scene.window.until("the request response is held", |_| {
+        scene.proxy.as_ref().unwrap().answers_waiting() == 1
+    });
+    let request = scene.entry_request();
+    assert_eq!(voice_of(&mut scene.window).entry, Some(EntryState::Asking));
+    let event = junto_client_core::protocol::events::Event::CallEntryAnswered {
+        request_id: request.id,
+        outcome: junto_client_core::protocol::call::EntryOutcome::Denied,
+    };
+    scene.window.event(scene.target.server_id, event.clone());
+    scene.proxy.as_ref().unwrap().release();
+    scene.window.until("the early answer is applied", |window| {
+        voice_of(window).entry == Some(EntryState::Denied)
+    });
+    let title = format!("You were not let into {ROOM}");
+    assert!(
+        scene.window.shown_titles().contains(&title),
+        "an answer received before its request response still notifies"
+    );
+    scene.window.event(scene.target.server_id, event);
+    assert_eq!(
+        scene
+            .window
+            .shown_titles()
+            .iter()
+            .filter(|shown| **shown == title)
+            .count(),
+        1
+    );
+    scene
+        .world
+        .run(
+            scene
+                .admin
+                .handle
+                .api()
+                .answer_entry_request(request.id, false),
+        )
+        .unwrap();
+    scene.world.run(scene.caller.calls.leave());
+}

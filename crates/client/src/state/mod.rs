@@ -1866,6 +1866,14 @@ impl AppState {
                             .into_iter()
                             .find(|(answered, _)| *answered == request.id);
                         if let Some((_, outcome)) = early {
+                            this.tell_event(
+                                server_id,
+                                &Event::CallEntryAnswered {
+                                    request_id: request.id,
+                                    outcome,
+                                },
+                                cx,
+                            );
                             this.entry_answered(outcome, cx);
                         }
                         true

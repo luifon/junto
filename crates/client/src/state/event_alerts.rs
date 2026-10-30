@@ -278,10 +278,13 @@ pub fn fact_of(event: &Event, scene: &EventScene<'_>) -> Option<Fact> {
     }
 }
 
-/// The key under which a fact is told at most once: a recording, a transcript or an export
-/// is told when it finishes, whatever later changes of it the server sends.
+/// The key under which a fact is told at most once: an entry answer or a completed
+/// recording, transcript or export.
 fn key_of(fact: &Fact, event: &Event) -> Option<String> {
     match (fact, event) {
+        (Fact::EntryAnswered { .. }, Event::CallEntryAnswered { request_id, .. }) => {
+            Some(format!("entry:{request_id}"))
+        }
         (Fact::RecordingDone { .. }, Event::RecordingUpdated { recording }) => {
             Some(format!("recording:{}", recording.id))
         }
