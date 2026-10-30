@@ -153,16 +153,17 @@ class Check:
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             window_frame.check_frame(process.pid, expect)
-            try:
-                stdout, stderr = process.communicate(timeout=60)
-            except subprocess.TimeoutExpired:
-                raise AssertionError("the close button of the window did not end the program") from None
-            expect(process.returncode == 0, "the program did not end without an error after its close",
-                   subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr))
+            window_frame.until("the close button closes the main window",
+                               lambda: not window_frame.windows_of(process.pid))
+            expect(process.poll() is None, "closing the window ended the background client")
+            reopened = ran([self.installed / "junto.exe", "--data-dir", data, "--no-activate"], timeout=30)
+            expect(reopened.returncode == 0, "a later start did not forward to the background client", reopened)
+            window_frame.Frame(process.pid)
+            expect(process.poll() is None, "reopening the window lost the original client process")
         finally:
             if process.poll() is None:
                 process.kill()
-                process.communicate()
+            process.communicate(timeout=60)
         values = window_frame.identity()
         expect(values is not None, "the program registered no identity of its notifications")
         picture = data / "notification-icon.png"
