@@ -1636,6 +1636,7 @@ impl Server {
                 saved.name = entry.name;
                 saved.logo_path = entry.logo_path;
                 saved.api_versions = entry.api_versions;
+                saved.capabilities = entry.capabilities;
             });
             if let Err(error) = stored {
                 tracing::warn!(server = %self.id, %error, "the server book was not updated");

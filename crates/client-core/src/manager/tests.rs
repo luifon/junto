@@ -4638,3 +4638,24 @@ fn removal_cleanup_preserves_a_replacement_selected_after_the_book_write() {
         again.entry().key()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.set_info(|info| info.capabilities.channel_topics = false);
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    assert!(!handle.entry().capabilities.channel_topics);
+    for supported in [true, false] {
+        server.set_info(|info| info.capabilities.channel_topics = supported);
+        handle.connect().await.unwrap();
+        assert_eq!(handle.entry().capabilities.channel_topics, supported);
+        let reopened = device.reopened(&network);
+        let saved = reopened.server(handle.id()).unwrap();
+        assert_eq!(saved.entry().capabilities.channel_topics, supported);
+        saved.connect().await.unwrap();
+        assert_eq!(saved.entry().capabilities.channel_topics, supported);
+    }
+}
