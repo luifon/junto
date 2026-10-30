@@ -157,16 +157,7 @@ async fn page(
     let shown: HashMap<_, _> = preferences
         .into_iter()
         .filter_map(|preference| {
-            let acquaintance = if preference.account_id == access.account_id {
-                Acquaintance::Own
-            } else if fellows.contains(&preference.account_id) {
-                Acquaintance::SharedWorkspace
-            } else if preference.administrator {
-                Acquaintance::Administrator
-            } else {
-                Acquaintance::Unrelated
-            };
-            access.allows(Request::ViewAccount(acquaintance)).then(|| {
+            may_see(access, &preference, &fellows).then(|| {
                 let idle = connected.get(&preference.account_id);
                 (
                     preference.account_id,
@@ -179,6 +170,12 @@ async fn page(
             })
         })
         .collect();
+    app.streams.watch_presence(
+        access.account_id,
+        access.session_id,
+        &asked,
+        &shown.keys().copied().collect(),
+    );
     Ok(PresencePage {
         own,
         accounts: asked
@@ -191,12 +188,47 @@ async fn page(
     })
 }
 
+fn may_see(access: &Access, preference: &Preference, fellows: &HashSet<AccountId>) -> bool {
+    let acquaintance = if preference.account_id == access.account_id {
+        Acquaintance::Own
+    } else if fellows.contains(&preference.account_id) {
+        Acquaintance::SharedWorkspace
+    } else if preference.administrator {
+        Acquaintance::Administrator
+    } else {
+        Acquaintance::Unrelated
+    };
+    access.allows(Request::ViewAccount(acquaintance))
+}
+
+pub(crate) async fn may_receive_changes(
+    app: &AppState,
+    bearer: &Bearer,
+    accounts: &[AccountId],
+) -> ApiResult<bool> {
+    read!(app, |connection| {
+        let access = Access::open(connection, bearer, app.now()).await?;
+        access.require(Request::OwnAccount)?;
+        let fellows = store::fellow_members(connection, access.account_id, accounts).await?;
+        Ok(preferences(connection, accounts)
+            .await?
+            .iter()
+            .any(|preference| may_see(&access, preference, &fellows)))
+    })
+}
+
 #[utoipa::path(put,path="/api/v1/account/presence",tag="account",request_body=SetPresence,security(("session"=[])),responses((status=200,body=SetPresence),ApiError))]
 pub async fn set_presence(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiJson(body): ApiJson<SetPresence>,
 ) -> ApiResult<Json<SetPresence>> {
+    let account_id = read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        access.require(Request::OwnAccount)?;
+        Ok(access.account_id)
+    })?;
+    let _visibility = app.streams.visibility_guard(account_id).await;
     let mut counted = false;
     let result = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;

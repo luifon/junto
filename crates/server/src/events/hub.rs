@@ -1,9 +1,9 @@
 //! The connections of this server process: their ceilings, their wake-ups and the accounts
 //! that are in a call (ADR 0116). Nothing here decides what a connection may receive.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use junto_protocol::error::ErrorCode;
@@ -34,13 +34,54 @@ pub struct Link {
     idle: AtomicBool,
     visible: AtomicBool,
     news: Notify,
+    presence: watch::Sender<()>,
+    interest: Mutex<PresenceInterest>,
     attention: Notify,
     replaced: AtomicBool,
     stopping: AtomicBool,
     task: Mutex<Option<AbortHandle>>,
 }
 
+const PRESENCE_WATCH: usize = 1024;
+
+#[derive(Default)]
+struct PresenceInterest {
+    accounts: VecDeque<AccountId>,
+    changed: HashSet<AccountId>,
+}
+
 impl Link {
+    pub fn presence_watch(&self) -> watch::Receiver<()> {
+        self.presence.subscribe()
+    }
+
+    pub fn take_presence_changes(&self) -> Vec<AccountId> {
+        let mut interest = lock(&self.interest);
+        let batch: Vec<_> = interest
+            .changed
+            .iter()
+            .copied()
+            .take(junto_protocol::presence::PRESENCE_PAGE)
+            .collect();
+        for id in &batch {
+            interest.changed.remove(id);
+        }
+        batch
+    }
+
+    pub fn has_presence_changes(&self) -> bool {
+        !lock(&self.interest).changed.is_empty()
+    }
+
+    pub fn restore_presence_changes(&self, accounts: &[AccountId]) {
+        let mut interest = lock(&self.interest);
+        for id in accounts {
+            if interest.accounts.contains(id) {
+                interest.changed.insert(*id);
+            }
+        }
+    }
+
     /// Resolves when the log can hold events that the connection has not read.
     pub async fn news(&self) {
         self.news.notified().await;
@@ -104,6 +145,7 @@ struct Registry {
     next_id: u64,
     by_account: HashMap<AccountId, Vec<Arc<Link>>>,
     stopping: bool,
+    visibility: HashMap<AccountId, Weak<tokio::sync::Mutex<()>>>,
 }
 
 /// The place of a call, as the audience of an event names it.
@@ -202,7 +244,6 @@ pub struct Streams {
     event_reads: Arc<Semaphore>,
     session_reads: Arc<Semaphore>,
     held: watch::Sender<bool>,
-    presence: watch::Sender<()>,
     appearance: watch::Sender<()>,
     calls: CallRegistry,
 }
@@ -219,7 +260,6 @@ impl Streams {
             event_reads: Arc::new(Semaphore::new(limits.concurrent_deliveries.max(1))),
             session_reads: Arc::new(Semaphore::new(limits.concurrent_session_checks.max(1))),
             held: watch::Sender::new(false),
-            presence: watch::Sender::new(()),
             appearance: watch::Sender::new(()),
             calls: CallRegistry::default(),
         }
@@ -229,12 +269,76 @@ impl Streams {
         self.appearance.subscribe()
     }
 
-    pub fn presence_watch(&self) -> watch::Receiver<()> {
-        self.presence.subscribe()
+    pub async fn visibility_guard(&self, account: AccountId) -> tokio::sync::OwnedMutexGuard<()> {
+        let gate = {
+            let mut registry = lock(&self.registry);
+            registry
+                .visibility
+                .retain(|_, gate| gate.strong_count() > 0);
+            match registry.visibility.get(&account).and_then(Weak::upgrade) {
+                Some(gate) => gate,
+                None => {
+                    let gate = Arc::new(tokio::sync::Mutex::new(()));
+                    registry.visibility.insert(account, Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        gate.lock_owned().await
     }
 
-    pub fn presence_changed(&self) {
-        self.presence.send_replace(());
+    pub fn watch_presence(
+        &self,
+        account: AccountId,
+        session: Uuid,
+        asked: &[AccountId],
+        allowed: &HashSet<AccountId>,
+    ) {
+        let registry = lock(&self.registry);
+        for link in registry
+            .by_account
+            .get(&account)
+            .into_iter()
+            .flatten()
+            .filter(|link| link.session_id == session)
+        {
+            let mut interest = lock(&link.interest);
+            for id in asked {
+                if *id != account {
+                    interest.accounts.retain(|held| held != id);
+                    interest.changed.remove(id);
+                }
+            }
+            for id in asked.iter().filter(|id| allowed.contains(id)) {
+                interest.accounts.retain(|held| held != id);
+                interest.accounts.push_back(*id);
+            }
+            while interest.accounts.len() > PRESENCE_WATCH {
+                if let Some(id) = interest.accounts.pop_front() {
+                    if id == account {
+                        interest.accounts.push_back(id);
+                    } else {
+                        interest.changed.remove(&id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn presence_changed(&self, account: AccountId, public: bool) {
+        let registry = lock(&self.registry);
+        for link in registry
+            .by_account
+            .values()
+            .flatten()
+            .filter(|link| public || link.account_id == account)
+        {
+            let mut interest = lock(&link.interest);
+            if interest.accounts.contains(&account) {
+                interest.changed.insert(account);
+                link.presence.send_replace(());
+            }
+        }
     }
 
     pub fn set_visible(&self, account: AccountId, visible: bool) {
@@ -245,7 +349,7 @@ impl Streams {
         }
         drop(registry);
         if changed {
-            self.presence_changed();
+            self.presence_changed(account, true);
         }
     }
 
@@ -256,9 +360,7 @@ impl Streams {
             .into_iter()
             .flatten()
             .any(|link| link.visible.load(Ordering::SeqCst));
-        if public {
-            self.presence_changed();
-        }
+        self.presence_changed(account, public);
     }
 
     pub fn idle_differs(&self, account: AccountId, session: Uuid, idle: bool) -> bool {
@@ -281,7 +383,7 @@ impl Streams {
         }
         drop(registry);
         if changed {
-            self.presence_changed();
+            self.presence_changed(account, true);
         }
     }
 
@@ -370,6 +472,11 @@ impl Streams {
             idle: AtomicBool::new(false),
             visible: AtomicBool::new(visible),
             news: Notify::new(),
+            presence: watch::Sender::new(()),
+            interest: Mutex::new(PresenceInterest {
+                accounts: VecDeque::from([account_id]),
+                ..Default::default()
+            }),
             attention: Notify::new(),
             replaced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -381,9 +488,7 @@ impl Streams {
             .or_default()
             .push(link.clone());
         drop(registry);
-        if visible {
-            self.presence_changed();
-        }
+        self.presence_changed(account_id, visible);
         Ok(Registration {
             streams: self.clone(),
             link,
@@ -420,9 +525,7 @@ impl Streams {
             }
         }
         drop(registry);
-        if link.visible.load(Ordering::SeqCst) {
-            self.presence_changed();
-        }
+        self.presence_changed(link.account_id, link.visible.load(Ordering::SeqCst));
     }
 
     /// Replaces the list of the accounts in calls with `members`, as
@@ -580,6 +683,47 @@ impl Drop for Registration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presence_interest_and_pending_identities_are_bounded_and_replaced_reads_are_pruned() {
+        let streams = Arc::new(Streams::new(&StreamLimits::default()));
+        let account = AccountId::generate();
+        let session = Uuid::new_v4();
+        let held = streams
+            .open(
+                account,
+                DeviceId::generate(),
+                session,
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .unwrap();
+        let ids: Vec<_> = (0..PRESENCE_WATCH + 100)
+            .map(|_| AccountId::generate())
+            .collect();
+        for page in ids.chunks(junto_protocol::presence::PRESENCE_PAGE) {
+            streams.watch_presence(account, session, page, &page.iter().copied().collect());
+            for id in page {
+                streams.presence_changed(*id, true);
+            }
+        }
+        let interest = lock(&held.link.interest);
+        assert_eq!(interest.accounts.len(), PRESENCE_WATCH);
+        assert!(interest.accounts.contains(&account));
+        assert!(interest.changed.len() <= PRESENCE_WATCH);
+        assert!(!interest.accounts.contains(&ids[0]));
+        drop(interest);
+        streams.watch_presence(account, session, &ids, &HashSet::new());
+        assert_eq!(
+            lock(&held.link.interest).accounts,
+            VecDeque::from([account])
+        );
+        assert!(
+            held.link
+                .take_presence_changes()
+                .iter()
+                .all(|id| *id == account)
+        );
+    }
+
     use super::*;
 
     fn streams(per_device: usize, per_account: usize) -> Arc<Streams> {

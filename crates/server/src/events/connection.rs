@@ -132,6 +132,7 @@ struct Connection<S> {
     pending: bool,
     presence_enabled: bool,
     presence_dirty: bool,
+    presence_initial: bool,
     appearance_enabled: bool,
     appearance_dirty: bool,
     unsubscribed_since: Instant,
@@ -181,6 +182,7 @@ pub async fn run<S>(
         pending: false,
         presence_enabled: false,
         presence_dirty: false,
+        presence_initial: false,
         appearance_enabled: false,
         appearance_dirty: false,
         unsubscribed_since: Instant::now(),
@@ -216,7 +218,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         let mut beats = tokio::time::interval_at(Instant::now() + heartbeat, heartbeat);
         beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut held = app.streams.held();
-        let mut presence = app.streams.presence_watch();
+        let mut presence = self.link.presence_watch();
         let mut appearance = app.streams.appearance_watch();
         let mut last_heard = Instant::now();
         let mut check_session = true;
@@ -332,10 +334,42 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         }
         if self.presence_dirty && self.presence_enabled && self.subscription.is_some() {
             self.presence_dirty = false;
-            self.control.push_back(Control {
-                message: ServerMessage::PresenceChanged {},
-                starts: None,
-            });
+            let accounts = self.link.take_presence_changes();
+            let allowed = if self.presence_initial {
+                self.presence_initial = false;
+                true
+            } else if accounts.is_empty() {
+                false
+            } else {
+                let app = self.app.clone();
+                let who = self.who;
+                let changed = accounts.clone();
+                match self
+                    .read(Lane::Events, async move {
+                        crate::routes::presence::may_receive_changes(&app, &who.bearer, &changed)
+                            .await
+                    })
+                    .await
+                {
+                    Read::Done(allowed) => allowed,
+                    result => {
+                        self.link.restore_presence_changes(&accounts);
+                        self.presence_dirty = true;
+                        return match result {
+                            Read::Interrupted => Ok(Step::Interrupted),
+                            _ if self.pace.failed() => Err(End::Close(CloseCode::Failed)),
+                            _ => Ok(Step::Failed),
+                        };
+                    }
+                }
+            };
+            self.presence_dirty = self.link.has_presence_changes();
+            if allowed {
+                self.control.push_back(Control {
+                    message: ServerMessage::PresenceChanged {},
+                    starts: None,
+                });
+            }
             return Ok(Step::Again);
         }
         if self.appearance_dirty && self.appearance_enabled && self.subscription.is_some() {
@@ -363,6 +397,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             self.told = subscription.position;
             self.link.set_level(Some(subscription.level));
             self.presence_dirty = self.presence_enabled;
+            self.presence_initial = self.presence_enabled;
             self.pending = true;
         } else if self.subscription.is_none() {
             self.unsubscribed_since = Instant::now();
