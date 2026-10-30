@@ -155,3 +155,40 @@ fn dragging_across_message_rows_copies_both_rows(cx: &mut TestAppContext) {
     assert!(copied.contains("beta"), "{copied:?}");
     assert!(copied.contains("gamma"), "{copied:?}");
 }
+
+#[gpui::test]
+fn moving_to_the_next_message_moves_its_copy_control_away_from_its_actions(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::WorkspacePermission;
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, _) =
+        crate::threads::with_root(cx, &world);
+    admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
+    let first = admin.send(&world, channel, document("First point"));
+    let second = admin.send(&world, channel, document("Second point"));
+    window.until_message("Second point");
+    window.until("the next message offers pin", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == second.id && row.can_pin)
+    });
+    window.hover_named(format!("message:{}", first.id));
+    assert!(window.shows("copy-text-value"));
+    window.hover_named(format!("message:{}", second.id));
+    let copy = window.cx.debug_bounds("copy-text-value").unwrap();
+    let pin = window
+        .cx
+        .debug_bounds(selector(format!("pin:{}", second.id)))
+        .unwrap();
+    assert!(
+        !copy.contains(&pin.center()),
+        "copy {copy:?} covers pin {pin:?}"
+    );
+    window.click("copy-text-value");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Second point"
+    );
+}
