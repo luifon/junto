@@ -42,6 +42,7 @@ pub async fn created(
     message_id: MessageId,
     position: u64,
 ) -> ApiResult<()> {
+    super::visibility::restore_for_message(connection, now, place).await?;
     record_message(connection, now, place, message_id, position, false, true).await
 }
 

@@ -10,6 +10,7 @@ mod store;
 pub mod threads;
 pub mod transfers;
 pub mod uploads;
+pub mod visibility;
 
 pub use mentions::{mentioned_among, mentions};
 pub use place::{Place, Purpose};

@@ -90,6 +90,16 @@ fn a_group_call_carries_sound_and_keeps_its_chat_when_detached(cx: &mut TestAppC
             .state
             .read_with(&window.cx, |state, _| state.is_call_detached())
     });
+    window.right_click_named(format!("direct-row:{}", group.id));
+    window.click("direct-hide");
+    window.until("hidden in the main column", |window| {
+        !window.shows_named(format!("direct-row:{}", group.id))
+    });
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    );
     assert_eq!(
         window
             .state
@@ -110,6 +120,20 @@ fn a_group_call_carries_sound_and_keeps_its_chat_when_detached(cx: &mut TestAppC
                 junto_client_core::model::PlaceId::Direct(group.id)
             ))
     );
+    window.click("new-direct");
+    window.until("hidden group can be reopened during its call", |window| {
+        window.shows_named(format!("hidden-direct:{}", group.id))
+    });
+    window.click_named(format!("hidden-direct:{}", group.id));
+    window.until("main group selection restored", |window| {
+        window
+            .view()
+            .lists()
+            .unwrap()
+            .conversation
+            .as_ref()
+            .is_some_and(|row| row.id == group.id)
+    });
     window.click("return-call");
     window.until("group returned", |window| {
         !window

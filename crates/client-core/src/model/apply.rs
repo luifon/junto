@@ -894,6 +894,16 @@ impl ServerModel {
                 self.direct_mutes
                     .retain(|held| held.account_id != *account_id);
             }
+            Event::ConversationVisibilityChanged {
+                conversation_id,
+                hidden,
+            } => {
+                if *hidden && self.place(PlaceId::Direct(*conversation_id)).is_some() {
+                    self.hidden_conversations.insert(*conversation_id);
+                } else if !*hidden {
+                    self.hidden_conversations.remove(conversation_id);
+                }
+            }
             Event::GroupConversationChanged { group } => {
                 if super::usable_group(group, self.account.id) {
                     self.group_conversations.retain(|held| held.id != group.id);
@@ -905,6 +915,7 @@ impl ServerModel {
                 account_id,
             } => {
                 if *account_id == self.account.id {
+                    self.hidden_conversations.remove(conversation_id);
                     self.forget_named_of(PlaceId::Direct(*conversation_id));
                     self.group_conversations
                         .retain(|held| held.id != *conversation_id);

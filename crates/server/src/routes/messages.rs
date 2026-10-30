@@ -583,9 +583,44 @@ pub async fn open_conversation(
             )
             .await?;
         }
+        messages::visibility::set(
+            connection,
+            app.now(),
+            access.account_id,
+            MessagePlace::Direct {
+                conversation_id: conversation.id,
+                low_account_id: low,
+                high_account_id: high,
+            },
+            false,
+        )
+        .await?;
         Ok(conversation)
     })
     .map(Json)
+}
+#[utoipa::path(put,path="/api/v1/conversations/{conversation_id}/visibility",tag="messages",params(("conversation_id"=ConversationId,Path)),request_body=SetConversationVisibility,security(("session"=[])),responses((status=204),ApiError))]
+pub async fn set_conversation_visibility(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<ConversationId>,
+    ApiJson(body): ApiJson<SetConversationVisibility>,
+) -> ApiResult<StatusCode> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        let place = Place::direct(connection, &access, id, Purpose::Read).await?;
+        rate(&app, &access, &mut counted)?;
+        messages::visibility::set(
+            connection,
+            app.now(),
+            access.account_id,
+            place.value,
+            body.hidden,
+        )
+        .await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 #[utoipa::path(get,path="/api/v1/conversations",tag="messages",security(("session"=[])),responses((status=200,body=Vec<Conversation>),ApiError))]
 pub async fn list_conversations(

@@ -93,6 +93,53 @@ impl Shell {
         };
         let mut list = ScrollArea::new("contacts-list", &self.contacts_scroll, text::CONTACTS)
             .selector("contacts-list");
+        if self.groups.mode.is_none() {
+            let hidden = self.state.read(cx).hidden_conversations(view.server_id);
+            let owner = self
+                .state
+                .read(cx)
+                .server(view.server_id)
+                .and_then(|server| server.owner());
+            if !hidden.is_empty() {
+                list = list.child(div().flex_none().child(words::HIDDEN));
+                for row in hidden {
+                    let id = row.id;
+                    let server_id = view.server_id;
+                    list = list.child(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("hidden-direct:{id}"))
+                            .child(
+                                ChannelRow::new(
+                                    ("hidden", id.as_uuid().as_u128() as u64),
+                                    Icon::Chat,
+                                    row.name.unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned()),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        if owner.is_none()
+                                            || this
+                                                .state
+                                                .read(cx)
+                                                .server(server_id)
+                                                .and_then(|server| server.owner())
+                                                != owner
+                                            || !matches!(this.layer, Layer::NewDirect)
+                                            || this.groups.mode.is_some()
+                                        {
+                                            return;
+                                        }
+                                        this.close_layer(window, cx);
+                                        this.state.update(cx, |state, cx| {
+                                            state.select_conversation(server_id, id, cx)
+                                        });
+                                    },
+                                )),
+                            ),
+                    );
+                }
+            }
+        }
         for row in view.rows.iter().flatten() {
             let account_id = row.account_id;
             if !self.group_candidate(account_id, cx) {

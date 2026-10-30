@@ -87,3 +87,9 @@ The thread row in the channel column opens its own shared context menu, with Ope
 Thread-root previews offer Copy text, Copy message link and Go to message. Pin rows collect their existing Go to message and permission-checked Unpin controls with Copy text and Copy link. They retain the bare message renderer so reply/edit actions do not enter the wrong composer. Nested author, link and file targets keep their independent menus. Copies and navigation check the captured account owner.
 
 The inline thread preview has Open thread when available and Copy link for the thread address. Its participant pictures and last-author fallback picture have independent account targets, including names from the current feed. Their source requires that the root still displays that participant or fallback author; deleting the root closes its account menu. Nested targets consume their context trigger before the thread or message preview does.
+
+### Hidden direct conversations
+
+Pair and group menus offer Hide conversation alongside their existing read, link, mute and group controls. The preference belongs to the account on the server (ADR 0408). Hidden rows do not contribute to the column or its unread totals. Hiding the main selection returns it to its channel and keeps the messages of a detached call available. A new message restores the row with its current unread state without selecting it.
+
+New direct message lists hidden conversations, including groups, so they can be reopened without another message. Contact selection, a conversation link, search and notices also reopen a hidden conversation. Reopening waits for authoritative visibility before selecting, and captures the account owner and navigation generation; a later answer cannot replace a newer selection or another account.

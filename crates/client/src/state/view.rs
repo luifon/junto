@@ -28,6 +28,7 @@ use junto_client_core::protocol::ids::{
     EntryRequestId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId,
     WorkspaceRoleId,
 };
+use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
 };
@@ -379,6 +380,15 @@ impl Unreads {
             model
                 .message_states
                 .iter()
+                .filter(|state| match state.place {
+                    MessagePlace::Direct {
+                        conversation_id, ..
+                    }
+                    | MessagePlace::Group { conversation_id } => {
+                        !model.hidden_conversations.contains(&conversation_id)
+                    }
+                    _ => true,
+                })
                 .map(|state| (PlaceId::of(&state.place), Unread::of_state(state)))
                 .collect(),
         )
@@ -2626,6 +2636,17 @@ fn directs(
     rows
 }
 
+pub(super) fn hidden_directs(
+    server_id: ServerId,
+    model: &ServerModel,
+    known: &Known,
+) -> Vec<DirectRow> {
+    directs(server_id, None, model, known, &Unreads::of(model), None)
+        .into_iter()
+        .filter(|row| model.hidden_conversations.contains(&row.id))
+        .collect()
+}
+
 /// A feed whose messages offer no change: a direct conversation with an account that left
 /// the server or was deleted (ADR 0121).
 fn read_only_feed(mut feed: Feed) -> Feed {
@@ -2682,6 +2703,10 @@ fn server_lists(
         conversation_id,
     );
     let conversation = directs.iter().find(|row| row.selected).cloned();
+    let directs = directs
+        .into_iter()
+        .filter(|row| !model.hidden_conversations.contains(&row.id))
+        .collect();
     // The direct-message call of this device in the shown conversation, unless the call
     // window draws the call.
     let direct_call = conversation

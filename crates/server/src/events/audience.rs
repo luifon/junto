@@ -86,6 +86,7 @@ impl Class {
             | Event::ExportUpdated { .. }
             | Event::ExportRemoved { .. }
             | Event::NotificationsRead { .. }
+            | Event::ConversationVisibilityChanged { .. }
             | Event::ThreadFollowChanged { .. }
             | Event::NotificationDefaultChanged { .. } => Self::Control,
             Event::ConversationOpened { .. }
@@ -703,7 +704,9 @@ impl Audience {
                 Some(Self::ActiveAccounts)
             }
             // Its writer states the stored list and the moderators (ADR 0121).
-            Event::AccountDepartureChanged { .. } => None,
+            Event::AccountDepartureChanged { .. } | Event::ConversationVisibilityChanged { .. } => {
+                None
+            }
             Event::MessageMentioned {
                 workspace_id,
                 channel_id,
@@ -1027,7 +1030,9 @@ impl Audience {
                 },
             ) => workspace_id == deleted,
             (
-                Event::ExportUpdated { .. } | Event::ExportRemoved { .. },
+                Event::ExportUpdated { .. }
+                | Event::ExportRemoved { .. }
+                | Event::ConversationVisibilityChanged { .. },
                 Self::Account { .. } | Self::AccountSeeing { .. },
             ) => true,
             (

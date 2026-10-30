@@ -903,6 +903,28 @@
       ],
       "type": "object"
     },
+    "conversation_visibility_changed": {
+      "properties": {
+        "conversation_id": {
+          "$ref": "#/components/schemas/ConversationId"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "conversation_visibility_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "hidden",
+        "type"
+      ],
+      "type": "object"
+    },
     "device_added": {
       "description": "A device was added to the account of the recipient.",
       "properties": {
@@ -4535,6 +4557,28 @@
             },
             "required": [
               "workspace_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "hidden": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "conversation_visibility_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "hidden",
               "type"
             ],
             "type": "object"

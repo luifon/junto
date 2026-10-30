@@ -105,6 +105,22 @@ fn emoji_segment(emoji: &str) -> String {
 }
 
 impl ServerApi {
+    pub async fn set_conversation_hidden(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+        hidden: bool,
+    ) -> Result<(), ApiError> {
+        let body =
+            super::client::encode(&junto_protocol::message::SetConversationVisibility { hidden })?;
+        self.call(
+            Method::Put,
+            format!("/conversations/{id}/visibility"),
+            Vec::new(),
+            Some(body),
+        )
+        .await
+        .map(|_| ())
+    }
     pub async fn groups(
         &self,
     ) -> Result<Vec<junto_protocol::message::GroupConversation>, ApiError> {

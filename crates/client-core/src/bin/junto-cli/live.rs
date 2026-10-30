@@ -979,6 +979,10 @@ fn event_details(event: &Event) -> String {
         Event::CallAccessEnded {} => String::new(),
         Event::DirectMuteSet { mute } => format!("account={}", mute.account_id),
         Event::DirectMuteRemoved { account_id } => format!("account={account_id}"),
+        Event::ConversationVisibilityChanged {
+            conversation_id,
+            hidden,
+        } => format!("conversation={conversation_id} hidden={hidden}"),
         Event::GroupConversationChanged { group } => {
             format!("group={} name={}", group.id, group.name)
         }

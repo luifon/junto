@@ -174,6 +174,11 @@ pub async fn leave_group(
         super::messages::rate(&app, &access, &mut counted)?;
         sqlx::query("insert into conversation_former_members(conversation_id,account_id) values($1,$2) on conflict do nothing")
             .bind(id).bind(access.account_id).execute(&mut *connection).await?;
+        sqlx::query("delete from hidden_conversations where conversation_id=$1 and account_id=$2")
+            .bind(id)
+            .bind(access.account_id)
+            .execute(&mut *connection)
+            .await?;
         sqlx::query("delete from conversation_members where conversation_id=$1 and account_id=$2")
             .bind(id)
             .bind(access.account_id)

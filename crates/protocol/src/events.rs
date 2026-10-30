@@ -257,7 +257,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 4;
+pub const EVENT_REVISION: u32 = 5;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -592,6 +592,10 @@ pub enum Event {
     GlossaryReplaced {
         workspace_id: WorkspaceId,
     },
+    ConversationVisibilityChanged {
+        conversation_id: crate::ids::ConversationId,
+        hidden: bool,
+    },
     GroupConversationChanged {
         group: crate::message::GroupConversation,
     },
@@ -828,6 +832,7 @@ impl Event {
         "thread_read",
         "message_read",
         "message_mentioned",
+        "conversation_visibility_changed",
         "group_conversation_changed",
         "group_conversation_left",
         "conversation_opened",
@@ -935,6 +940,7 @@ impl Event {
             Self::NotificationSettingsChanged { .. } => "notification_settings_changed",
             Self::RetentionChanged { .. } => "retention_changed",
             Self::MessageMentioned { .. } => "message_mentioned",
+            Self::ConversationVisibilityChanged { .. } => "conversation_visibility_changed",
             Self::GroupConversationChanged { .. } => "group_conversation_changed",
             Self::GroupConversationLeft { .. } => "group_conversation_left",
             Self::ConversationOpened { .. } => "conversation_opened",
@@ -1509,6 +1515,10 @@ mod tests {
                 channel_id,
                 message_id: crate::ids::MessageId::generate(),
                 position: 1,
+            },
+            Event::ConversationVisibilityChanged {
+                conversation_id: crate::ids::ConversationId::generate(),
+                hidden: true,
             },
             Event::GroupConversationChanged {
                 group: crate::message::GroupConversation {

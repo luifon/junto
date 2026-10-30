@@ -173,5 +173,5 @@ pub async fn call_line(
     };
     sqlx::query("insert into messages(id,place_id,position,created_at,system,call_id) values($1,$2,$3,$4,$5,$6)")
         .bind(id).bind(place.id).bind(position).bind(now).bind(sqlx::types::Json(system)).bind(call_id).execute(&mut *connection).await?;
-    super::changed(connection, now, place.value, id, position as u64, false).await
+    super::created(connection, now, place.value, id, position as u64).await
 }

@@ -245,6 +245,7 @@ pub async fn get_snapshot(
             super::moderation_notices::page(connection, now, Some(access.account_id), None, None)
                 .await?;
         let snapshot = Snapshot {
+            hidden_conversations: crate::messages::visibility::list(connection, access.account_id, &messages).await?,
             group_conversations: crate::messages::groups::list(connection, &access).await?,
             cursor: log.cursor(log.head)?,
             account,

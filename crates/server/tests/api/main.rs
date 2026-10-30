@@ -36,6 +36,7 @@ mod exports;
 mod first_start;
 mod glossary;
 mod group_conversations;
+mod hidden_conversations;
 mod history_permissions;
 mod host_commands;
 mod http_errors;

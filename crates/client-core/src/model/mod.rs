@@ -394,6 +394,7 @@ pub struct ServerModel {
     /// The direct conversations of the account that the contact rule allows now.
     pub conversations: Vec<Conversation>,
     pub group_conversations: Vec<junto_protocol::message::GroupConversation>,
+    pub hidden_conversations: std::collections::BTreeSet<junto_protocol::ids::ConversationId>,
     /// The limits of the server for the files of a message. They are read when a reader
     /// opens the messages of a place.
     pub attachment_limits: Option<AttachmentLimits>,
@@ -542,6 +543,7 @@ impl ServerModel {
             message_states: snapshot.messages,
             conversations,
             group_conversations,
+            hidden_conversations: snapshot.hidden_conversations.into_iter().collect(),
             attachment_limits: None,
             timelines: Vec::new(),
             outbox: Vec::new(),

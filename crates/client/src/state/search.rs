@@ -154,11 +154,13 @@ impl Hit {
         let (workspace_id, place) = match model.readable_channel(channel_id) {
             Some(channel) => (Some(channel.workspace_id), PlaceId::Channel(channel_id)),
             None => {
-                let conversation = model
+                let id = model
                     .conversations
                     .iter()
-                    .find(|held| held.id.as_uuid() == self.place_id)?;
-                (None, PlaceId::Direct(conversation.id))
+                    .map(|held| held.id)
+                    .chain(model.group_conversations.iter().map(|held| held.id))
+                    .find(|id| id.as_uuid() == self.place_id)?;
+                (None, PlaceId::Direct(id))
             }
         };
         Some(Jump {
@@ -385,6 +387,18 @@ fn place_of(
                 kind: channel.kind,
             },
             Some((channel.workspace_id, channel_id)),
+        );
+    }
+    if let Some(group) = model
+        .group_conversations
+        .iter()
+        .find(|group| group.id.as_uuid() == place_id)
+    {
+        return (
+            Whereabouts::Direct {
+                name: Some(text::label(&group.name)),
+            },
+            None,
         );
     }
     match model

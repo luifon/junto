@@ -12,3 +12,8 @@ pub const NAME_INVALID: &str = "Use a name of 1 to 80 characters without control
 pub const LEAVE: &str = "Leave conversation";
 pub const LEAVE_QUESTION: &str =
     "Leave this conversation? Its messages and files will no longer be available to you.";
+
+pub const HIDE: &str = "Hide conversation";
+pub const HIDDEN: &str = "Hidden conversations";
+
+pub const OPEN_FAILED: &str = "The conversation could not be opened. Try again.";

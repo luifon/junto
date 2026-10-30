@@ -463,6 +463,13 @@ async fn world() -> World {
             &unknown,
         ),
         operation(
+            Method::PUT,
+            "/api/v1/conversations/{conversation_id}/visibility",
+            &[&absent],
+            json!({"hidden":true}),
+            &unknown,
+        ),
+        operation(
             Method::GET,
             "/api/v1/conversations",
             &[],

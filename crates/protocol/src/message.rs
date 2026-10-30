@@ -371,3 +371,10 @@ pub struct CreateGroupConversation {
 pub struct RenameGroupConversation {
     pub name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SetConversationVisibility {
+    pub hidden: bool,
+}

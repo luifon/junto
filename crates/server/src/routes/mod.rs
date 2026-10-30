@@ -214,7 +214,11 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(messages::add_reaction));
     add(&mut router, || routes!(messages::remove_reaction));
     add(&mut router, || {
-        routes!(messages::open_conversation, messages::list_conversations)
+        routes!(
+            messages::open_conversation,
+            messages::list_conversations,
+            messages::set_conversation_visibility
+        )
     });
     add(&mut router, || {
         routes!(groups::create_group, groups::list_groups)

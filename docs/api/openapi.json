@@ -6441,6 +6441,73 @@
         ]
       }
     },
+    "/api/v1/conversations/{conversation_id}/visibility": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "set_conversation_visibility",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetConversationVisibility"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/device-links": {
       "post": {
         "tags": [
@@ -21060,6 +21127,18 @@
           }
         }
       },
+      "SetConversationVisibility": {
+        "type": "object",
+        "required": [
+          "hidden"
+        ],
+        "properties": {
+          "hidden": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "SetGlossary": {
         "type": "object",
         "required": [
@@ -21208,6 +21287,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GroupConversation"
+            }
+          },
+          "hidden_conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationId"
             }
           },
           "messages": {

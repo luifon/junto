@@ -13,6 +13,7 @@ mod history;
 pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
+mod conversations;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -246,6 +247,7 @@ struct Asked {
 /// What the person asked for and that has not ended yet, or has failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
+    pub(super) opening_hidden: Option<conversations::Opening>,
     /// Account deletions still awaiting their server answer or local cleanup.
     pub deleting: HashSet<Owner>,
     /// The recoveries whose acknowledgement is on its way, each with the owner of the
@@ -2639,6 +2641,7 @@ impl AppState {
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
         let snapshots = self.snapshots();
+        self.settle_conversation_visibility(&snapshots);
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
