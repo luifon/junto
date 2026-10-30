@@ -918,19 +918,24 @@ async fn scoped_file_history_uses_a_chronological_index_on_first_and_later_spars
     let (server, owner, channel) = (&files.server, &files.owner, &files.channel);
     let upload = files.upload(b"seed file").await;
     let seed = files.attach(&[upload.id]).await;
-    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,permanent)
-        select gen_random_uuid(),place_id,position+n,author_id,created_at+n*interval '1 second',document,((position+n)%2000=0)
-        from messages cross join generate_series(1,300000) n where id=$1")
-        .bind(seed.id).execute(&mut server.test_data().await).await.unwrap();
+    let mut fixture = server.test_data().await;
+    for first in (1_i32..=300_000).step_by(10_000) {
+        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,permanent)
+            select gen_random_uuid(),place_id,position+n,author_id,created_at+n*interval '1 second',document,((position+n)%2000=0)
+            from messages cross join generate_series($2::integer,$3::integer) n where id=$1")
+            .bind(seed.id).bind(first).bind(first + 9_999)
+            .execute(&mut fixture).await.unwrap();
+    }
     sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,position)
         select gen_random_uuid(),a.storage_id,m.place_id,m.author_id,m.id,a.name,a.bytes,a.bytes,a.sha256,true,a.expires_at,a.touched_at,true,p
         from messages m cross join generate_series(0,1) p join attachments a on a.id=$1
         where m.place_id=$2 and m.position%1000=0")
-        .bind(upload.id).bind(channel.id).execute(&mut server.test_data().await).await.unwrap();
+        .bind(upload.id).bind(channel.id).execute(&mut fixture).await.unwrap();
     sqlx::raw_sql("analyze messages; analyze attachments")
-        .execute(&server.db)
+        .execute(&mut fixture)
         .await
         .unwrap();
+    drop(fixture);
     let capabilities: junto_protocol::discovery::SearchCapabilities = server
         .get(owner, "/api/v1/search/capabilities")
         .await

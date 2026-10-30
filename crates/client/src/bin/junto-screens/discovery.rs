@@ -560,6 +560,9 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             let mut search = retention();
             search.text.clear();
             search.filters.date = DateFilter::Today;
+            search
+                .hits
+                .retain(|hit| hit.created_at.date() == morning().date());
             searching(shell, search, window, cx);
         },
     )?;
