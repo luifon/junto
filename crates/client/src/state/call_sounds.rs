@@ -236,16 +236,22 @@ pub(crate) fn sounds(before: &Heard, after: &Heard) -> Vec<Sound> {
     }
     // A person who starts or stops watching the share of this device; a person who leaves
     // the call is heard leaving.
-    if let (Some(viewers_before), Some(viewers_after)) = (&before.viewers, &after.viewers) {
-        if viewers_after.iter().any(|id| !viewers_before.contains(id)) {
-            sounds.push(Sound::ViewerJoined);
-        }
-        if viewers_before
+    if let Some(viewers_after) = &after.viewers
+        && viewers_after.iter().any(|id| {
+            before
+                .viewers
+                .as_ref()
+                .is_none_or(|viewers| !viewers.contains(id))
+        })
+    {
+        sounds.push(Sound::ViewerJoined);
+    }
+    if let (Some(viewers_before), Some(viewers_after)) = (&before.viewers, &after.viewers)
+        && viewers_before
             .iter()
             .any(|id| !viewers_after.contains(id) && listed_after.contains_key(id))
-        {
-            sounds.push(Sound::ViewerLeft);
-        }
+    {
+        sounds.push(Sound::ViewerLeft);
     }
     if let (Some(hands_before), Some(hands_after)) = (&before.hands, &after.hands)
         && hands_after.iter().any(|id| !hands_before.contains(id))
@@ -810,6 +816,13 @@ mod tests {
         let after = listed(&on, &before);
         assert_eq!(sounds(&before, &after), vec![Sound::ViewerJoined]);
         assert_eq!(sounds(&after, &before), vec![Sound::ViewerLeft]);
+        let no_share = [participant(scene.own, &[]), participant(other, &[])];
+        let before_share = listed(&no_share, &Heard::default());
+        let already_watched = listed(&on, &before_share);
+        assert_eq!(
+            sounds(&before_share, &already_watched),
+            vec![Sound::ShareStarted, Sound::ViewerJoined]
+        );
         // A viewer who leaves the call is heard leaving.
         let alone = [participant(scene.own, &[0])];
         assert_eq!(
