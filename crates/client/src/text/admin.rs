@@ -488,6 +488,16 @@ const fn is_logo_ask(what: AskKind) -> bool {
 
 /// Why the server did not do a request of the administration.
 pub fn refusal(what: AskKind, error: &ApiError) -> String {
+    if matches!(
+        error,
+        ApiError::InvalidResponse {
+            reason: "channel topics are not supported",
+            ..
+        }
+    ) {
+        return super::TOPIC_UNSUPPORTED.to_owned();
+    }
+
     let code = error.code();
     let fixed = match (code, error.category()) {
         (Some(ErrorCode::ExceedsOwnPermissions), _) => {

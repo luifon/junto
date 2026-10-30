@@ -11,6 +11,15 @@ pub struct ServerInfo {
     /// The path of the logo on this server, when the server has one.
     pub logo_path: Option<String>,
     pub api_versions: Vec<u32>,
+    #[serde(default)]
+    pub capabilities: Capabilities,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Capabilities {
+    #[serde(default)]
+    pub channel_topics: bool,
 }
 
 /// What the health route reports when the server can serve requests.
@@ -33,4 +42,22 @@ pub struct Health {
     /// such a directory, and when no free space can be read.
     #[serde(default)]
     pub storage_low: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_topic_capabilities_are_unsupported_and_unknown_capabilities_are_ignored() {
+        let mut old = serde_json::json!({ "server_id": ServerId::generate(), "name": "Example Studio", "logo_path": null, "api_versions": [1] });
+        let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
+        assert!(!read.capabilities.channel_topics);
+        old["capabilities"] = serde_json::json!({ "future_feature": true });
+        let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
+        assert!(!read.capabilities.channel_topics);
+        old["capabilities"]["channel_topics"] = serde_json::json!(true);
+        let read: ServerInfo = serde_json::from_value(old).unwrap();
+        assert!(read.capabilities.channel_topics);
+    }
 }

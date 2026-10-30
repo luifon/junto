@@ -345,6 +345,12 @@ impl AppState {
         );
     }
 
+    pub fn channel_topics_supported(&self, server_id: ServerId) -> bool {
+        self.client
+            .server(server_id)
+            .is_some_and(|server| server.entry().capabilities.channel_topics)
+    }
+
     /// Changes the name, the category or the setting "permanent messages" of a channel.
     pub fn update_channel(
         &mut self,
@@ -353,6 +359,13 @@ impl AppState {
         change: UpdateChannel,
         cx: &mut Context<Self>,
     ) {
+        if change.topic.is_some() && !self.channel_topics_supported(server_id) {
+            let stamp = self.admin.begin(AskKind::UpdateChannel(channel_id));
+            self.admin
+                .settle(stamp, Some(text::TOPIC_UNSUPPORTED.to_owned()));
+            self.changed(cx);
+            return;
+        }
         self.admin_ask(
             server_id,
             AskKind::UpdateChannel(channel_id),

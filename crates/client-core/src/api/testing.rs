@@ -130,6 +130,9 @@ impl FakeServer {
                     name: name.to_owned(),
                     logo_path: Some("/api/v1/logo".to_owned()),
                     api_versions: vec![1],
+                    capabilities: junto_protocol::server::Capabilities {
+                        channel_topics: true,
+                    },
                 },
                 owner_code: Some("OWNER-CODE".to_owned()),
                 owner: None,

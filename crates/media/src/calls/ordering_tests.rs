@@ -45,6 +45,7 @@ fn fixture() -> Fixture {
             name: "Test".into(),
             logo_path: None,
             api_versions: vec![1],
+            capabilities: Default::default(),
             connection_mode: ConnectionMode::Always,
             membership: Membership::Member {
                 account_id,

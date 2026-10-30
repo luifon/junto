@@ -319,7 +319,10 @@ impl Shell {
                 }
             }),
         )];
-        if channel.allowed.manage && view.workspace()?.archived.is_none() {
+        if channel.allowed.manage
+            && view.workspace()?.archived.is_none()
+            && self.state.read(cx).channel_topics_supported(server)
+        {
             let topic = channel.topic.clone();
             actions.push(crate::ui::RowAction::new(
                 text::EDIT_TOPIC,

@@ -3826,6 +3826,7 @@ mod tests {
                 name: "Silent".into(),
                 logo_path: None,
                 api_versions: vec![1],
+                capabilities: Default::default(),
                 connection_mode: ConnectionMode::Always,
                 membership: Membership::Member {
                     account_id: AccountId::generate(),
