@@ -1,5 +1,8 @@
 //! The button. One definition draws every kind of the design.
 
+#[cfg(all(test, feature = "test-support"))]
+mod tests;
+
 use gpui::{
     App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Refineable,
     RenderOnce, Rgba, Role, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,

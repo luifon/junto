@@ -3642,7 +3642,7 @@ impl Shell {
                                 .label(sign)
                                 .tooltip(emoji.name())
                                 .h(u(22.0))
-                                .w(u(26.0))
+                                .min_w(u(26.0))
                                 .px(u(1.0))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if this.state.read(cx).owner(server_id) == owner {
