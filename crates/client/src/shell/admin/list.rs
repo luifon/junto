@@ -63,6 +63,14 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) trait ListHost: Sized + 'static {
     fn page_list(&mut self) -> &mut PageList;
 
+    fn guard_actions(
+        &self,
+        _account: Option<AccountId>,
+        _actions: &mut [crate::ui::RowAction],
+        _cx: &Context<Self>,
+    ) {
+    }
+
     /// The accounts of the rows that the list laid out, in the order of the rows, after a
     /// frame in which they changed.
     fn accounts_laid_out(&mut self, _accounts: Vec<AccountId>, _cx: &mut Context<Self>) {}
@@ -79,6 +87,17 @@ pub(crate) trait ListHost: Sized + 'static {
 }
 
 impl ListHost for Shell {
+    fn guard_actions(
+        &self,
+        account: Option<AccountId>,
+        actions: &mut [crate::ui::RowAction],
+        cx: &Context<Self>,
+    ) {
+        if let Some(open) = account.and_then(|account| self.admin_identity_context(account, cx)) {
+            self.guard_identity_actions(open, actions, cx);
+        }
+    }
+
     fn page_list(&mut self) -> &mut PageList {
         &mut self.admin.list
     }
@@ -779,7 +798,7 @@ pub(crate) fn element<V: ListHost>(
     let laid_out = Rc::clone(&frame);
     let render = cx.processor(move |this: &mut V, index: usize, window, cx| {
         laid_out.laid_out.set(laid_out.laid_out.get() + 1);
-        let (content, actions) = if rows
+        let (content, mut actions) = if rows
             .get(index)
             .is_some_and(|entry| entry.position.is_some())
         {
@@ -790,6 +809,7 @@ pub(crate) fn element<V: ListHost>(
         let Some(entry) = rows.get(index) else {
             return content;
         };
+        this.guard_actions(entry.account, &mut actions, cx);
         // A row can be laid out twice in a frame, to measure it and to draw it.
         if let Some(account) = entry.account {
             let mut accounts = laid_out.accounts.borrow_mut();

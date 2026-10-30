@@ -1042,6 +1042,41 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if direct.departure.is_none()
+            && let Some(owner) = self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner())
+        {
+            items.insert(
+                1,
+                MenuItem::new("direct-call", text::DIRECT_CALL)
+                    .icon(Icon::Phone)
+                    .selector("direct-call")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let state = this.state.read(cx);
+                        let current = state
+                            .server(server_id)
+                            .is_some_and(|server| server.owner() == Some(owner))
+                            && state.view().lists().is_some_and(|lists| {
+                                lists.directs.iter().any(|row| {
+                                    row.id == conversation_id
+                                        && row.account_id == account_id
+                                        && row.departure.is_none()
+                                })
+                            });
+                        if !current {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.start_direct_call(server_id, account_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
         items.extend(
             self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
                 this.state.update(cx, |state, cx| {

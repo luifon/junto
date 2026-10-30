@@ -22,6 +22,7 @@ mod direct;
 mod edges;
 mod feed;
 mod file_links;
+mod identity_menus;
 mod invited;
 mod join;
 mod keybinds;
@@ -2052,7 +2053,7 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
-            Layer::NewDirect => self.render_new_direct(cx),
+            Layer::NewDirect => self.render_new_direct(window, cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
             Layer::AccountMenu(_) => self.render_account_menu(window, cx),

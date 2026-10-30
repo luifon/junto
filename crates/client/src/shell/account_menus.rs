@@ -52,6 +52,13 @@ pub(crate) enum AccountSource {
         account: AccountId,
     },
     Mentions(Box<AccountSource>),
+    Contacts,
+    Members(junto_client_core::protocol::ids::WorkspaceId),
+    AdminPeople,
+    AdminMembers {
+        workspace: junto_client_core::protocol::ids::WorkspaceId,
+        addable: bool,
+    },
     Message(MessageId),
     Pending(u64),
     Search(crate::state::search::ResultTarget),
@@ -81,6 +88,9 @@ impl OpenAccountMenu {
         let Some(source) = &self.source else {
             return true;
         };
+        if let Some(present) = self.identity_source_present(view, state) {
+            return present;
+        }
         match source {
             AccountSource::Mentions(parent) => {
                 use junto_client_core::protocol::message::{Block, Document, Inline};
@@ -238,6 +248,10 @@ impl OpenAccountMenu {
                             })
                     });
             }
+            AccountSource::Contacts
+            | AccountSource::Members(_)
+            | AccountSource::AdminPeople
+            | AccountSource::AdminMembers { .. } => return false,
             AccountSource::Message(_) | AccountSource::Pending(_) => {}
         }
         let held = |feed: Option<&crate::state::feed::Feed>| {
@@ -534,7 +548,9 @@ impl Shell {
         } else {
             state.view()
         };
-        open.source_is_present(&view, state) && self.account_source_visible(open, &view, cx)
+        open.source_is_present(&view, state)
+            && self.identity_source_visible(open, &view, cx)
+            && self.account_source_visible(open, &view, cx)
     }
 
     pub(super) fn render_account_menu(
@@ -557,55 +573,24 @@ impl Shell {
             let account = person.account_id;
             let owner = open.owner;
             items.push(menu_label(text::label(&person.name), false, cx).into_any_element());
-            for (id, label, value) in [
-                ("account-copy-name", text::COPY_NAME, person.name.clone()),
-                (
-                    "account-copy-id",
-                    text::COPY_ACCOUNT_ID,
-                    account.to_string(),
-                ),
-            ] {
-                let person = person.clone();
+            for (id, action) in self.identity_actions(&open, person, cx) {
                 let selector = format!("{id}:{account}");
+                let shell = cx.entity().downgrade();
+                let person = person.clone();
+                let handler = action.handler.clone();
                 items.push(
                     div()
                         .debug_selector(move || selector)
-                        .child(MenuItem::new((id, index), label).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                if this.account_menu_current(owner, &person, cx) {
-                                    this.close_layer(window, cx);
-                                    this.copy_text(value.clone(), cx);
+                        .child(MenuItem::new((id, index), action.label).on_click(
+                            move |event, window, cx| {
+                                if shell.upgrade().is_some_and(|shell| {
+                                    shell.read(cx).account_menu_current(owner, &person, cx)
+                                }) && let Some(handler) = &handler
+                                {
+                                    handler(event, window, cx);
                                 }
                             },
-                        )))
-                        .into_any_element(),
-                );
-            }
-            if account != owner.account_id && !person.departed {
-                let person = person.clone();
-                items.push(
-                    div()
-                        .debug_selector(move || format!("account-message:{account}"))
-                        .child(
-                            MenuItem::new(
-                                ("account-message", index),
-                                text::message_person(&person.name),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    if this.account_menu_current(owner, &person, cx) {
-                                        this.close_layer(window, cx);
-                                        this.state.update(cx, |state, cx| {
-                                            state.open_conversation(
-                                                owner.entry.server_id,
-                                                account,
-                                                cx,
-                                            )
-                                        });
-                                    }
-                                },
-                            )),
-                        )
+                        ))
                         .into_any_element(),
                 );
             }

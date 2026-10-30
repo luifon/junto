@@ -1653,8 +1653,28 @@ impl Shell {
         let detail: SharedString = member.roles.join(" · ").into();
         let account_id = member.account_id;
         let owner = server_id.and_then(|id| self.state.read(cx).server(id)?.owner());
-        let (row, actions) = crate::ui::collect_actions(|| {
-            self.account_copy_actions(account_id, member.name.clone(), cx);
+        let context = owner
+            .zip(
+                self.view
+                    .as_ref()
+                    .and_then(|view| view.workspace())
+                    .map(|workspace| workspace.id),
+            )
+            .map(|(owner, workspace)| {
+                self.identity_context(
+                    owner,
+                    super::account_menus::AccountTarget {
+                        account_id,
+                        name: member.name.clone(),
+                        departed: false,
+                    },
+                    super::account_menus::AccountSource::Members(workspace),
+                )
+            });
+        let (row, mut actions) = crate::ui::collect_actions(|| {
+            if let Some(open) = &context {
+                self.register_identity_actions(open, cx);
+            }
             let write = (!member.is_self).then(|| {
                 div()
                     .flex_none()
@@ -1751,6 +1771,13 @@ impl Shell {
                 )
                 .children(write)
         });
+        let mut labels = std::collections::HashSet::new();
+        actions.retain(|action| labels.insert(action.label.clone()));
+        if let Some(open) = context {
+            self.guard_identity_actions(open, &mut actions, cx);
+        } else {
+            actions.clear();
+        }
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let row = row
             .focusable()
