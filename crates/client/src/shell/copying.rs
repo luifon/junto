@@ -59,10 +59,12 @@ impl Shell {
                 .right()
                 .min(window.viewport_size().width - u(104.0).to_pixels(window.rem_size()))
                 .max(px(0.0));
-            let top = bounds
-                .bottom()
-                .min(window.viewport_size().height - u(34.0).to_pixels(window.rem_size()))
-                .max(px(0.0));
+            let height = u(34.0).to_pixels(window.rem_size());
+            let top = if bounds.bottom() + height <= window.viewport_size().height {
+                bounds.bottom()
+            } else {
+                (bounds.top() - height).max(px(0.0))
+            };
             controls.push(
                 SelectableText::unobserved(
                     div()

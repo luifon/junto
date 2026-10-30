@@ -114,6 +114,8 @@ The scoped text-layout observer is the only gpui change for selection (ADR 0757)
 
 Hovering another text value updates the copy target immediately. The blank gap to a copy control can keep the previous target reachable, but does not take priority over text under the pointer.
 
+The floating copy control opens above its text when there is insufficient room below, instead of being clamped over the bottom controls. The pointer corridor uses the union of the text and the actual control bounds, so either placement remains reachable at the current interface scale. The meeting-notice window test checks that Dismiss still activates after hovering its text.
+
 - The composer shows marks while the person types, not formatted text.
 - The syntax colours follow regular expressions and no grammar: a name is coloured by its form, not by its meaning. A language that the library does not know, and a block without a language, stay without colours.
 - A picture above the bounds of the server for pictures is a file row, and so are HEIC, AVIF and every other format (ADR 0408).

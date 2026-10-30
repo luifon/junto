@@ -426,11 +426,10 @@ impl Element for SelectableText {
                     held.parts.get(index).map(|part| part.copy_bounds(byte))
                 });
                 let keep = hover_bounds.is_some_and(|bounds| {
-                    Bounds::new(
-                        bounds.origin,
-                        size(bounds.size.width + px(104.0), bounds.size.height + px(34.0)),
-                    )
-                    .contains(&event.position)
+                    held.control
+                        .as_ref()
+                        .map_or(bounds, |control| bounds.union(control))
+                        .contains(&event.position)
                 });
                 let on_text = hovered.is_some();
                 if hovered != held.hovered && (on_text || !keep) {
