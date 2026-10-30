@@ -10,6 +10,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::shell::Shell;
 use junto_client::state::view::{ChannelRow, Members, ServerStatus, ShellView};
 use junto_client::state::{AppState, Timing};
+use junto_client_core::protocol::ids::MessageId;
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
@@ -789,6 +790,22 @@ impl Window {
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
         self.press_at(bounds.center(), gpui::MouseButton::Right);
+        self.settle();
+    }
+
+    /// Opens a message menu outside its account, link and attachment targets.
+    #[track_caller]
+    pub fn right_click_message(&mut self, message_id: MessageId) {
+        self.settle();
+        let name = selector(format!("message:{message_id}"));
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        self.press_at(
+            gpui::point(bounds.left() + gpui::px(4.0), bounds.center().y),
+            gpui::MouseButton::Right,
+        );
         self.settle();
     }
 

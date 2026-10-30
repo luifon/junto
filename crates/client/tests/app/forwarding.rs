@@ -26,7 +26,7 @@ fn forwarding_copies_the_body_and_rechecks_only_origin_access(cx: &mut TestAppCo
     let target = admin.text_channel(&world, &mut window, "delivery");
     let server_id = window.view().selected.unwrap().id;
     window.until_message("the private plan");
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
     window.click("forward-send");
@@ -110,7 +110,7 @@ fn forwarding_to_a_conversation_keeps_its_existing_draft(cx: &mut TestAppContext
         panic!("not a direct conversation")
     };
     let server_id = window.view().selected.unwrap().id;
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.click_named(format!(
         "forward-destination:{server_id}:direct:{conversation}"
@@ -213,7 +213,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
             .iter()
             .any(|row| row.message.id == source.id)
     });
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.click_named(format!("forward-destination:{target_id}:channel:{channel}"));
     window.click("forward-send");
@@ -264,7 +264,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
             })
         })
         .unwrap();
-    reader.right_click_named(format!("message:{}", forwarded.id));
+    reader.right_click_message(forwarded.id);
     reader.click("message-copy-text");
     let copied_text = reader.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(copied_text.contains("a protected source"));
@@ -305,7 +305,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
             .iter()
             .any(|row| row.message.id == forwarded.id)
     });
-    reader.right_click_named(format!("message:{}", forwarded.id));
+    reader.right_click_message(forwarded.id);
     reader.click("message-forward");
     let PlaceId::Direct(conversation) = direct else {
         panic!("not a direct conversation")
@@ -347,7 +347,7 @@ fn a_thread_link_can_choose_a_destination_outside_the_thread_list(cx: &mut TestA
             state.message_link(server_id, root.id)
         })
         .unwrap();
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.type_into("forward-find", &link);
     window.click("forward-thread-link");
@@ -418,7 +418,7 @@ fn a_forward_keeps_code_whitespace_and_downloads_the_sources_file(cx: &mut TestA
             .iter()
             .any(|row| row.message.id == source.id)
     });
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
     window.click("forward-send");
@@ -475,7 +475,7 @@ fn a_forward_keeps_code_whitespace_and_downloads_the_sources_file(cx: &mut TestA
     assert_eq!(std::fs::read(path).unwrap(), b"protected attachment");
     window.until("the forwarded message is confirmed", |window| window.messages().iter().any(|row| row.message.id != source.id && row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, Block::Forward { message_id, .. } if *message_id == source.id)))));
     let forwarded = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap();
-    window.right_click_named(format!("message:{}", forwarded.message.id));
+    window.right_click_message(forwarded.message.id);
     window.click("message-copy-text");
     assert!(
         window
@@ -502,7 +502,7 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
     let server_id = window.view().selected.unwrap().id;
     let author = admin.handle.account().unwrap();
     window.until_message("a shared plan");
-    window.right_click_named(format!("message:{}", source.id));
+    window.right_click_message(source.id);
     window.click("message-forward");
     window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
     window.click("forward-send");
@@ -538,7 +538,7 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         author.to_string()
     );
     let copied = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap().message.id;
-    window.right_click_named(format!("message:{copied}"));
+    window.right_click_message(copied);
     window.click("message-edit");
     window.click("composer-view-1");
     window.until(

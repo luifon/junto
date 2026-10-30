@@ -19,7 +19,7 @@ fn a_refused_edit_keeps_its_text_and_edit_target_after_restart(cx: &mut TestAppC
     let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
     window.write("original message");
     let id = window.until_message("original message").message.id;
-    window.right_click_named(format!("message:{id}"));
+    window.right_click_message(id);
     window.click("message-edit");
     window.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "precious refused edit 日本語", window, cx)
@@ -67,7 +67,7 @@ fn an_edit_acceptance_does_not_clear_a_newer_edit_draft(cx: &mut TestAppContext)
     let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
     window.write("original message");
     let id = window.until_message("original message").message.id;
-    window.right_click_named(format!("message:{id}"));
+    window.right_click_message(id);
     window.click("message-edit");
     window
         .in_shell(|shell, window, cx| shell.type_message(Pane::Main, "submitted edit", window, cx));
@@ -115,7 +115,7 @@ fn channel_and_thread_drafts_survive_a_process_restart_and_clear_after_send(
     );
     window.until_message("draft discussion");
     window.type_into("composer-input", "日本語 **kept main**");
-    window.right_click_named(format!("message:{}", root.id));
+    window.right_click_message(root.id);
     window.click("message-thread");
     window.until("the thread opens", |window| {
         window.shows("thread-composer-input")
@@ -232,7 +232,7 @@ fn replies_edits_and_selected_files_recover_after_restart(cx: &mut TestAppContex
         crate::messages::document("reply target"),
     );
     window.until_message("reply target");
-    window.right_click_named(format!("message:{}", root.id));
+    window.right_click_message(root.id);
     window.click("message-reply");
     window.type_into("composer-input", "kept reply");
     let files = tempfile::tempdir().unwrap();
@@ -285,7 +285,7 @@ fn replies_edits_and_selected_files_recover_after_restart(cx: &mut TestAppContex
     let reply = window.until_message("kept reply");
     assert_eq!(reply.message.reply_to, Some(root.id));
     assert_eq!(reply.message.attachments.len(), 2);
-    window.right_click_named(format!("message:{}", reply.message.id));
+    window.right_click_message(reply.message.id);
     window.click("message-edit");
     window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "kept edit", window, cx));
     quit(window);
