@@ -316,7 +316,7 @@ fn rule_43_the_file_of_another_server_uses_the_default_workspace_and_its_everyon
 fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
     let current = server();
     let cases = [
-        (json!({ "format": 5 }), "the file has the format 5"),
+        (json!({ "format": 999 }), "the file has the format 999"),
         (
             json!({ "format": 1, "workspaces": [
                 { "id": id(1), "name": "Main" }, { "id": id(1), "name": "Again" }] }),
@@ -394,7 +394,7 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
         assert!(found.contains(stated), "{desired}: {found}");
     }
     let several = problems(
-        json!({ "format": 5, "workspaces": [{ "id": id(1), "name": "" },
+        json!({ "format": junto_protocol::structure_file::STRUCTURE_FORMAT + 1, "workspaces": [{ "id": id(1), "name": "" },
                                              { "id": id(1), "name": "x" }] }),
         &current,
     );
@@ -880,7 +880,12 @@ fn format_4_a_file_with_a_wrong_sync_state_or_category_override_is_refused() {
         let accepted = file(json!({ "format": format }));
         assert_eq!(changes(&accepted, &current), Vec::<Value>::new());
     }
-    assert!(problems(json!({ "format": 5 }), &current).contains("the formats 1 to 4"));
+    assert!(
+        problems(json!({ "format": 999 }), &current).contains(&format!(
+            "the formats 1 to {}",
+            junto_protocol::structure_file::STRUCTURE_FORMAT
+        ))
+    );
 }
 #[test]
 fn a_glossary_that_differs_replaces_the_whole_glossary_after_the_channels_of_its_workspace() {
@@ -978,5 +983,32 @@ fn an_absent_glossary_is_kept_and_an_empty_one_removes_every_term() {
     assert_eq!(
         changes(&foreign, &current),
         [json!({ "change": "replace_glossary", "workspace": id(1), "terms": ["Tarnwick"] })]
+    );
+}
+
+#[test]
+fn channel_topics_are_kept_changed_cleared_and_sent_on_creation() {
+    let mut current = server();
+    current.workspaces[0].channels[0].topic = Some("Existing purpose".to_owned());
+    let mut desired = current.clone();
+    desired.workspaces[0].channels[0].topic = None;
+    assert!(changes(&desired, &current).is_empty());
+    desired.workspaces[0].channels[0].topic = Some("  New purpose  ".to_owned());
+    let changed = changes(&desired, &current);
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["topic"], "New purpose");
+    desired.workspaces[0].channels[0].topic = Some(String::new());
+    assert_eq!(changes(&desired, &current)[0]["topic"], "");
+    current.workspaces[0].channels.remove(0);
+    desired = current.clone();
+    let mut new = server().workspaces[0].channels[0].clone();
+    new.topic = Some("Initial purpose".to_owned());
+    desired.workspaces[0].channels.push(new);
+    let created = changes(&desired, &current);
+    assert!(
+        created
+            .iter()
+            .any(|change| change["change"] == "create_channel"
+                && change["topic"] == "Initial purpose")
     );
 }

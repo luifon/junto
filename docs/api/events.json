@@ -2762,6 +2762,10 @@
             "format": "int32",
             "type": "integer"
           },
+          "topic": {
+            "maxLength": 1024,
+            "type": "string"
+          },
           "user_limit": {
             "description": "The largest number of people in the call of a voice channel. Absent: no limit. A\nperson who is invited or moved in can pass it (ADR 0504).",
             "format": "int32",

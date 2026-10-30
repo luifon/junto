@@ -28,6 +28,7 @@ fn a_person_collapses_a_category_with_the_menu_pointer_and_keyboard_and_keeps_it
                 .run(admin.handle.api().create_channel(
                     workspace,
                     &CreateChannel {
+                        topic: String::new(),
                         name: name.to_owned(),
                         kind: ChannelKind::Text,
                         category_id: Some(category.id),

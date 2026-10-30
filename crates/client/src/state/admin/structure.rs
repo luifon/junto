@@ -330,6 +330,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let channel = CreateChannel {
+            topic: String::new(),
             name,
             kind,
             category_id,

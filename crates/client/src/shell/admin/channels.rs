@@ -363,6 +363,40 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let server_id = view.server_id;
+        if let (Some(Mode::EditChannelTopic), Scope::Channel(settings)) =
+            (self.admin.mode, &view.scope)
+        {
+            let topic = self
+                .admin
+                .topic
+                .read(cx)
+                .value()
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .trim()
+                .to_owned();
+            if topic.chars().count()
+                > junto_client_core::protocol::structure::CHANNEL_TOPIC_MAX_CHARS
+            {
+                self.admin.invalid = Some(text::TOPIC_TOO_LONG);
+                cx.notify();
+                return;
+            }
+            let channel_id = settings.channel_id;
+            self.admin_sent(AskKind::UpdateChannel(channel_id));
+            self.state.update(cx, |state, cx| {
+                state.update_channel(
+                    server_id,
+                    channel_id,
+                    UpdateChannel {
+                        topic: Some(topic),
+                        ..UpdateChannel::default()
+                    },
+                    cx,
+                )
+            });
+            return;
+        }
         let name = self.admin_name(cx);
         if name.is_empty() {
             self.admin.invalid = Some(text::admin::NAME_EMPTY);
@@ -1127,6 +1161,82 @@ impl Shell {
         self.channel_settings_hold(view, settings)
     }
 
+    fn render_topic_form(
+        &mut self,
+        view: &AdminView,
+        channel: ChannelId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        use gpui_base::input::{InputEditorStyle, Textarea};
+        let colors = theme.colors;
+        self.admin.topic.update(cx, |state, _| {
+            state.set_editor_style(InputEditorStyle {
+                foreground: colors.ink.into(),
+                muted_foreground: colors.ink_3.into(),
+                background: colors.travertine_hi.into(),
+                border: colors.rule.into(),
+                selection: colors.terracotta_wash.into(),
+                caret: colors.ink.into(),
+                ..InputEditorStyle::default()
+            })
+        });
+        let sending = view.sending(AskKind::UpdateChannel(channel));
+        div()
+            .flex()
+            .flex_col()
+            .gap(u(8.0))
+            .child(
+                div()
+                    .id("channel-topic-input")
+                    .debug_selector(|| "channel-topic-input".to_owned())
+                    .role(gpui::Role::TextInput)
+                    .aria_label(text::CHANNEL_TOPIC)
+                    .min_w_0()
+                    .p(u(8.0))
+                    .border_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .bg(Hsla::from(colors.travertine_hi))
+                    .child(crate::selectable::SelectableText::unobserved(
+                        crate::ui::InputMenu::new(
+                            &self.admin.topic,
+                            Textarea::new(&self.admin.topic),
+                        ),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(u(8.0))
+                    .child(
+                        Button::new("admin-form-cancel")
+                            .label(text::CANCEL)
+                            .selector("admin-form-cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_admin_mode(None, "", window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("admin-form-send")
+                            .label(text::SAVE)
+                            .selector("admin-form-send")
+                            .disabled(sending)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit_admin_form(window, cx)
+                            })),
+                    ),
+            )
+            .children(
+                self.admin
+                    .invalid
+                    .map(|invalid| Notice::error(invalid).into_any_element()),
+            )
+            .children(refusal(
+                view.refused(AskKind::UpdateChannel(channel)),
+                "channel-topic-refused",
+            ))
+    }
+
     /// The overview of the settings of one channel.
     pub(crate) fn render_channel_overview(
         &mut self,
@@ -1223,6 +1333,31 @@ impl Shell {
                 )),
         };
         column = column.child(self.mode_row(&[Mode::RenameChannel], name_line));
+        let topic = page.topic.clone();
+        let topic_line = if self.admin.mode == Some(Mode::EditChannelTopic) {
+            self.render_topic_form(view, channel_id, &theme, cx)
+        } else {
+            line(&theme)
+                .child(line_text(
+                    text::CHANNEL_TOPIC,
+                    Some(if topic.is_empty() {
+                        text::TOPIC_EMPTY.into()
+                    } else {
+                        topic.clone().into()
+                    }),
+                    &theme,
+                ))
+                .child(row_action(
+                    "channel-topic-edit",
+                    text::EDIT_TOPIC,
+                    "channel-topic-edit".to_owned(),
+                    held,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_admin_mode(Some(Mode::EditChannelTopic), &topic, window, cx)
+                    }),
+                ))
+        };
+        column = column.child(self.mode_row(&[Mode::EditChannelTopic], topic_line));
         // The category.
         let category_name = page
             .category_id

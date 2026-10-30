@@ -13788,6 +13788,9 @@
               "position": {
                 "type": "integer",
                 "format": "int32"
+              },
+              "topic": {
+                "type": "string"
               }
             }
           },
@@ -15618,6 +15621,10 @@
             "type": "integer",
             "format": "int32"
           },
+          "topic": {
+            "type": "string",
+            "maxLength": 1024
+          },
           "user_limit": {
             "type": [
               "integer",
@@ -15727,6 +15734,13 @@
               "null"
             ],
             "description": "For a channel in a category. `true`: the channel takes the overrides of its category,\nand the entry states no overrides of its own. `false`: the channel has its own\noverrides. Absent: a new channel in a category is synced, and an existing channel\nkeeps its state until a stated override changes what it uses."
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
           },
           "user_limit": {
             "type": [
@@ -16081,6 +16095,10 @@
             ],
             "format": "int32",
             "description": "Absent: after the last channel."
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 1024
           }
         }
       },
@@ -20054,6 +20072,13 @@
                 ],
                 "format": "int32"
               },
+              "topic": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 1024
+              },
               "workspace": {
                 "$ref": "#/components/schemas/StructureId"
               }
@@ -20103,6 +20128,13 @@
                   "null"
                 ],
                 "format": "int32"
+              },
+              "topic": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 1024
               }
             }
           },
@@ -20383,7 +20415,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 4. This tool also reads the formats 1 to 3.",
+            "description": "The version of the file format: 5. This tool also reads the formats 1 to 4.",
             "minimum": 0
           },
           "server_roles": {
@@ -20981,6 +21013,13 @@
               "null"
             ],
             "format": "int32"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
           }
         }
       },

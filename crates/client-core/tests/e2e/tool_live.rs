@@ -155,6 +155,7 @@ async fn the_tool_shows_the_state_watches_events_and_runs_call_actions() {
     let account_id = logged_in(&handle);
     let workspace = handle.api().workspaces().await.unwrap().remove(0);
     let create = |name: &str, kind| CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind,
         category_id: None,

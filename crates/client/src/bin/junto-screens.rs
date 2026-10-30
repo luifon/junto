@@ -206,6 +206,7 @@ fn participant(name: &str) -> CallParticipant {
 
 fn channel(number: u32, workspace_id: WorkspaceId, kind: ChannelKind, name: &str) -> Channel {
     Channel {
+        topic: String::new(),
         id: id(number),
         workspace_id,
         category_id: None,

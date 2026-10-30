@@ -24,7 +24,7 @@ use crate::structure::{ChannelKind, present};
 
 /// The format version that this build writes. It reads every format from
 /// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
-pub const STRUCTURE_FORMAT: u32 = 4;
+pub const STRUCTURE_FORMAT: u32 = 5;
 
 /// The oldest format version that this build reads.
 pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
@@ -43,7 +43,7 @@ pub const MOST_CHANGES: usize = 200;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 4. This tool also reads the formats 1 to 3.
+    /// The version of the file format: 5. This tool also reads the formats 1 to 4.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -162,6 +162,9 @@ pub struct CategoryEntry {
 pub struct ChannelEntry {
     pub id: StructureId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+    pub topic: Option<String>,
     /// The kind of a channel does not change.
     pub kind: ChannelKind,
     /// The identifier of a category of the same workspace. `null`: no category. Absent: a
@@ -300,6 +303,9 @@ pub enum StructureChange {
         kind: ChannelKind,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+        topic: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<StructureId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         position: Option<i32>,
@@ -308,6 +314,9 @@ pub enum StructureChange {
         id: StructureId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+        topic: Option<String>,
         #[serde(
             default,
             deserialize_with = "present",
@@ -569,7 +578,7 @@ mod tests {
             serde_json::json!([])
         );
         assert!(workspace["channels"][0].get("synced").is_none());
-        assert_eq!(STRUCTURE_FORMAT, 4);
+        assert_eq!(STRUCTURE_FORMAT, 5);
     }
 
     #[test]
@@ -604,6 +613,7 @@ mod tests {
             StructureChange::UpdateChannel {
                 id,
                 name: None,
+                topic: None,
                 category: Some(None),
                 position: None,
                 permanent_messages: None,

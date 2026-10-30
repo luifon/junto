@@ -272,6 +272,7 @@ pub(crate) fn text_channel(
     name: &str,
 ) -> ChannelId {
     let channel = CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind: ChannelKind::Text,
         category_id: None,
@@ -3540,6 +3541,7 @@ fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_
             .run(with_token.create_channel(
                 default,
                 &CreateChannel {
+                    topic: String::new(),
                     name: name.to_owned(),
                     kind: ChannelKind::Text,
                     category_id: None,

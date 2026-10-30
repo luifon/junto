@@ -351,6 +351,7 @@ fn the_menu_of_a_person_reads_the_list_of_the_voice_channel_of_that_person() {
     let (daily, studio) = (scene.daily, scene.studio);
     let ana = AccountId::generate();
     let focus = Channel {
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id: studio,
         category_id: None,

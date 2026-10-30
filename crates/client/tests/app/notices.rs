@@ -44,6 +44,7 @@ impl Admin {
             .run(self.handle.api().create_channel(
                 workspace_id,
                 &CreateChannel {
+                    topic: String::new(),
                     name: name.to_owned(),
                     kind: ChannelKind::Text,
                     category_id: None,
@@ -1164,6 +1165,7 @@ fn the_notices_of_other_places_are_listed_when_a_deleted_workspace_took_every_he
         .run(api.create_channel(
             lab,
             &CreateChannel {
+                topic: String::new(),
                 name: "bench".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: None,

@@ -269,24 +269,146 @@ impl Shell {
             .h_full()
             .child(self.render_main_header(
                 view,
-                channel,
                 call,
                 narrow || (call.is_some() && !self.side_fits(Panel::Call, cx)),
                 &theme,
+                window,
                 cx,
             ))
             .child(split)
     }
 
+    fn topic_source_current(
+        &self,
+        owner: junto_client_core::Owner,
+        channel: junto_client_core::protocol::ids::ChannelId,
+        cx: &gpui::App,
+    ) -> bool {
+        self.state
+            .read(cx)
+            .server(owner.entry.server_id)
+            .is_some_and(|server| server.owner() == Some(owner))
+            && self
+                .state
+                .read(cx)
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.channel.as_ref())
+                .is_some_and(|row| row.id == channel)
+    }
+
+    fn channel_topic_header(
+        &mut self,
+        view: &ShellView,
+        channel: &ChannelRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if channel.topic.is_empty() {
+            return None;
+        }
+        let server = view.selected.as_ref()?.id;
+        let owner = self.state.read(cx).server(server)?.owner()?;
+        let (id, workspace) = (channel.id, view.workspace()?.id);
+        let copied = channel.topic.clone();
+        let mut actions = vec![crate::ui::RowAction::new(
+            text::COPY_TOPIC,
+            cx.listener(move |this, _, _, cx| {
+                if this.topic_source_current(owner, id, cx) {
+                    this.copy_text(copied.clone(), cx);
+                }
+            }),
+        )];
+        if channel.allowed.manage && view.workspace()?.archived.is_none() {
+            let topic = channel.topic.clone();
+            actions.push(crate::ui::RowAction::new(
+                text::EDIT_TOPIC,
+                cx.listener(move |this, _, window, cx| {
+                    if this.topic_source_current(owner, id, cx)
+                        && this
+                            .state
+                            .read(cx)
+                            .view()
+                            .workspace()
+                            .is_some_and(|workspace| {
+                                workspace.archived.is_none()
+                                    && workspace
+                                        .channel
+                                        .as_ref()
+                                        .is_some_and(|row| row.allowed.manage)
+                            })
+                    {
+                        this.open_admin(
+                            crate::state::admin::AdminOpen::Channel {
+                                server_id: server,
+                                workspace_id: workspace,
+                                channel_id: id,
+                                page: crate::state::admin::ChannelPage::Overview,
+                            },
+                            window,
+                            cx,
+                        );
+                        this.set_admin_mode(
+                            Some(super::admin::Mode::EditChannelTopic),
+                            &topic,
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            ));
+        }
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id("channel-topic")
+            .debug_selector(|| "channel-topic".to_owned())
+            .relative()
+            .role(Role::Group)
+            .aria_label(channel.topic.clone())
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .tooltip(tooltip(channel.topic.clone()))
+            .typeface(theme.types.small, &theme)
+            .ink(theme.colors.ink_2)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(channel.topic.replace(['\n', '\t'], " ")),
+            );
+        Some(
+            crate::ui::bind_action_menu(
+                frame,
+                gpui::SharedString::from(format!("channel-topic-menu:{owner:?}:{id}")),
+                actions,
+                window,
+                cx,
+            )
+            .into_any_element(),
+        )
+    }
+
     fn render_main_header(
         &mut self,
         view: &ShellView,
-        channel: Option<&ChannelRow>,
         call: Option<&CallPanel>,
         narrow: bool,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let channel = view
+            .workspace()
+            .and_then(|workspace| workspace.channel.as_ref());
+        let topic = channel
+            .filter(|_| {
+                view.lists()
+                    .is_some_and(|lists| lists.conversation.is_none())
+            })
+            .and_then(|channel| self.channel_topic_header(view, channel, window, cx));
         let colors = theme.colors;
         let members_open = self.members_open && call.is_none();
         // The buttons show their icons alone where their labels do not fit (ADR 0730).
@@ -465,7 +587,14 @@ impl Shell {
                         .typeface(theme.types.title, theme)
                         .ink(colors.ink)
                         .child(icon(shown, 17.0, colors.terracotta_deep))
-                        .child(div().min_w_0().truncate().child(name)),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .min_w_0()
+                                .child(div().truncate().child(name))
+                                .children(topic),
+                        ),
                 )
             })
             .children(after)

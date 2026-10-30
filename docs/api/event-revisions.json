@@ -6,5 +6,9 @@
   {
     "revision": 2,
     "sha256": "3d7978fa12160eee4dde279ceb70b279399fc746634d9eb3dc16ca88e4d9aa20"
+  },
+  {
+    "revision": 3,
+    "sha256": "2bef86c807a63ce88bb0f36cc43f3fd83fe6c6ff60ae6e5abbe8b6a12fc21e78"
   }
 ]

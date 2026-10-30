@@ -93,6 +93,13 @@
               "null"
             ]
           },
+          "topic": {
+            "maxLength": 1024,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "user_limit": {
             "description": "For a voice channel only. `null`: no limit.",
             "format": "int32",
@@ -276,7 +283,7 @@
             "description": "The entries that applying the file deletes. Nothing else is deleted."
           },
           "format": {
-            "description": "The version of the file format: 4. This tool also reads the formats 1 to 3.",
+            "description": "The version of the file format: 5. This tool also reads the formats 1 to 4.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -391,6 +398,6 @@
       }
     }
   },
-  "description": "The structure of a Junto server as the setup tool writes it: format 4. The tool reads the formats 1 to 4. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "description": "The structure of a Junto server as the setup tool writes it: format 5. The tool reads the formats 1 to 5. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
   "title": "Junto structure file"
 }

@@ -270,6 +270,7 @@ fn the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second
                 .run(api.create_channel(
                     workspace.id,
                     &CreateChannel {
+                        topic: String::new(),
                         name: "plans".to_owned(),
                         kind: ChannelKind::Text,
                         category_id: None,

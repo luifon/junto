@@ -15,7 +15,7 @@ Crate:
 - The tool is the crate `junto-setup` with the binary `junto-setup`. It depends on `junto-protocol` for the types of the file and of the two routes, and not on the server. Its HTTP client is the one of the client library (ADR 0714): TLS with the trust store of the operating system.
 - The function that computes a plan reads two documents and contacts nothing.
 
-File format 4 (formats 1 to 3 remain readable):
+File format 5 (formats 1 to 4 remain readable):
 
 - A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories`, `channels` and `glossary`; a category holds `overrides`; a channel holds `synced` and `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
 - An object of a file with a field that the format does not name is refused, so that a misspelled field is not ignored.
@@ -25,6 +25,7 @@ File format 4 (formats 1 to 3 remain readable):
 - An exported file states every field, and no deletion.
 - Format 2 adds optional role `position` keys expressing relative order, with larger keys higher and everyone at zero. Numeric gaps and shifts do not request changes. Only explicitly positioned roles exchange their existing slots; other roles keep their places. A new unpositioned role stays at the bottom (ADR 0309).
 - Format 3 adds the optional `glossary` of a workspace: the list of its terms in their order of priority (ADR 0603). The list replaces the whole glossary, and `[]` removes every term. As for every optional field, an absent `glossary` keeps the glossary of an existing workspace, and a new workspace has an empty glossary.
+- Format 5 adds the optional topic of a channel (ADR 0215): an absent topic keeps an existing value, and an empty string clears it. Export states every topic.
 - Format 4 adds the role overrides of a category and the sync state of a channel (ADR 0304). A category entry states `overrides` as a channel entry does: the allow set and the deny set of each role, which the synced channels of the category take. A channel entry in a category states `synced`. `true`: the channel takes the overrides of its category, and the entry states no overrides. `false`: the channel uses its own overrides, which the entry states. A channel without a category has no `synced`.
 - An absent `synced` keeps the state of an existing channel, and a new channel in a category is synced. An override that such an entry states is compared with the overrides that the channel uses now, which for a synced channel are those of its category. The first override that changes what a synced channel uses detaches it, as the route of the channel's rules does. A file of format 1 to 3 is applied this way.
 - The fields are read in a file of any format number; a file states the lowest format whose fields it uses.
@@ -34,7 +35,7 @@ Matching:
 
 - An entry is matched by its identifier (ADR 0211). A matched entry with another name is a rename.
 - A workspace entry with `default: true` whose identifier the server does not know stands for the default workspace of the server. A role entry with `everyone: true` stands for the "everyone" role of its workspace, whatever its identifier is.
-- The tool refuses a file before any request that changes the server when: its format is not one of 1 to 4; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override of a category or a channel has a permission in both sets, or names a role that is neither in the file nor on the server, or that is listed for deletion; a channel entry with `synced: true` states overrides or has no category; a text channel has a setting of voice channels; an entry of any kind is also listed for deletion, or is listed twice; a channel names a category or a role that is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a category or a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
+- The tool refuses a file before any request that changes the server when: its format is not one of 1 to 5; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override of a category or a channel has a permission in both sets, or names a role that is neither in the file nor on the server, or that is listed for deletion; a channel entry with `synced: true` states overrides or has no category; a text channel has a setting of voice channels; an entry of any kind is also listed for deletion, or is listed twice; a channel names a category or a role that is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a category or a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
 
 Plan:
 
@@ -62,7 +63,7 @@ Commands:
 - A second `apply` of the same file plans no change and sends no request that changes the server.
 - The export of one server, applied to an empty server, renames the default workspace of that server, changes its "everyone" role, and adds the other entries. The two first channels of the empty server stay, because the file does not list them for deletion.
 - A person who writes a new entry by hand gives it a new UUID.
-- The tool reads file formats 1 to 4 and writes format 4. Saved plans use format 4; older saved plans must be recomputed. A later format has another number.
+- The tool reads file formats 1 to 5 and writes format 5. Saved plans use format 5; older saved plans must be recomputed. A later format has another number.
 - A tool that reads format 3 at most refuses an exported file of format 4, because a category entry holds `overrides` and a channel entry holds `synced`.
 - The protocol crate states the format that is written and the oldest format that is read as two constants. The description of the generated schema and the refusal of a file of another format are written from them, so they name the current formats.
 - A structure with more than 200 differences is applied in several files, each with a part of the entries.

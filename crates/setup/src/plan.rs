@@ -1200,6 +1200,14 @@ fn channel_rules(
     override_changes(planner, Place::Channel(id, name), &stated, uses.as_ref());
 }
 
+fn topic_text(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned()
+}
+
 fn create_channel(planner: &mut Planner<'_>, workspace: StructureId, channel: &ChannelEntry) {
     let id = channel.id;
     let kind = match channel.kind {
@@ -1212,6 +1220,7 @@ fn create_channel(planner: &mut Planner<'_>, workspace: StructureId, channel: &C
             workspace,
             kind: channel.kind,
             name: channel.name.trim().to_owned(),
+            topic: channel.topic.as_deref().map(topic_text),
             category: channel.category.flatten(),
             position: channel.position,
         },
@@ -1222,6 +1231,7 @@ fn create_channel(planner: &mut Planner<'_>, workspace: StructureId, channel: &C
             StructureChange::UpdateChannel {
                 id,
                 name: None,
+                topic: None,
                 category: None,
                 position: None,
                 permanent_messages: Some(true),
@@ -1267,6 +1277,15 @@ fn update_channel(
     }
     let mut differences = Differences::default();
     let name = differences.name(&existing.name, &channel.name);
+    let stated_topic = channel.topic.as_deref().map(topic_text);
+    let topic = differences
+        .value(
+            "topic",
+            existing.topic.as_deref(),
+            stated_topic.as_deref(),
+            |value| format!("{value:?}"),
+        )
+        .map(str::to_owned);
     let category = differences.value("category", existing.category, channel.category, reference);
     let position = differences.value("position", existing.position, channel.position, |value| {
         value.to_string()
@@ -1287,6 +1306,7 @@ fn update_channel(
             StructureChange::UpdateChannel {
                 id,
                 name,
+                topic,
                 category,
                 position,
                 permanent_messages,

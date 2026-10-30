@@ -30,6 +30,21 @@ fn checked(field: &'static str, trimmed: &str) -> ApiResult<String> {
     Ok(trimmed.to_owned())
 }
 
+pub fn channel_topic(value: &str) -> ApiResult<String> {
+    let value = value.replace("\r\n", "\n").replace('\r', "\n");
+    let value = value.trim();
+    if value.chars().count() > junto_protocol::structure::CHANNEL_TOPIC_MAX_CHARS {
+        return Err(ApiError::invalid("topic is longer than 1024 characters"));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return Err(ApiError::invalid("topic contains a control character"));
+    }
+    Ok(value.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

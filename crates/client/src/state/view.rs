@@ -805,6 +805,7 @@ pub struct VoiceState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRow {
+    pub topic: String,
     pub id: ChannelId,
     pub kind: ChannelKind,
     pub name: String,
@@ -2255,6 +2256,7 @@ fn channel_row(
     unreads: &Unreads,
 ) -> ChannelRow {
     ChannelRow {
+        topic: channel.channel.topic.clone(),
         id: channel.channel.id,
         kind: channel.channel.kind,
         name: channel.channel.name.clone(),
@@ -2823,6 +2825,7 @@ fn workspace_view(
         // A call of an archived voice channel has ended: the row has no voice state, and
         // the main area shows its messages.
         channel = Some(ChannelRow {
+            topic: archived.channel.topic.clone(),
             id: channel_id,
             kind: archived.channel.kind,
             name: archived.channel.name.clone(),

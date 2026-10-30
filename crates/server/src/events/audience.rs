@@ -2152,6 +2152,7 @@ mod tests {
         assert!(!channel_audience(&place, WorkspacePermission::ViewChannel).fits(&on_server));
 
         let channel = Channel {
+            topic: String::new(),
             id: place.channel_id,
             workspace_id: place.workspace_id,
             category_id: None,

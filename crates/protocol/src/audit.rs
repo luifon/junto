@@ -216,6 +216,8 @@ pub enum AuditEvent {
     /// that setting has an entry of its own.
     ChannelUpdated {
         name: String,
+        #[serde(default)]
+        topic: String,
         category_id: Option<CategoryId>,
         position: i32,
         permanent_messages: bool,

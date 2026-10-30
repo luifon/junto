@@ -263,6 +263,7 @@ fn a_saved_channel_export_contains_messages_threads_files_recordings_and_transcr
         .run(owner.api().create_channel(
             workspace,
             &CreateChannel {
+                topic: String::new(),
                 name: "Daily".to_owned(),
                 kind: ChannelKind::Voice,
                 category_id: None,
@@ -440,6 +441,7 @@ fn the_recordings_page_shows_rows_loads_older_and_refreshes_after_an_event(
         .run(owner.api().create_channel(
             workspace,
             &CreateChannel {
+                topic: String::new(),
                 name: "Daily".to_owned(),
                 kind: ChannelKind::Voice,
                 category_id: None,

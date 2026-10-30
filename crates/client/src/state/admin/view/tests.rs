@@ -57,6 +57,7 @@ fn channel(
     category_id: Option<CategoryId>,
 ) -> Channel {
     Channel {
+        topic: String::new(),
         id: ChannelId::generate(),
         workspace_id,
         category_id,

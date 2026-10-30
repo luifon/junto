@@ -230,6 +230,7 @@ fn channel_change(arguments: &Arguments) -> Result<UpdateChannel, Failure> {
     };
     let change = UpdateChannel {
         name: arguments.value("name").map(str::to_owned),
+        topic: arguments.value("topic").map(str::to_owned),
         category_id,
         position: arguments.value("position").map(position).transpose()?,
         permanent_messages: on_off(arguments, "permanent")?,
@@ -328,6 +329,7 @@ fn channels(
         "create" => Action::NewChannel(
             workspace()?,
             CreateChannel {
+                topic: arguments.value("topic").unwrap_or_default().to_owned(),
                 name: word(words, 2, "the name")?.to_owned(),
                 kind: kind(arguments)?,
                 category_id: named(arguments, "category", "a category")?,
@@ -1636,6 +1638,7 @@ mod tests {
 
     fn channel(name: &str) -> Channel {
         Channel {
+            topic: String::new(),
             id: ChannelId::generate(),
             workspace_id: WorkspaceId::generate(),
             category_id: None,
@@ -1726,11 +1729,20 @@ mod tests {
             other,
             UpdateChannel {
                 name: Some("roadmap".to_owned()),
+                topic: None,
                 category_id: None,
                 position: Some(-2),
                 permanent_messages: Some(true),
             }
         );
+        assert_eq!(
+            change(&["--topic", "Plans\nand links"])
+                .unwrap()
+                .topic
+                .as_deref(),
+            Some("Plans\nand links")
+        );
+        assert_eq!(change(&["--topic", ""]).unwrap().topic.as_deref(), Some(""));
         assert!(change(&[]).is_none());
         assert!(change(&["--category", "projects"]).is_none());
         assert!(change(&["--permanent", "yes"]).is_none());

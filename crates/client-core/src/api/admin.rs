@@ -354,6 +354,7 @@ mod tests {
 
     fn channel() -> Channel {
         Channel {
+            topic: String::new(),
             id: ChannelId::generate(),
             workspace_id: WorkspaceId::generate(),
             category_id: None,

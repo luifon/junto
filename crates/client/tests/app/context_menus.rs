@@ -1560,6 +1560,7 @@ fn category_settings_from_a_header_keep_the_server_permission_check(cx: &mut Tes
         .run(admin.handle.api().create_channel(
             workspace,
             &CreateChannel {
+                topic: String::new(),
                 name: "planning".to_owned(),
                 kind: ChannelKind::Text,
                 category_id: Some(category.id),

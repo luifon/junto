@@ -172,7 +172,7 @@ pub const EXPORT_CATEGORIES: &str =
      left join structure_identifiers i on i.kind = 'category' and i.object_id = c.id
      order by c.position, c.id";
 pub const EXPORT_CHANNELS: &str =
-    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.kind,
+    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.topic, c.kind,
             coalesce(ci.identifier, c.category_id), c.position, c.permanent_messages,
             c.user_limit, c.hides_occupants, c.category_id is not null and c.permissions_synced
      from channels c
@@ -204,6 +204,7 @@ type ChannelRow = (
     Uuid,
     WorkspaceId,
     Uuid,
+    String,
     String,
     String,
     Option<Uuid>,
@@ -330,6 +331,7 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
             workspace_id,
             entry,
             name,
+            topic,
             kind,
             category,
             position,
@@ -345,6 +347,7 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
             .push(ChannelEntry {
                 id: StructureId::from_uuid(entry),
                 name,
+                topic: Some(topic),
                 kind,
                 category: Some(category.map(StructureId::from_uuid)),
                 position: Some(position),
@@ -596,6 +599,7 @@ async fn apply_one(
             workspace,
             kind,
             name,
+            topic,
             category,
             position,
         } => {
@@ -612,6 +616,7 @@ async fn apply_one(
                 id: ChannelId::generate(),
                 workspace_id: WorkspaceId::from_uuid(workspace_id),
                 name: &name,
+                topic: topic.as_deref().unwrap_or_default(),
                 kind: *kind,
                 category_id,
                 position: *position,
@@ -622,6 +627,7 @@ async fn apply_one(
         StructureChange::UpdateChannel {
             id,
             name,
+            topic,
             category,
             position,
             permanent_messages,
@@ -637,6 +643,7 @@ async fn apply_one(
             let name = optional_name(name.as_deref())?;
             let update = UpdateChannel {
                 name: None,
+                topic: topic.clone(),
                 category_id,
                 position: *position,
                 permanent_messages: *permanent_messages,

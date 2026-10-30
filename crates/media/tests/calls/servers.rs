@@ -97,6 +97,7 @@ async fn a_second_voice_channel_of_one_server_replaces_the_call_without_a_notice
             .create_channel(
                 room.workspace_id,
                 &junto_client_core::protocol::structure::CreateChannel {
+                    topic: String::new(),
                     name: "Focus".to_owned(),
                     kind: junto_client_core::protocol::structure::ChannelKind::Voice,
                     category_id: None,

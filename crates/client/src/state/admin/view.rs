@@ -352,6 +352,7 @@ pub struct VoiceSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverviewPage {
+    pub topic: String,
     pub name: String,
     pub category_id: Option<CategoryId>,
     pub categories: Vec<(CategoryId, String)>,
@@ -1062,6 +1063,7 @@ fn channel_settings(
                 _ => Privacy::Unknown,
             };
             ChannelPageView::Overview(OverviewPage {
+                topic: channel.topic.clone(),
                 name: channel.name.clone(),
                 category_id: channel.category_id,
                 categories: workspace

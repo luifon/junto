@@ -3298,6 +3298,12 @@ pub const STOP_SHARING: &str = "Stop sharing";
 
 pub const COLLAPSE_CATEGORY: &str = "Collapse category";
 pub const EXPAND_CATEGORY: &str = "Expand category";
+pub const CHANNEL_TOPIC: &str = "Topic";
+pub const EDIT_TOPIC: &str = "Edit topic";
+pub const COPY_TOPIC: &str = "Copy topic";
+pub const TOPIC_EMPTY: &str = "No topic";
+pub const TOPIC_SAVED: &str = "Topic saved";
+pub const TOPIC_TOO_LONG: &str = "A topic has at most 1024 characters.";
 pub const CATEGORY_SETTINGS: &str = "Category settings";
 
 #[cfg(test)]

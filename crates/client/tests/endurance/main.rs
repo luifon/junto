@@ -366,6 +366,7 @@ impl Place {
             .run(owner.api().create_channel(
                 workspace_id,
                 &junto_client_core::protocol::structure::CreateChannel {
+                    topic: String::new(),
                     name: "notes".to_owned(),
                     kind: junto_client_core::protocol::structure::ChannelKind::Text,
                     category_id: None,

@@ -72,6 +72,8 @@ pub enum ChannelKind {
     Voice,
 }
 
+pub const CHANNEL_TOPIC_MAX_CHARS: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Channel {
@@ -80,6 +82,9 @@ pub struct Channel {
     pub category_id: Option<CategoryId>,
     pub kind: ChannelKind,
     pub name: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+    pub topic: String,
     pub position: i32,
     /// The channel setting that makes each message sent under it permanent.
     pub permanent_messages: bool,
@@ -119,6 +124,9 @@ pub struct ArchivePeriod {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateChannel {
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+    pub topic: String,
     pub kind: ChannelKind,
     #[serde(default)]
     pub category_id: Option<CategoryId>,
@@ -169,6 +177,9 @@ pub struct MoveChannels {
 pub struct UpdateChannel {
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
+    pub topic: Option<String>,
     #[serde(
         default,
         deserialize_with = "present",

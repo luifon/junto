@@ -66,6 +66,7 @@ pub enum Mode {
     MoveChannel(ChannelId),
     /// The new name of the channel whose settings are open.
     RenameChannel,
+    EditChannelTopic,
     /// A number of days is typed: the archive period or a retention.
     Days(AskKind),
     /// The question before the removal of the logo of the server.
@@ -91,6 +92,7 @@ impl Mode {
             Self::RenameWorkspace(_) | Self::RenameCategory(_) | Self::RenameChannel => {
                 done::NAME_SAVED
             }
+            Self::EditChannelTopic => text::TOPIC_SAVED,
             Self::DeleteWorkspace(_) => done::WORKSPACE_DELETED,
             Self::EnterCode => done::CODE_ENTERED,
             Self::CreateCategory => done::CATEGORY_CREATED,
@@ -117,6 +119,7 @@ pub(crate) struct AdminUi {
     pub(crate) name: Entity<InputState>,
     /// A number or a code: days, a user limit, an invite code.
     pub(crate) value: Entity<InputState>,
+    pub(crate) topic: Entity<gpui_base::input::TextareaState>,
     pub(crate) mode: Option<Mode>,
     /// The second step of "Move to" on the page of the channels: the group whose places
     /// the row offers. Absent while the group is chosen.
@@ -151,6 +154,11 @@ impl AdminUi {
         list::init(cx);
         let name = Field::state(text::admin::NAME_FIELD, window, cx);
         let value = Field::state("", window, cx);
+        let topic = gpui::AppContext::new(cx, |cx| {
+            gpui_base::input::TextareaState::new(window, cx)
+                .context_menu(false)
+                .auto_grow(2, 6)
+        });
         let mut subscriptions = vec![
             Field::observe(
                 &name,
@@ -171,6 +179,15 @@ impl AdminUi {
                 },
             ),
         ];
+        subscriptions.push(cx.subscribe_in(
+            &topic,
+            window,
+            |this: &mut Shell, _, event: &gpui_base::input::InputEvent, _, cx| {
+                if matches!(event, gpui_base::input::InputEvent::Change) {
+                    this.admin_field_changed(cx);
+                }
+            },
+        ));
         let (overrides, more) = overrides::Ui::new(window, cx);
         subscriptions.extend(more);
         let (people, more) = people::Ui::new(window, cx);
@@ -182,6 +199,7 @@ impl AdminUi {
         let ui = Self {
             name,
             value,
+            topic,
             mode: None,
             move_group: None,
             new_kind: ChannelKind::Text,
@@ -468,7 +486,19 @@ impl Shell {
         self.admin.opened_term = None;
         self.admin.space.release();
         self.admin.list.state.remeasure();
-        let name = name.to_owned();
+        let topic = if mode == Some(Mode::EditChannelTopic) {
+            name.to_owned()
+        } else {
+            String::new()
+        };
+        self.admin
+            .topic
+            .update(cx, |field, cx| field.set_value(topic, window, cx));
+        let name = if mode == Some(Mode::EditChannelTopic) {
+            String::new()
+        } else {
+            name.to_owned()
+        };
         self.admin
             .name
             .update(cx, |field, cx| field.set_value(name, window, cx));
@@ -488,6 +518,10 @@ impl Shell {
                 | Mode::AddTerm
                 | Mode::ChangeTerm(_),
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
+            Some(Mode::EditChannelTopic) => self
+                .admin
+                .topic
+                .update(cx, |field, cx| field.focus(window, cx)),
             Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
             }
@@ -543,7 +577,8 @@ impl Shell {
                 Mode::CreateCategory
                 | Mode::RenameCategory(_)
                 | Mode::CreateChannel(_)
-                | Mode::RenameChannel,
+                | Mode::RenameChannel
+                | Mode::EditChannelTopic,
             ) => self.submit_channel_form(&view, window, cx),
             Some(Mode::Days(_)) => self.submit_days(&view, window, cx),
             Some(Mode::AddTerm | Mode::ChangeTerm(_)) => {

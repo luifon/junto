@@ -1217,6 +1217,7 @@ mod tests {
 
     fn channel(workspace_id: WorkspaceId, name: &str) -> Channel {
         Channel {
+            topic: String::new(),
             id: ChannelId::generate(),
             workspace_id,
             category_id: None,
@@ -1802,6 +1803,7 @@ mod tests {
             ),
             (
                 AuditEvent::ChannelUpdated {
+                    topic: String::new(),
                     name: "general".to_owned(),
                     category_id: Some(scene.projects),
                     position: 1,

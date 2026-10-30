@@ -36,6 +36,7 @@ fn channel_in(
     name: &str,
 ) -> ChannelId {
     let channel = CreateChannel {
+        topic: String::new(),
         name: name.to_owned(),
         kind: ChannelKind::Text,
         category_id: Some(category_id),

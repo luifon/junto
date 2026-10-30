@@ -1347,6 +1347,7 @@ mod tests {
                 roles: Vec::new(),
                 categories: Vec::new(),
                 channels: vec![Channel {
+                    topic: String::new(),
                     id: channel_id,
                     workspace_id,
                     category_id: None,

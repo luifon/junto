@@ -445,6 +445,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "category",
     "position",
     "permanent",
+    "topic",
     "allow",
     "deny",
     "action",
