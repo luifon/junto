@@ -103,6 +103,7 @@ pub enum Inline {
 }
 pub const MAX_INLINE_DEPTH: usize = 8;
 pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
+pub const MAX_LIST_ITEMS: usize = 5_500;
 
 pub struct InlineNodes<'a> {
     stack: Vec<(std::slice::Iter<'a, Inline>, usize)>,
@@ -132,6 +133,17 @@ impl<'a> Iterator for InlineNodes<'a> {
 }
 
 impl Document {
+    pub fn list_items(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(|block| match block {
+                Block::List { items, .. } => items.len(),
+                Block::Checklist { items } => items.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
     pub fn content_blocks(&self) -> impl Iterator<Item = &Block> {
         self.blocks
             .iter()

@@ -5,6 +5,9 @@ use junto_protocol::message::{Block, Document, Inline};
 
 pub fn validate(document: &Document) -> ApiResult<Vec<&Inline>> {
     let bytes = serde_json::to_vec(document).map_err(|error| ApiError::internal(&error))?;
+    if document.list_items() > junto_protocol::message::MAX_LIST_ITEMS {
+        return Err(ApiError::invalid("a message has at most 5500 list items"));
+    }
     if document.forward_origins() > 1 {
         return Err(ApiError::invalid(
             "a message has at most one forward origin",
@@ -299,6 +302,34 @@ mod tests {
                 .contains("a message has at most 100 mentions")
         );
     }
+    #[test]
+    fn list_items_are_bounded_across_lists_and_checklists() {
+        let mut document = Document {
+            blocks: vec![
+                Block::Forward {
+                    server: "https://chat.example.test".parse().unwrap(),
+                    message_id: junto_protocol::ids::MessageId::generate(),
+                },
+                Block::List {
+                    ordered: false,
+                    items: vec![vec![]; 5_499],
+                },
+                Block::Checklist {
+                    items: vec![junto_protocol::message::CheckItem {
+                        checked: false,
+                        content: vec![],
+                    }],
+                },
+                paragraph("valid content"),
+            ],
+        };
+        assert!(validate(&document).is_ok());
+        if let Block::List { items, .. } = &mut document.blocks[1] {
+            items.push(vec![]);
+        }
+        assert!(validate(&document).is_err());
+    }
+
     #[test]
     fn forward_origins_are_metadata_and_keep_copied_content_bounded() {
         let value = serde_json::json!({"blocks": [{

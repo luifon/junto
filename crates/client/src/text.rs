@@ -2324,6 +2324,10 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
     use crate::compose::Problem;
     match problem {
         Problem::Empty => "Write a text or attach a file.".to_owned(),
+        Problem::TooManyListItems { items } => format!(
+            "The message has {items} list items. Use at most {}.",
+            junto_client_core::protocol::message::MAX_LIST_ITEMS
+        ),
         Problem::TooLong { bytes, limit } => format!(
             "The message is too long: {} of {} that a message can have with its formatting.",
             file_size(bytes as u64),

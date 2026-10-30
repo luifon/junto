@@ -12,9 +12,8 @@ use junto_protocol::message::{Block, Document, Inline, Message};
 pub const MOST_BLOCKS: usize = 100;
 /// The inline nodes of the document of one message (ADR 0408).
 pub const MOST_INLINE_NODES: usize = 1_000;
-/// The items of the lists of the document of one message. ADR 0408 states no number: its
-/// 16 KiB of compact JSON hold fewer than 5,500 items.
-pub const MOST_LIST_ITEMS: usize = 5_500;
+/// The items of all lists of one message (ADR 0408).
+pub const MOST_LIST_ITEMS: usize = junto_protocol::message::MAX_LIST_ITEMS;
 /// The files of one message: the highest limit that a server can be set to (ADR 0408).
 pub const MOST_FILES: usize = 100;
 /// The different emoji of the reactions of one message (ADR 0408).
@@ -85,24 +84,6 @@ fn inline_nodes(document: &Document) -> usize {
     document.inlines().take(MOST_INLINE_NODES + 1).count()
 }
 
-/// The items of the lists of a document.
-fn list_items(document: &Document) -> usize {
-    document
-        .blocks
-        .iter()
-        .map(|block| match block {
-            Block::List { items, .. } => items.len(),
-            Block::Checklist { items } => items.len(),
-            Block::Heading { .. }
-            | Block::Small { .. }
-            | Block::Paragraph { .. }
-            | Block::Quote { .. }
-            | Block::Code { .. }
-            | Block::Forward { .. } => 0,
-        })
-        .sum()
-}
-
 /// The weight of a message: the bytes of its texts, and a fixed weight for the message
 /// and for each part of its structure. The memory that the message takes is at most a
 /// small multiple of it.
@@ -139,7 +120,7 @@ pub fn fits(message: &Message) -> bool {
             document.content_blocks().count() <= MOST_BLOCKS
                 && document.forward_origins() <= 1
                 && inline_nodes(document) <= MOST_INLINE_NODES
-                && list_items(document) <= MOST_LIST_ITEMS
+                && document.list_items() <= MOST_LIST_ITEMS
                 && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
                 && document.blocks.iter().all(|block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)))
         })

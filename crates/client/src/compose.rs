@@ -60,6 +60,9 @@ pub enum Problem {
     TooManyNodes {
         nodes: usize,
     },
+    TooManyListItems {
+        items: usize,
+    },
     TooManyMentions {
         mentions: usize,
     },
@@ -801,6 +804,10 @@ pub fn has_content(document: &Document) -> bool {
 /// Checks a document against the limits of the server before it is sent. A message with a
 /// file can have an empty document.
 pub fn check(document: &Document, has_files: bool) -> Result<(), Problem> {
+    let items = document.list_items();
+    if items > junto_client_core::protocol::message::MAX_LIST_ITEMS {
+        return Err(Problem::TooManyListItems { items });
+    }
     if !has_content(document) && !has_files {
         return Err(Problem::Empty);
     }

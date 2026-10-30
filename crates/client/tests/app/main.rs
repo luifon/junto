@@ -83,6 +83,7 @@ mod reaction_people;
 mod recordings;
 mod recovery;
 mod reply_quotes;
+mod review_corrections;
 mod system_lines;
 // The steps of a recording need the recorder of a deployment: only the native rehearsal
 // (`tests/rehearsal/`) runs them.
