@@ -432,8 +432,7 @@ impl Element for SelectableText {
                     )
                     .contains(&event.position)
                 });
-                let on_text = hovered.is_some()
-                    && hover_bounds.is_some_and(|bounds| event.position.y < bounds.bottom());
+                let on_text = hovered.is_some();
                 if hovered != held.hovered && (on_text || !keep) {
                     held.hovered = hovered;
                     window.refresh();

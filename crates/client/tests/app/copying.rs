@@ -155,3 +155,31 @@ fn dragging_across_message_rows_copies_both_rows(cx: &mut TestAppContext) {
     assert!(copied.contains("beta"), "{copied:?}");
     assert!(copied.contains("gamma"), "{copied:?}");
 }
+
+#[gpui::test]
+fn hovering_an_adjacent_paragraph_copies_that_paragraph(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.write("Earlier paragraph\n\nLater paragraph");
+    window.until_message("Earlier paragraph Later paragraph");
+    let earlier = window
+        .in_shell(|shell, _, _| shell.readonly_text_point("Earlier paragraph", 2))
+        .unwrap();
+    window.move_pointer(earlier);
+    assert!(window.shows("copy-text-value"));
+    let later = window
+        .in_shell(|shell, _, _| shell.readonly_text_point("Later paragraph", 2))
+        .unwrap();
+    assert!(
+        later.y > earlier.y && later.y - earlier.y < px(40.0),
+        "the paragraphs must be adjacent"
+    );
+    window.move_pointer(later);
+    window.click("copy-text-value");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Later paragraph"
+    );
+}
