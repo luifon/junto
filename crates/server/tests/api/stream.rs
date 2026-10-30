@@ -419,7 +419,6 @@ async fn a_change_with_more_events_than_a_batch_arrives_whole_in_one_message() {
 async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
-    let mut stream = server.subscribed(&owner, Level::Full).await;
     let mut data = server.test_data().await;
     let mut transaction = sqlx::Connection::begin(&mut data).await.unwrap();
     let event = Event::DeviceRenamed {
@@ -446,6 +445,7 @@ async fn a_change_with_more_events_than_a_client_reads_leads_to_a_snapshot() {
     .execute(&mut *transaction)
     .await
     .unwrap();
+    let mut stream = server.subscribed(&owner, Level::Full).await;
     transaction.commit().await.unwrap();
     assert_eq!(
         after_checkpoints(&mut stream).await,
