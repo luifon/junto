@@ -20,7 +20,7 @@ impl Shell {
             self.pending_link = Some(link);
             return;
         }
-        if !matches!(self.layer, Layer::None) {
+        while !matches!(self.layer, Layer::None) {
             self.close_layer(window, cx);
         }
         match link {

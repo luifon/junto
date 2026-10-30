@@ -329,3 +329,95 @@ fn a_reactor_opens_its_profile_and_shows_current_presence(cx: &mut TestAppContex
         !window.shows("account-menu") && !window.shows_named(format!("reaction-profile:{author}"))
     });
 }
+
+fn external_link_closes_reactor_overlays(cx: &mut TestAppContext, profile: bool) {
+    use crate::links::{deliver_from_outside, registered_main_window};
+    use junto_client_core::{address::ServerAddress, links::AppLink};
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, original) = member(cx, &world, &server.address(), &admin, "Reader");
+    let mut window = registered_main_window(cx, original);
+    let source = window.selected_channel();
+    let destination = admin.text_channel(&world, &mut window, "destination");
+    let target = admin.send(&world, destination, document("the link destination"));
+    window.click_named(format!("channel-row:{source}"));
+    window.until("the source channel is ready", |window| {
+        window.selected_channel() == source && window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let sent = admin.send(&world, source, document("a reviewed plan"));
+    let author = admin.handle.account().unwrap();
+    world
+        .run(admin.handle.api().add_reaction(sent.id, "👍"))
+        .unwrap();
+    window.until_message("a reviewed plan");
+    window.until("the roster control is drawn", |window| {
+        window.shows_named(format!("reaction-people:{}", sent.id))
+    });
+    window.click_named(format!("reaction-people:{}", sent.id));
+    window.until("the reactor profile control is drawn", |window| {
+        window.shows_named(format!("reaction-profile:{author}"))
+    });
+    for escape in [true, false] {
+        if profile {
+            window.click_named(format!("reaction-profile:{author}"));
+            window.until("the reactor profile is open", |window| {
+                window.shows("profile-card")
+            });
+        } else {
+            window.right_click_named(format!("reaction-profile:{author}"));
+            assert!(window.shows("account-menu"));
+        }
+        if escape {
+            window.press("escape");
+            assert!(window.shows("reaction-people-dialog"));
+            assert!(!window.shows("account-menu") && !window.shows("profile-card"));
+        }
+    }
+    let server = ServerAddress::parse(&server.address()).unwrap();
+    let link = if profile {
+        AppLink::Message {
+            server,
+            id: target.id,
+        }
+    } else {
+        AppLink::Channel {
+            server,
+            id: destination,
+        }
+    };
+    deliver_from_outside(&mut window, link);
+    window.until("the external destination is loaded", |window| {
+        window.selected_channel() == destination
+            && window.feed().is_some_and(|feed| feed.loaded)
+            && (!profile
+                || window
+                    .messages()
+                    .iter()
+                    .any(|row| row.message.id == target.id && row.target))
+    });
+    assert!(
+        !window.shows("reaction-people-dialog"),
+        "the reaction roster covers the link destination"
+    );
+    assert!(!window.shows("account-menu") && !window.shows("profile-card"));
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state
+                .profile_view(window.shell.entity_id()))
+            .is_none()
+    );
+    window.press("escape");
+    assert!(!window.shows("reaction-people-dialog"));
+}
+
+#[gpui::test]
+fn an_external_channel_link_closes_the_reactor_account_menu_and_roster(cx: &mut TestAppContext) {
+    external_link_closes_reactor_overlays(cx, false);
+}
+
+#[gpui::test]
+fn an_external_message_link_closes_the_reactor_profile_and_roster(cx: &mut TestAppContext) {
+    external_link_closes_reactor_overlays(cx, true);
+}
