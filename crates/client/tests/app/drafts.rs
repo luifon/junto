@@ -78,9 +78,6 @@ fn channel_and_thread_drafts_survive_a_process_restart_and_clear_after_send(
 
 #[gpui::test]
 fn closing_and_reopening_the_main_shell_keeps_drafts_while_state_lives(cx: &mut TestAppContext) {
-    use gpui::{AppContext as _, VisualTestContext};
-    use gpui_base::Root;
-    use junto_client::shell::Shell;
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
@@ -88,60 +85,28 @@ fn closing_and_reopening_the_main_shell_keeps_drafts_while_state_lives(cx: &mut 
     window.type_into("composer-input", "close and reopen");
     let state = window.state.clone();
     let old = window.shell.downgrade();
-    window.cx.update(|window, _| window.remove_window());
-    drop(window);
-    for _ in 0..3 {
-        cx.update(|_| {});
-    }
+    let mut reopened = window.reopen_shell(cx);
     assert!(old.upgrade().is_none());
-    let built = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let output = built.clone();
-    let shown = state.clone();
-    let handle = cx.add_window(move |window, cx| {
-        let shell = cx.new(|cx| Shell::new(shown, window, cx));
-        *output.borrow_mut() = Some(shell.clone());
-        Root::new(shell, window, cx)
-    });
-    let mut visual = VisualTestContext::from_window(handle.into(), cx);
-    crate::harness::draw_from_a_task(&mut visual);
-    visual.update(|window, cx| window.simulate_next_frame(cx));
-    visual.run_until_parked();
-    let shell = built.borrow_mut().take().unwrap();
     assert_eq!(
-        shell.read_with(&visual, |shell, cx| shell.composer_text(Pane::Main, cx)),
+        reopened.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "close and reopen"
     );
-    let built = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let output = built.clone();
-    let shown = state.clone();
-    let newer = cx.add_window(move |window, cx| {
-        let shell = cx.new(|cx| Shell::new(shown, window, cx));
-        *output.borrow_mut() = Some(shell.clone());
-        Root::new(shell, window, cx)
-    });
-    let mut newer = VisualTestContext::from_window(newer.into(), cx);
-    crate::harness::draw_from_a_task(&mut newer);
-    newer.update(|window, cx| window.simulate_next_frame(cx));
-    newer.run_until_parked();
-    let newer_shell = built.borrow_mut().take().unwrap();
+    let mut newer = reopened.another_shell(cx);
     assert_eq!(
-        newer_shell.read_with(&newer, |shell, cx| shell.composer_text(Pane::Main, cx)),
+        newer.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "close and reopen"
     );
-    newer.update(|window, cx| {
-        newer_shell.update(cx, |shell, cx| {
-            shell.type_message(Pane::Main, "newer window draft", window, cx)
-        })
+    newer.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "newer window draft", window, cx)
     });
-    newer.run_until_parked();
-    let stale = shell.downgrade();
-    visual.update(|window, _| window.remove_window());
-    drop(shell);
+    let stale = reopened.shell.downgrade();
+    reopened.cx.update(|window, _| window.remove_window());
+    drop(reopened);
     for _ in 0..3 {
         cx.update(|_| {});
     }
     assert!(stale.upgrade().is_none());
-    visual.run_until_parked();
+    newer.run_tasks();
     cx.update(junto_client::state::finish_writes);
     let store = state.read_with(cx, |state, _| {
         junto_client_core::drafts::DraftStore::new(state.client().data_dir().clone())
@@ -155,16 +120,12 @@ fn closing_and_reopening_the_main_shell_keeps_drafts_while_state_lives(cx: &mut 
             .any(|draft| draft["text"] == "newer window draft"),
         "{saved:?}"
     );
-    newer.update(|window, cx| {
-        newer_shell.update(cx, |shell, cx| {
-            assert_eq!(shell.composer_text(Pane::Main, cx), "newer window draft");
-            shell.type_message(Pane::Main, "", window, cx);
-        })
+    newer.in_shell(|shell, window, cx| {
+        assert_eq!(shell.composer_text(Pane::Main, cx), "newer window draft");
+        shell.type_message(Pane::Main, "", window, cx);
     });
-    newer.update(|window, _| window.remove_window());
-    drop(newer_shell);
     drop(state);
-    newer.run_until_parked();
+    newer.close();
 }
 
 #[gpui::test]

@@ -133,6 +133,9 @@ Tests on real systems:
     bound of ADR 0730. On gpui's test platform the background tasks of gpui run on the
     thread of the test, so a piece includes them; work on the runtime of the client and
     on the threads of the media engine is not included, as in the product.
+  - Closing/reopening a main shell while its application state lives uses the same
+    window harness. Its helpers create visual contexts, draw the first frame and pump
+    tasks; the lifecycle tests do not bypass the source guard with raw context calls.
 
 - On macOS the test target `modes` measures one window per process in seven modes of the
   use and prints the memory, the processor share and the threads of each (ADR 0914).
