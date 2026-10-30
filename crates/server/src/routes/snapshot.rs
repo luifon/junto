@@ -111,6 +111,8 @@ pub async fn get_snapshot(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        let groups=crate::messages::groups::list(connection,&access).await?;
+        crate::messages::groups::with_readable(access.account_id,groups,async {
         let log = log::state(connection).await?;
         let account = store::own_account(connection, &access).await?;
         let default_workspace = store::default_workspace(connection).await?;
@@ -275,6 +277,7 @@ pub async fn get_snapshot(
             moderation_notices: notices.notices,
             moderation_notices_next: notices.next_before,
         })
+        }).await
     })
     .map(|mut response| {
         let extended = super::notifications::extended_preferences(&headers);

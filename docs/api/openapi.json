@@ -17822,6 +17822,7 @@
       },
       "CreateGroupConversation": {
         "type": "object",
+        "description": "Starts a named group of three to ten people. Each account may belong to 256 groups.",
         "required": [
           "name",
           "account_ids"

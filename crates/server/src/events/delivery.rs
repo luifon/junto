@@ -1218,16 +1218,15 @@ impl Standing {
         }
         group_ids.sort_unstable();
         group_ids.dedup();
-        let mut groups = HashSet::new();
-        for id in group_ids {
-            match crate::messages::groups::readable(connection, access, id).await {
-                Ok(_) => {
-                    groups.insert(id);
-                }
-                Err(error) if error.code() == ErrorCode::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
+        let named: Vec<_> = group_ids.iter().map(|id| id.as_uuid()).collect();
+        let groups: HashSet<_> =
+            crate::messages::groups::for_accounts(connection, &[access.account_id], Some(&named))
+                .await?
+                .remove(&access.account_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|group| group.id)
+                .collect();
         Ok(Self {
             groups,
             quiet: candidates.iter().any(|candidate| {

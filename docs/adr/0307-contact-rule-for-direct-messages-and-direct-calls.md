@@ -41,7 +41,7 @@ Group conversations:
 
 - All active members of a group must be mutually reachable by this same contact decision. The server uses the existing contact facts and the permission function for each pair. A person added to the group must be active and reachable by every active member.
 - History, changes, events, replay, snapshots, search, notices, attachments, exports and call admission require current membership and this rule for the active members. Administrator status does not replace membership.
-- When any active pair loses contact, the group is unavailable until contact returns or the affected member leaves the group. A member can leave while the group is unavailable. A departed account retains its membership and attribution, without preventing the remaining active members from exchanging messages; it receives no new event while inactive.
+- When any active pair loses contact, the group is unavailable until contact returns or the affected member leaves the group. A member can leave while the group is unavailable. A nonactive account retains its membership and attribution, without preventing the remaining active members from exchanging messages. This includes inactive, banned, removed and deleted accounts. Credentials deny the nonactive caller, and repeated call admission ends its seat. Returning accounts rejoin the contact decision; membership alone does not restore access before contact returns.
 
 What it does not decide:
 
@@ -57,3 +57,5 @@ What it does not decide:
 - ADR 0408 makes earlier direct-message history unavailable while this rule fails, and available again when it holds. A conversation with an inactive or deleted account stays readable for the remaining participant and takes no change (ADR 0121).
 - Every account of the server can learn the names of the administrators from the list of contacts. ADR 0119 lets it see their profiles for the same reason.
 - Test: `contacts::a_member_reaches_the_accounts_of_its_workspaces_and_the_administrators_only` and `contacts::the_contacts_are_found_by_a_part_of_the_name_in_pages_of_names` in `crates/server`: a member in a workspace of its own reaches the administrators only, a banned account and an account that lost the administrator permission leave the lists, each listed account takes a conversation, and the pages follow the names.
+
+Group membership and contact standing are loaded in batches. The contact decision compares only active members, using the same permission function in both directions. Snapshot construction reuses its readable groups only inside its serializable read transaction; no cached standing crosses a request or a write. Search, notices and event delivery batch their named group candidates. The snapshot cost regression compares one and 201 groups without a query per group.

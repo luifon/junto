@@ -364,6 +364,7 @@ pub struct GroupMembership {
     pub name: String,
 }
 
+/// Starts a named group of three to ten people. Each account may belong to 256 groups.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]

@@ -929,3 +929,333 @@ async fn a_finished_group_export_keeps_former_member_names_and_is_revoked_after_
         .empty(StatusCode::NO_CONTENT);
     server.get(&writer, &file).await.error(ErrorCode::NotFound);
 }
+
+async fn nonactive_member_keeps_the_remaining_group_readable(banned: bool) {
+    use junto_protocol::call::CallJoin;
+    let server = TestServer::start_for_calls().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let excluded = server.join(&owner, "Excluded").await;
+    let (id, _) = create(&server, &writer, &[&reader, &excluded], "Project").await;
+    let history = format!("/api/v1/conversations/{id}/messages");
+    let written: Message = server
+        .post(&excluded, &history, &text("Earlier decision"))
+        .await
+        .ok(StatusCode::CREATED);
+    let call = format!("{GROUPS}/{id}/call/join");
+    for person in [&writer, &excluded] {
+        let joined: CallJoin = server
+            .post(person, &call, &json!({}))
+            .await
+            .ok(StatusCode::OK);
+        server.connect(joined);
+    }
+    server.check().await;
+    if banned {
+        server
+            .put_empty(
+                &owner,
+                &format!("/api/v1/accounts/{}/ban", excluded.account_id),
+            )
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    } else {
+        server
+            .post(
+                &owner,
+                &format!("/api/v1/accounts/{}/removal", excluded.account_id),
+                &json!({}),
+            )
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    }
+    server
+        .get(&excluded, &history)
+        .await
+        .error(ErrorCode::Unauthenticated);
+    server
+        .post(&excluded, &call, &json!({}))
+        .await
+        .error(ErrorCode::Unauthenticated);
+    server.check().await;
+    for person in [&writer, &reader] {
+        let page: MessagePage = server.get(person, &history).await.ok(StatusCode::OK);
+        assert!(page.messages.iter().any(|message| message.id == written.id
+            && message.author_name.as_deref() == Some("Excluded")));
+    }
+    let snapshot = server.snapshot(&writer).await;
+    assert!(
+        snapshot.own_call.is_some(),
+        "the remaining member keeps the call seat"
+    );
+    assert!(snapshot.direct_calls.iter().all(|room| {
+        room.participants
+            .iter()
+            .all(|person| person.account_id != excluded.account_id)
+    }));
+    let joined: CallJoin = server
+        .post(&reader, &call, &json!({}))
+        .await
+        .ok(StatusCode::OK);
+    server.connect(joined);
+    server.check().await;
+    let seats: i64 = sqlx::query_scalar("select count(*) from call_members where account_id=$1")
+        .bind(excluded.account_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(seats, 0, "the inactive caller's seat ended");
+}
+
+#[tokio::test]
+async fn banning_a_member_keeps_history_and_calls_for_the_remaining_members() {
+    nonactive_member_keeps_the_remaining_group_readable(true).await;
+}
+
+#[tokio::test]
+async fn removing_a_member_keeps_history_and_calls_for_the_remaining_members() {
+    nonactive_member_keeps_the_remaining_group_readable(false).await;
+}
+
+#[tokio::test]
+async fn snapshot_group_authorization_has_a_constant_statement_bound_for_many_groups() {
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    create(&server, &writer, &[&reader, &third], "Project").await;
+    let (mut held, role) = crate::messages_queries::measure_requests(&server).await;
+    let observer = &mut **held.first_mut().unwrap();
+    server.snapshot(&writer).await;
+    let before = crate::messages_queries::statements(observer, role).await;
+    server.snapshot(&writer).await;
+    let small = crate::messages_queries::since(
+        crate::messages_queries::statements(observer, role).await,
+        before,
+    );
+    sqlx::query("with made as (insert into conversations(id,name) select gen_random_uuid(),'Project '||n::text from generate_series(1,200)n returning id) insert into conversation_members(conversation_id,account_id) select id,unnest($1::uuid[]) from made")
+        .bind(vec![writer.account_id,reader.account_id,third.account_id]).execute(&mut server.test_data().await).await.unwrap();
+    server.snapshot(&writer).await;
+    let before = crate::messages_queries::statements(observer, role).await;
+    let snapshot = server.snapshot(&writer).await;
+    let large = crate::messages_queries::since(
+        crate::messages_queries::statements(observer, role).await,
+        before,
+    );
+    assert_eq!(snapshot.group_conversations.len(), 201);
+    let small: i64 = small.values().sum();
+    let large_total: i64 = large.values().sum();
+    eprintln!("group snapshot statements: one={small}, many={large_total}");
+    assert!(
+        large_total <= small + 5,
+        "201 groups must add no per-group authorization queries: one={small}, many={large_total}, statements={large:?}"
+    );
+    server.require_no_statement_eviction(evictions).await;
+}
+
+#[tokio::test]
+async fn a_group_collection_limit_applies_to_creation_and_addition_and_leave_releases_a_place() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    sqlx::query("with made as (insert into conversations(id,name) select gen_random_uuid(),'Project '||n::text from generate_series(1,256)n returning id) insert into conversation_members(conversation_id,account_id) select id,unnest($1::uuid[]) from made")
+        .bind(vec![writer.account_id,reader.account_id,third.account_id]).execute(&mut server.test_data().await).await.unwrap();
+    server
+        .post(
+            &writer,
+            GROUPS,
+            &json!({"name":"One too many","account_ids":[reader.account_id,third.account_id]}),
+        )
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let fourth = server.join(&owner, "Fourth").await;
+    let fifth = server.join(&owner, "Fifth").await;
+    let sixth = server.join(&owner, "Sixth").await;
+    let (id, _) = create(&server, &fourth, &[&fifth, &sixth], "Other project").await;
+    let route = format!("{GROUPS}/{id}/members");
+    server
+        .post(&fourth, &route, &json!({"account_id":writer.account_id}))
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let leave:ConversationId=sqlx::query_scalar("select conversation_id from conversation_members where account_id=$1 order by conversation_id limit 1")
+        .bind(writer.account_id).fetch_one(&server.db).await.unwrap();
+    server
+        .delete(&writer, &format!("{GROUPS}/{leave}/membership"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server
+        .post(&fourth, &route, &json!({"account_id":writer.account_id}))
+        .await
+        .ok::<Value>(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn group_file_and_export_transfers_end_after_leaving() {
+    use junto_protocol::export::Export;
+    const LENGTH: usize = 24 * 1024 * 1024;
+    let attachments = crate::support::Scratch::new();
+    let exports = crate::support::Scratch::new();
+    let server = TestServer::start_tuned(
+        |config| {
+            config.attachments_directory = Some(attachments.0.clone());
+            config.exports_directory = Some(exports.0.clone());
+        },
+        Some(16 * 1024),
+    )
+    .await;
+    server.state.attachment_space.use_disk(std::sync::Arc::new(
+        junto_server::storage::FakeDisk::new(crate::support::FREE_DISK),
+    ));
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let (id, _) = create(&server, &writer, &[&reader, &third], "Project").await;
+    let bytes = vec![7u8; LENGTH];
+    let attachment =
+        crate::messages_support::upload(&server, &writer, json!({"conversation_id":id}), &bytes)
+            .await;
+    server
+        .post(
+            &writer,
+            &format!("/api/v1/conversations/{id}/messages"),
+            &json!({"document":{"blocks":[]},"attachments":[attachment.id]}),
+        )
+        .await
+        .ok::<Message>(StatusCode::CREATED);
+    let file = format!("/api/v1/attachments/{}/file", attachment.id);
+    let complete = server.get(&reader, &file).await;
+    assert_eq!(complete.status, StatusCode::OK);
+    assert_eq!(complete.bytes(), bytes);
+    let export: Export = server
+        .post(
+            &reader,
+            &format!("/api/v1/conversations/{id}/exports"),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    junto_server::exports::run_once(&server.state)
+        .await
+        .unwrap();
+    let archive = format!("/api/v1/exports/{}/file", export.id);
+    let archive_length = 256 * 1024 * 1024u64;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(exports.0.join(export.id.to_string()).join("1.zip"))
+        .unwrap()
+        .set_len(archive_length)
+        .unwrap();
+    let client = reqwest::Client::new();
+    let mut running = Vec::new();
+    for (path, length) in [(&file, LENGTH as u64), (&archive, archive_length)] {
+        let mut response = client
+            .get(format!("{}{path}", server.base))
+            .header(junto_protocol::message::GROUPS_HEADER, "1")
+            .bearer_auth(&reader.token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let first = response.chunk().await.unwrap().unwrap().len() as u64;
+        running.push((response, first, length));
+    }
+    server
+        .delete(&reader, &format!("{GROUPS}/{id}/membership"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server
+        .clock
+        .advance(server.state.config.limits.recordings.download_check + time::Duration::seconds(1));
+    for (mut response, mut received, length) in running {
+        let whole = loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => received += chunk.len() as u64,
+                Ok(None) => break true,
+                Err(_) => break false,
+            }
+        };
+        assert!(
+            received < length && !whole,
+            "a departed reader must not finish the transfer: {received}/{length}, complete={whole}"
+        );
+    }
+    for path in [&file, &archive] {
+        server.get(&reader, path).await.error(ErrorCode::NotFound);
+    }
+    let complete = server.get(&third, &file).await;
+    assert_eq!(complete.status, StatusCode::OK);
+    assert_eq!(complete.bytes(), bytes);
+}
+
+#[tokio::test]
+async fn an_inactive_member_returns_only_after_contact_is_restored() {
+    use junto_protocol::{auth::SessionCreated, structure::Workspace};
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let former = server.join(&owner, "Former").await;
+    let (id, _) = create(&server, &writer, &[&reader, &former], "Project").await;
+    let history = format!("/api/v1/conversations/{id}/messages");
+    let written: Message = server
+        .post(&former, &history, &text("Earlier decision"))
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .post(
+            &former,
+            &format!("/api/v1/workspaces/{}/departure", workspace.id),
+            &Value::Null,
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let page: MessagePage = server.get(&reader, &history).await.ok(StatusCode::OK);
+    assert!(page.messages.iter().any(|message| message.id == written.id));
+    server
+        .get(&former, &history)
+        .await
+        .error(ErrorCode::Unauthenticated);
+    let other: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({"name":"Other"}))
+        .await
+        .ok(StatusCode::CREATED);
+    let invite = server
+        .invite(&owner, json!({"workspace_ids":[other.id]}))
+        .await;
+    let returned: SessionCreated = server
+        .join_reply(&former.key, invite.code.expose(), "Another name")
+        .await
+        .ok(StatusCode::CREATED);
+    assert_eq!(returned.account_id, former.account_id);
+    let former = crate::support::member(former.key, returned);
+    for person in [&writer, &reader, &former] {
+        server
+            .get(person, &history)
+            .await
+            .error(ErrorCode::NotFound);
+    }
+    server
+        .put_empty(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}",
+                workspace.id, former.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    for person in [&writer, &reader, &former] {
+        let page: MessagePage = server.get(person, &history).await.ok(StatusCode::OK);
+        assert!(
+            page.messages.iter().any(|message| message.id == written.id
+                && message.author_name.as_deref() == Some("Former"))
+        );
+    }
+}

@@ -3,12 +3,13 @@ use crate::{
     error::{ApiError, ApiResult},
     store,
 };
-use junto_authz::{Participation, Request};
+use junto_authz::{Actor, Contact, Participation, Request, authorize};
 use junto_protocol::{
-    ids::{AccountId, ConversationId},
+    ids::{AccountId, ConversationId, WorkspaceId},
     message::GroupConversation,
 };
 use sqlx::PgConnection;
+use std::collections::{HashMap, HashSet};
 
 tokio::task_local! { static SUPPORTED: bool; }
 
@@ -90,27 +91,144 @@ pub async fn participant(
     Ok(group)
 }
 
+pub const MOST_GROUPS: i64 = 256;
+
+tokio::task_local! {
+    static READABLE: (AccountId, Vec<GroupConversation>);
+}
+
+/// Reuses standing only inside the caller's serializable snapshot transaction.
+pub(crate) async fn with_readable<T>(
+    account: AccountId,
+    groups: Vec<GroupConversation>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    READABLE.scope((account, groups), future).await
+}
+
+fn cached(account: AccountId) -> Option<Vec<GroupConversation>> {
+    READABLE
+        .try_with(|(id, groups)| (*id == account).then(|| groups.clone()))
+        .ok()
+        .flatten()
+}
+
+struct Standing {
+    actor: Actor,
+    workspaces: HashSet<WorkspaceId>,
+}
+
+async fn standing(
+    connection: &mut PgConnection,
+    accounts: &[AccountId],
+) -> ApiResult<HashMap<AccountId, Standing>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let query = format!(
+        "select contact.*,array(select workspace_id from workspace_members where account_id=contact.id) from ({}) contact(id,owner,roles,allow,deny)",
+        store::CONTACT_STANDING
+    );
+    let rows: Vec<(AccountId, bool, Vec<i64>, i64, i64, Vec<WorkspaceId>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(query))
+            .bind(accounts)
+            .fetch_all(connection)
+            .await?;
+    rows.into_iter()
+        .map(|(id, owner, roles, allow, deny, workspaces)| {
+            Ok((
+                id,
+                Standing {
+                    actor: crate::access::visibility::make_actor(owner, roles, (allow, deny))?,
+                    workspaces: workspaces.into_iter().collect(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn mutually_reachable(accounts: &[AccountId], standing: &HashMap<AccountId, Standing>) -> bool {
+    let active: Vec<_> = accounts.iter().filter_map(|id| standing.get(id)).collect();
+    active.iter().enumerate().all(|(index, left)| {
+        active[index + 1..].iter().all(|right| {
+            let shared = !left.workspaces.is_disjoint(&right.workspaces);
+            let contact = |other: &Standing| {
+                if shared {
+                    Contact::SharedWorkspace
+                } else if other.actor.is_administrator() {
+                    Contact::Administrator
+                } else {
+                    Contact::Unrelated
+                }
+            };
+            authorize(&left.actor, &Request::Contact(contact(right))).is_allowed()
+                && authorize(&right.actor, &Request::Contact(contact(left))).is_allowed()
+        })
+    })
+}
+
 pub async fn eligible(connection: &mut PgConnection, accounts: &[AccountId]) -> ApiResult<bool> {
-    let departed = store::departed_among(connection, accounts).await?;
-    for (index, account) in accounts.iter().enumerate() {
-        let Some(access) = Access::of_account(connection, *account).await? else {
-            if departed.contains(account) {
-                continue;
-            }
-            return Ok(false);
-        };
-        let others = &accounts[index + 1..];
-        let contacts = store::contacts(connection, &access, others).await?;
-        if others.iter().any(|other| {
-            !departed.contains(other)
-                && !contacts
-                    .get(other)
-                    .is_some_and(|contact| access.allows(Request::Contact(*contact)))
-        }) {
-            return Ok(false);
+    Ok(mutually_reachable(
+        accounts,
+        &standing(connection, accounts).await?,
+    ))
+}
+
+pub(crate) async fn for_accounts(
+    connection: &mut PgConnection,
+    accounts: &[AccountId],
+    named: Option<&[uuid::Uuid]>,
+) -> ApiResult<HashMap<AccountId, Vec<GroupConversation>>> {
+    let mut result = HashMap::new();
+    if !supported() || accounts.is_empty() || named.is_some_and(<[uuid::Uuid]>::is_empty) {
+        return Ok(result);
+    }
+    let mut missing = Vec::new();
+    for account in accounts {
+        if let Some(groups) = cached(*account) {
+            result.insert(
+                *account,
+                groups
+                    .into_iter()
+                    .filter(|group| named.is_none_or(|ids| ids.contains(&group.id.as_uuid())))
+                    .collect(),
+            );
+        } else {
+            missing.push(*account);
         }
     }
-    Ok(true)
+    if missing.is_empty() {
+        return Ok(result);
+    }
+    let rows:Vec<(ConversationId,String,Vec<AccountId>)>=sqlx::query_as(
+        "select c.id,c.name,array(select account_id from conversation_members where conversation_id=c.id order by account_id) from conversations c where c.name is not null and c.id in (select conversation_id from conversation_members where account_id=any($1) and ($2::uuid[] is null or conversation_id=any($2))) order by c.id"
+    ).bind(&missing).bind(named).fetch_all(&mut *connection).await?;
+    let mut members: Vec<_> = rows
+        .iter()
+        .flat_map(|(_, _, ids)| ids.iter().copied())
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    let standing = standing(connection, &members).await?;
+    for (id, name, account_ids) in rows {
+        if !mutually_reachable(&account_ids, &standing) {
+            continue;
+        }
+        let group = GroupConversation {
+            id,
+            name,
+            account_ids,
+        };
+        for account in &missing {
+            if standing.contains_key(account) && group.account_ids.contains(account) {
+                result
+                    .entry(*account)
+                    .or_insert_with(Vec::new)
+                    .push(group.clone());
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub async fn readable(
@@ -118,6 +236,11 @@ pub async fn readable(
     access: &Access,
     id: ConversationId,
 ) -> ApiResult<GroupConversation> {
+    if let Ok(Some(group)) = READABLE.try_with(|(account, groups)| {
+        (*account == access.account_id).then(|| groups.iter().find(|group| group.id == id).cloned())
+    }) {
+        return group.ok_or_else(ApiError::not_found);
+    }
     let group = participant(connection, access, id).await?;
     if !eligible(connection, &group.account_ids).await? {
         return Err(ApiError::not_found());
@@ -129,20 +252,30 @@ pub async fn list(
     connection: &mut PgConnection,
     access: &Access,
 ) -> ApiResult<Vec<GroupConversation>> {
-    if !supported() {
+    if !access.allows(Request::DirectMessage(Participation::Participant)) {
         return Ok(Vec::new());
     }
-    let ids: Vec<ConversationId> = sqlx::query_scalar("select conversation_id from conversation_members where account_id=$1 order by conversation_id")
-        .bind(access.account_id).fetch_all(&mut *connection).await?;
-    let mut groups = Vec::new();
-    for id in ids {
-        match readable(connection, access, id).await {
-            Ok(group) => groups.push(group),
-            Err(error) if error.code() == junto_protocol::error::ErrorCode::NotFound => {}
-            Err(error) => return Err(error),
-        }
+    Ok(for_accounts(connection, &[access.account_id], None)
+        .await?
+        .remove(&access.account_id)
+        .unwrap_or_default())
+}
+
+pub(crate) async fn reserve_memberships(
+    connection: &mut PgConnection,
+    accounts: &[AccountId],
+) -> ApiResult<()> {
+    sqlx::query("select id from accounts where id=any($1) order by id for update")
+        .bind(accounts)
+        .execute(&mut *connection)
+        .await?;
+    let full:bool=sqlx::query_scalar("select exists(select account_id from conversation_members where account_id=any($1) group by account_id having count(*) >= $2)").bind(accounts).bind(MOST_GROUPS).fetch_one(connection).await?;
+    if full {
+        return Err(ApiError::invalid(
+            "an account belongs to at most 256 groups",
+        ));
     }
-    Ok(groups)
+    Ok(())
 }
 
 pub async fn call_line(

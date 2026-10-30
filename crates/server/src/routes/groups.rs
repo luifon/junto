@@ -64,6 +64,7 @@ pub async fn create_group(
         if !groups::eligible(connection, &accounts).await? {
             return Err(ApiError::not_found());
         }
+        groups::reserve_memberships(connection, &accounts).await?;
         sqlx::query("insert into conversations(id,name) values($1,$2)")
             .bind(id)
             .bind(&name)
@@ -161,6 +162,7 @@ pub async fn add_group_member(
             if !groups::eligible(connection, &group.account_ids).await? {
                 return Err(ApiError::not_found());
             }
+            groups::reserve_memberships(connection, &[body.account_id]).await?;
             sqlx::query(
                 "insert into conversation_members(conversation_id,account_id) values($1,$2)",
             )

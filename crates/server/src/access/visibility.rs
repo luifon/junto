@@ -76,7 +76,7 @@ struct Standing {
     groups: Vec<ConversationId>,
 }
 
-fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
+pub(crate) fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
     Ok(Actor {
         server_override: super::permissions::server_rule(person.0, person.1)?,
         position: if owner {
@@ -267,19 +267,19 @@ async fn load_for(
         })
         .collect::<ApiResult<_>>()?;
     if directs && crate::messages::groups::supported() {
+        let candidates: Vec<_> = group_candidates.keys().copied().collect();
+        let mut groups =
+            crate::messages::groups::for_accounts(connection, &candidates, named).await?;
         for (account, places) in &mut result {
-            let Some(ids) = group_candidates.remove(account) else {
-                continue;
-            };
-            let Some(access) = Access::of_account(connection, *account).await? else {
-                continue;
-            };
-            for id in ids {
-                match crate::messages::groups::readable(connection, &access, id).await {
-                    Ok(_) => places.directs.push(id),
-                    Err(error) if error.code() == junto_protocol::error::ErrorCode::NotFound => {}
-                    Err(error) => return Err(error),
-                }
+            if let Some(candidates) = group_candidates.remove(account) {
+                places.directs.extend(
+                    groups
+                        .remove(account)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|group| candidates.contains(&group.id))
+                        .map(|group| group.id),
+                );
             }
         }
     }
