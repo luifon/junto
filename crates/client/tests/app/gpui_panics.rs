@@ -11,11 +11,36 @@ use gpui::{
     AppContext as _, BorrowAppContext as _, EventEmitter, Global, TestAppContext, VisualTestContext,
 };
 
-use crate::harness::{dispatch_from_the_window, draw_from_a_task, open_view, pad, press_pad};
+use crate::harness::{
+    dispatch_from_the_window, draw_from_a_task, native_frame, open_view, pad, press_pad,
+};
 
 gpui::actions!(gpui_panics, [Probe]);
 
 const MESSAGE: &str = "a panic of the gpui test";
+
+#[gpui::test]
+fn a_nested_frame_preserves_pending_picture_callbacks(cx: &mut TestAppContext) {
+    let mut window = pad(cx, Rc::new(|_, _| {}));
+    let ran = Rc::new(Cell::new(false));
+    let (send, mut received) = futures_channel::oneshot::channel();
+    window.update(|window, _| {
+        let ran = ran.clone();
+        window.on_next_frame(move |_, _| {
+            ran.set(true);
+            let _ = send.send(());
+        });
+    });
+    native_frame(&mut window, true);
+    assert!(!ran.get());
+    assert!(
+        received.try_recv().is_ok(),
+        "the frame dropped the picture acknowledgement"
+    );
+    native_frame(&mut window, false);
+    assert!(ran.get());
+    assert_eq!(received.try_recv(), Ok(Some(())));
+}
 
 /// Panics the first time.
 #[derive(Clone, Default)]

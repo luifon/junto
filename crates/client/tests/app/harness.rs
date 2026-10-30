@@ -1433,6 +1433,23 @@ pub fn draw_from_a_task(cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
+/// Gives the window a native frame, optionally while an application update holds it.
+pub fn native_frame(cx: &mut VisualTestContext, nested: bool) {
+    let handle = cx.update(|window, _| window.window_handle());
+    let platform = cx.cx.test_window(handle);
+    let request = || {
+        platform.simulate_frame_request(gpui::RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
+    };
+    if nested {
+        cx.update(|_, _| request());
+    } else {
+        request();
+    }
+}
+
 /// Presses and releases the left button on the pad, through the input callback of the test
 /// window, as a platform gives the events.
 pub fn press_pad(cx: &mut VisualTestContext) {

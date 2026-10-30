@@ -43,6 +43,7 @@ mod lines;
 mod native_share;
 mod permissions;
 mod profile_cards;
+mod received;
 mod rules;
 mod sound_help;
 mod tones;

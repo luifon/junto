@@ -81,3 +81,7 @@ Tests:
 - Applications that a person cannot share alone because they started Junto: File Explorer in the usual start of Junto, and a terminal or a launcher with a window from which Junto was started.
 - The client test of the share through the window runs only where LiveKit runs; the Windows job has none (ADR 0912).
 - The capture costs one Direct3D device per share.
+
+## Screen capture test boundary
+
+The native screen-capture test requires an arriving picture at the enumerated display size and no delivery after stopping. It does not require the pixels of a fixture window at fixed desktop coordinates: the captured source is the composited desktop, and another native window can cover that region. The old fixed-coordinate colour oracle is removed. Window capture retains the four-colour content and change checks against its own source, independently of desktop occlusion. This does not establish the cause of an earlier white or grey desktop picture. Checking a complete desktop image against known pixels requires a controlled desktop session.

@@ -1768,9 +1768,14 @@ impl Window {
                 let force_render =
                     mem::take(&mut deferred_force_render) || request_frame_options.force_render;
 
-                let thermal_state = handle
-                    .update(&mut cx, |_, _, cx| cx.thermal_state())
-                    .log_err();
+                // Modified: a native frame can arrive while a non-drawing App update
+                // holds the window. Keep its callbacks until the window is available.
+                let Ok(thermal_state) = handle.update(&mut cx, |_, _, cx| cx.thermal_state())
+                else {
+                    deferred_force_render |= force_render;
+                    invalidator.wake_platform();
+                    return;
+                };
 
                 // Throttle frame rate based on conditions:
                 // - Thermal pressure (Serious/Critical): cap to ~60fps
@@ -1782,7 +1787,10 @@ impl Window {
                     None
                 } else if !active.get() && !input_rate_tracker.borrow_mut().is_high_rate() {
                     inactive_frame_interval.map(|interval| (interval, FrameRateLimit::Inactive))
-                } else if let Some(ThermalState::Critical | ThermalState::Serious) = thermal_state {
+                } else if matches!(
+                    thermal_state,
+                    ThermalState::Critical | ThermalState::Serious
+                ) {
                     Some((Duration::from_micros(16667), FrameRateLimit::Thermal))
                 } else {
                     None

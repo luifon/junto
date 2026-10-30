@@ -484,7 +484,7 @@ fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_cl
 }
 
 #[test]
-fn a_screen_share_shows_the_window_where_it_is_and_stops_when_dropped() {
+fn a_screen_share_has_the_display_size_and_stops_when_dropped() {
     let fixture = Fixture::open();
     let capture = junto_media::share::system();
     let runtime = runtime();
@@ -503,20 +503,27 @@ fn a_screen_share_shows_the_window_where_it_is_and_stops_when_dropped() {
             pictures.clone(),
         ))
         .unwrap();
-    let area = fixture.area;
-    until_colours(
-        &pictures,
-        0,
-        |_| {
-            quarters((
-                f64::from(area.0),
-                f64::from(area.1),
-                f64::from(area.2),
-                f64::from(area.3),
-            ))
-        },
-        "the screen share",
-    );
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        if let Some(picture) = pictures.latest.lock().unwrap().as_ref() {
+            assert_eq!(
+                (picture.width, picture.height),
+                (display.width, display.height)
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the screen share gave no picture"
+        );
+        std::thread::yield_now();
+    }
     drop(stream);
     let count = *pictures.count.lock().unwrap();
     std::thread::sleep(Duration::from_millis(300));

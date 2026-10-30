@@ -1,3 +1,4 @@
+// Modified: native callback regression tests can access their platform test window.
 use crate::{
     Action, AnyView, AnyWindowHandle, App, AppCell, AppContext, AsyncApp, AvailableSpace,
     BackgroundExecutor, BorrowAppContext, Bounds, Capslock, ClipboardItem, DrawPhase, Drawable,
@@ -617,7 +618,8 @@ impl TestAppContext {
     }
 
     /// Returns the `TestWindow` backing the given handle.
-    pub(crate) fn test_window(&self, window: AnyWindowHandle) -> TestWindow {
+    // Modified: the client tests dispatch a native frame during an App update.
+    pub fn test_window(&self, window: AnyWindowHandle) -> TestWindow {
         self.app
             .borrow_mut()
             .windows

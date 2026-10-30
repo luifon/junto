@@ -844,6 +844,11 @@ impl Shell {
         self.pictures_converting || self.pictures_prepared.is_some()
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn pictures_waiting_for_frame(&self) -> bool {
+        self.pictures_prepared.is_some()
+    }
+
     /// Takes the pictures of the call as on a system whose graphics processor is emulated in
     /// software, or as on one with a graphics processor, for a test: the follower of the
     /// pictures starts again with the choice.
