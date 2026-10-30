@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, EntityId, Task};
 use junto_client_core::protocol::{
     ids::{AccountId, ChannelId, ConversationId, ServerId, WorkspaceId},
     structure::ChannelKind,
 };
-use junto_client_core::{flow::FlowError, model::PlaceId};
+use junto_client_core::{Owner, flow::FlowError, model::PlaceId};
 
 use super::{
     AppState,
@@ -61,6 +61,16 @@ struct Search {
     part: String,
     contacts: HashMap<ServerId, ContactSearch>,
     tasks: HashMap<ServerId, Task<()>>,
+    names: HashMap<(Owner, AccountId), PeerName>,
+}
+
+#[derive(Default)]
+struct PeerName {
+    value: Option<String>,
+    finished: bool,
+    failed: bool,
+    reading: Option<u64>,
+    task: Option<Task<()>>,
 }
 
 #[derive(Default)]
@@ -104,6 +114,7 @@ impl AppState {
                 ..Default::default()
             },
         );
+        self.read_switcher(window, cx);
         cx.notify();
     }
 
@@ -126,6 +137,11 @@ impl AppState {
         let Some(search) = self.switchers.windows.get_mut(&window) else {
             return;
         };
+        if retry {
+            for name in search.names.values_mut() {
+                name.failed = false;
+            }
+        }
         for contacts in search.contacts.values_mut() {
             if retry {
                 contacts.failed = None;
@@ -148,11 +164,15 @@ impl AppState {
         for search in self.switchers.windows.values_mut() {
             search.contacts.remove(&server_id);
             search.tasks.remove(&server_id);
+            search
+                .names
+                .retain(|(owner, _), _| owner.entry.server_id != server_id);
         }
         self.refresh_switchers(cx);
     }
 
     fn read_switcher(&mut self, window: EntityId, cx: &mut Context<Self>) {
+        self.read_switcher_names(window, cx);
         self.switchers.sequence += 1;
         let contact_generation = self.switchers.sequence;
         let servers = self.snapshots();
@@ -189,7 +209,12 @@ impl AppState {
                 .contacts
                 .values()
                 .filter(|contacts| contacts.reading.is_some())
-                .count(),
+                .count()
+                + search
+                    .names
+                    .values()
+                    .filter(|name| name.reading.is_some())
+                    .count(),
         );
         let session = search.session;
         for (server_id, contacts) in &mut search.contacts {
@@ -238,10 +263,123 @@ impl AppState {
         }
     }
 
+    fn read_switcher_names(&mut self, window: EntityId, cx: &mut Context<Self>) {
+        let mut wanted = HashMap::new();
+        for server in self.snapshots() {
+            let Some(model) = shown_model(&server) else {
+                continue;
+            };
+            let Some(owner) = self
+                .owner(server.id)
+                .filter(|owner| owner.account_id == model.account.id)
+            else {
+                continue;
+            };
+            for conversation in &model.conversations {
+                let peer = if conversation.low_account_id == owner.account_id {
+                    conversation.high_account_id
+                } else {
+                    conversation.low_account_id
+                };
+                wanted.insert((owner, peer), self.known.people.name(server.id, peer));
+            }
+        }
+        let valid: HashSet<_> = wanted.keys().copied().collect();
+        self.switchers.sequence += 1;
+        let number = self.switchers.sequence;
+        let Some(search) = self.switchers.windows.get_mut(&window) else {
+            return;
+        };
+        search.names.retain(|key, _| valid.contains(key));
+        for (key, known) in wanted {
+            let name = search.names.entry(key).or_default();
+            if let Some(known) = known {
+                name.value = Some(known);
+                name.finished = true;
+            }
+        }
+        let names_reading = search
+            .names
+            .values()
+            .filter(|name| name.reading.is_some())
+            .count();
+        let contacts_reading = search
+            .contacts
+            .values()
+            .filter(|contacts| contacts.reading.is_some())
+            .count();
+        let mut room = 2_usize
+            .saturating_sub(names_reading)
+            .min(MAX_READS.saturating_sub(names_reading + contacts_reading));
+        let session = search.session;
+        for (key, name) in &mut search.names {
+            if room == 0 {
+                break;
+            }
+            if name.finished || name.failed || name.reading.is_some() {
+                continue;
+            }
+            let Some(server) = self
+                .client
+                .server(key.0.entry.server_id)
+                .filter(|server| server.owner() == Some(key.0))
+            else {
+                continue;
+            };
+            room -= 1;
+            name.reading = Some(number);
+            let key = *key;
+            let api = server.api_for(key.0.account_id);
+            name.task = Some(cx.spawn(async move |this, cx| {
+                let answer = super::people::Answer::of(api.profile(key.1).await);
+                let _ = this.update(cx, |this, cx| {
+                    if this.owner(key.0.entry.server_id) != Some(key.0) {
+                        this.read_switcher(window, cx);
+                        return;
+                    }
+                    if let Some(search) = this
+                        .switchers
+                        .windows
+                        .get_mut(&window)
+                        .filter(|search| search.session == session)
+                        && let Some(name) = search
+                            .names
+                            .get_mut(&key)
+                            .filter(|name| name.reading == Some(number))
+                    {
+                        name.task = None;
+                        name.reading = None;
+                        match answer {
+                            super::people::Answer::Read(profile) if profile.id == key.1 => {
+                                let shown = super::account::shown_name(&profile.name);
+                                name.value = Some(profile.departure.map_or_else(
+                                    || shown.clone(),
+                                    |departure| text::departed_name(&shown, departure),
+                                ));
+                                name.finished = true;
+                            }
+                            super::people::Answer::None => name.failed = true,
+                            _ => name.finished = true,
+                        }
+                        this.read_switcher(window, cx);
+                        cx.notify();
+                    }
+                });
+            }));
+        }
+    }
+
     pub fn switcher_view(&self, window: EntityId) -> Option<SwitchView> {
         let search = self.switchers.windows.get(&window)?;
         let servers = self.snapshots();
-        let mut view = SwitchView::default();
+        let mut view = SwitchView {
+            reading: search
+                .names
+                .values()
+                .any(|name| name.reading.is_some() || (!name.finished && !name.failed)),
+            failed: search.names.values().any(|name| name.failed),
+            ..Default::default()
+        };
         for server in &servers {
             let model = shown_model(server);
             let unreads = model.map(Unreads::of);
@@ -292,6 +430,11 @@ impl AppState {
                     .known
                     .people
                     .name(server.id, other)
+                    .or_else(|| {
+                        self.owner(server.id)
+                            .and_then(|owner| search.names.get(&(owner, other)))
+                            .and_then(|name| name.value.clone())
+                    })
                     .or_else(|| {
                         model
                             .workspaces

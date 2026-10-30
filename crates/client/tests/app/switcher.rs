@@ -268,3 +268,72 @@ fn closed_queries_failures_logout_and_two_windows_keep_separate_searches(cx: &mu
             ))
     );
 }
+
+#[gpui::test]
+fn a_cold_switcher_finds_a_departed_conversation_peer_on_another_server(
+    cx: &mut TestAppContext,
+    other_cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (harbor, mill) = (world.server("Harbor"), world.server("Mill"));
+    let (harbor_admin, mill_admin) = (world.owner(&harbor), world.owner(&mill));
+    let (directory, mut window) = member(cx, &world, &harbor.address(), &harbor_admin, "Member");
+    let (_peer_directory, mut peer) =
+        member(other_cx, &world, &harbor.address(), &harbor_admin, "Marta");
+    let harbor_id = window.view().selected.unwrap().id;
+    let conversation = world
+        .run(window.handle().api().open_conversation(peer.own_account()))
+        .unwrap();
+    let workspace = default_workspace(&world, &harbor_admin.handle);
+    world
+        .run(peer.handle().api().leave_workspace(workspace))
+        .unwrap();
+    peer.close();
+    window.join_further(&world, &mill, &mill_admin);
+    let mill_id = window.view().selected.unwrap().id;
+    window.state.update(&mut window.cx, |state, cx| {
+        state.move_server(mill_id, junto_client::state::book::Step::Up, cx)
+    });
+    window.until("Mill is first for the next cold start", |window| {
+        window.view().servers[0].id == mill_id
+    });
+    window.close();
+    let mut cold = crate::harness::open(cx, directory.path());
+    cold.until_ready();
+    assert_eq!(cold.view().selected.unwrap().id, mill_id);
+    cold.press("secondary-k");
+    cold.until(
+        "the background server's retained conversation loads",
+        |window| {
+            choices(window)
+                .rows
+                .iter()
+                .any(|row| row.destination == Destination::Conversation(harbor_id, conversation.id))
+        },
+    );
+    query(&mut cold, "Marta");
+    cold.until("the name and contact requests finish", |window| {
+        !choices(window).reading
+    });
+    let rows = choices(&mut cold).rows;
+    assert!(
+        rows.iter().any(|row| row.destination
+            == Destination::Conversation(harbor_id, conversation.id)
+            && row.name == "Marta (inactive)"),
+        "historical counterpart name is missing: {rows:?}"
+    );
+    cold.press("enter");
+    cold.until("the retained conversation opens on Harbor", |window| {
+        window
+            .view()
+            .selected
+            .as_ref()
+            .is_some_and(|row| row.id == harbor_id)
+            && window.view().lists().is_some_and(|lists| {
+                lists
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|row| row.id == conversation.id)
+            })
+    });
+}
