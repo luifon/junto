@@ -2838,7 +2838,7 @@ pub const SEARCH_NOTHING_TITLE: &str = "No result";
 pub const SEARCH_NOTHING: &str = "No message and no transcript line that you can read holds these words. The search compares whole words.";
 pub const SEARCH_FAILED_TITLE: &str = "The search got no answer";
 pub const SEARCH_REFUSED_TITLE: &str = "The server did not take the search";
-pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search text.";
+pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search.";
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
 pub const MESSAGE_LINK_UNAVAILABLE: &str =
     "This link is unavailable or you do not have access to it.";
@@ -2880,7 +2880,11 @@ pub fn results_for(count: usize, more: bool, query: &str) -> String {
         (count, false) => format!("{count} results"),
         (count, true) => format!("{count}+ results"),
     };
-    format!("{count} for “{shown}”")
+    if query.trim().is_empty() {
+        count
+    } else {
+        format!("{count} for “{shown}”")
+    }
 }
 
 /// The line of a transcript as a result names it. The first line is line 1.

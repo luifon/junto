@@ -2,7 +2,7 @@
 
 use junto_protocol::discovery::{
     MarkNotificationsRead, Notification, NotificationDefault, NotificationLevel, NotificationPage,
-    NotificationSettings, NotificationsRead, SearchPage,
+    NotificationSettings, NotificationsRead, SearchCapabilities, SearchPage,
 };
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId};
 use time::OffsetDateTime;
@@ -42,8 +42,10 @@ impl SettingsScope {
 /// and a minus before a word.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchQuery {
-    /// From 1 to 1,024 bytes, or empty for a scoped file list.
+    /// Up to 1,024 bytes. Empty text needs at least one filter.
     pub text: String,
+    /// A chronological file list: empty text and exactly one channel or conversation.
+    pub files: bool,
     pub has_file: bool,
     pub has_link: bool,
     pub has_picture: bool,
@@ -70,6 +72,9 @@ impl SearchQuery {
                 .map_err(|error| ApiError::Request(error.to_string()))
         };
         let mut pairs = vec![("q", self.text.clone())];
+        if self.files {
+            pairs.push(("files", "true".to_owned()));
+        }
         for (key, enabled) in [
             ("has_file", self.has_file),
             ("has_link", self.has_link),
@@ -107,6 +112,24 @@ impl SearchQuery {
 }
 
 impl ServerApi {
+    pub async fn search_capabilities(&self) -> Result<SearchCapabilities, ApiError> {
+        match self
+            .call(
+                Method::Get,
+                "/search/capabilities".to_owned(),
+                Vec::new(),
+                None,
+            )
+            .await
+        {
+            Ok(response) if response.status == 404 => Ok(SearchCapabilities::default()),
+            Ok(response) => read_json(&response),
+            Err(error) if error.category() == Some(super::ErrorCategory::NotFound) => {
+                Ok(SearchCapabilities::default())
+            }
+            Err(error) => Err(error),
+        }
+    }
     // Notices.
 
     /// One page of the notices of the caller, the newest first. `before` is the last
@@ -211,6 +234,24 @@ impl ServerApi {
     /// One page of results, the best match first. Each page is decided by what the caller
     /// can read at the time of its request (ADR 0409).
     pub async fn search(&self, query: &SearchQuery) -> Result<SearchPage, ApiError> {
+        let filters = !query.files
+            && (query.has_file
+                || query.has_link
+                || query.has_picture
+                || query.mentions_me
+                || query.direct
+                || query.conversation_id.is_some());
+        if filters || query.files || query.text.trim().is_empty() {
+            let supported = self.search_capabilities().await?;
+            if (filters && !supported.filters)
+                || (query.files && !supported.files)
+                || (!query.files && query.text.trim().is_empty() && !supported.filter_only)
+            {
+                return Err(ApiError::Request(
+                    "This server does not support these search filters or file lists.".to_owned(),
+                ));
+            }
+        }
         let response = self
             .call(Method::Get, "/search".to_owned(), query.pairs()?, None)
             .await?;
@@ -276,6 +317,20 @@ mod tests {
         ] {
             assert!(pairs.contains(&(key, "true".to_owned())));
         }
+    }
+
+    #[test]
+    fn file_lists_have_an_explicit_mode_and_opaque_cursor() {
+        let query = SearchQuery {
+            files: true,
+            channel_id: Some(ChannelId::generate()),
+            cursor: Some("f:123456:opaque".to_owned()),
+            ..Default::default()
+        };
+        let pairs = query.pairs().unwrap();
+        assert!(pairs.contains(&("files", "true".to_owned())));
+        assert!(pairs.contains(&("cursor", "f:123456:opaque".to_owned())));
+        assert!(pairs.contains(&("q", String::new())));
     }
 
     #[test]

@@ -8,6 +8,121 @@ use crate::messages::document;
 use crate::pictures::send_files;
 
 #[gpui::test]
+fn an_open_file_list_withdraws_changed_files_and_discards_a_delayed_page(cx: &mut TestAppContext) {
+    use sqlx::ConnectOptions;
+    use std::str::FromStr;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    window.until("history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    let deleted = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(channel),
+        "Delete this",
+        vec![("deleted.txt", vec![1])],
+    );
+    let changed = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(channel),
+        "Keep one file",
+        vec![("removed.txt", vec![2]), ("kept.txt", vec![3])],
+    );
+    let gone = changed.attachments[0].id;
+    let kept = changed.attachments[1].id;
+    window.until_message("Keep one file");
+    window.click("place-files");
+    window.until("both files are listed", |window| {
+        window.shows_named(format!("listed-file:{gone}"))
+            && window.shows_named(format!("listed-file:{}", deleted.attachments[0].id))
+    });
+    proxy.hold_answer_ending("GET", "/search");
+    window.in_shell(|shell, _, cx| shell.state().update(cx, |state, cx| state.search_again(cx)));
+    window.until("the earlier page waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+    world
+        .run(admin.handle.api().delete_message(deleted.id))
+        .unwrap();
+    world.run(async {
+        let mut db = sqlx::postgres::PgConnectOptions::from_str(server.database_url())
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("update attachments set removed_at=now() where id=$1")
+            .bind(gone)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        admin
+            .handle
+            .api()
+            .edit_message(changed.id, document("One file remains"))
+            .await
+            .unwrap();
+    });
+    window.until_message("One file remains");
+    window.until(
+        "changed file metadata is withdrawn while fresh pages wait",
+        |window| {
+            !window.shows_named(format!("listed-file:{gone}"))
+                && !window.shows_named(format!("listed-file:{}", deleted.attachments[0].id))
+                && window
+                    .view()
+                    .workspace()
+                    .and_then(|workspace| workspace.search.as_ref())
+                    .is_some_and(|panel| {
+                        panel.state == junto_client::state::search::SearchShown::Searching
+                    })
+        },
+    );
+    window.until("replacement pages wait too", |_| {
+        proxy.answers_waiting() >= 2
+    });
+    let old = proxy
+        .all()
+        .iter()
+        .position(|seen| {
+            seen.method == "GET"
+                && seen.path.starts_with("/api/v1/search?")
+                && seen.answer.is_none()
+        })
+        .unwrap();
+    proxy.release_answers_except(old);
+    window.until(
+        "the surviving attachment returns from fresh metadata",
+        |window| window.shows_named(format!("listed-file:{kept}")),
+    );
+    proxy.release();
+    window.until(
+        "every search answer, including the oldest, was received",
+        |window| {
+            let requests = proxy.all();
+            let pages: Vec<_> = requests
+                .iter()
+                .filter(|seen| seen.method == "GET" && seen.path.starts_with("/api/v1/search?"))
+                .collect();
+            requests[old].answer.is_some()
+                && pages.iter().all(|seen| seen.answer.is_some())
+                && window
+                    .state
+                    .read_with(&window.cx, |state, _| state.search_answers())
+                    == pages.len() as u64
+        },
+    );
+    assert!(!window.shows_named(format!("listed-file:{gone}")));
+    assert!(!window.shows_named(format!("listed-file:{}", deleted.attachments[0].id)));
+    assert!(window.shows_named(format!("listed-file:{kept}")));
+}
+
+#[gpui::test]
 fn channel_files_include_thread_files_and_offer_copy_download_and_the_message(
     cx: &mut TestAppContext,
 ) {
@@ -184,6 +299,44 @@ fn direct_files_work_after_the_last_workspace_membership_is_removed(cx: &mut Tes
             .is_some_and(|lists| lists.workspace.is_none() && lists.conversation.is_some())
             && window.feed().is_some_and(|feed| feed.loaded)
     });
+    assert!(window.shows("search-field"));
+    window.search_for("direct");
+    let searched = window.until_searched();
+    assert!(searched.messages().iter().any(|row| row.target == junto_client::state::search::ResultTarget::Message(message.id)));
+    window.click("search-direct");
+    assert_eq!(window.until_searched().messages().len(), 1);
+    window.click("search-has-file");
+    assert_eq!(window.until_searched().messages().len(), 1);
+    let author = message.author_id.unwrap();
+    window.until(
+        "the conversation participant is an author choice without a workspace",
+        |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.search.as_ref())
+                .is_some_and(|panel| panel.authors.iter().any(|(id, _)| *id == author))
+        },
+    );
+    window.in_shell(move |shell, _, cx| {
+        shell.set_search_filters(
+            junto_client::state::search::Filters {
+                author: Some(author),
+                direct: true,
+                has_file: true,
+                date: junto_client::state::search::DateFilter::Today,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    assert_eq!(window.until_searched().messages().len(), 1);
+    window.search_for("");
+    assert_eq!(window.until_searched().messages().len(), 1);
+    assert!(window.shows("search-panel"));
+    assert!(!window.shows("file-list-panel"));
+    window.click("close-search");
+
     window.click("place-files");
     window.until("the direct file is listed without a workspace", |window| {
         window.shows_named(format!("listed-file:{}", message.attachments[0].id))

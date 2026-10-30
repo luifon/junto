@@ -158,7 +158,7 @@ Notifications:
 Search:
 
 - `GET /api/v1/search` uses PostgreSQL full-text search with the `simple` configuration and
-  web-search query syntax. Queries have 1 to 1,024 bytes, pages 1 to 200 results (default 50).
+  web-search query syntax. Queries have at most 1,024 bytes and need text or a filter (ADR 0405); pages have 1 to 200 results (default 50).
   Search includes authored messages, thread replies, reachable direct messages and ready or
   partial transcript lines. Messages extract each text node once. Transcript lines store
   current searchable text and an indexed vector; corrections replace that text atomically.

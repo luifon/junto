@@ -2006,8 +2006,12 @@ impl AppState {
             }
             Notice::Ended { .. } => return,
         };
-        if let Event::MessageChanged { message_id, .. } = event.as_ref() {
+        if let Event::MessageChanged {
+            place, message_id, ..
+        } = event.as_ref()
+        {
             self.forget_quotes(server_id, Some(*message_id), cx);
+            self.search_after_message_change(server_id, place, *message_id, cx);
         }
         self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {

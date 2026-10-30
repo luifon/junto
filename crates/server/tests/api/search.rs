@@ -1,4 +1,202 @@
 use crate::discovery_support::*;
+
+#[tokio::test]
+async fn filters_without_text_find_captionless_pictures_and_page_authorized_results() {
+    let files = Files::open().await;
+    let (server, owner, channel) = (&files.server, &files.owner, &files.channel);
+    let reader = server.join(owner, "Reader").await;
+    let mentioned = mention(server, owner, channel, &reader).await;
+    let linked = send(server, owner, channel, "https://example.test/plan").await;
+    let picture = upload(
+        server,
+        owner,
+        json!({"channel_id": channel.id}),
+        &junto_server::image::samples::png(4, 4),
+    )
+    .await;
+    let picture: Message = server
+        .post(
+            owner,
+            &format!("/api/v1/channels/{}/messages", channel.id),
+            &json!({"document":{"blocks":[]},"attachments":[picture.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let conversation: Conversation = server
+        .post(
+            &reader,
+            "/api/v1/conversations",
+            &json!({"account_id":owner.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let direct: Message = server
+        .post(
+            &reader,
+            &format!("/api/v1/conversations/{}/messages", conversation.id),
+            &text("Private notes"),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    for (filter, expected) in [
+        ("has_file", picture.id),
+        ("has_picture", picture.id),
+        ("has_link", linked.id),
+        ("mentions_me", mentioned.id),
+        ("direct", direct.id),
+    ] {
+        let page = search(server, &reader, &format!("&{filter}=true&limit=1")).await;
+        assert_eq!(page.results.len(), 1, "{filter}");
+        assert_eq!(page.results[0].message_id, Some(expected), "{filter}");
+        assert!(page.next.is_none(), "{filter}");
+    }
+    let without_q: SearchPage = server
+        .get(&reader, "/api/v1/search?has_picture=true")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(without_q.results[0].message_id, Some(picture.id));
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    loop {
+        let suffix = cursor
+            .as_ref()
+            .map(|value| format!("&cursor={value}"))
+            .unwrap_or_default();
+        let page = search(
+            server,
+            &reader,
+            &format!("&author_id={}&limit=1{suffix}", owner.account_id),
+        )
+        .await;
+        seen.extend(page.results.iter().filter_map(|hit| hit.message_id));
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(seen.len() < 10);
+    }
+    for id in [mentioned.id, linked.id, picture.id] {
+        assert!(seen.contains(&id));
+    }
+    assert!(!seen.contains(&direct.id));
+    server
+        .delete(owner, &message(picture.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        search(server, &reader, "&has_picture=true")
+            .await
+            .results
+            .is_empty()
+    );
+    let role: junto_protocol::roles::WorkspaceRole = server
+        .post(
+            owner,
+            &format!("/api/v1/workspaces/{}/roles", channel.workspace_id),
+            &json!({"name":"Readers"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put_empty(
+            owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}/roles/{}",
+                channel.workspace_id, reader.account_id, role.id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let mut mentions = vec![mentioned.id];
+    for inline in [
+        json!({"kind":"everyone"}),
+        json!({"kind":"role","role_id":role.id}),
+    ] {
+        let sent: Message = server
+            .post(
+                owner,
+                &format!("/api/v1/channels/{}/messages", channel.id),
+                &json!({"document":{"blocks":[{"kind":"paragraph","content":[inline]}]}}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        mentions.push(sent.id);
+    }
+    let page = search(server, &reader, "&mentions_me=true").await;
+    assert_eq!(page.results.len(), mentions.len());
+    assert!(
+        mentions
+            .iter()
+            .all(|id| page.results.iter().any(|hit| hit.message_id == Some(*id)))
+    );
+    let private_upload = files.upload(b"private file").await;
+    let private = files.attach(&[private_upload.id]).await;
+    sqlx::query("update messages set readers=$2 where id=$1")
+        .bind(private.id)
+        .bind(vec![owner.account_id.as_uuid()])
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        search(server, &reader, "&has_file=true")
+            .await
+            .results
+            .is_empty()
+    );
+    assert_eq!(
+        search(server, owner, "&has_file=true").await.results[0].message_id,
+        Some(private.id)
+    );
+    let file_scope = format!("&files=true&channel_id={}", channel.id);
+    assert!(
+        search(server, &reader, &file_scope)
+            .await
+            .results
+            .is_empty()
+    );
+    assert_eq!(
+        search(server, owner, &file_scope).await.results[0].message_id,
+        Some(private.id)
+    );
+    let page = search(
+        server,
+        &reader,
+        &format!(
+            "&from={}&until={}",
+            (mentioned.created_at - time::Duration::seconds(1))
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            (direct.created_at + time::Duration::seconds(1))
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
+        ),
+    )
+    .await;
+    assert!(
+        page.results
+            .iter()
+            .any(|hit| hit.message_id == Some(linked.id))
+    );
+    server
+        .make_private(owner, channel.workspace_id, channel.id, role.id)
+        .await;
+    server
+        .delete(
+            owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}/roles/{}",
+                channel.workspace_id, reader.account_id, role.id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        search(server, &reader, "&mentions_me=true")
+            .await
+            .results
+            .is_empty()
+    );
+}
 #[tokio::test]
 async fn rule_39_41_search_finds_threads_and_directs_with_channel_author_date_filters() {
     let server = TestServer::start().await;
@@ -641,7 +839,10 @@ async fn scoped_file_lists_include_empty_documents_and_thread_files_without_othe
         )
         .await
         .ok(StatusCode::CREATED);
-    let query = format!("&has_file=true&channel_id={}&limit=1", channel.id);
+    let query = format!(
+        "&files=true&has_file=true&channel_id={}&limit=1",
+        channel.id
+    );
     let page = search(server, &reader, &query).await;
     assert_eq!(page.results.len(), 1);
     assert_eq!(page.results[0].message_id, Some(child.id));
@@ -681,7 +882,7 @@ async fn scoped_file_lists_include_empty_documents_and_thread_files_without_othe
     let scoped = search(
         server,
         &reader,
-        &format!("&has_file=true&channel_id={}", channel.id),
+        &format!("&files=true&has_file=true&channel_id={}", channel.id),
     )
     .await;
     assert_eq!(scoped.results.len(), 2);
@@ -691,7 +892,10 @@ async fn scoped_file_lists_include_empty_documents_and_thread_files_without_othe
             .iter()
             .all(|hit| hit.place_id == channel.id.as_uuid())
     );
-    let query = format!("&has_file=true&conversation_id={}", conversation.id);
+    let query = format!(
+        "&files=true&has_file=true&conversation_id={}",
+        conversation.id
+    );
     let page = search(server, &reader, &query).await;
     assert_eq!(page.results.len(), 1);
     assert_eq!(page.results[0].message_id, Some(direct.id));
@@ -706,4 +910,126 @@ async fn scoped_file_lists_include_empty_documents_and_thread_files_without_othe
         .await
         .empty(StatusCode::NO_CONTENT);
     assert!(search(server, &reader, &query).await.results.is_empty());
+}
+
+#[tokio::test]
+async fn scoped_file_history_uses_a_chronological_index_on_first_and_later_sparse_pages() {
+    let files = Files::open().await;
+    let (server, owner, channel) = (&files.server, &files.owner, &files.channel);
+    let upload = files.upload(b"seed file").await;
+    let seed = files.attach(&[upload.id]).await;
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,permanent)
+        select gen_random_uuid(),place_id,position+n,author_id,created_at+n*interval '1 second',document,((position+n)%2000=0)
+        from messages cross join generate_series(1,300000) n where id=$1")
+        .bind(seed.id).execute(&mut server.test_data().await).await.unwrap();
+    sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,position)
+        select gen_random_uuid(),a.storage_id,m.place_id,m.author_id,m.id,a.name,a.bytes,a.bytes,a.sha256,true,a.expires_at,a.touched_at,true,p
+        from messages m cross join generate_series(0,1) p join attachments a on a.id=$1
+        where m.place_id=$2 and m.position%1000=0")
+        .bind(upload.id).bind(channel.id).execute(&mut server.test_data().await).await.unwrap();
+    sqlx::raw_sql("analyze messages; analyze attachments")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let capabilities: junto_protocol::discovery::SearchCapabilities = server
+        .get(owner, "/api/v1/search/capabilities")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        capabilities,
+        junto_protocol::discovery::SearchCapabilities::ALL
+    );
+    let (_held, _role) = crate::messages_queries::measure_requests(server).await;
+    let query = format!(
+        "&files=true&has_file=true&channel_id={}&limit=50",
+        channel.id
+    );
+    let started = std::time::Instant::now();
+    let first = search(server, owner, &query).await;
+    let first_time = started.elapsed();
+    assert_eq!(first.results.len(), 50);
+    assert!(first.results.iter().all(|hit| hit.attachments.len() == 2));
+    let started = std::time::Instant::now();
+    let second = search(
+        server,
+        owner,
+        &format!("{query}&cursor={}", first.next.as_ref().unwrap()),
+    )
+    .await;
+    let second_time = started.elapsed();
+    assert_eq!(second.results.len(), 50);
+    let all: Vec<_> = first.results.iter().chain(&second.results).collect();
+    eprintln!(
+        "files over 300000 messages with 1/1000 file messages: first {} ms, later {} ms",
+        first_time.as_millis(),
+        second_time.as_millis()
+    );
+    assert!(
+        all.windows(2)
+            .all(|pair| (pair[0].created_at, pair[0].message_id)
+                > (pair[1].created_at, pair[1].message_id))
+    );
+    assert!(all.iter().all(|hit| hit.rank == 0.0));
+    assert!(first_time.as_millis() < 8000 && second_time.as_millis() < 8000);
+    let mut connection = server.db.acquire().await.unwrap();
+    let actual: String = sqlx::query_scalar("select statement from pg_prepared_statements where statement like 'with file_page as%' limit 1").fetch_one(&mut *connection).await.unwrap();
+    for cursor in [None, first.next.as_deref()] {
+        let (before, id) = match cursor {
+            None => (
+                time::OffsetDateTime::from_unix_timestamp(253_402_300_799).unwrap(),
+                uuid::Uuid::max(),
+            ),
+            Some(cursor) => {
+                let (before, id) = cursor.strip_prefix("f:").unwrap().split_once(':').unwrap();
+                (
+                    time::OffsetDateTime::from_unix_timestamp_nanos(before.parse().unwrap())
+                        .unwrap(),
+                    id.parse::<uuid::Uuid>().unwrap(),
+                )
+            }
+        };
+        let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "explain(analyze,format json) {actual}"
+        )))
+        .bind(channel.id)
+        .bind(owner.account_id)
+        .bind(before)
+        .bind(id)
+        .bind(51_i64)
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert!(
+            plan.to_string().contains("attachments_file_history"),
+            "{plan}"
+        );
+        fn visited(node: &Value) -> u64 {
+            node["Actual Rows"].as_u64().unwrap_or(0) * node["Actual Loops"].as_u64().unwrap_or(0)
+                + node["Plans"]
+                    .as_array()
+                    .map_or(0, |children| children.iter().map(visited).sum())
+        }
+        fn file_index_rows(node: &Value) -> u64 {
+            let own = if node["Index Name"] == "attachments_file_history" {
+                node["Actual Rows"].as_u64().unwrap_or(0)
+                    * node["Actual Loops"].as_u64().unwrap_or(0)
+            } else {
+                0
+            };
+            own + node["Plans"]
+                .as_array()
+                .map_or(0, |children| children.iter().map(file_index_rows).sum())
+        }
+        let work = visited(&plan[0]["Plan"]);
+        let candidates = file_index_rows(&plan[0]["Plan"]);
+        eprintln!("file page plan visited {work} rows, {candidates} attachment index rows: {plan}");
+        assert!(
+            work < 4000,
+            "file pages must not visit the candidate message history: {plan}"
+        );
+        assert!(
+            candidates <= 256,
+            "the index must stop after enough visible file messages: {plan}"
+        );
+    }
 }

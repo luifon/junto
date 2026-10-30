@@ -12,8 +12,8 @@ ADR 0405 and ADR 0409 define the search: full-text search over messages and tran
 
 Query:
 
-- The header of a channel and of a direct conversation has the search field. Enter sends the text; the text is not sent while the person types. The search covers every place of the shown server that the account can read.
-- A text of more than 1,024 bytes is refused before a request, and an empty text ends the search.
+- The header of a channel and of a direct conversation has the search field, including when the account has no workspace. Enter sends the text; the text is not sent while the person types. The search covers every place of the shown server that the account can read.
+- A text of more than 1,024 bytes is refused before a request, and empty text opens the search criteria. With no text or criteria the window prompts for a filter without requesting all history.
 - The panel has three filters: a channel of the shown workspace, a member of the shown workspace as the author, and a time span of "any time", "today", "last 7 days" or "last 30 days". "Today" starts when the day began in the time zone of the person. A changed filter sends the search again.
 
 State:
@@ -81,3 +81,22 @@ stop after 1,000 messages. Switching account or losing the source place withdraw
 the list and invalidates requests already in flight; it never broadens a lost
 file scope to another place. Existing permission-refresh behavior clears data
 before retrying a read.
+
+Search and Files have explicit modes independent of text. Filter-only searches
+retain their controls, paging and result cap; only Files replaces each page and
+keeps chronological back cursors. Without a workspace the server projection
+retains search results and known conversation participants as author choices.
+
+A search reads the server capabilities before sending extensions. Content,
+mention and direct switches show a reason and take no input when unsupported;
+ordinary text and its existing filters remain available. The core API also
+refuses unsupported extension requests, including scoped Files. No page is
+filtered locally to emulate an absent server capability.
+
+Message-change events withdraw that message's saved file metadata immediately
+and reread the affected open page. Every reread advances the request generation,
+so an earlier response cannot restore deleted messages or removed attachments.
+Opening Files starts without saved hits from an earlier visit.
+File and picture search results expose retained files through the common file
+controls, even when their message has no caption.
+Replacing server state also drops saved file metadata before rereading the open page.

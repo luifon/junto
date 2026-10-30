@@ -421,12 +421,25 @@ impl Shell {
                     .justify_between()
                     .child(title)
                     .child(
-                        Toggle::new(selector, title, on, (text::ON, text::OFF))
-                            .selector(selector)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_search_filters(next, cx);
-                            })),
-                    ),
+                    Toggle::new(selector, title, on, (text::ON, text::OFF))
+                        .held(match panel.capabilities {
+                            Some(supported)
+                                if supported.filters
+                                    && (!panel.text.is_empty() || supported.filter_only) =>
+                            {
+                                None
+                            }
+                            Some(supported) if supported.filters => Some(
+                                "Enter text: this server does not support filter-only searches.",
+                            ),
+                            Some(_) => Some("This server does not support these search filters."),
+                            None => Some("Server search support has not been confirmed."),
+                        })
+                        .selector(selector)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_search_filters(next, cx);
+                        })),
+                ),
             );
         }
         content = content
@@ -632,11 +645,7 @@ impl Shell {
             .as_ref()
             .and_then(|view| view.lists())
             .is_some_and(|lists| {
-                lists.call.is_some()
-                    && lists
-                        .search
-                        .as_ref()
-                        .is_some_and(|panel| panel.text.is_empty())
+                lists.call.is_some() && lists.search.as_ref().is_some_and(|panel| panel.files)
             });
         if file_call {
             self.state.update(cx, |state, cx| state.hide_search(cx));
@@ -672,7 +681,7 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        let files = panel.text.is_empty();
+        let files = panel.files;
         let found = if files {
             panel.results.iter().map(|row| row.attachments.len()).sum()
         } else {
@@ -701,6 +710,10 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
             );
         let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
+        let unsupported = panel.capabilities.filter(|supported| !files && !supported.filters).map(|_| {
+            Notice::new("This server does not support content, mention or direct-message filters. Text search and its channel, author and date filters remain available.")
+                .selector("search-filters-unsupported")
+        });
         let again = |cx: &mut Context<Self>| {
             Button::new("search-again")
                 .icon(Icon::Retry)
@@ -754,14 +767,18 @@ impl Shell {
                 .into_any_element(),
             SearchShown::Nothing => {
                 let empty = StatePanel::new(
-                    if files && panel.previous_files {
+                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                        "Choose search filters"
+                    } else if files && panel.previous_files {
                         "No older files"
                     } else if files {
                         "No files"
                     } else {
                         text::SEARCH_NOTHING_TITLE
                     },
-                    if files && panel.previous_files {
+                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                        "Choose a filter or enter text to search."
+                    } else if files && panel.previous_files {
                         "No older files are available. You can return to newer files."
                     } else if files {
                         "Files shared here will appear in this list."
@@ -813,9 +830,7 @@ impl Shell {
                         }
                     };
                     rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
-                    if files {
-                        rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
-                    }
+                    rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
                 }
                 // "Show more results" stands under the list, at a place of its own while
                 // results are listed: a page that arrives does not move it.
@@ -884,6 +899,7 @@ impl Shell {
         )
         .child(header)
         .children(filters)
+        .children(unsupported)
         .child(
             crate::ui::notice_slot("search-go-failed-slot")
                 .children(go_failed)

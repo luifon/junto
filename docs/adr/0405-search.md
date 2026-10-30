@@ -35,12 +35,24 @@ limited to conversations the account can read. These message filters exclude
 transcript lines. Every existing visibility and private-reader check still
 applies before a result is returned.
 
-An empty query with `has_file` and one explicit channel or conversation scope
-lists that place's files, including attachments of thread replies and messages
-without text. The scope is checked as a history read before the query runs.
-`conversation_id` narrows results to one authorized direct conversation; it cannot
-be combined with `channel_id`. The response includes retained attachment metadata
-for file and picture queries, fetched in one batch for authorized message IDs.
-Other searches keep their existing statement count. Files of deleted messages,
-removed attachments and private-reader messages outside the caller's audience
-are excluded before pagination. Empty queries without a file scope are refused.
+Text is optional when at least one content, mention, place, author or time filter
+is supplied. A request with neither text nor criteria is refused. Filter-only
+searches use the same authorization and cursor rules; a picture needs no caption.
+`conversation_id` cannot be combined with `channel_id`. File and picture results
+include retained attachment metadata, fetched in one batch for authorized messages.
+
+`files=true` explicitly selects a file list with one channel or conversation
+scope, empty text and no other search criteria. The scope is authorized through
+the common place resolver as a history read, without enumerating other places.
+An index on live attachments orders each place by its message creation time and
+message identifier. This time is recorded on attachment association, including
+permanent messages. Duplicate attachments of one message occupy one result.
+The cursor records those chronological keys, rather than a computed text rank;
+a page applies private-reader and deletion checks before limiting messages and
+renders text only for the selected page. Removed attachments are excluded.
+
+`GET /search/capabilities` reports support for content/mention/direct filters,
+filter-only requests and explicit file lists. A missing route means none of those
+extensions is supported. Clients negotiate before sending extension parameters;
+they never simulate server filters by filtering a returned page. Older servers
+continue to accept ordinary text, channel, author and date searches.

@@ -1480,6 +1480,13 @@ async fn world() -> World {
         operation(Method::GET, "/api/v1/search", &[], none.clone(), &own),
         operation(
             Method::GET,
+            "/api/v1/search/capabilities",
+            &[],
+            none.clone(),
+            &[],
+        ),
+        operation(
+            Method::GET,
             "/api/v1/threads/unread",
             &[],
             none.clone(),

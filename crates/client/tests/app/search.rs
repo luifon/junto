@@ -86,7 +86,10 @@ async fn seed_transcript(
 
 impl Window {
     fn search_panel(&mut self) -> Option<SearchPanel> {
-        self.view().workspace()?.search.clone()
+        let view = self.view();
+        view.workspace()
+            .and_then(|workspace| workspace.search.clone())
+            .or_else(|| view.lists().and_then(|lists| lists.search.clone()))
     }
 
     /// Types a search text into the field of the header and sends it with Enter.
@@ -114,6 +117,91 @@ impl Window {
         });
         self.search_panel().unwrap()
     }
+}
+
+#[gpui::test]
+fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    window.until("history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    let picture = crate::pictures::send_files(
+        &world,
+        &admin,
+        junto_client_core::model::PlaceId::Channel(channel),
+        "",
+        vec![("picture.png", crate::pictures::png(4, 4))],
+    );
+    admin.send(&world, channel, document("https://example.test/plan"));
+    let own = window.own_account();
+    let mention = junto_client_core::protocol::message::Document {
+        blocks: vec![junto_client_core::protocol::message::Block::Paragraph {
+            content: vec![junto_client_core::protocol::message::Inline::Account {
+                account_id: own,
+            }],
+        }],
+    };
+    admin.send(&world, channel, mention);
+    let conversation = world
+        .run(admin.handle.api().open_conversation(own))
+        .unwrap();
+    world
+        .run(admin.handle.api().send_message(
+            junto_client_core::model::PlaceId::Direct(conversation.id),
+            &junto_client_core::protocol::message::SendMessage {
+                document: document("Direct notes"),
+                reply_to: None,
+                attachments: vec![],
+            },
+        ))
+        .unwrap();
+    window.until("the direct conversation is known", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
+    });
+    window.search_for("");
+    window.until_searched();
+    assert!(window.shows("search-panel"));
+    assert!(!window.shows("file-list-panel"));
+    for selector in [
+        "search-has-file",
+        "search-has-picture",
+        "search-has-link",
+        "search-mentions-me",
+        "search-direct",
+    ] {
+        window.click(selector);
+        let panel = window.until_searched();
+        assert!(!panel.results.is_empty(), "{selector}");
+        if selector == "search-has-picture" {
+            assert!(
+                panel
+                    .messages()
+                    .iter()
+                    .any(|row| row.target == ResultTarget::Message(picture.id))
+            );
+            assert!(window.shows_named(format!("listed-file:{}", picture.attachments[0].id)));
+        }
+        window.click(selector);
+        window.until_searched();
+    }
+    let from = picture
+        .created_at
+        .date()
+        .previous_day()
+        .unwrap()
+        .to_string();
+    let through = picture.created_at.date().next_day().unwrap().to_string();
+    window.type_into("search-from", &from);
+    window.type_into("search-through", &through);
+    window.click("search-apply-dates");
+    assert!(window.until_searched().messages().len() >= 4);
 }
 
 #[gpui::test]
@@ -752,7 +840,7 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
             .all()
             .iter()
             .enumerate()
-            .filter(|(_, seen)| seen.path.starts_with("/api/v1/search"))
+            .filter(|(_, seen)| seen.path.starts_with("/api/v1/search?"))
             .map(|(index, seen)| (index, seen.answer.is_some()))
             .collect()
     };
@@ -800,7 +888,7 @@ fn a_permission_change_withdraws_the_results_and_the_answer_of_an_earlier_read(
             let reads: Vec<Option<u16>> = proxy
                 .all()
                 .iter()
-                .filter(|seen| seen.path.starts_with("/api/v1/search"))
+                .filter(|seen| seen.path.starts_with("/api/v1/search?"))
                 .map(|seen| seen.answer.as_ref().map(|(status, _)| *status))
                 .collect();
             (proxy.answers_waiting(), reads)
@@ -996,4 +1084,66 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
     window.click("search-date");
     window.click("search-date-0");
     assert_eq!(window.until_searched().messages().len(), 5);
+}
+
+#[gpui::test]
+fn older_servers_disable_unsupported_filters_and_never_receive_filtered_requests(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    proxy.fail_ending(
+        "/search/capabilities",
+        std::iter::repeat_n(Fault::NotFound, 30),
+    );
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    window.until("history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    admin.send(&world, channel, document("quartz notes"));
+    window.until_message("quartz notes");
+    window.search_for("quartz");
+    assert_eq!(window.until_searched().messages().len(), 1);
+    assert!(window.shows("search-filters-unsupported"));
+    let reads = || {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.starts_with("/api/v1/search?"))
+            .count()
+    };
+    let before = reads();
+    for selector in [
+        "search-has-file",
+        "search-has-link",
+        "search-has-picture",
+        "search-mentions-me",
+        "search-direct",
+    ] {
+        window.click(selector);
+        assert_eq!(window.search_panel().unwrap().filters, Filters::default());
+    }
+    assert_eq!(reads(), before);
+    let server_id = window.view().selected.unwrap().id;
+    let api = window.state.read_with(&window.cx, |state, _| {
+        state.server(server_id).unwrap().api()
+    });
+    for query in [
+        junto_client_core::api::SearchQuery {
+            text: "quartz".to_owned(),
+            has_picture: true,
+            ..Default::default()
+        },
+        junto_client_core::api::SearchQuery {
+            text: String::new(),
+            direct: true,
+            ..Default::default()
+        },
+    ] {
+        assert!(world.run(api.search(&query)).is_err());
+    }
+    assert_eq!(reads(), before);
 }

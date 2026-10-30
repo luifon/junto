@@ -2747,7 +2747,7 @@ fn server_lists(
                 None => super::search::search_without_workspace(server_id, model, known),
             })
             .flatten()
-            .filter(|panel| panel.text.is_empty() && selection.notices != Some(server_id)),
+            .filter(|_| selection.notices != Some(server_id)),
         workspace: shown,
         directs,
         conversation,

@@ -201,6 +201,8 @@ fn retention() -> Search {
         page: 0,
     };
     Search {
+        files: false,
+        capabilities: Some(junto_client_core::protocol::discovery::SearchCapabilities::ALL),
         server_id: server_id(),
         text: "retention".to_owned(),
         filters: Filters::default(),
@@ -549,6 +551,32 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 ..Filters::default()
             };
             search.hits.truncate(1);
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-filter-only", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.text.clear();
+            search.filters.date = DateFilter::Today;
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-choose-filters", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.text.clear();
+            search.hits.clear();
+            searching(shell, search, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("search-older-server", acme(|_| {})),
+        |shell, window, cx| {
+            let mut search = retention();
+            search.capabilities = Some(Default::default());
             searching(shell, search, window, cx);
         },
     )?;

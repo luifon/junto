@@ -588,6 +588,7 @@ async fn search(
             .transpose()
     };
     let query = SearchQuery {
+        files: arguments.flag("files"),
         text: word(words, 0, "the text of the search")?.to_owned(),
         channel_id: parse("channel", "a channel")?,
         conversation_id: arguments

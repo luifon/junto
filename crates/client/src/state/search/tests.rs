@@ -158,6 +158,8 @@ impl Scene {
 
     fn search(&self, text: &str, hits: Vec<Hit>) -> Search {
         Search {
+            files: false,
+            capabilities: Some(junto_client_core::protocol::discovery::SearchCapabilities::ALL),
             server_id: self.server_id,
             text: text.to_owned(),
             filters: Filters::default(),

@@ -209,6 +209,8 @@ pub const MOST_HIT_CHARACTERS: usize = 600;
 /// The search of the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Search {
+    pub files: bool,
+    pub capabilities: Option<junto_client_core::protocol::discovery::SearchCapabilities>,
     pub server_id: ServerId,
     pub text: String,
     pub filters: Filters,
@@ -271,6 +273,8 @@ pub struct ResultRow {
 /// The search as the side panel shows it (view H of the design).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchPanel {
+    pub files: bool,
+    pub capabilities: Option<junto_client_core::protocol::discovery::SearchCapabilities>,
     pub server_id: ServerId,
     pub text: String,
     pub state: SearchShown,
@@ -585,7 +589,16 @@ fn panel(
                 .map(|member| (member.account_id, crate::text::label(&member.name)))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if workspace.is_some() {
+                Vec::new()
+            } else {
+                accounts
+                    .iter()
+                    .map(|(id, name)| (*id, crate::text::label(name)))
+                    .collect()
+            }
+        });
     authors.sort_by(|one, other| {
         one.1
             .to_lowercase()
@@ -593,13 +606,15 @@ fn panel(
             .then(one.0.cmp(&other.0))
     });
     Some(SearchPanel {
+        files: search.files,
+        capabilities: search.capabilities,
         server_id,
         text: search.text.clone(),
         state,
         results,
         more: search.more,
         // A later page that waits for its places is shown as a page on its way.
-        can_read_more: (search.more && (search.text.is_empty() || search.hits.len() < MOST_HITS))
+        can_read_more: (search.more && (search.files || search.hits.len() < MOST_HITS))
             || withheld.is_some_and(|page| page > 0),
         reading_more: search.reading_more || withheld.is_some_and(|page| page > 0),
         archive_failed,

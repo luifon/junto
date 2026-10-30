@@ -149,6 +149,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(pins::list));
     add(&mut router, || routes!(pins::pin, pins::unpin));
     add(&mut router, || routes!(search::search));
+    add(&mut router, || routes!(search::capabilities));
     add(&mut router, || {
         routes!(notifications::get_settings, notifications::set_settings)
     });

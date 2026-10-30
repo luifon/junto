@@ -17,7 +17,21 @@ use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 
+mod files;
+
 pub use crate::access::visibility::places;
+
+#[utoipa::path(get,path="/api/v1/search/capabilities",tag="messages",security(("session"=[])),responses((status=200,body=junto_protocol::discovery::SearchCapabilities),ApiError))]
+pub async fn capabilities(
+    State(app): State<AppState>,
+    bearer: Bearer,
+) -> ApiResult<Json<junto_protocol::discovery::SearchCapabilities>> {
+    read!(app, |connection| {
+        Access::open(connection, &bearer, app.now()).await?;
+        Ok(junto_protocol::discovery::SearchCapabilities::ALL)
+    })
+    .map(Json)
+}
 
 pub fn read_rate(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
     if !*counted {
@@ -34,7 +48,10 @@ pub fn read_rate(app: &AppState, access: &Access, counted: &mut bool) -> ApiResu
 
 #[derive(Deserialize, utoipa::IntoParams)]
 pub struct Query {
+    #[serde(default)]
     pub q: String,
+    #[serde(default)]
+    pub files: bool,
     pub channel_id: Option<ChannelId>,
     pub author_id: Option<AccountId>,
     pub conversation_id: Option<ConversationId>,
@@ -63,13 +80,22 @@ pub async fn search(
     let limit = query.limit.unwrap_or(50);
     if query.q.contains('\0')
         || (query.q.trim().is_empty()
-            && !(query.has_file && (query.channel_id.is_some() || query.conversation_id.is_some())))
+            && !(query.has_file
+                || query.has_link
+                || query.has_picture
+                || query.mentions_me
+                || query.direct
+                || query.channel_id.is_some()
+                || query.conversation_id.is_some()
+                || query.author_id.is_some()
+                || query.from.is_some()
+                || query.until.is_some()))
         || (query.channel_id.is_some() && query.conversation_id.is_some())
         || query.q.len() > 1024
         || !(1..=200).contains(&limit)
     {
         return Err(ApiError::invalid(
-            "use a query of 1 to 1024 bytes and limit 1 to 200",
+            "use text or a search filter, at most 1024 query bytes and limit 1 to 200",
         ));
     }
     let date = |value: &Option<String>| {
@@ -86,7 +112,22 @@ pub async fn search(
     if from.zip(until).is_some_and(|(a, b)| a >= b) {
         return Err(ApiError::invalid("from must precede until"));
     }
-    let (rank, id, line) = if let Some(cursor) = &query.cursor {
+    if query.files
+        && (!query.q.trim().is_empty()
+            || query.has_link
+            || query.has_picture
+            || query.mentions_me
+            || query.direct
+            || query.author_id.is_some()
+            || from.is_some()
+            || until.is_some()
+            || (query.channel_id.is_some() == query.conversation_id.is_some()))
+    {
+        return Err(ApiError::invalid(
+            "a file list needs one scope and no text or other filters",
+        ));
+    }
+    let (rank, id, line) = if let Some(cursor) = query.cursor.as_ref().filter(|_| !query.files) {
         let mut fields = cursor.split(':');
         let invalid = || ApiError::invalid("invalid search cursor");
         let rank: f32 = fields
@@ -115,6 +156,7 @@ pub async fn search(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         read_rate(&app, &access, &mut counted)?;
+        if query.files { return files::page(connection, &access, &query, limit).await; }
         let allowed = places(connection, &access).await?;
         if let Some(channel) = query.channel_id {
             Place::channel(connection, &access, channel).await?

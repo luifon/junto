@@ -16,7 +16,6 @@ use junto_client_core::settings::Panel;
 
 use super::edges::Side;
 
-use super::search::search_width;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use junto_media::calls::Phase;
@@ -731,18 +730,8 @@ impl Shell {
                         })),
                 )
             })
-            // Without a workspace there is no search (ADR 0743): its place stays empty, so
-            // that the controls before it do not move when a workspace goes or comes
-            // (ADR 0730).
             .when(view.lists().is_some() && call.is_none(), |header| {
-                header.child(match view.workspace() {
-                    Some(_) => self.render_search_field(compact, cx),
-                    None => div()
-                        .flex_none()
-                        .w(u(search_width(compact)))
-                        .debug_selector(|| "search-place".to_owned())
-                        .into_any_element(),
-                })
+                header.child(self.render_search_field(compact, cx))
             })
             .when(!compact, |header| header.child(fit.end()))
     }

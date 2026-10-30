@@ -595,6 +595,8 @@ pub fn logged_in(handle: &ServerHandle) -> AccountId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
+    /// Models a route absent on an older server.
+    NotFound,
     /// Answers `busy` and does not pass the request on.
     Busy,
     /// Passes the request on, waits for the answer of the server and drops it.
@@ -1080,6 +1082,17 @@ async fn serve(
             body.len()
         );
         answered(503, body);
+        client.write_all(head.as_bytes()).await?;
+        client.write_all(body).await?;
+        return client.shutdown().await;
+    }
+    if fault == Some(Fault::NotFound) {
+        let body = br#"{"error":{"code":"not_found","message":"the route is not supported"}}"#;
+        let head = format!(
+            "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        answered(404, body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(body).await?;
         return client.shutdown().await;
