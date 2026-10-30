@@ -61,6 +61,8 @@ Account controls retain the complete server and account identity in their elemen
 
 The card uses a separate focus handle and element scope. A dialog beneath it remains drawn, preserving its input, scroll position and account controls while the card cover blocks pointer input. Escape or Close restores the originating focus when that control remains available, otherwise the enclosing dialog or page takes focus. Main and detached call windows have independent cards. Message and Call use the server of the card even when another server is selected.
 
+The administration profile-cache frame test holds its test clock and waits for both profile and presence reads before measuring the return to cached rows. A presence answer requests a draw independently of profile loading. The measured scroll must still start no profile request and draw once; unrelated status answers and periodic UI timers are outside that measurement.
+
 ## Consequences
 
 - A person sees the avatar of another account after one request for the profile and one for the image. A workspace with 200 members costs up to 200 profile requests when its member list is shown, four at a time. A page of the administration costs one request for each account of the rows that its list lays out.

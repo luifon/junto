@@ -3119,6 +3119,7 @@ fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut Test
     let world = World::new();
     let server = world.server("People profiles");
     let (_directory, mut window, owner) = owner_window(cx, &server);
+    window.hold_clock();
     let code = invite(&world, &owner, Vec::new());
     let device = Device::new();
     world.run(async {
@@ -3156,8 +3157,16 @@ fn the_people_page_reads_the_profiles_of_the_rows_that_it_lays_out(cx: &mut Test
         state.read_with(&window.cx, |state, _| state.people_wanted(server_id))
     };
     let read = |window: &mut Window| {
-        window.until("every profile request has its answer", |window| {
-            state.read_with(&window.cx, |state, _| state.people_on_way(server_id)) == 0
+        window.until("profile and presence reads have settled", |window| {
+            state.read_with(&window.cx, |state, _| {
+                state.people_on_way(server_id) == 0
+                    && state.presence_server(server_id).is_some_and(|presence| {
+                        presence.connected
+                            && presence.choice.is_some()
+                            && !presence.reading
+                            && presence.read_failed.is_none()
+                    })
+            })
         });
     };
     read(&mut window);
