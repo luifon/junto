@@ -70,7 +70,7 @@ fn a_nested_channel_menu_does_not_open_the_parent_menu(cx: &mut TestAppContext) 
 }
 
 use super::{ContextMenuExt, Menu, MenuItem};
-use gpui::{StatefulInteractiveElement, point};
+use gpui::point;
 
 struct PopupHost {
     trigger: FocusHandle,

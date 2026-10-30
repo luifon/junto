@@ -3260,6 +3260,77 @@ pub const CAMERA_RESTRICTED: &str = "This system restricts camera access, and Ju
 
 pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailable in this start. Open the installed application to enable them.";
 
+pub const COPY_TEXT: &str = "Copy text";
+
+pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
+
+pub const EDIT_TEXT: &str = "Edit text";
+pub const CUT: &str = "Cut";
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+pub const SELECT_ALL: &str = "Select all";
+
+pub const FORWARDED_MESSAGE: &str = "Forwarded message";
+pub const FORWARD_MESSAGE: &str = "Forward message";
+pub const FORWARD_SEND: &str = "Forward";
+pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
+pub const FORWARD_LOADING: &str = "Loading original message…";
+pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
+pub const FORWARD_NONE: &str = "No writable destinations match.";
+
+pub const FORWARD_THREAD_LINK: &str = "Use thread link";
+
+pub const VIEW_ORIGINAL: &str = "View original";
+
+pub const MARK_UNREAD: &str = "Mark unread";
+
+pub const WHO_REACTED: &str = "Who reacted";
+pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
+pub const REACTION_PEOPLE_UNAVAILABLE: &str =
+    "These reactions are unavailable, or you do not have access to this message.";
+pub const REACTION_PEOPLE_EMPTY: &str = "Nobody has this reaction now.";
+pub const REACTION_PEOPLE_MORE: &str = "More people reacted. Open Who reacted for the full list.";
+pub const DELETED_REACTOR: &str = "Deleted account";
+pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
+pub const REACTION_PREVIOUS: &str = "Previous people";
+pub const REACTION_NEXT: &str = "Next people";
+
+pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
+
+pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
+pub const CHANNEL_REFERENCE: &str = "Channel";
+
+pub const SPOILER: &str = "Spoiler";
+pub const REVEAL_SPOILER: &str = "Reveal spoiler";
+pub const SPOILER_KEYBOARD: &str = "Reveal the next spoiler with Enter or Space";
+pub const HEADING: &str = "Heading";
+pub const SMALL_TEXT: &str = "Small text";
+
+pub const FORWARD_FILE_FAILED: &str = "The files could not be copied to this destination.";
+
+pub const FORWARD_ORIGIN_UNAVAILABLE: &str = "You cannot open the original message.";
+
+pub const COMPOSER_VIEW: &str = "Composer view";
+pub const WRITE: &str = "Write";
+pub const PREVIEW: &str = "Preview";
+pub const PREVIEW_EMPTY: &str = "Nothing to preview yet.";
+pub const PREVIEW_FIX: &str = "Fix the message to preview it.";
+
+pub const EMOJI_COMPLETION: &str = "Emoji completion";
+pub const RECENT_EMOJI: &str = "Recent emoji";
+
+pub const DRAFT: &str = "Draft";
+
+pub fn typing_people(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [name] => format!("{name} is typing…"),
+        [first, second] => format!("{first} and {second} are typing…"),
+        [first, second, third] => format!("{first}, {second} and {third} are typing…"),
+        _ => "Several people are typing…".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -3764,75 +3835,5 @@ mod tests {
             assert!(rest.starts_with(' '), "{fault:?}");
         }
         assert!(recording_request_failed("No.").ends_with(" No."));
-    }
-}
-pub const COPY_TEXT: &str = "Copy text";
-
-pub const COPY_MESSAGE_LINK: &str = "Copy link to message";
-
-pub const EDIT_TEXT: &str = "Edit text";
-pub const CUT: &str = "Cut";
-pub const COPY: &str = "Copy";
-pub const PASTE: &str = "Paste";
-pub const SELECT_ALL: &str = "Select all";
-
-pub const FORWARDED_MESSAGE: &str = "Forwarded message";
-pub const FORWARD_MESSAGE: &str = "Forward message";
-pub const FORWARD_SEND: &str = "Forward";
-pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
-pub const FORWARD_LOADING: &str = "Loading original message…";
-pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
-pub const FORWARD_NONE: &str = "No writable destinations match.";
-
-pub const FORWARD_THREAD_LINK: &str = "Use thread link";
-
-pub const VIEW_ORIGINAL: &str = "View original";
-
-pub const MARK_UNREAD: &str = "Mark unread";
-
-pub const WHO_REACTED: &str = "Who reacted";
-pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
-pub const REACTION_PEOPLE_UNAVAILABLE: &str =
-    "These reactions are unavailable, or you do not have access to this message.";
-pub const REACTION_PEOPLE_EMPTY: &str = "Nobody has this reaction now.";
-pub const REACTION_PEOPLE_MORE: &str = "More people reacted. Open Who reacted for the full list.";
-pub const DELETED_REACTOR: &str = "Deleted account";
-pub const UNAVAILABLE_REACTOR: &str = "This account is no longer available.";
-pub const REACTION_PREVIOUS: &str = "Previous people";
-pub const REACTION_NEXT: &str = "Next people";
-
-pub const VIEW_QUOTED_MESSAGE: &str = "View quoted message";
-
-pub const UNKNOWN_CHANNEL_REFERENCE: &str = "channel";
-pub const CHANNEL_REFERENCE: &str = "Channel";
-
-pub const SPOILER: &str = "Spoiler";
-pub const REVEAL_SPOILER: &str = "Reveal spoiler";
-pub const SPOILER_KEYBOARD: &str = "Reveal the next spoiler with Enter or Space";
-pub const HEADING: &str = "Heading";
-pub const SMALL_TEXT: &str = "Small text";
-
-pub const FORWARD_FILE_FAILED: &str = "The files could not be copied to this destination.";
-
-pub const FORWARD_ORIGIN_UNAVAILABLE: &str = "You cannot open the original message.";
-
-pub const COMPOSER_VIEW: &str = "Composer view";
-pub const WRITE: &str = "Write";
-pub const PREVIEW: &str = "Preview";
-pub const PREVIEW_EMPTY: &str = "Nothing to preview yet.";
-pub const PREVIEW_FIX: &str = "Fix the message to preview it.";
-
-pub const EMOJI_COMPLETION: &str = "Emoji completion";
-pub const RECENT_EMOJI: &str = "Recent emoji";
-
-pub const DRAFT: &str = "Draft";
-
-pub fn typing_people(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [name] => format!("{name} is typing…"),
-        [first, second] => format!("{first} and {second} are typing…"),
-        [first, second, third] => format!("{first}, {second} and {third} are typing…"),
-        _ => "Several people are typing…".to_owned(),
     }
 }
