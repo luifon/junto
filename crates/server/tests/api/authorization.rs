@@ -486,6 +486,20 @@ async fn world() -> World {
         ),
         operation(Method::DELETE, "/api/v1/account", &[], none.clone(), &own),
         operation(
+            Method::POST,
+            "/api/v1/presence",
+            &[],
+            json!({"accounts":[target_id],"idle":false}),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/account/presence",
+            &[],
+            json!({"choice":"online"}),
+            &own,
+        ),
+        operation(
             Method::PUT,
             "/api/v1/account/avatar",
             &[],
@@ -502,6 +516,13 @@ async fn world() -> World {
         operation(
             Method::GET,
             "/api/v1/accounts/{account_id}/profile",
+            &[&outsider.account_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/accounts/{account_id}/card",
             &[&outsider.account_id],
             none.clone(),
             &[(Plain, NotFound)],

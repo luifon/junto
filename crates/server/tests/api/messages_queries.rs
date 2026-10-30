@@ -371,7 +371,7 @@ async fn unread_query_does_not_read_every_mention_of_other_accounts_after_the_re
     )
     .bind(channel.id)
     .bind(other.account_id)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     sqlx::query(
@@ -380,7 +380,7 @@ async fn unread_query_does_not_read_every_mention_of_other_accounts_after_the_re
     )
     .bind(channel.id)
     .bind(other.account_id)
-    .execute(&server.db)
+    .execute(&mut server.test_data().await)
     .await
     .unwrap();
     let state: junto_protocol::message::MessageState = server
