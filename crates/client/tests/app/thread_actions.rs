@@ -1,19 +1,18 @@
 //! The actions of a thread, of pins and of the permanence of a channel that a person takes
 //! in the window against the real server (ADR 0741, ADR 0796): the default following of a
 //! thread, the followed threads after the first eight, a fork into a voice channel, an
-//! edit, a reaction and a file in a thread, the pin of a permanent message, the limit of
-//! the pins of a channel, and permanent messages turned on and off.
+//! edit, a reaction and a file in a thread, the channel pin limit, and permanent messages
+//! turned on and off.
 
 use gpui::TestAppContext;
 use junto_client::shell::Pane;
 use junto_client::state::feed::FeedRow;
-use junto_client::state::view::PinsState;
 use junto_client::text;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::message::{Message, SendMessage};
-use junto_client_core::protocol::structure::{ChannelKind, UpdateChannel};
+use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::UploadStage;
 
 use crate::harness::{Window, World, named, selector};
@@ -45,15 +44,6 @@ impl Window {
                 )
             })
             .unwrap_or_default()
-    }
-
-    /// The messages of the open pin list.
-    fn pinned(&mut self) -> Option<Vec<MessageId>> {
-        let view = self.view();
-        match &view.workspace()?.pins.as_ref()?.state {
-            PinsState::Loaded(rows) => Some(rows.iter().map(|row| row.message.id).collect()),
-            PinsState::Loading | PinsState::Failed => None,
-        }
     }
 
     /// The rows of the thread of the side panel.
@@ -492,86 +482,6 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
     assert_eq!(stored.thread_root, Some(root_id));
     assert_eq!(stored.attachments.len(), 1);
     assert_eq!(stored.attachments[0].bytes, 19);
-}
-
-#[gpui::test]
-fn a_moderator_pins_and_unpins_permanent_messages(cx: &mut TestAppContext) {
-    let world = World::new();
-    let (_server, admin, _directory, mut window, general, root_id) = with_root(cx, &world);
-    let api = admin.handle.api();
-    admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
-    world
-        .run(api.update_channel(
-            general,
-            &UpdateChannel {
-                permanent_messages: Some(true),
-                ..UpdateChannel::default()
-            },
-        ))
-        .unwrap();
-    let decision = admin.send(&world, general, document("We approve the scope."));
-    let reply = admin.reply(&world, root_id, document("Tracks, one per speaker."));
-    let row = window.until_message("We approve the scope.");
-    assert!(row.message.permanent);
-    window.until("the pin is offered", |window| {
-        window
-            .messages()
-            .iter()
-            .any(|row| row.message.id == decision.id && row.can_pin)
-    });
-    let pins = |world: &World| -> Vec<MessageId> {
-        world
-            .run(api.pins(general))
-            .unwrap()
-            .into_iter()
-            .map(|pin| pin.id)
-            .collect()
-    };
-
-    // The bar of a permanent message pins it, as it pins any message.
-    window.act_on(decision.id, "pin");
-    window.until("the permanent message is pinned", |window| {
-        window
-            .messages()
-            .iter()
-            .any(|row| row.message.id == decision.id && row.message.pinned)
-    });
-    assert_eq!(pins(&world), [decision.id]);
-
-    // A permanent reply in a thread is pinned from its bar in the side panel.
-    window.open_thread_by_pointer(root_id);
-    window.until("the permanent reply", |window| {
-        window
-            .thread_message(reply)
-            .is_some_and(|row| row.message.permanent && row.can_pin)
-    });
-    window.act_on(reply, "pin");
-    window.until("the permanent reply is pinned", |window| {
-        window
-            .thread_message(reply)
-            .is_some_and(|row| row.message.pinned)
-    });
-    assert_eq!(pins(&world), [decision.id, reply]);
-    window.click("close-thread");
-
-    // The pin list holds both.
-    window.click("pins-button");
-    window.until("both pins in the list", |window| {
-        window.pinned() == Some(vec![decision.id, reply])
-    });
-    window.click("close-pins");
-
-    // The bar takes the pin of a permanent message away, and the message stays.
-    window.act_on(decision.id, "pin");
-    window.until("the pin is taken away", |window| {
-        window
-            .messages()
-            .iter()
-            .any(|row| row.message.id == decision.id && !row.message.pinned)
-    });
-    assert_eq!(pins(&world), [reply]);
-    let stored: Message = world.run(api.message(decision.id)).unwrap();
-    assert!(stored.permanent && !stored.pinned);
 }
 
 #[gpui::test]

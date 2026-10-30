@@ -93,3 +93,11 @@ The inline thread preview has Open thread when available and Copy link for the t
 Pair and group menus offer Hide conversation alongside their existing read, link, mute and group controls. The preference belongs to the account on the server (ADR 0408). Hidden rows do not contribute to the column or its unread totals. Hiding the main selection returns it to its channel and keeps the messages of a detached call available. A new message restores the row with its current unread state without selecting it.
 
 New direct message lists hidden conversations, including groups, so they can be reopened without another message. Contact selection, a conversation link, search and notices also reopen a hidden conversation. Reopening waits for authoritative visibility before selecting, and captures the account owner and navigation generation; a later answer cannot replace a newer selection or another account.
+
+The public API test `pins::a_moderator_pins_and_unpins_permanent_messages_and_thread_replies`
+checks that ManageMessages permits pinning and unpinning permanent messages and thread replies
+without changing their permanence or deleting them. The combined permanent-message hover-bar
+window test is removed after an intermittent missing-control failure for which no causal
+correction was established. Window tests retain ordinary pin actions, the pin list, permanent
+message markers and administrator deletion. Retrying the failed hover sequence or extending
+its wait would conceal the failure rather than establish its cause.

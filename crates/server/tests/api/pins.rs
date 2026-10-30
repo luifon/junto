@@ -232,6 +232,75 @@ async fn rule_19_21_pins_require_permission_and_track_current_content() {
 }
 
 #[tokio::test]
+async fn a_moderator_pins_and_unpins_permanent_messages_and_thread_replies() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let moderator = server.join(&owner, "Moderator").await;
+    let channel = channel(&server, &owner, "text").await;
+    server
+        .grant_workspace(
+            &owner,
+            &moderator,
+            channel.workspace_id,
+            &[junto_protocol::WorkspacePermission::ManageMessages],
+        )
+        .await;
+    let root = send(&server, &owner, &channel, "Question").await;
+    server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", channel.id),
+            &json!({"permanent_messages":true}),
+        )
+        .await
+        .ok::<Channel>(StatusCode::OK);
+    let decision = send(&server, &owner, &channel, "Decision").await;
+    let answer = reply(&server, &owner, root.id, "Answer").await;
+    assert!(!root.permanent);
+    for entry in [&decision, &answer] {
+        assert!(entry.permanent && !entry.pinned);
+        server
+            .put_empty(&moderator, &format!("{}/pin", message(entry.id)))
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    }
+    let pins_route = format!("/api/v1/channels/{}/pins", channel.id);
+    let pins: Vec<Message> = server.get(&moderator, &pins_route).await.ok(StatusCode::OK);
+    assert_eq!(
+        pins.iter().map(|pin| pin.id).collect::<Vec<_>>(),
+        [decision.id, answer.id]
+    );
+    assert!(pins.iter().all(|pin| pin.pinned && pin.permanent));
+    assert_eq!(pins[1].thread_root, Some(root.id));
+    server
+        .delete(&moderator, &format!("{}/pin", message(decision.id)))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let pins: Vec<Message> = server.get(&moderator, &pins_route).await.ok(StatusCode::OK);
+    assert_eq!(
+        pins.iter().map(|pin| pin.id).collect::<Vec<_>>(),
+        [answer.id]
+    );
+    let stored: Message = server
+        .get(&moderator, &message(decision.id))
+        .await
+        .ok(StatusCode::OK);
+    assert!(stored.permanent && !stored.pinned && !stored.deleted);
+    server
+        .delete(&moderator, &format!("{}/pin", message(answer.id)))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let pins: Vec<Message> = server.get(&moderator, &pins_route).await.ok(StatusCode::OK);
+    assert!(pins.is_empty());
+    let stored: Message = server
+        .get(&moderator, &message(answer.id))
+        .await
+        .ok(StatusCode::OK);
+    assert!(stored.permanent && !stored.pinned && !stored.deleted);
+    assert_eq!(stored.thread_root, Some(root.id));
+}
+
+#[tokio::test]
 async fn rule_20_22_pin_limit_idempotence_and_change_events() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
