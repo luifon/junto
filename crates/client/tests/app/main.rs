@@ -36,6 +36,7 @@ mod calls;
 mod category_collapse;
 mod channel_calls;
 mod channel_creation;
+mod channel_files;
 mod channel_history;
 mod channel_topics;
 mod channel_use;

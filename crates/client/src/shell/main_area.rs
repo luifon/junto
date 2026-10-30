@@ -79,7 +79,9 @@ impl Shell {
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
-                let search = shown.and_then(|shown| shown.search.as_ref());
+                let search = shown
+                    .and_then(|shown| shown.search.as_ref())
+                    .or(lists.search.as_ref());
                 match (thread, pins, &lists.notices, search) {
                     (Some(thread), ..) => {
                         Some((Panel::Thread, this.render_thread_panel(thread, window, cx)))
@@ -122,7 +124,11 @@ impl Shell {
                 (Some(panel), _, _) => {
                     // A panel that does not fit beside the stage lies over it (review M2).
                     let over = narrow || !self.side_fits(Panel::Call, cx);
-                    self.render_call(view, panel, over, window, cx)
+                    let (body, side) = self.render_call(view, panel, over, window, cx);
+                    let files = lists.search.as_ref().map(|search| {
+                        (Panel::Search, self.render_search_panel(search, window, cx))
+                    });
+                    (body, files.or(side))
                 }
                 (None, Some(_), _) => (
                     self.render_feed(lists, false, notices.take().unwrap_or_default(), window, cx),
@@ -179,7 +185,8 @@ impl Shell {
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
         let notices_open = lists.is_some_and(|lists| lists.notices.is_some());
         let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
-        let search_open = workspace.is_some_and(|workspace| workspace.search.is_some());
+        let search_open = workspace.is_some_and(|workspace| workspace.search.is_some())
+            || lists.is_some_and(|lists| lists.search.is_some());
         let split = div()
             .relative()
             .flex()
@@ -235,7 +242,9 @@ impl Shell {
                     // The panel lies over the content, with a flat cover behind it.
                     split
                         .child(Self::side_cover(&theme, cx, move |this, cx| {
-                            if in_call {
+                            if search_open {
+                                this.state.update(cx, |state, cx| state.hide_search(cx));
+                            } else if in_call {
                                 this.call_panel_open = false;
                             } else if thread_open {
                                 this.state.update(cx, |state, cx| state.close_thread(cx));
@@ -246,8 +255,6 @@ impl Shell {
                                     .update(cx, |state, cx| state.close_transcript(cx));
                             } else if notices_open {
                                 this.state.update(cx, |state, cx| state.close_notices(cx));
-                            } else if search_open {
-                                this.state.update(cx, |state, cx| state.hide_search(cx));
                             } else {
                                 this.members_open = false;
                             }
@@ -598,6 +605,25 @@ impl Shell {
                 )
             })
             .children(after)
+            .when_some(
+                view.lists()
+                    .and_then(|lists| lists.feed.as_ref())
+                    .map(|feed| (feed.server_id, feed.place)),
+                |header, (server_id, place)| {
+                    let refused = channel.is_some_and(|channel| !channel.allowed.read_history);
+                    header.child(
+                        Button::new("place-files")
+                            .icon(Icon::FolderOpen)
+                            .tooltip("Files")
+                            .accessible_label("Files")
+                            .selector("place-files")
+                            .disabled(refused)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.show_place_files(server_id, place, window, cx)
+                            })),
+                    )
+                },
+            )
             .when(call.is_none() && unread, |header| {
                 header.child(
                     Button::new("mark-as-read")

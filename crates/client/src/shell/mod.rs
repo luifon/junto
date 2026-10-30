@@ -21,6 +21,7 @@ mod direct;
 mod edges;
 mod feed;
 mod file_links;
+mod files;
 mod invited;
 mod join;
 mod keybinds;
@@ -1960,9 +1961,13 @@ impl Shell {
             Layer::GroupChoice(server_id) => !view.servers.iter().any(|row| row.id == *server_id),
             // The scope of the dialog is gone.
             Layer::Notify => view.notify.is_none(),
-            Layer::SearchFilter(_) => view
-                .workspace()
-                .is_none_or(|workspace| workspace.search.is_none()),
+            Layer::SearchFilter(_) => view.lists().is_none_or(|lists| {
+                lists.search.is_none()
+                    && lists
+                        .workspace
+                        .as_ref()
+                        .is_none_or(|workspace| workspace.search.is_none())
+            }),
             // The card of the recording is no longer among the shown rows.
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 !view.may_remove_recording(*server_id, *recording_id)

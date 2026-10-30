@@ -42,13 +42,14 @@ impl SettingsScope {
 /// and a minus before a word.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchQuery {
-    /// From 1 to 1,024 bytes.
+    /// From 1 to 1,024 bytes, or empty for a scoped file list.
     pub text: String,
     pub has_file: bool,
     pub has_link: bool,
     pub has_picture: bool,
     pub mentions_me: bool,
     pub direct: bool,
+    pub conversation_id: Option<junto_protocol::ids::ConversationId>,
     pub channel_id: Option<ChannelId>,
     /// The author of a message, or the speaker of a transcript line.
     pub author_id: Option<AccountId>,
@@ -79,6 +80,9 @@ impl SearchQuery {
             if enabled {
                 pairs.push((key, "true".to_owned()));
             }
+        }
+        if let Some(id) = self.conversation_id {
+            pairs.push(("conversation_id", id.to_string()));
         }
         if let Some(channel_id) = self.channel_id {
             pairs.push(("channel_id", channel_id.to_string()));

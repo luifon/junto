@@ -178,6 +178,7 @@ fn hit(number: u32, place_id: uuid::Uuid, author: &str, minutes: i64, text: &str
         position: Some(u64::from(number)),
         thread_root: None,
         start_ms: None,
+        attachments: Vec::new(),
         page: 0,
     }
 }
@@ -196,6 +197,7 @@ fn retention() -> Search {
         position: None,
         thread_root: None,
         start_ms: Some(1_843_000),
+        attachments: Vec::new(),
         page: 0,
     };
     Search {
@@ -203,6 +205,7 @@ fn retention() -> Search {
         text: "retention".to_owned(),
         filters: Filters::default(),
         progress: Progress::Done,
+        file_pages: Vec::new(),
         hits: vec![
             hit(
                 1,

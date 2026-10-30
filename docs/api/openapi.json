@@ -8880,6 +8880,21 @@
             }
           },
           {
+            "name": "conversation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ConversationId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
             "name": "from",
             "in": "query",
             "required": false,
@@ -18959,6 +18974,12 @@
           "rank"
         ],
         "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            }
+          },
           "author_id": {
             "$ref": "#/components/schemas/AccountId"
           },

@@ -123,6 +123,7 @@ impl OpenAccountMenu {
                 return view
                     .workspace()
                     .and_then(|workspace| workspace.search.as_ref())
+                    .or_else(|| view.lists().and_then(|lists| lists.search.as_ref()))
                     .is_some_and(|panel| {
                         panel.server_id == self.owner.entry.server_id
                             && panel.results.iter().any(|row| row.target == *target)

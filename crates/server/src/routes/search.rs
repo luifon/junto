@@ -3,7 +3,7 @@ use crate::{
     access::Access,
     error::{ApiError, ApiResult},
     extract::{ApiQuery, Bearer},
-    messages::Place,
+    messages::{Place, Purpose, uploads},
     read,
     state::AppState,
 };
@@ -11,7 +11,7 @@ use axum::{Json, extract::State};
 use junto_protocol::{
     discovery::{SearchHit, SearchPage},
     error::ErrorCode,
-    ids::{AccountId, ChannelId, MessageId, RecordingId},
+    ids::{AccountId, ChannelId, ConversationId, MessageId, RecordingId},
 };
 use serde::Deserialize;
 use sqlx::Row;
@@ -37,6 +37,7 @@ pub struct Query {
     pub q: String,
     pub channel_id: Option<ChannelId>,
     pub author_id: Option<AccountId>,
+    pub conversation_id: Option<ConversationId>,
     pub from: Option<String>,
     pub until: Option<String>,
     #[serde(default)]
@@ -61,7 +62,9 @@ pub async fn search(
 ) -> ApiResult<Json<SearchPage>> {
     let limit = query.limit.unwrap_or(50);
     if query.q.contains('\0')
-        || query.q.trim().is_empty()
+        || (query.q.trim().is_empty()
+            && !(query.has_file && (query.channel_id.is_some() || query.conversation_id.is_some())))
+        || (query.channel_id.is_some() && query.conversation_id.is_some())
         || query.q.len() > 1024
         || !(1..=200).contains(&limit)
     {
@@ -117,6 +120,9 @@ pub async fn search(
             Place::channel(connection, &access, channel).await?
                 .require(&access, junto_authz::WorkspacePermission::ReadMessageHistory)?;
         }
+        if let Some(conversation) = query.conversation_id {
+            Place::direct(connection, &access, conversation, Purpose::Read).await?;
+        }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
              line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
              vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms
@@ -132,12 +138,12 @@ pub async fn search(
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
              reads_call(r.call_id,$3) and not ($12 or $13 or $14 or $15 or $16) ), hits as (select
-             content.*,ts_rank_cd(vector,q) as rank from content,query where vector @@ q and ($4::uuid is null or
+             content.*,ts_rank_cd(vector,q) as rank from content,query where ($1 = '' or vector @@ q) and ($17::uuid is null or place_id=$17) and ($4::uuid is null or
              place_id=$4) and ($5::uuid is null or author_id=$5) and ($6::timestamptz is null or created_at >= $6) and
              ($7::timestamptz is null or created_at < $7)) select hits.*,ch.workspace_id from hits left join channels ch on
              ch.id=hits.place_id where (rank,hits.id,line)<($8,$9,$10) order by rank desc,hits.id desc,line desc limit
              $11")
-            .bind(&query.q)
+            .bind(query.q.trim())
             .bind(allowed.ids())
             .bind(access.account_id)
             .bind(query.channel_id)
@@ -153,7 +159,8 @@ pub async fn search(
             .bind(query.has_picture)
             .bind(query.mentions_me)
             .bind(query.direct)
-            .fetch_all(connection)
+            .bind(query.conversation_id)
+            .fetch_all(&mut *connection)
             .await?;
         let more = rows.len() > limit as usize;
         let mut results = Vec::new();
@@ -174,6 +181,7 @@ pub async fn search(
                 created_at: row.try_get("created_at")?,
                 text: row.try_get("text")?,
                 rank,
+                attachments: Vec::new(),
                 position: row
                     .try_get::<Option<i64>, _>("position")?
                     .map(|position| position as u64),
@@ -182,6 +190,13 @@ pub async fn search(
                     .try_get::<Option<i64>, _>("start_ms")?
                     .map(|start_ms| start_ms as u64),
             });
+        }
+        if query.has_file || query.has_picture {
+            let ids: Vec<_> = results.iter().filter_map(|hit| hit.message_id).collect();
+            let mut files = uploads::of_messages(connection, &ids).await?;
+            for hit in &mut results {
+                hit.attachments = hit.message_id.and_then(|id| files.remove(&id)).unwrap_or_default();
+            }
         }
         Ok(SearchPage {
             results,

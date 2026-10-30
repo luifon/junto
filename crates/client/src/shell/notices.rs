@@ -878,6 +878,20 @@ impl Shell {
     ) -> AnyElement {
         let channel_id = channel.id;
         let mut items = vec![
+            MenuItem::new("channel-files", "Files")
+                .icon(Icon::FolderOpen)
+                .disabled(!channel.allowed.read_history)
+                .selector("channel-files")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.show_place_files(
+                        server_id,
+                        junto_client_core::model::PlaceId::Channel(channel_id),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
             MenuItem::new("channel-mark-read", text::MARK_AS_READ)
                 .icon(Icon::CheckDouble)
                 .selector("channel-mark-read")
@@ -978,6 +992,19 @@ impl Shell {
         let account_id = direct.account_id;
         let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
         let mut items = vec![
+            MenuItem::new("direct-files", "Files")
+                .icon(Icon::FolderOpen)
+                .selector("direct-files")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.show_place_files(
+                        server_id,
+                        junto_client_core::model::PlaceId::Direct(conversation_id),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
             MenuItem::new("direct-mark-read", text::MARK_AS_READ)
                 .icon(Icon::CheckDouble)
                 .selector("direct-mark-read")

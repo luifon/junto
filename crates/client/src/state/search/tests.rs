@@ -132,6 +132,7 @@ impl Scene {
             position: Some(7),
             thread_root: None,
             start_ms: None,
+            attachments: Vec::new(),
             page: 0,
         }
     }
@@ -149,6 +150,7 @@ impl Scene {
             position: None,
             thread_root: None,
             start_ms: None,
+            attachments: Vec::new(),
             page: 0,
         }
     }
@@ -159,6 +161,7 @@ impl Scene {
             text: text.to_owned(),
             filters: Filters::default(),
             progress: Progress::Done,
+            file_pages: Vec::new(),
             hits,
             more: false,
             reading_more: false,
@@ -465,6 +468,7 @@ fn the_text_of_a_result_is_held_up_to_a_bound() {
             created_at: morning(),
             text,
             rank: 1.0,
+            attachments: Vec::new(),
             position: None,
             thread_root: None,
             start_ms: None,

@@ -152,6 +152,8 @@ pub struct SearchHit {
     pub created_at: OffsetDateTime,
     pub text: String,
     pub rank: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::message::Attachment>,
     /// The position of the message in its channel or conversation. Absent for a
     /// transcript line.
     #[serde(default)]

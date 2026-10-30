@@ -105,7 +105,7 @@ Status values:
 | [0402](0402-permanent-messages.md) | Permanent messages | Accepted | A channel setting that makes each message sent under it uneditable and excluded from automatic deletion. |
 | [0403](0403-threads-and-forks.md) | Threads and forks | Accepted | Replies attached to one message; a thread can be forked into a text channel or a voice channel. |
 | [0404](0404-notifications.md) | Unread signs and notifications | Accepted | Server-stored read positions, a level per channel, mute, do not disturb, and rules for direct messages and threads. |
-| [0405](0405-search.md) | Search | Accepted | PostgreSQL full-text search over messages and transcripts, limited to the channels a user can read. |
+| [0405](0405-search.md) | Search | Accepted | PostgreSQL full-text search over authorized messages and transcripts, with content filters and scoped file lists. |
 | [0406](0406-archive-export-and-retention.md) | Archive, export and retention | Accepted | Manual archive with deletion after a set time, ZIP export with an expiring link, retention per workspace. |
 | [0407](0407-deleted-channels-and-permanent-message-count.md) | Deleted channels keep a marker row, and a channel counts its permanent messages | Accepted | A deleted channel stays as a row for the audit log; the count of permanent messages decides the owner-only deletion. |
 | [0408](0408-text-message-storage-api-and-uploads.md) | Message documents, history positions and resumable attachments | Accepted | Typed documents, authorized history and unread state, private system lines and resumable files. |

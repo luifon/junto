@@ -67,6 +67,7 @@ impl DateFilter {
 /// The filters of a search (ADR 0405).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Filters {
+    pub conversation: Option<junto_client_core::protocol::ids::ConversationId>,
     pub channel: Option<ChannelId>,
     /// The author of a message, or the speaker of a transcript line.
     pub author: Option<AccountId>,
@@ -103,6 +104,7 @@ pub struct Hit {
     pub author_id: AccountId,
     pub created_at: OffsetDateTime,
     pub text: String,
+    pub attachments: Vec<junto_client_core::protocol::message::Attachment>,
     /// The position of the message in its channel or conversation (ADR 0413). Absent for a
     /// transcript line, and from a server before that record.
     pub position: Option<u64>,
@@ -126,6 +128,7 @@ impl From<SearchHit> for Hit {
             author_id: hit.author_id,
             created_at: hit.created_at,
             text: bounded(hit.text),
+            attachments: hit.attachments,
             position: hit.position,
             thread_root: hit.thread_root,
             start_ms: hit.start_ms,
@@ -168,11 +171,9 @@ impl Hit {
         let (workspace_id, place) = match model.readable_channel(channel_id) {
             Some(channel) => (Some(channel.workspace_id), PlaceId::Channel(channel_id)),
             None => {
-                let conversation = model
-                    .conversations
-                    .iter()
-                    .find(|held| held.id.as_uuid() == self.place_id)?;
-                (None, PlaceId::Direct(conversation.id))
+                let id = junto_client_core::protocol::ids::ConversationId::from_uuid(self.place_id);
+                model.place(PlaceId::Direct(id))?;
+                (None, PlaceId::Direct(id))
             }
         };
         Some(Jump {
@@ -212,6 +213,7 @@ pub struct Search {
     pub text: String,
     pub filters: Filters,
     pub progress: Progress,
+    pub file_pages: Vec<String>,
     /// The results of the pages that were read, the best match first.
     pub hits: Vec<Hit>,
     /// The server has a page after the read ones.
@@ -262,6 +264,7 @@ pub struct ResultRow {
     pub text: String,
     /// The parts of the text that match a word of the search.
     pub marks: Vec<Range<usize>>,
+    pub attachments: Vec<junto_client_core::protocol::message::Attachment>,
     pub target: ResultTarget,
 }
 
@@ -290,6 +293,7 @@ pub struct SearchPanel {
     pub author: Option<(AccountId, String)>,
     pub date: DateFilter,
     pub filters: Filters,
+    pub previous_files: bool,
     /// The message of a result that is being read for the jump to it.
     pub going: Option<MessageId>,
     pub go_failed: Option<String>,
@@ -457,6 +461,23 @@ pub fn search_panel(
     model: &ServerModel,
     known: &Known,
 ) -> Option<SearchPanel> {
+    panel(server_id, Some(workspace), model, known)
+}
+
+pub fn search_without_workspace(
+    server_id: ServerId,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<SearchPanel> {
+    panel(server_id, None, model, known)
+}
+
+fn panel(
+    server_id: ServerId,
+    workspace: Option<&WorkspaceModel>,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<SearchPanel> {
     let search = known
         .search
         .as_ref()
@@ -509,6 +530,7 @@ pub fn search_panel(
             author_id: hit.author_id,
             author: name_of(hit.author_id),
             text: hit.text.clone(),
+            attachments: hit.attachments.clone(),
             marks: marks(&hit.text, &search.text),
             target,
         };
@@ -545,8 +567,8 @@ pub fn search_panel(
         Progress::Done => SearchShown::Nothing,
     };
     let channels: Vec<(ChannelId, String, ChannelKind)> = workspace
-        .channels
-        .iter()
+        .into_iter()
+        .flat_map(|workspace| &workspace.channels)
         .map(|channel| {
             (
                 channel.channel.id,
@@ -556,8 +578,7 @@ pub fn search_panel(
         })
         .collect();
     let mut authors: Vec<(AccountId, String)> = workspace
-        .members
-        .loaded()
+        .and_then(|workspace| workspace.members.loaded())
         .map(|members| {
             members
                 .iter()
@@ -578,7 +599,7 @@ pub fn search_panel(
         results,
         more: search.more,
         // A later page that waits for its places is shown as a page on its way.
-        can_read_more: (search.more && search.hits.len() < MOST_HITS)
+        can_read_more: (search.more && (search.text.is_empty() || search.hits.len() < MOST_HITS))
             || withheld.is_some_and(|page| page > 0),
         reading_more: search.reading_more || withheld.is_some_and(|page| page > 0),
         archive_failed,
@@ -595,13 +616,16 @@ pub fn search_panel(
             .map(|account_id| (account_id, name_of(account_id))),
         date: search.filters.date,
         filters: search.filters,
+        previous_files: !search.file_pages.is_empty(),
         unreadable: channels
             .iter()
             .map(|(channel_id, _, _)| *channel_id)
             .filter(|channel_id| {
-                !workspace
-                    .permissions_in(*channel_id)
-                    .contains(&junto_client_core::protocol::WorkspacePermission::ReadMessageHistory)
+                workspace.is_some_and(|workspace| {
+                    !workspace.permissions_in(*channel_id).contains(
+                        &junto_client_core::protocol::WorkspacePermission::ReadMessageHistory,
+                    )
+                })
             })
             .collect(),
         channels,

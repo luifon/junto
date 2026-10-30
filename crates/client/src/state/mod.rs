@@ -2716,6 +2716,7 @@ impl AppState {
             self.selection.notify = None;
         }
         self.end_search_of_other_server(shown.server);
+        self.end_files_of_other_place(shown);
         self.drop_lost_search_filter(&snapshots, cx);
         let before = self.shown;
         self.follow_history(&before, &shown);

@@ -4,7 +4,7 @@
 use gpui::Context;
 use junto_client_core::api::{ApiError, ErrorCategory, SearchQuery};
 use junto_client_core::flow::FlowError;
-use junto_client_core::model::Timeline;
+use junto_client_core::model::{PlaceId, Timeline};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{MessageId, ServerId};
 use time::OffsetDateTime;
@@ -54,9 +54,75 @@ impl AppState {
             .search
             .as_ref()
             .filter(|search| search.server_id == server_id)
-            .map(|search| search.filters)
+            .map(|search| {
+                if search.text.is_empty() {
+                    Filters::default()
+                } else {
+                    search.filters
+                }
+            })
             .unwrap_or_default();
         self.start_search(server_id, text, filters, cx);
+    }
+
+    pub fn show_place_files(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(model) = self
+            .client
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+        else {
+            return;
+        };
+        let mut filters = Filters {
+            has_file: true,
+            ..Filters::default()
+        };
+        match place {
+            PlaceId::Channel(id) | PlaceId::Thread { channel_id: id, .. } => {
+                let Some(channel) = model.readable_channel(id) else {
+                    return;
+                };
+                self.selection
+                    .workspaces
+                    .insert(server_id, channel.workspace_id);
+                self.selection
+                    .channels
+                    .insert((server_id, channel.workspace_id), id);
+                self.selection.conversations.remove(&server_id);
+                filters.channel = Some(id);
+            }
+            PlaceId::Direct(id) => {
+                if model.place(PlaceId::Direct(id)).is_none() {
+                    return;
+                }
+                self.selection.conversations.insert(server_id, id);
+                self.known.conversation_refused = None;
+                filters.conversation = Some(id);
+            }
+        }
+        self.end_jump();
+        self.navigations += 1;
+        self.selection.server = Some(server_id);
+        self.start_search(server_id, String::new(), filters, cx);
+    }
+
+    pub fn previous_files(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = &mut self.known.search else {
+            return;
+        };
+        if !search.text.is_empty() || search.reading_more || search.file_pages.is_empty() {
+            return;
+        }
+        search.file_pages.pop();
+        search.go_failed = None;
+        search.reading_more = true;
+        self.ask_search(false, cx);
+        self.changed(cx);
     }
 
     /// Changes the filters of the search and runs it again.
@@ -68,11 +134,15 @@ impl AppState {
         self.start_search(server_id, text, filters, cx);
     }
 
-    /// Runs the search of the window again from its first page, after a failure.
+    /// Runs the search of the window again after a failure.
     pub fn search_again(&mut self, cx: &mut Context<Self>) {
         let Some(search) = &self.known.search else {
             return;
         };
+        if search.text.is_empty() {
+            self.read_search_again(cx);
+            return;
+        }
         let (server_id, text, filters) = (search.server_id, search.text.clone(), search.filters);
         self.start_search(server_id, text, filters, cx);
     }
@@ -100,6 +170,7 @@ impl AppState {
             text,
             filters,
             progress: Progress::Searching,
+            file_pages: Vec::new(),
             hits: held.map(|search| search.hits).unwrap_or_default(),
             more: false,
             reading_more: false,
@@ -134,11 +205,18 @@ impl AppState {
             return;
         };
         if !search.more
-            || search.hits.len() >= MOST_HITS
+            || (!search.text.is_empty() && search.hits.len() >= MOST_HITS)
             || search.reading_more
             || search.progress != Progress::Done
         {
             return;
+        }
+        if search.text.is_empty() {
+            let Some(cursor) = self.search_next.clone() else {
+                return;
+            };
+            search.file_pages.push(cursor);
+            search.go_failed = None;
         }
         search.reading_more = true;
         self.ask_search(true, cx);
@@ -165,6 +243,7 @@ impl AppState {
         let query = SearchQuery {
             text: search.text.clone(),
             channel_id: search.filters.channel,
+            conversation_id: search.filters.conversation,
             author_id: search.filters.author,
             from: search
                 .filters
@@ -177,7 +256,13 @@ impl AppState {
             mentions_me: search.filters.mentions_me,
             direct: search.filters.direct,
             limit: None,
-            cursor: if more { self.search_next.clone() } else { None },
+            cursor: if search.text.is_empty() {
+                search.file_pages.last().cloned()
+            } else if more {
+                self.search_next.clone()
+            } else {
+                None
+            },
         };
         let api = server.api();
         cx.spawn(async move |this, cx| {
@@ -196,7 +281,7 @@ impl AppState {
                 search.reading_more = false;
                 match answered {
                     Ok(page) => {
-                        if !more {
+                        if !more || search.text.is_empty() {
                             search.hits.clear();
                         }
                         let number = search.hits.last().map_or(0, |last| last.page + 1);
@@ -218,6 +303,9 @@ impl AppState {
                     Err(error) => {
                         // A further page that failed leaves the read pages.
                         if more {
+                            if search.text.is_empty() {
+                                search.file_pages.pop();
+                            }
                             search.go_failed = Some(text::flow_error(&FlowError::from(&error)));
                         } else {
                             search.hits.clear();
@@ -257,6 +345,25 @@ impl AppState {
             .as_ref()
             .is_some_and(|search| Some(search.server_id) != shown)
         {
+            self.known.search = None;
+            self.search_asks += 1;
+            self.search_next = None;
+        }
+    }
+
+    pub(super) fn end_files_of_other_place(&mut self, shown: Shown) {
+        let changed = self.known.search.as_ref().is_some_and(|search| {
+            if !search.text.is_empty() {
+                return false;
+            }
+            let scope = search
+                .filters
+                .channel
+                .map(PlaceId::Channel)
+                .or_else(|| search.filters.conversation.map(PlaceId::Direct));
+            Some(search.server_id) != shown.server || scope != shown.place()
+        });
+        if changed {
             self.known.search = None;
             self.search_asks += 1;
             self.search_next = None;
@@ -325,6 +432,19 @@ impl AppState {
         let Some(search) = &mut self.known.search else {
             return;
         };
+        if search.text.is_empty()
+            && let Some(id) = search.filters.conversation
+        {
+            let held = servers
+                .iter()
+                .find(|server| server.id == search.server_id)
+                .and_then(shown_model)
+                .is_none_or(|model| model.place(PlaceId::Direct(id)).is_some());
+            if !held {
+                self.close_search(cx);
+            }
+            return;
+        }
         let Some(channel_id) = search.filters.channel else {
             return;
         };
@@ -332,8 +452,15 @@ impl AppState {
             .iter()
             .find(|server| server.id == search.server_id)
             .and_then(shown_model)
-            .is_none_or(|model| model.channel(channel_id).is_some());
+            .is_none_or(|model| {
+                model.channel(channel_id).is_some()
+                    || (search.text.is_empty() && model.readable_channel(channel_id).is_some())
+            });
         if held {
+            return;
+        }
+        if search.text.is_empty() {
+            self.close_search(cx);
             return;
         }
         search.filters.channel = None;

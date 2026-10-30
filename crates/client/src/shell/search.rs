@@ -627,6 +627,22 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.members_open = false;
+        let file_call = self
+            .view
+            .as_ref()
+            .and_then(|view| view.lists())
+            .is_some_and(|lists| {
+                lists.call.is_some()
+                    && lists
+                        .search
+                        .as_ref()
+                        .is_some_and(|panel| panel.text.is_empty())
+            });
+        if file_call {
+            self.state.update(cx, |state, cx| state.hide_search(cx));
+            self.open_call_panel(cx);
+            self.show_call_tab(super::call::CallTab::Chat, cx);
+        }
         self.state.update(cx, |state, cx| match target {
             ResultTarget::Message(message_id) => state.go_to_result(message_id, cx),
             ResultTarget::Transcript {
@@ -656,14 +672,25 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        let found = panel.results.len();
+        let files = panel.text.is_empty();
+        let found = if files {
+            panel.results.iter().map(|row| row.attachments.len()).sum()
+        } else {
+            panel.results.len()
+        };
         let note: SharedString = match &panel.state {
             SearchShown::Searching if found == 0 => text::SEARCHING.into(),
+            _ if files && found == 1 => "1 file".into(),
+            _ if files => format!("{found} files").into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
-        let header = SideHeader::new(text::SEARCH)
+        let header = SideHeader::new(if files { "Files" } else { text::SEARCH })
             .title_bar()
-            .icon(Icon::Search)
+            .icon(if files {
+                Icon::FolderOpen
+            } else {
+                Icon::Search
+            })
             .note(note)
             .trailing(
                 Button::new("close-search")
@@ -673,7 +700,7 @@ impl Shell {
                     .selector("close-search")
                     .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
             );
-        let filters = self.render_filters(panel, &theme, cx);
+        let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
         let again = |cx: &mut Context<Self>| {
             Button::new("search-again")
                 .icon(Icon::Retry)
@@ -726,9 +753,38 @@ impl Shell {
                 .child(text::SEARCHING)
                 .into_any_element(),
             SearchShown::Nothing => {
-                StatePanel::new(text::SEARCH_NOTHING_TITLE, text::SEARCH_NOTHING)
-                    .selector("search-nothing")
-                    .into_any_element()
+                let empty = StatePanel::new(
+                    if files && panel.previous_files {
+                        "No older files"
+                    } else if files {
+                        "No files"
+                    } else {
+                        text::SEARCH_NOTHING_TITLE
+                    },
+                    if files && panel.previous_files {
+                        "No older files are available. You can return to newer files."
+                    } else if files {
+                        "Files shared here will appear in this list."
+                    } else {
+                        text::SEARCH_NOTHING
+                    },
+                )
+                .selector("search-nothing");
+                if files && panel.previous_files {
+                    empty
+                        .action(
+                            Button::new("previous-files")
+                                .label("Newer files")
+                                .selector("previous-files")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.search_scroll.set_offset(gpui::Point::default());
+                                    this.state.update(cx, |state, cx| state.previous_files(cx));
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    empty.into_any_element()
+                }
             }
             SearchShown::Refused(reason) => {
                 StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
@@ -757,6 +813,9 @@ impl Shell {
                         }
                     };
                     rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
+                    if files {
+                        rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
+                    }
                 }
                 // "Show more results" stands under the list, at a place of its own while
                 // results are listed: a page that arrives does not move it.
@@ -765,20 +824,40 @@ impl Shell {
                         .label(if panel.reading_more {
                             text::READING_MORE_RESULTS
                         } else {
-                            text::SHOW_MORE_RESULTS
+                            if files {
+                                "Older files"
+                            } else {
+                                text::SHOW_MORE_RESULTS
+                            }
                         })
                         .disabled(panel.reading_more || !panel.can_read_more)
                         .selector("more-results")
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if files {
+                                this.search_scroll.set_offset(gpui::Point::default());
+                            }
                             this.state
                                 .update(cx, |state, cx| state.read_more_results(cx));
                         })),
                 );
+                let previous = files.then(|| {
+                    div().flex().flex_none().px(u(14.0)).child(
+                        Button::new("previous-files")
+                            .label("Newer files")
+                            .selector("previous-files")
+                            .disabled(!panel.previous_files || panel.reading_more)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.search_scroll.set_offset(gpui::Point::default());
+                                this.state.update(cx, |state, cx| state.previous_files(cx));
+                            })),
+                    )
+                });
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
+                    .children(previous)
                     .child(
                         ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
                             .selector("search-results")
@@ -792,7 +871,11 @@ impl Shell {
         side_panel(
             &theme,
             text::SEARCH,
-            "search-panel",
+            if files {
+                "file-list-panel"
+            } else {
+                "search-panel"
+            },
             self.panel_width(
                 junto_client_core::settings::Panel::Search,
                 theme.metrics.side_panel_width,
@@ -800,7 +883,7 @@ impl Shell {
             ),
         )
         .child(header)
-        .child(filters)
+        .children(filters)
         .child(
             crate::ui::notice_slot("search-go-failed-slot")
                 .children(go_failed)

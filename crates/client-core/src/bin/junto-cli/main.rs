@@ -128,7 +128,9 @@ commands:
                                [--channel <id>] [--author <account>] [--from <time>]
                                [--until <time>] [--limit <n>] [--cursor <continuation>]
                                [--has-file] [--has-link] [--has-picture]
-                               [--mentions-me] [--direct]
+                               [--mentions-me] [--direct] [--conversation <id>]
+                               Empty text with --has-file and a channel or conversation
+                               lists the files of that place.
 
 actions of call:
   show [<channel>]             the call of a voice channel, or the call of this account
@@ -440,6 +442,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "quiet",
     "time-zone",
     "channel",
+    "conversation",
     "author",
     "from",
     "until",

@@ -33,3 +33,13 @@ mention rules, independently of notification preferences. Direct messages are
 limited to conversations the account can read. These message filters exclude
 transcript lines. Every existing visibility and private-reader check still
 applies before a result is returned.
+
+An empty query with `has_file` and one explicit channel or conversation scope
+lists that place's files, including attachments of thread replies and messages
+without text. The scope is checked as a history read before the query runs.
+`conversation_id` narrows results to one authorized direct conversation; it cannot
+be combined with `channel_id`. The response includes retained attachment metadata
+for file and picture queries, fetched in one batch for authorized message IDs.
+Other searches keep their existing statement count. Files of deleted messages,
+removed attachments and private-reader messages outside the caller's audience
+are excluded before pagination. Empty queries without a file scope are refused.

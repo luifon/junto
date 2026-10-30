@@ -61,3 +61,23 @@ Both chosen days are included: the request starts at the beginning of From in
 the person's time zone and ends exclusively at the beginning of the day after
 Through. Each boundary uses that date's time-zone rules, including daylight
 saving changes. Today uses the same calendar-boundary rule. Choosing a date preset replaces the range.
+
+Files in the channel or conversation header, and in each place's context menu,
+opens a scoped file list using the search transport and its stale-request guards.
+It includes thread files and offers the existing file opener, picture preview,
+download, copy-name/link and message navigation actions. A conversation's list
+also works when the account belongs to no workspace. File panels without a
+workspace use the server list rather than requiring a workspace projection.
+During a call, the file list replaces the side panel while the stage and the
+connection remain active. Closing it restores the call panel.
+
+A file list holds one page of messages and their files at a time, newest first.
+Opening Files selects its source place. Navigating to another place closes the
+file list. Older files advances the cursor; Newer files returns through the recorded page
+cursors. Both reset the list scroll. A failed older-page request keeps the current
+page and does not advance cursor history. An empty older page still offers Newer
+files. Unlike text search, browsing files does not
+stop after 1,000 messages. Switching account or losing the source place withdraws
+the list and invalidates requests already in flight; it never broadens a lost
+file scope to another place. Existing permission-refresh behavior clears data
+before retrying a read.

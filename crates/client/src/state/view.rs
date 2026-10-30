@@ -1234,6 +1234,7 @@ pub struct ServerLists {
     pub uploads: Arc<HashMap<u64, UploadProgress>>,
     /// The notices of the server that the side panel shows.
     pub notices: Option<NoticesPanel>,
+    pub search: Option<SearchPanel>,
     /// The notices of the server that the person has not read.
     pub unread_notices: usize,
     /// Present when the main area shows the place of the call of this device: its voice
@@ -2738,6 +2739,13 @@ fn server_lists(
         _ => Writing::OPEN,
     };
     ServerLists {
+        search: (shown.is_none() || call.is_some())
+            .then(|| match workspace {
+                Some(workspace) => super::search::search_panel(server_id, workspace, model, known),
+                None => super::search::search_without_workspace(server_id, model, known),
+            })
+            .flatten()
+            .filter(|panel| panel.text.is_empty() && selection.notices != Some(server_id)),
         workspace: shown,
         directs,
         conversation,

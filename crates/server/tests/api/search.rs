@@ -442,6 +442,7 @@ async fn fix_transcript_search_uses_a_stored_indexed_vector() {
     .bind(false)
     .bind(false)
     .bind(false)
+    .bind(None::<uuid::Uuid>)
     .fetch_one(&mut *connection)
     .await
     .unwrap();
@@ -615,4 +616,94 @@ async fn content_mentions_and_direct_filters_combine_before_pagination() {
             .results
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn scoped_file_lists_include_empty_documents_and_thread_files_without_other_places() {
+    let files = Files::open().await;
+    let (server, owner, channel) = (&files.server, &files.owner, &files.channel);
+    let reader = server.join(owner, "Reader").await;
+    let first = files.upload(b"file one").await;
+    let root: Message = server
+        .post(
+            owner,
+            &format!("/api/v1/channels/{}/messages", channel.id),
+            &json!({"document":{"blocks":[]},"attachments":[first.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let second = files.upload(b"file two").await;
+    let child: Message = server
+        .post(
+            owner,
+            &format!("{}/thread", message(root.id)),
+            &json!({"document":{"blocks":[]},"attachments":[second.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let query = format!("&has_file=true&channel_id={}&limit=1", channel.id);
+    let page = search(server, &reader, &query).await;
+    assert_eq!(page.results.len(), 1);
+    assert_eq!(page.results[0].message_id, Some(child.id));
+    assert_eq!(page.results[0].attachments[0].id, second.id);
+    let next = search(
+        server,
+        &reader,
+        &format!("{query}&cursor={}", page.next.unwrap()),
+    )
+    .await;
+    assert_eq!(next.results[0].message_id, Some(root.id));
+    assert_eq!(next.results[0].attachments[0].id, first.id);
+    assert!(next.next.is_none());
+    let conversation: Conversation = server
+        .post(
+            owner,
+            "/api/v1/conversations",
+            &json!({"account_id":reader.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let upload = upload(
+        server,
+        owner,
+        json!({"conversation_id":conversation.id}),
+        b"direct file",
+    )
+    .await;
+    let direct: Message = server
+        .post(
+            owner,
+            &format!("/api/v1/conversations/{}/messages", conversation.id),
+            &json!({"document":{"blocks":[]},"attachments":[upload.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let scoped = search(
+        server,
+        &reader,
+        &format!("&has_file=true&channel_id={}", channel.id),
+    )
+    .await;
+    assert_eq!(scoped.results.len(), 2);
+    assert!(
+        scoped
+            .results
+            .iter()
+            .all(|hit| hit.place_id == channel.id.as_uuid())
+    );
+    let query = format!("&has_file=true&conversation_id={}", conversation.id);
+    let page = search(server, &reader, &query).await;
+    assert_eq!(page.results.len(), 1);
+    assert_eq!(page.results[0].message_id, Some(direct.id));
+    assert_eq!(page.results[0].attachments[0].id, upload.id);
+    let outsider = server.join(owner, "Outsider").await;
+    server
+        .get(&outsider, &format!("/api/v1/search?q={query}"))
+        .await
+        .error(ErrorCode::NotFound);
+    server
+        .delete(owner, &message(direct.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(search(server, &reader, &query).await.results.is_empty());
 }
