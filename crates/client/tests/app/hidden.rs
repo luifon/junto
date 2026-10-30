@@ -103,7 +103,8 @@ fn column(window: &mut Window) -> Vec<(String, Vec<String>)> {
                     let title = match &section.title {
                         SectionTitle::TextChannels => "Text channels".to_owned(),
                         SectionTitle::VoiceChannels => "Voice channels".to_owned(),
-                        SectionTitle::Category(name) => name.clone(),
+                        SectionTitle::Category(name) | SectionTitle::Personal(name) => name.clone(),
+                        SectionTitle::Favourites => "Favourites".to_owned(),
                     };
                     let mut rows: Vec<String> =
                         section.rows.iter().map(|row| row.name.clone()).collect();

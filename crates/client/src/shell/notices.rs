@@ -892,6 +892,21 @@ impl Shell {
                 }))
                 .into_any_element(),
         ];
+        if let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+        {
+            items.extend(self.personal_channel_items(
+                super::personal::ChannelDrag {
+                    owner,
+                    workspace: workspace_id,
+                    channel: channel_id,
+                },
+                cx,
+            ));
+        }
         items.push(
             MenuItem::new("channel-copy-link", text::COPY_TARGET_LINK)
                 .icon(Icon::Link)

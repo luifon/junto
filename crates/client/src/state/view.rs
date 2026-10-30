@@ -712,6 +712,8 @@ pub enum SectionTitle {
     TextChannels,
     VoiceChannels,
     Category(String),
+    Favourites,
+    Personal(String),
 }
 
 /// The microphone of a person in a voice channel.
@@ -832,6 +834,7 @@ pub struct ChannelSection {
     pub category_id: Option<CategoryId>,
     pub collapsed: bool,
     pub may_create: bool,
+    pub personal: Option<junto_client_core::arrangement::channels::Location>,
     pub title: SectionTitle,
     pub rows: Vec<ChannelRow>,
 }
@@ -2386,7 +2389,7 @@ fn sections(
     model: &ServerModel,
     known: &Known,
     unreads: &Unreads,
-) -> Vec<ChannelSection> {
+) -> (Vec<ChannelSection>, Option<ChannelId>) {
     let in_category = |channel: &ChannelModel| {
         channel.channel.category_id.filter(|id| {
             workspace
@@ -2413,6 +2416,7 @@ fn sections(
                 category_id: None,
                 collapsed: false,
                 may_create: workspace.holds(WorkspacePermission::ManageChannel),
+                personal: None,
                 title,
                 rows,
             });
@@ -2435,12 +2439,69 @@ fn sections(
                 model.account.id,
                 category.id,
             ),
+            personal: None,
             may_create: category_may_create(model, workspace.workspace.id, category.id),
             title: SectionTitle::Category(category.name.clone()),
             rows,
         });
     }
-    made
+    let fallback = made
+        .iter()
+        .flat_map(|section| &section.rows)
+        .find(|row| row.kind == ChannelKind::Text)
+        .or_else(|| made.iter().flat_map(|section| &section.rows).next())
+        .map(|row| row.id);
+    if let Some(layout) =
+        known
+            .arrangement
+            .channels(server_id, model.account.id, workspace.workspace.id)
+    {
+        use junto_client_core::arrangement::channels::Location;
+        let mut personal = Vec::new();
+        let placed: HashSet<_> = layout
+            .favourites
+            .iter()
+            .chain(layout.sections.iter().flat_map(|section| &section.channels))
+            .copied()
+            .collect();
+        let mut by_id = HashMap::new();
+        for section in &mut made {
+            for row in std::mem::take(&mut section.rows) {
+                if placed.contains(&row.id) {
+                    by_id.insert(row.id, row);
+                } else {
+                    section.rows.push(row);
+                }
+            }
+        }
+        let mut rows = |ids: &[ChannelId]| {
+            ids.iter()
+                .filter_map(|id| by_id.remove(id))
+                .collect::<Vec<_>>()
+        };
+        let favourites = rows(&layout.favourites);
+        if !favourites.is_empty() {
+            personal.push(ChannelSection {
+                category_id: None,
+                collapsed: layout.favourites_collapsed,
+                may_create: false,
+                personal: Some(Location::Favourites),
+                title: SectionTitle::Favourites,
+                rows: favourites,
+            });
+        }
+        personal.extend(layout.sections.iter().map(|section| ChannelSection {
+            category_id: None,
+            collapsed: section.collapsed,
+            may_create: false,
+            personal: Some(Location::Section(section.id)),
+            title: SectionTitle::Personal(section.name.clone()),
+            rows: rows(&section.channels),
+        }));
+        personal.extend(made);
+        made = personal;
+    }
+    (made, fallback)
 }
 
 fn members(
@@ -2776,7 +2837,7 @@ fn workspace_view(
     unreads: &Unreads,
     conversation: Option<ConversationShown>,
 ) -> WorkspaceParts {
-    let mut sections = sections(server_id, workspace, model, known, unreads);
+    let (mut sections, fallback) = sections(server_id, workspace, model, known, unreads);
     let wanted = selection
         .channels
         .get(&(server_id, workspace.workspace.id))
@@ -2795,12 +2856,7 @@ fn workspace_view(
     } else {
         wanted
             .filter(|id| rows().any(|row| row.id == *id))
-            .or_else(|| {
-                rows()
-                    .find(|row| row.kind == ChannelKind::Text)
-                    .map(|row| row.id)
-            })
-            .or_else(|| rows().next().map(|row| row.id))
+            .or(fallback)
     };
     // The thread of the side panel belongs to the shown channel.
     let open_thread = selection

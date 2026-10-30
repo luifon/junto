@@ -4,6 +4,8 @@
 //! entries of the book (ADR 0780). A group stands at the place of its first server, and
 //! its servers follow in the order of the book.
 
+pub mod channels;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use junto_protocol::ids::{AccountId, CategoryId, ServerId, WorkspaceId};
@@ -88,6 +90,8 @@ pub struct ServerPlace {
     pub workspace_order: Vec<WorkspaceId>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collapsed_categories: BTreeMap<AccountId, BTreeSet<CategoryId>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub channel_layouts: BTreeMap<AccountId, BTreeMap<WorkspaceId, channels::Layout>>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -102,6 +106,7 @@ impl ServerPlace {
             workspaces_collapsed: false,
             workspace_order: Vec::new(),
             collapsed_categories: BTreeMap::new(),
+            channel_layouts: BTreeMap::new(),
         }
     }
 
@@ -110,6 +115,7 @@ impl ServerPlace {
             && !self.workspaces_collapsed
             && self.workspace_order.is_empty()
             && self.collapsed_categories.is_empty()
+            && self.channel_layouts.is_empty()
     }
 }
 
@@ -200,6 +206,12 @@ pub enum Change {
     /// The group goes; its servers stay at its place in their order.
     DissolveGroup {
         group: GroupId,
+    },
+    PersonalChannels {
+        server: ServerId,
+        account: AccountId,
+        workspace: WorkspaceId,
+        change: channels::Change,
     },
     CollapseCategory {
         server: ServerId,
@@ -298,6 +310,8 @@ pub enum ArrangeError {
     TooManyGroups,
     #[error("too many collapsed categories")]
     TooManyCollapsedCategories,
+    #[error(transparent)]
+    Personal(#[from] channels::Error),
 }
 
 /// A group name as it is stored: without control characters and outer spaces, cut to
@@ -347,6 +361,18 @@ impl Arrangement {
         self.place(server)
             .and_then(|place| place.collapsed_categories.get(&account))
             .is_some_and(|categories| categories.contains(&category))
+    }
+
+    pub fn channels(
+        &self,
+        server: ServerId,
+        account: AccountId,
+        workspace: WorkspaceId,
+    ) -> Option<&channels::Layout> {
+        self.place(server)?
+            .channel_layouts
+            .get(&account)?
+            .get(&workspace)
     }
 
     /// Puts `items` in the order of the person for the workspaces of a server. Items that
@@ -400,6 +426,18 @@ impl Arrangement {
                 > MOST_COLLAPSED_CATEGORIES
             {
                 return Err("too many collapsed categories".to_owned());
+            }
+            if place
+                .channel_layouts
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+                > MOST_ORDERED_WORKSPACES
+            {
+                return Err("too many personal workspace layouts".to_owned());
+            }
+            for layout in place.channel_layouts.values().flat_map(BTreeMap::values) {
+                layout.check().map_err(|error| error.to_string())?;
             }
             if place.workspace_order.len() > MOST_ORDERED_WORKSPACES {
                 return Err(format!(
@@ -775,6 +813,32 @@ impl Work {
                     for (offset, server) in servers.into_iter().enumerate() {
                         self.shelves.insert(shelf + offset, Shelf::Server(server));
                     }
+                }
+            }
+            Change::PersonalChannels {
+                server,
+                account,
+                workspace,
+                change,
+            } => {
+                self.find_server(server)
+                    .ok_or(ArrangeError::NoServer(server))?;
+                let layouts = &mut self.place_mut(server).channel_layouts;
+                if !layouts
+                    .get(&account)
+                    .is_some_and(|workspaces| workspaces.contains_key(&workspace))
+                    && layouts.values().map(BTreeMap::len).sum::<usize>() >= MOST_ORDERED_WORKSPACES
+                {
+                    return Err(channels::Error::Limit.into());
+                }
+                let workspaces = layouts.entry(account).or_default();
+                let layout = workspaces.entry(workspace).or_default();
+                layout.apply(change)?;
+                if layout.is_empty() {
+                    workspaces.remove(&workspace);
+                }
+                if workspaces.is_empty() {
+                    layouts.remove(&account);
                 }
             }
             Change::CollapseCategory {

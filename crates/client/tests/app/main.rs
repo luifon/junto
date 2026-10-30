@@ -75,6 +75,7 @@ mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
+mod personal_sections;
 mod pictures;
 mod recordings;
 mod recovery;
