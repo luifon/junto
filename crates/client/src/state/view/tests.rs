@@ -2655,8 +2655,9 @@ pub(super) mod calls {
             Some(MeetingView {
                 by_self: true,
                 presenter: Some("Luca".to_owned()),
+                presenter_id: scene.own,
                 hands: vec![(ana, Some("Ana".to_owned()))],
-                waiting: vec![Some("Ben".to_owned())],
+                waiting: vec![(ben, Some("Ben".to_owned()))],
                 may_speak: false,
             })
         );

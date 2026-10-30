@@ -70,6 +70,18 @@ pub(crate) fn has_focused_menu(window: &Window, cx: &App) -> bool {
     })
 }
 
+pub(crate) fn over_focused_menu(at: Point<Pixels>, window: &Window, cx: &App) -> bool {
+    cx.try_global::<PaintedMenus>().is_some_and(|menus| {
+        menus.0.iter().any(|(id, focus, bounds)| {
+            *id == window.window_handle().window_id()
+                && bounds.contains(&at)
+                && focus
+                    .upgrade()
+                    .is_some_and(|focus| focus.contains_focused(window, cx))
+        })
+    })
+}
+
 #[derive(Default)]
 pub struct MenuPlacement(std::cell::Cell<Option<(Point<Pixels>, gpui::Size<Pixels>)>>);
 

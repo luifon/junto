@@ -464,6 +464,16 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
             && avatar(window, own)
     });
 
+    window.right_click_named(format!("hidden-avatar:{ada}"));
+    assert!(window.shows("account-menu"));
+    window.click_named(format!("account-copy-id:{ada}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        ada.to_string()
+    );
+    window.right_click_named(format!("hidden-avatar:{ada}"));
+    window.press("escape");
+
     // The camera of the window starts: its tile returns.
     window.click("call-camera");
     window.until("the tile of the own camera is drawn", |window| {
@@ -471,12 +481,15 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
 
     // The camera of Ada starts while the setting is on: her tile and picture are drawn.
+    window.right_click_named(format!("hidden-avatar:{ada}"));
+    assert!(window.shows("account-menu"));
     caller.calls.start_camera(None);
     window.until("the tile of the camera of Ada is drawn", |window| {
         tile(window, ada)
             && tile(window, own)
             && !window.shows("people-hidden")
             && drawn(window) == 2
+            && !window.shows("account-menu")
     });
     caller.calls.stop_camera();
     window.until("the tile of Ada leaves with her camera", |window| {

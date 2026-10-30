@@ -25,6 +25,11 @@ pub(crate) struct AccountTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
+    Hidden,
+    InviteChoice,
+    Presenter,
+    RaisedHand,
+    MeetingWaiting,
     Tile,
     Share {
         id: junto_media::engine::ShareId,
@@ -168,6 +173,13 @@ impl OpenAccountMenu {
                                         .iter()
                                         .any(|person| person.account_id == *account_id)
                                 })
+                            }
+                            CallSurface::Hidden
+                            | CallSurface::InviteChoice
+                            | CallSurface::Presenter
+                            | CallSurface::RaisedHand
+                            | CallSurface::MeetingWaiting => {
+                                self.additional_call_present(*surface, panel, *account_id)
                             }
                             _ => panel
                                 .people
@@ -401,7 +413,7 @@ impl Shell {
         })
     }
 
-    fn call_account_menu(
+    pub(super) fn call_account_menu(
         &self,
         account_id: AccountId,
         name: String,
@@ -495,6 +507,9 @@ impl Shell {
         let Some(panel) = &lists.call else {
             return false;
         };
+        if let Some(visible) = self.additional_call_visible(*surface, *account_id, view, cx) {
+            return visible;
+        }
         match surface {
             CallSurface::Share { .. } => self.detached || !self.state.read(cx).is_call_detached(),
             CallSurface::Tile => {
@@ -509,6 +524,7 @@ impl Shell {
                     && lists.notices.is_none()
                     && self.call_panel_shown(self.call_panel_overlay, cx)
             }
+            _ => false,
         }
     }
 

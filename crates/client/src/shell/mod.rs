@@ -9,6 +9,7 @@ pub mod admin;
 mod arrange;
 mod book;
 pub mod call;
+mod call_identity_targets;
 mod call_menus;
 mod camera;
 mod channels;

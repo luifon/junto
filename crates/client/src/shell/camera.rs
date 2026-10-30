@@ -124,6 +124,7 @@ impl super::Shell {
         people: &[Occupant],
         hidden: &[AccountId],
         theme: &Theme,
+        cx: &gpui::App,
     ) -> Option<gpui::Stateful<gpui::Div>> {
         if hidden.is_empty() {
             return None;
@@ -138,9 +139,17 @@ impl super::Shell {
             .take(3)
             .map(|person| {
                 let account_id = person.account_id;
-                div()
+                let child = div()
                     .debug_selector(move || format!("hidden-avatar:{account_id}"))
-                    .child(super::people::avatar(&faces, account_id, 20.0).radius(2.0))
+                    .child(super::people::avatar(&faces, account_id, 20.0).radius(2.0));
+                self.call_identity_target(
+                    format!("hidden-person:{account_id}").into(),
+                    account_id,
+                    super::channels::occupant_name(person).to_string(),
+                    super::account_menus::CallSurface::Hidden,
+                    child,
+                    cx,
+                )
             });
         let selected = line.clone();
         Some(

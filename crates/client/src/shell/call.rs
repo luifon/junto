@@ -760,7 +760,7 @@ impl Shell {
                             )
                         })
                         .children(
-                            self.hidden_note(people, &hidden, theme)
+                            self.hidden_note(people, &hidden, theme, cx)
                                 .map(|note| note.mt(u(14.0))),
                         ),
                 )

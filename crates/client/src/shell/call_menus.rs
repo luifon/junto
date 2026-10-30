@@ -28,15 +28,7 @@ fn share_sound_volume(open: &OpenAccountMenu) -> bool {
 impl Shell {
     fn call_source_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
         matches!(&open.source, Some(AccountSource::CallOccupant { .. }))
-            && self.view.as_ref().is_some_and(|view| {
-                open.source_is_present(view, self.state.read(cx))
-                    && self.account_source_visible(open, view, cx)
-            })
-            && self
-                .state
-                .read(cx)
-                .server(open.owner.entry.server_id)
-                .is_some_and(|server| server.owner() == Some(open.owner))
+            && self.account_context_current(open, cx)
     }
 
     pub(super) fn call_menu_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
@@ -455,7 +447,8 @@ impl Shell {
         if matches!(
             &open.source,
             Some(AccountSource::CallOccupant {
-                surface: super::account_menus::CallSurface::Member { inside: false },
+                surface: super::account_menus::CallSurface::Member { inside: false }
+                    | super::account_menus::CallSurface::InviteChoice,
                 ..
             })
         ) {

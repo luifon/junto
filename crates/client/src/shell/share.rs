@@ -1863,11 +1863,13 @@ impl Shell {
                 })
                 .collect()
         };
-        let hidden_note = self.hidden_note(people, &hidden_ids, theme).map(|note| {
-            note.ml_auto().mb(u(22.0)).when(self.detached, |note| {
-                note.flex_col().items_start().w_full().ml(u(0.0)).mb(u(0.0))
-            })
-        });
+        let hidden_note = self
+            .hidden_note(people, &hidden_ids, theme, cx)
+            .map(|note| {
+                note.ml_auto().mb(u(22.0)).when(self.detached, |note| {
+                    note.flex_col().items_start().w_full().ml(u(0.0)).mb(u(0.0))
+                })
+            });
         let strip = div()
             .id("call-people")
             .role(Role::List)

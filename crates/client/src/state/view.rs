@@ -885,11 +885,12 @@ pub struct MeetingView {
     /// The person of this device runs it.
     pub by_self: bool,
     pub presenter: Option<String>,
+    pub presenter_id: AccountId,
     /// The people with a raised hand whose microphone is closed, for the presenter.
     pub hands: Vec<(AccountId, Option<String>)>,
     /// The people whose block the presenter removed and whose own microphone setting is
     /// "closed", for the presenter.
-    pub waiting: Vec<Option<String>>,
+    pub waiting: Vec<(AccountId, Option<String>)>,
     /// The presenter removed the block of the person, and the person's own microphone
     /// setting is "closed".
     pub may_speak: bool,
@@ -3666,6 +3667,7 @@ fn room_view(
             MeetingView {
                 by_self,
                 presenter: name_of(meeting.presenter),
+                presenter_id: meeting.presenter,
                 hands: call
                     .map(|call| call.participants.as_slice())
                     .unwrap_or_default()
@@ -3685,7 +3687,7 @@ fn room_view(
                             && participant.microphone_block.is_none()
                             && participant.muted
                     })
-                    .map(|participant| name_of(participant.account_id))
+                    .map(|participant| (participant.account_id, name_of(participant.account_id)))
                     .collect(),
                 may_speak: may_speak(active, call, Some(model), known),
             }
