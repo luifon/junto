@@ -32,6 +32,7 @@ mod attachment_menus;
 mod badges;
 mod book;
 mod call_notices;
+mod category_collapse;
 mod calls;
 mod channel_calls;
 mod channel_history;

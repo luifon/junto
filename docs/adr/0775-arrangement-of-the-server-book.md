@@ -14,7 +14,7 @@ Discord lets a person organise the list of servers: a server is dragged to anoth
 
 The arrangement, in the client core (`arrangement`):
 
-- The arrangement belongs to the data directory, in the file of the server book (format version 7; a book of version 6 is read as one without an arrangement). Junto has no account across servers, so nothing synchronises it between devices.
+- The arrangement belongs to the data directory, in the file of the server book (format version 8; a book of version 6 is read as one without an arrangement, and version 7 has no collapsed categories). Junto has no account across servers, so nothing synchronises it between devices.
 - The order of the servers stays the order of the entries of the book (ADR 0780). A group stands at the place of its first server, and its servers follow in the order of the book; every change writes the entries so that the servers of a group follow each other.
 - A group has an identifier, a name of at most 64 characters (it can be empty: the window then names the group by its servers), a colour from a fixed set of the colours of the theme (bone, terracotta, ochre, olive, cypress, bronze, cinnabar) and a collapsed state. Each server can have a record: its group, whether its workspaces are collapsed, and the order of its workspaces (at most 512). A workspace that the order does not name follows those that it names, in the order of the server, so a new workspace appears at the end. Groups are not nested. The book holds at most 128 groups.
 - The changes are: move a server next to a server or a group, to the end of a group or to the end of the book; drop a server on another one (a new group of the two at the place of the other one, or its group when it has one); a new group of one server; leave a group (the server stands directly after it); move a group next to a server or a group (a group never goes into a group); rename, colour, collapse and dissolve a group (its servers stay in their place, outside a group); collapse the workspaces of a server; collapse or expand everything; move a workspace among the workspaces of its server. A change is made under the lock of the book on the file as it is then (ADR 0780). A change that names a server, a group or a workspace that is gone changes nothing and fails.
@@ -34,9 +34,15 @@ The server book, in the window:
 - The window derives the groups and the top-level parts of the book (`ShellView::groups` and `ShellView::book`) from the list of the client and the arrangement, and the servers keep their indexes in `ShellView::servers`.
 - Tests: `state::view::book_tests::arrangement`, `state::book::tests::a_drop_makes_the_change_of_its_zone_and_target`, `state::book::tests::a_drag_has_a_zone_of_a_third_or_of_a_half_of_its_target`, and the window tests `book::servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_the_groups` and `book::the_workspaces_of_a_server_are_ordered_collapsed_and_marked_read_and_a_second_start_shows_it` and `book::the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_server`. The screens `book-group-*`, `book-workspaces-collapsed`, `book-workspace-menu` and `book-menu-in-group` of `junto-screens` draw them.
 
+Category collapse in the channel column:
+
+- A press on a category header, Enter or Space on the focused header, or its Collapse category/Expand category menu action changes its collapsed state. A chevron and the accessibility expanded state report it. Collapsed, the category keeps the selected channel visible and hides its other rows; selection and the open conversation do not change. The header shows the unread sign and mentions of its hidden children and their threads, respecting their mute settings.
+- Collapse choices belong to the server and account in the local arrangement, with at most 4096 collapsed category records per server. They survive a restart, remain separate across accounts and go with a removed server. Version 7 books migrate without collapsed categories. They do not synchronise between devices. The queued write checks the account owner captured by the header before applying the change.
+- The category settings, Copy name and Mark as read menu actions remain available while collapsed; Mark as read includes the child channels and their listed threads. Window regression `category_collapse` covers menu, pointer, keyboard, unread activity, selected-child visibility and restart; the arrangement test covers account/server separation and removal.
+
 ## Consequences
 
 - A person orders and groups the servers and the workspaces with the pointer or with the keyboard, and a second start shows the same server book.
-- A client of an earlier version does not read a book of version 7, and does not change it (ADR 0710).
+- A client of an earlier version does not read a book of version 8, and does not change it (ADR 0710).
 - A new server is added at the end of the book, outside every group, where Discord puts it at the top; ADR 0780 keeps the end.
 - The arrangement is per data directory: a second device has its own.

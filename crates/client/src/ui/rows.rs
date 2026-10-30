@@ -195,6 +195,8 @@ impl RenderOnce for WorkspaceRow {
 pub struct CategoryHeader {
     menu_id: Option<ElementId>,
     actions: Vec<super::RowAction>,
+    toggle: Option<(bool, super::RowAction)>,
+    unread: Option<(SharedString, UnreadSign)>,
     name: SharedString,
     first: bool,
     count: Option<SharedString>,
@@ -205,6 +207,8 @@ impl CategoryHeader {
         Self {
             menu_id: None,
             actions: Vec::new(),
+            toggle: None,
+            unread: None,
             name: name.into(),
             first: false,
             count: None,
@@ -218,6 +222,16 @@ impl CategoryHeader {
 
     pub fn action(mut self, action: super::RowAction) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    pub fn toggle(mut self, collapsed: bool, action: super::RowAction) -> Self {
+        self.toggle = Some((collapsed, action));
+        self
+    }
+
+    pub fn unread(mut self, id: impl Into<SharedString>, sign: Option<UnreadSign>) -> Self {
+        self.unread = sign.map(|sign| (id.into(), sign));
         self
     }
 
@@ -241,6 +255,10 @@ impl RenderOnce for CategoryHeader {
         let id = self
             .menu_id
             .unwrap_or_else(|| format!("section-header:{}", self.name).into());
+        let label: SharedString = self.unread.as_ref().map_or_else(
+            || self.name.clone(),
+            |(_, sign)| format!("{}, {}", self.name, sign.label).into(),
+        );
         let copied = self.name.to_string();
         let mut actions = vec![super::RowAction::new(
             crate::text::COPY_NAME,
@@ -253,12 +271,15 @@ impl RenderOnce for CategoryHeader {
                 );
             },
         )];
+        if let Some((_, action)) = &self.toggle {
+            actions.push(action.clone());
+        }
         actions.extend(self.actions);
         let frame = div()
             .id(id.clone())
             .relative()
             .role(Role::Group)
-            .aria_label(self.name.clone())
+            .aria_label(label)
             .focusable()
             .tab_stop(true)
             .focus_visible(move |style| style.shadow(ring))
@@ -272,6 +293,36 @@ impl RenderOnce for CategoryHeader {
             .pr(u(10.0))
             .typeface(theme.types.label, &theme)
             .ink(theme.colors.bronze)
+            .when_some(self.toggle, |header, (collapsed, action)| {
+                header
+                    .role(Role::Button)
+                    .aria_expanded(!collapsed)
+                    .cursor_pointer()
+                    .on_click(move |event, window, cx| {
+                        if let Some(handler) = &action.handler {
+                            handler(event, window, cx);
+                        }
+                    })
+                    .child(icon(
+                        if collapsed {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        12.0,
+                        theme.colors.bronze,
+                    ))
+            })
+            .when_some(self.unread, |header, (id, sign)| {
+                header.tooltip(tooltip(sign.label.clone())).child(
+                    div()
+                        .debug_selector(move || id.to_string())
+                        .flex()
+                        .items_center()
+                        .h(gpui::px(0.0))
+                        .child(sign.element(cx)),
+                )
+            })
             .child(
                 div()
                     .flex_none()

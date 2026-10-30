@@ -420,7 +420,19 @@ impl Shell {
                 .when_some(
                     account_owner.filter(|_| !section.rows.is_empty()),
                     |header, owner| {
-                        let channels: Vec<_> = section.rows.iter().map(|row| row.id).collect();
+                        let places: Vec<_> = section
+                            .rows
+                            .iter()
+                            .flat_map(|row| {
+                                std::iter::once(junto_client_core::model::PlaceId::Channel(row.id))
+                                    .chain(row.threads.iter().map(move |thread| {
+                                        junto_client_core::model::PlaceId::Thread {
+                                            channel_id: row.id,
+                                            root_id: thread.root_id,
+                                        }
+                                    }))
+                            })
+                            .collect();
                         let mut action = crate::ui::RowAction::new(
                             text::MARK_AS_READ,
                             cx.listener(move |this, _, _, cx| {
@@ -431,23 +443,74 @@ impl Shell {
                                     .is_some_and(|server| server.owner() == Some(owner))
                                 {
                                     this.state.update(cx, |state, _| {
-                                        for id in &channels {
-                                            state.mark_place_as_read(
-                                                owner.entry.server_id,
-                                                junto_client_core::model::PlaceId::Channel(*id),
-                                            );
+                                        for place in &places {
+                                            state.mark_place_as_read(owner.entry.server_id, *place);
                                         }
                                     });
                                 }
                             }),
                         );
-                        action.disabled = section
-                            .rows
-                            .iter()
-                            .all(|row| row.unread.messages == 0 && row.unread.mentions == 0);
+                        action.disabled = section.rows.iter().all(|row| {
+                            row.unread.messages == 0
+                                && row.unread.mentions == 0
+                                && row
+                                    .threads
+                                    .iter()
+                                    .all(|thread| thread.unread == 0 && thread.mentions == 0)
+                        });
                         header.action(action)
                     },
                 );
+            let header = header.when_some(
+                section.category_id.zip(account_owner),
+                |header, (category, owner)| {
+                    let collapsed = section.collapsed;
+                    let (messages, mentions, unread) = section
+                        .rows
+                        .iter()
+                        .filter(|row| !row.selected && !row.unread.muted && !row.mute.is_on())
+                        .fold((0u64, 0u64, false), |(messages, mentions, unread), row| {
+                            row.threads.iter().fold(
+                                (
+                                    messages.saturating_add(row.unread.messages),
+                                    mentions.saturating_add(row.unread.mentions),
+                                    unread || row.unread.any(),
+                                ),
+                                |(messages, mentions, unread), thread| {
+                                    (
+                                        messages.saturating_add(thread.unread),
+                                        mentions.saturating_add(thread.mentions),
+                                        unread || thread.unread > 0 || thread.mentions > 0,
+                                    )
+                                },
+                            )
+                        });
+                    header
+                        .toggle(
+                            collapsed,
+                            crate::ui::RowAction::new(
+                                if collapsed {
+                                    text::EXPAND_CATEGORY
+                                } else {
+                                    text::COLLAPSE_CATEGORY
+                                },
+                                cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.collapse_category(owner, category, !collapsed, cx)
+                                    })
+                                }),
+                            ),
+                        )
+                        .unread(
+                            format!("category-unread:{category}"),
+                            (collapsed && unread).then(|| crate::ui::UnreadSign {
+                                mentions: (mentions > 0)
+                                    .then(|| text::mention_badge(mentions).into()),
+                                label: text::unread_tooltip(messages, mentions).into(),
+                            }),
+                        )
+                },
+            );
             rows.push(
                 div()
                     .debug_selector(move || selector)
@@ -456,7 +519,11 @@ impl Shell {
                     .into_any_element(),
             );
             let mut after_occupants = false;
-            for channel in &section.rows {
+            for channel in section
+                .rows
+                .iter()
+                .filter(|row| !section.collapsed || row.selected)
+            {
                 let channel_id = channel.id;
                 let index = channel_index;
                 channel_index += 1;

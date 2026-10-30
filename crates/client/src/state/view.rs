@@ -829,6 +829,7 @@ pub struct ChannelRow {
 pub struct ChannelSection {
     /// Absent for the sections grouped by channel kind.
     pub category_id: Option<CategoryId>,
+    pub collapsed: bool,
     pub title: SectionTitle,
     pub rows: Vec<ChannelRow>,
 }
@@ -2393,6 +2394,7 @@ fn sections(
         if !rows.is_empty() {
             made.push(ChannelSection {
                 category_id: None,
+                collapsed: false,
                 title,
                 rows,
             });
@@ -2410,6 +2412,11 @@ fn sections(
             .collect();
         made.push(ChannelSection {
             category_id: Some(category.id),
+            collapsed: known.arrangement.category_collapsed(
+                server_id,
+                model.account.id,
+                category.id,
+            ),
             title: SectionTitle::Category(category.name.clone()),
             rows,
         });

@@ -696,7 +696,12 @@ impl AppState {
             .client
             .server(server_id)
             .and_then(|server| server.live().view().model)
-            .and_then(|model| model.message_state(place).map(|state| state.latest));
+            .and_then(|model| match place {
+                PlaceId::Thread { root_id, .. } => {
+                    model.thread_state(root_id).map(|state| state.latest)
+                }
+                _ => model.message_state(place).map(|state| state.latest),
+            });
         if let Some(latest) = latest {
             self.mark_read(server_id, place, latest);
         }

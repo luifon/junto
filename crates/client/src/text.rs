@@ -3296,6 +3296,8 @@ pub const ACCOUNT_ACTIONS: &str = "Account actions";
 pub const SELECT_SOURCE: &str = "Select source";
 pub const STOP_SHARING: &str = "Stop sharing";
 
+pub const COLLAPSE_CATEGORY: &str = "Collapse category";
+pub const EXPAND_CATEGORY: &str = "Expand category";
 pub const CATEGORY_SETTINGS: &str = "Category settings";
 
 #[cfg(test)]

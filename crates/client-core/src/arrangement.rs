@@ -4,14 +4,15 @@
 //! entries of the book (ADR 0780). A group stands at the place of its first server, and
 //! its servers follow in the order of the book.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use junto_protocol::ids::{ServerId, WorkspaceId};
+use junto_protocol::ids::{AccountId, CategoryId, ServerId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const LONGEST_GROUP_NAME: usize = 64;
 pub const MOST_GROUPS: usize = 128;
+pub const MOST_COLLAPSED_CATEGORIES: usize = 4096;
 /// How many workspaces of one server the order names at most.
 pub const MOST_ORDERED_WORKSPACES: usize = 512;
 
@@ -85,6 +86,8 @@ pub struct ServerPlace {
     /// follows those that it names, in the order of the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_order: Vec<WorkspaceId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collapsed_categories: BTreeMap<AccountId, BTreeSet<CategoryId>>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -98,11 +101,15 @@ impl ServerPlace {
             group: None,
             workspaces_collapsed: false,
             workspace_order: Vec::new(),
+            collapsed_categories: BTreeMap::new(),
         }
     }
 
     fn is_default(&self) -> bool {
-        self.group.is_none() && !self.workspaces_collapsed && self.workspace_order.is_empty()
+        self.group.is_none()
+            && !self.workspaces_collapsed
+            && self.workspace_order.is_empty()
+            && self.collapsed_categories.is_empty()
     }
 }
 
@@ -194,6 +201,12 @@ pub enum Change {
     DissolveGroup {
         group: GroupId,
     },
+    CollapseCategory {
+        server: ServerId,
+        account: AccountId,
+        category: CategoryId,
+        collapsed: bool,
+    },
     CollapseWorkspaces {
         server: ServerId,
         collapsed: bool,
@@ -283,6 +296,8 @@ pub enum ArrangeError {
     NoWorkspace(WorkspaceId),
     #[error("the server book holds {MOST_GROUPS} groups")]
     TooManyGroups,
+    #[error("too many collapsed categories")]
+    TooManyCollapsedCategories,
 }
 
 /// A group name as it is stored: without control characters and outer spaces, cut to
@@ -321,6 +336,17 @@ impl Arrangement {
     pub fn workspaces_collapsed(&self, server_id: ServerId) -> bool {
         self.place(server_id)
             .is_some_and(|place| place.workspaces_collapsed)
+    }
+
+    pub fn category_collapsed(
+        &self,
+        server: ServerId,
+        account: AccountId,
+        category: CategoryId,
+    ) -> bool {
+        self.place(server)
+            .and_then(|place| place.collapsed_categories.get(&account))
+            .is_some_and(|categories| categories.contains(&category))
     }
 
     /// Puts `items` in the order of the person for the workspaces of a server. Items that
@@ -365,6 +391,15 @@ impl Arrangement {
         for place in &self.servers {
             if !servers.insert(place.server_id) {
                 return Err(format!("server {} is arranged twice", place.server_id));
+            }
+            if place
+                .collapsed_categories
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>()
+                > MOST_COLLAPSED_CATEGORIES
+            {
+                return Err("too many collapsed categories".to_owned());
             }
             if place.workspace_order.len() > MOST_ORDERED_WORKSPACES {
                 return Err(format!(
@@ -739,6 +774,32 @@ impl Work {
                 if let Shelf::Group { servers, .. } = self.shelves.remove(shelf) {
                     for (offset, server) in servers.into_iter().enumerate() {
                         self.shelves.insert(shelf + offset, Shelf::Server(server));
+                    }
+                }
+            }
+            Change::CollapseCategory {
+                server,
+                account,
+                category,
+                collapsed,
+            } => {
+                self.find_server(server)
+                    .ok_or(ArrangeError::NoServer(server))?;
+                let categories = &mut self.place_mut(server).collapsed_categories;
+                if collapsed {
+                    if !categories
+                        .get(&account)
+                        .is_some_and(|set| set.contains(&category))
+                        && categories.values().map(BTreeSet::len).sum::<usize>()
+                            >= MOST_COLLAPSED_CATEGORIES
+                    {
+                        return Err(ArrangeError::TooManyCollapsedCategories);
+                    }
+                    categories.entry(account).or_default().insert(category);
+                } else if let Some(set) = categories.get_mut(&account) {
+                    set.remove(&category);
+                    if set.is_empty() {
+                        categories.remove(&account);
                     }
                 }
             }

@@ -459,6 +459,28 @@ impl AppState {
         self.arrange_with(move |_| Some(change), cx);
     }
 
+    pub fn collapse_category(
+        &mut self,
+        owner: junto_client_core::Owner,
+        category: junto_client_core::protocol::ids::CategoryId,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.arrange_with(
+            move |client| {
+                (client.server(owner.entry.server_id)?.owner() == Some(owner)).then_some(
+                    Change::CollapseCategory {
+                        server: owner.entry.server_id,
+                        account: owner.account_id,
+                        category,
+                        collapsed,
+                    },
+                )
+            },
+            cx,
+        );
+    }
+
     /// Makes the change that `change` finds when the write runs, from the client as it is
     /// then. Nothing happens without one.
     fn arrange_with(

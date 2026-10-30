@@ -604,3 +604,98 @@ fn a_step_moves_a_workspace_one_place_among_the_listed_ones() {
     assert_eq!(step_workspace(&listed, listed[2], false), None);
     assert_eq!(step_workspace(&listed, WorkspaceId::generate(), true), None);
 }
+
+#[test]
+fn category_collapse_belongs_to_one_account_and_server_and_is_serialised() {
+    let mut book = Book::new(2);
+    let (server, other_server) = (book.id(0), book.id(1));
+    let (account, other_account) = (AccountId::generate(), AccountId::generate());
+    let category = CategoryId::generate();
+    book.change(Change::CollapseCategory {
+        server,
+        account,
+        category,
+        collapsed: true,
+    })
+    .unwrap();
+    assert!(
+        book.arrangement
+            .category_collapsed(server, account, category)
+    );
+    assert!(
+        !book
+            .arrangement
+            .category_collapsed(server, other_account, category)
+    );
+    assert!(
+        !book
+            .arrangement
+            .category_collapsed(other_server, account, category)
+    );
+    let bytes = serde_json::to_vec(&book.arrangement).unwrap();
+    let read: Arrangement = serde_json::from_slice(&bytes).unwrap();
+    assert!(read.category_collapsed(server, account, category));
+    assert!(
+        !read
+            .normalised(&[other_server])
+            .category_collapsed(server, account, category)
+    );
+    book.change(Change::CollapseCategory {
+        server,
+        account,
+        category,
+        collapsed: false,
+    })
+    .unwrap();
+    assert!(book.arrangement.is_empty());
+    let old: Arrangement = serde_json::from_str("{}").unwrap();
+    assert!(!old.category_collapsed(server, account, category));
+}
+
+#[test]
+fn category_collapse_at_its_bound_keeps_existing_choices_and_can_expand() {
+    let mut book = Book::new(1);
+    let server = book.id(0);
+    let account = AccountId::generate();
+    let categories: BTreeSet<_> = (0..MOST_COLLAPSED_CATEGORIES)
+        .map(|_| CategoryId::generate())
+        .collect();
+    let existing = *categories.first().unwrap();
+    let mut place = ServerPlace::new(server);
+    place.collapsed_categories.insert(account, categories);
+    book.arrangement.servers.push(place);
+    assert!(book.arrangement.check().is_ok());
+    let extra = CategoryId::generate();
+    assert_eq!(
+        book.change(Change::CollapseCategory {
+            server,
+            account,
+            category: extra,
+            collapsed: true
+        }),
+        Err(ArrangeError::TooManyCollapsedCategories)
+    );
+    assert!(!book.arrangement.category_collapsed(server, account, extra));
+    book.change(Change::CollapseCategory {
+        server,
+        account,
+        category: existing,
+        collapsed: true,
+    })
+    .unwrap();
+    book.change(Change::CollapseCategory {
+        server,
+        account,
+        category: existing,
+        collapsed: false,
+    })
+    .unwrap();
+    book.change(Change::CollapseCategory {
+        server,
+        account,
+        category: extra,
+        collapsed: true,
+    })
+    .unwrap();
+    assert!(book.arrangement.category_collapsed(server, account, extra));
+}
