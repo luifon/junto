@@ -17,6 +17,7 @@ mod contacts;
 mod copying;
 mod decode;
 pub mod detached;
+mod device_checks;
 mod direct;
 mod edges;
 mod feed;
@@ -85,6 +86,7 @@ pub(crate) enum Layer {
     /// The first start: the person chooses a name.
     Welcome,
     Settings,
+    Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
     ServerMenu,
     ConfirmRemove(ServerId),
@@ -316,6 +318,7 @@ pub struct Shell {
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
     pub(crate) cameras: camera::ShownCameras,
+    pub(crate) device_ui: device_checks::DeviceUi,
     drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
     /// The pictures that the follower converted for the next frame of the display.
@@ -555,9 +558,13 @@ impl Shell {
                 },
             ),
             cx.on_release(move |this: &mut Self, cx| {
-                this.state.update(cx, |state, _| {
+                let detached = this.detached;
+                this.state.update(cx, |state, cx| {
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
+                    if !detached {
+                        state.set_device_checks(false, cx);
+                    }
                 });
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
@@ -808,6 +815,7 @@ impl Shell {
             share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
+            device_ui: Default::default(),
             drawing_call: false,
             picture_tasks: Vec::new(),
             pictures_prepared: None,
@@ -890,6 +898,7 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         shell.follow_pictures(window, cx);
+        shell.follow_device_preview(window, cx);
         if detached {
             // The text that a call window holds when it closes goes to the main window
             // (ADR 0772). The state closes the window and tells the main window.
@@ -1390,9 +1399,11 @@ impl Shell {
         }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
-        if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
+        if matches!(self.layer, Layer::Settings | Layer::Prejoin(_)) {
             self.state
-                .update(cx, |state, _| state.set_input_test(false));
+                .update(cx, |state, cx| state.set_device_checks(false, cx));
+            self.device_ui.menu = None;
+            prepared::take(&mut self.device_ui.preview, HashMap::new(), cx);
             self.stop_keybind_recording(cx);
         }
         self.release_viewer_picture(cx);
@@ -1433,9 +1444,11 @@ impl Shell {
             self.state.update(cx, |state, cx| state.close_link_all(cx));
         }
         self.release_share_previews(cx);
-        if matches!(self.layer, Layer::Settings) {
+        if matches!(self.layer, Layer::Settings | Layer::Prejoin(_)) {
             self.state
-                .update(cx, |state, _| state.set_input_test(false));
+                .update(cx, |state, cx| state.set_device_checks(false, cx));
+            self.device_ui.menu = None;
+            prepared::take(&mut self.device_ui.preview, HashMap::new(), cx);
             self.stop_keybind_recording(cx);
         }
         self.release_viewer_picture(cx);
@@ -2011,6 +2024,9 @@ impl Shell {
                         .server(open.owner.entry.server_id)
                         .is_none_or(|server| server.owner() != Some(open.owner))
             }
+            Layer::Prejoin(prejoin) => {
+                !prejoin.current(self.state.read(cx)) || !self.state.read(cx).device_checks_open()
+            }
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -2052,6 +2068,7 @@ impl Shell {
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
+            Layer::Prejoin(prejoin) => self.render_prejoin(**prejoin, cx),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),

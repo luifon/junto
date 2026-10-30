@@ -46,6 +46,17 @@ impl Shell {
         div()
             .flex_none()
             .p(u(12.0))
+            .child(self.device_check_button(
+                junto_media::calls::CallTarget {
+                    server_id: server,
+                    place: CallPlace::Group {
+                        conversation_id: id,
+                    },
+                },
+                None,
+                "check-group-devices",
+                cx,
+            ))
             .child(
                 Button::new("start-group-call")
                     .label(text::DIRECT_CALL)
@@ -117,9 +128,29 @@ impl Shell {
                 }))
                 .into_any_element()
         };
+        let check = (!incoming && !separate)
+            .then(|| {
+                self.state
+                    .read(cx)
+                    .server(server)
+                    .and_then(|server| server.account())
+            })
+            .flatten()
+            .map(|own| {
+                self.device_check_button(
+                    junto_media::calls::CallTarget {
+                        server_id: server,
+                        place: CallPlace::direct(own, other),
+                    },
+                    None,
+                    "check-direct-devices",
+                    cx,
+                )
+            });
         div()
             .flex_none()
             .p(u(12.0))
+            .children(check)
             .child(call)
             .child(
                 crate::ui::notice_slot("direct-notice-area").children(

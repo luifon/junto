@@ -1064,7 +1064,7 @@ fn turn_processing_off(window: &mut Window) {
     window.click("app-settings");
     window.click("settings-section-voice");
     for part in ["echo-cancellation", "noise-suppression", "automatic-gain"] {
-        window.click(part);
+        window.click_in_settings(part);
     }
     window.until("the processing is off", |window| {
         let voice = window

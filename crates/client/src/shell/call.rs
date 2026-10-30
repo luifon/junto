@@ -283,6 +283,22 @@ impl Shell {
                     voice.hidden,
                 ))
                 .into_any_element(),
+            if channel.allowed.connect && !joining {
+                self.device_check_button(
+                    junto_media::calls::CallTarget {
+                        server_id,
+                        place: junto_client_core::protocol::call::CallPlace::Channel {
+                            workspace_id,
+                            channel_id,
+                        },
+                    },
+                    None,
+                    "check-call-devices",
+                    cx,
+                )
+            } else {
+                div().into_any_element()
+            },
             Button::new("join-call")
                 .kind(ButtonKind::Green)
                 .icon(Icon::Speaker)

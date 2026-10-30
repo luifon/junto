@@ -26,6 +26,7 @@ pub mod account;
 pub mod admin;
 pub mod book;
 pub mod conversations;
+pub mod device_checks;
 pub mod followed;
 pub mod people;
 pub mod permissions;

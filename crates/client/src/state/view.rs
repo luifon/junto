@@ -3302,7 +3302,7 @@ fn head_unread(model: &ServerModel, unreads: &Unreads) -> Unread {
 /// The devices of one kind as the sound settings list them: the default of the system
 /// first, then each connected device. A chosen device that is not connected is listed too,
 /// so that the person sees what is stored.
-fn device_choices(connected: &[DeviceInfo], chosen: Option<&str>) -> Vec<DeviceChoice> {
+pub(super) fn device_choices(connected: &[DeviceInfo], chosen: Option<&str>) -> Vec<DeviceChoice> {
     let default = connected.iter().find(|device| device.is_default);
     let mut choices = vec![DeviceChoice {
         id: None,

@@ -12,6 +12,7 @@ pub mod com;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod condition_wait;
+pub mod device_check;
 pub mod engine;
 mod executor;
 pub mod permission;

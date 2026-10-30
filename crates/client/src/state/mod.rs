@@ -14,6 +14,7 @@ pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
 mod conversations;
+mod device_checks;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -496,6 +497,9 @@ pub struct AppState {
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
+    device_checks: Option<device_checks::CheckSession>,
+    device_check_sequence: u64,
+    device_check_call: Option<Seat>,
     /// What is told about the recording of the call of this device.
     recording: recording::RecordingTold,
     /// The media snapshot that the view is derived from in place of the calls.
@@ -698,7 +702,7 @@ pub struct AppState {
     panic_notice: Option<PanicNotice>,
     _changes: Task<()>,
     _retry: Task<()>,
-    _media: [Task<()>; 3],
+    _media: [Task<()>; 4],
     _panics: Task<()>,
 }
 
@@ -760,6 +764,8 @@ impl Drop for AppState {
     fn drop(&mut self) {
         // The call does not outlive the application. The leave runs to its end on the
         // runtime of the client.
+        self.calls.stop_device_checks();
+        self.calls.stop_input_test();
         drop(self.calls.leave());
     }
 }
@@ -817,6 +823,14 @@ impl AppState {
                         calls_watch.mark_changed();
                         cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
                     }
+                }
+            }
+        });
+        let mut checks = calls.watch_device_checks();
+        let follow_checks = cx.spawn(async move |this, cx| {
+            while checks.changed().await.is_ok() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
                 }
             }
         });
@@ -979,6 +993,9 @@ impl AppState {
             calls,
             voice_failed,
             camera_devices: Vec::new(),
+            device_checks: None,
+            device_check_sequence: 0,
+            device_check_call: None,
             recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
             media_fixture: None,
@@ -1074,7 +1091,7 @@ impl AppState {
             panic_notice: None,
             _changes: follow,
             _retry: retry,
-            _media: [follow_calls, follow_levels, clock],
+            _media: [follow_calls, follow_levels, clock, follow_checks],
             _panics: panics,
         };
         if state.voice_failed.is_some() {
@@ -2306,7 +2323,7 @@ impl AppState {
     /// Opens the microphone outside a call while the sound settings are shown, for the level
     /// under the sensitivity, and closes it (ADR 0733). A call opens the microphone itself.
     pub fn set_input_test(&mut self, on: bool) {
-        if on && self.calls.view().call.is_none() {
+        if on && self.calls.view().call.is_none() && self.calls.view().joining.is_none() {
             self.calls.start_input_test();
         } else {
             self.calls.stop_input_test();
@@ -2345,8 +2362,9 @@ impl AppState {
     ) {
         change(&mut self.known.media.voice);
         self.calls.set_voice(voice_config(&self.known.media.voice));
-        // The level test opens the device again with the changed device or processing.
-        if self.calls.input_test_runs() {
+        if let Some(kind) = self.calls.device_check_view().audio.kind() {
+            self.calls.start_audio_check(kind);
+        } else if self.calls.input_test_runs() {
             self.calls.start_input_test();
         }
         self.write_voice(cx, change);
@@ -2561,6 +2579,7 @@ impl AppState {
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_device_checks(cx);
         self.reconcile_direct(cx);
         self.play_call_sounds();
         let servers = self.client.servers();

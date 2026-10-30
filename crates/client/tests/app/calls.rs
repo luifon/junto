@@ -232,7 +232,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     // Voice activation has no key to choose, and offers the sensitivity, off at first.
     assert!(window.shows("input-mode-0") && !window.shows("talk-key-0"));
     assert!(!window.shows("voice-threshold-slider"));
-    window.click("voice-threshold");
+    window.click_in_settings("voice-threshold");
     window.until("the sensitivity is on at its first level", |window| {
         window.shows("voice-threshold-slider") && voice(window).voice_threshold == Some(-45)
     });
@@ -249,26 +249,26 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
                 .read_with(&window.cx, |state, _| state.shown_levels().input > 0)
     });
     // One click on push to talk asks first, and states the key.
-    window.click("input-mode-1");
+    window.click_in_settings("input-mode-1");
     window.until("the switch is asked", |window| {
         window.shows("push-to-talk-question")
     });
     assert!(!window.shows("talk-key-1"));
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
-    window.click("keep-voice-activation");
+    window.click_in_settings("keep-voice-activation");
     window.until("the question closes", |window| {
         !window.shows("push-to-talk-question")
     });
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
-    window.click("input-mode-1");
-    window.click("confirm-push-to-talk");
+    window.click_in_settings("input-mode-1");
+    window.click_in_settings("confirm-push-to-talk");
     window.until("the key of push-to-talk is offered", |window| {
         window.shows("talk-key-1")
     });
-    window.click("talk-key-1");
-    window.click("noise-suppression");
-    window.click("echo-cancellation");
-    window.click("echo-cancellation");
+    window.click_in_settings("talk-key-1");
+    window.click_in_settings("noise-suppression");
+    window.click_in_settings("echo-cancellation");
+    window.click_in_settings("echo-cancellation");
     window.until("the settings are used", |window| {
         let voice = voice(window);
         voice.input_mode == InputMode::PushToTalk
