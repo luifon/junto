@@ -108,7 +108,7 @@ pub async fn search(
                 .require(&access, junto_authz::WorkspacePermission::ReadMessageHistory)?;
         }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
-             line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
+             line,m.place_id,m.author_id,m.created_at,null::text as text,m.search_vector as
              vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms,m.document as document
              from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
              not null and (m.readers is null or $3=any(m.readers)) union all select
@@ -145,9 +145,9 @@ pub async fn search(
             next = Some(format!("{rank}:{id}:{line}"));
             let transcript: bool = row.try_get("transcript")?;
             let document = row.try_get::<Option<sqlx::types::Json<junto_protocol::message::Document>>, _>("document")?;
-            let text = if let Some(document) = document.filter(|document| document.0.inlines().any(|(node, _)| matches!(node, junto_protocol::message::Inline::Spoiler { .. }))) {
+            let text = if let Some(document) = document {
                 messages::document::preview_text(&document.0)
-            } else { row.try_get("text")? };
+            } else { row.try_get::<Option<String>, _>("text")?.unwrap_or_default() };
             results.push(SearchHit {
                 message_id: (!transcript).then(|| MessageId::from_uuid(id)),
                 recording_id: transcript.then(|| RecordingId::from_uuid(id)),
