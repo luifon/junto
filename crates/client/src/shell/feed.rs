@@ -733,7 +733,9 @@ impl Rich {
                 Box::new(super::account_menus::OpenAccountMenu {
                     owner,
                     people,
-                    source: source.clone(),
+                    source: source.clone().map(|source| {
+                        super::account_menus::AccountSource::Mentions(Box::new(source))
+                    }),
                     position,
                 }),
                 cx,

@@ -51,6 +51,7 @@ pub(crate) enum AccountSource {
         quoted: MessageId,
         account: AccountId,
     },
+    Mentions(Box<AccountSource>),
     Message(MessageId),
     Pending(u64),
     Search(crate::state::search::ResultTarget),
@@ -81,6 +82,39 @@ impl OpenAccountMenu {
             return true;
         };
         match source {
+            AccountSource::Mentions(parent) => {
+                use junto_client_core::protocol::message::{Block, Document, Inline};
+                let current = |document: &Document| {
+                    self.people.iter().all(|person| {
+                    let named = |inline: &Inline| matches!(inline, Inline::Account { account_id } if *account_id == person.account_id);
+                    document.blocks.iter().any(|block| match block {
+                        Block::Paragraph { content } | Block::Quote { content } => content.iter().any(named),
+                        Block::List { items, .. } => items.iter().flatten().any(named),
+                        Block::Checklist { items } => items.iter().flat_map(|item| &item.content).any(named),
+                        Block::Code { .. } => false,
+                    })
+                })
+                };
+                let message = |row: &crate::state::feed::MessageRow| {
+                    matches!(&**parent, AccountSource::Message(id) if row.message.id == *id)
+                        && !row.message.deleted
+                        && row.message.document.as_ref().is_some_and(current)
+                };
+                let held = |feed: &crate::state::feed::Feed| {
+                    feed.server_id == self.owner.entry.server_id && feed.rows.iter().any(|row| match row {
+                        FeedRow::Message(row) => message(row),
+                        FeedRow::Waiting(row) => matches!(&**parent, AccountSource::Pending(id) if row.pending.id == *id) && current(&row.pending.document),
+                        _ => false,
+                    })
+                };
+                let workspace = view.workspace();
+                let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+                return view.selected.as_ref().is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && (view.lists().and_then(|lists| lists.feed.as_ref()).is_some_and(held)
+                        || thread.and_then(|thread| thread.feed.as_ref()).is_some_and(held)
+                        || thread.and_then(|thread| thread.root.as_ref()).is_some_and(message)
+                        || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(message))));
+            }
             AccountSource::CallOccupant {
                 seat,
                 account_id,
@@ -470,17 +504,7 @@ impl Shell {
         let mut accounts = std::collections::HashSet::new();
         open.people
             .retain(|person| accounts.insert(person.account_id));
-        if !open.people.is_empty()
-            && self.view.as_ref().is_some_and(|view| {
-                open.source_is_present(view, self.state.read(cx))
-                    && self.account_source_visible(&open, view, cx)
-            })
-            && self
-                .state
-                .read(cx)
-                .server(open.owner.entry.server_id)
-                .is_some_and(|server| server.owner() == Some(open.owner))
-        {
+        if !open.people.is_empty() && self.account_context_current(&open, cx) {
             self.open_layer(Layer::AccountMenu(Box::new(open.clone())), window, cx);
             self.start_call_menu_volume(&open, cx);
         }
@@ -493,12 +517,24 @@ impl Shell {
         cx: &App,
     ) -> bool {
         matches!(&self.layer, Layer::AccountMenu(open) if open.owner == owner && open.people.contains(person)
-            && self.view.as_ref().is_some_and(|view| open.source_is_present(view, self.state.read(cx)) && self.account_source_visible(open, view, cx)))
-            && self
-                .state
-                .read(cx)
-                .server(owner.entry.server_id)
-                .is_some_and(|server| server.owner() == Some(owner))
+            && self.account_context_current(open, cx))
+    }
+
+    pub(super) fn account_context_current(&self, open: &OpenAccountMenu, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        if state
+            .server(open.owner.entry.server_id)
+            .and_then(|server| server.owner())
+            != Some(open.owner)
+        {
+            return false;
+        }
+        let view = if self.detached {
+            state.call_view()
+        } else {
+            state.view()
+        };
+        open.source_is_present(&view, state) && self.account_source_visible(open, &view, cx)
     }
 
     pub(super) fn render_account_menu(

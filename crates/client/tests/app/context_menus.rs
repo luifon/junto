@@ -1593,3 +1593,51 @@ fn category_settings_from_a_header_keep_the_server_permission_check(cx: &mut Tes
     });
     assert!(!window.shows("rules-add"));
 }
+
+#[gpui::test]
+fn a_mention_menu_closes_when_the_document_removes_or_replaces_its_account(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let own = window.own_account();
+    let other = admin.handle.account().unwrap();
+    for replacement in [
+        document("No mention remains"),
+        crate::notices::mention("", other),
+    ] {
+        let message = admin.send(
+            &world,
+            window.selected_channel(),
+            crate::notices::mention("", own),
+        );
+        window.until_message("@Rin");
+        let bounds = window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("message:{}", message.id)))
+            .unwrap();
+        window.press_at_count(
+            gpui::point(bounds.left() + px(65.0), bounds.bottom() - px(12.0)),
+            gpui::MouseButton::Right,
+            1,
+        );
+        assert!(window.shows_named(format!("account-copy-id:{own}")));
+        world
+            .run(
+                admin
+                    .handle
+                    .api()
+                    .edit_message(message.id, replacement.clone()),
+            )
+            .unwrap();
+        window.until("the replacement document is visible", |window| {
+            window.messages().iter().any(|row| {
+                row.message.id == message.id && row.message.document.as_ref() == Some(&replacement)
+            })
+        });
+        assert!(!window.shows("account-menu"));
+        assert!(!window.shows_named(format!("account-copy-id:{own}")));
+    }
+}

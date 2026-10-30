@@ -129,3 +129,7 @@ The picture viewer belongs to the entry and logged-in account that opened it. It
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already. The `image` crate of the client has its `gif` feature for the GIF pictures of messages; gpui builds the same decoder, so no crate was added.
 
 Reply previews have a separate context menu for their displayed text, the quoted message link and Go to message through the existing permission-checked link opener. A deleted quote offers only its displayed placeholder text. The preview author name and picture use the account menu, independently of the preview or enclosing message menu. That identity source captures the parent message or pending send, quoted message and author, and is removed with the displayed preview. Confirmed and pending previews use the same renderer.
+
+### Context target lifetime
+
+Mention account menus capture the source message or pending outbox entry separately from author targets. Retention and execution require every captured account to remain mentioned in the current document, including thread roots and pinned messages. Tests cover actions present → empty → present with focus restoration, and editing a displayed mention to another account or to ordinary text while its menu is open.
