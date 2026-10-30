@@ -541,6 +541,10 @@ impl Transport for OneServer {
                 api_versions: vec![SupportedVersions::THIS_BUILD.current()],
                 capabilities: junto_client_core::protocol::server::Capabilities {
                     channel_topics: true,
+                    message_format: junto_client_core::protocol::message::DocumentFormat {
+                        event_revision: junto_client_core::protocol::events::EVENT_REVISION,
+                    },
+                    search: junto_client_core::protocol::discovery::SearchCapabilities::ALL,
                 },
             };
             let body = serde_json::to_vec(&info).map_err(|error| {

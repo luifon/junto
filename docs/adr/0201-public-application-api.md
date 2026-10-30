@@ -23,6 +23,8 @@ Versioning:
 - Each server reports the versions it supports (ADR 0101).
 - The client supports the current version and the previous version.
 - Tests run the client against both versions (ADR 0902).
+- Document-format support, optional channel-topic editing and search extensions are advertised together in the `capabilities` object of `GET /api/server`. Search uses the nested `search` fields `filters`, `filter_only` and `files`. Missing objects or fields mean unsupported; unknown fields are ignored. The `message_format.event_revision` defaults to zero and bounds modern document writes. There are no separate search or message-format capability routes.
+- A saved server caches and persists this discovery object with its other server information, replacing it on reconnect in either direction. Session-bound readers use the current saved owner; fixed-token readers fetch the same public server information and check its server identifier. Unsupported document and topic writes, search filters and file lists are refused before their request is sent.
 
 Administration:
 

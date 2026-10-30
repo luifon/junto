@@ -139,12 +139,15 @@ fn forwarding_unicode_mentions_above_32_kib_is_confirmed_in_the_desktop(cx: &mut
 
 #[gpui::test]
 fn a_new_client_refuses_new_document_writes_to_an_old_server(cx: &mut TestAppContext) {
-    use crate::support::{Fault, FaultProxy};
+    use crate::support::FaultProxy;
     use junto_client_core::protocol::message::Inline;
     let world = World::new();
     let server = world.server("Acme Studio");
     let proxy = world.run(FaultProxy::start(&server));
     let admin = world.owner(&server);
+    proxy.answer_json("GET", "/api/server", serde_json::to_vec(&serde_json::json!({
+        "server_id": admin.handle.id(), "name": "Acme Studio", "logo_path": null, "api_versions": [1]
+    })).unwrap());
     let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
     window.write("an ordinary v1 message");
     let id = window.until_message("an ordinary v1 message").message.id;
@@ -162,7 +165,6 @@ fn a_new_client_refuses_new_document_writes_to_an_old_server(cx: &mut TestAppCon
             }],
         }],
     };
-    proxy.fail("/api/v1/message-format", [Fault::NotFound, Fault::NotFound]);
     let before = proxy.all().len();
     for editing in [false, true] {
         let result = world.run(async {
@@ -185,6 +187,12 @@ fn a_new_client_refuses_new_document_writes_to_an_old_server(cx: &mut TestAppCon
             "{result:?}"
         );
     }
+    assert!(
+        !proxy
+            .all()
+            .iter()
+            .any(|request| request.path == "/api/v1/message-format")
+    );
     let send_path = format!("/api/v1/channels/{}/messages", window.selected_channel());
     let edit_path = format!("/api/v1/messages/{id}");
     assert!(!proxy.all()[before..].iter().any(|request| {

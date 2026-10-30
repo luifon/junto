@@ -34,6 +34,8 @@ Messages of the client:
 
 Version rule:
 
+Document-format support, optional channel topics and search extensions use the `capabilities` field of `GET /api/server` (ADR 0201). An absent field never enables a new request. These discovery flags do not replace the explicit document and group read opt-ins that protect older fixed-enum decoders.
+
 - The stream belongs to the API version of its path, `/api/v1/events`.
 - Within one API version the server adds and does not change. It can add a message type, an event type, and a field of an existing message or event.
 - A field that exists keeps its name, its type, its meaning and, for a field with a fixed set of values, its set of values.
@@ -87,8 +89,8 @@ fallback cannot disclose them in notifications or previews. The stored document
 is unchanged. History pages are bounded again after projection because expanded
 labels can increase their bytes.
 
-`GET /api/v1/message-format` is capability metadata for an authenticated session. Before a modern write,
-the client checks its advertised revision; a missing route or an older format is
+`GET /api/server` advertises document support as `capabilities.message_format.event_revision` (ADR 0201). Before a modern write,
+the client checks this revision; absent metadata defaults to zero and an older format is
 refused locally before POST or PUT. A request-construction refusal is known not
 sent and stays in the outbox as such. The composer also refuses unsupported
 formatting when hello already identifies an older server, retaining its draft.

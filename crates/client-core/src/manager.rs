@@ -1109,6 +1109,26 @@ struct Managed {
 }
 
 impl Authority for Managed {
+    fn capabilities(&self) -> crate::api::session::CapabilitiesFuture {
+        let result = (|| {
+            let state = lock(&self.server.state);
+            let held = match (&state.api, &state.session, state.retired) {
+                (Some(_), Some(held), false) => held,
+                _ => return Err(ApiError::NotLoggedIn),
+            };
+            if let Some(account) = self.account
+                && account != held.account_id
+            {
+                return Err(ApiError::AccountChanged {
+                    was: account,
+                    now: held.account_id,
+                });
+            }
+            Ok(state.entry.capabilities.clone())
+        })();
+        Box::pin(async move { result })
+    }
+
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
         let work = self.server.core.runtime.run(async move {

@@ -903,6 +903,28 @@
       ],
       "type": "object"
     },
+    "conversation_visibility_changed": {
+      "properties": {
+        "conversation_id": {
+          "$ref": "#/components/schemas/ConversationId"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "conversation_visibility_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "hidden",
+        "type"
+      ],
+      "type": "object"
+    },
     "device_added": {
       "description": "A device was added to the account of the recipient.",
       "properties": {
@@ -1116,6 +1138,46 @@
       },
       "required": [
         "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "group_conversation_changed": {
+      "properties": {
+        "group": {
+          "$ref": "#/components/schemas/GroupConversation"
+        },
+        "type": {
+          "enum": [
+            "group_conversation_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "group",
+        "type"
+      ],
+      "type": "object"
+    },
+    "group_conversation_left": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "conversation_id": {
+          "$ref": "#/components/schemas/ConversationId"
+        },
+        "type": {
+          "enum": [
+            "group_conversation_left"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "account_id",
         "type"
       ],
       "type": "object"
@@ -2724,6 +2786,24 @@
         "oneOf": [
           {
             "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "enum": [
+                  "group"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "channel_id": {
                 "$ref": "#/components/schemas/ChannelId"
               },
@@ -2924,7 +3004,7 @@
             "description": "Starts or restarts the delivery after `cursor` at `level`. Without a cursor the\ndelivery starts after the newest event.",
             "properties": {
               "appearance": {
-                "description": "Opt in to public appearance invalidations (revision 4).",
+                "description": "Opt in to public appearance invalidations (revision 12).",
                 "type": "boolean"
               },
               "cursor": {
@@ -2941,7 +3021,7 @@
                 "$ref": "#/components/schemas/Level"
               },
               "presence": {
-                "description": "Opt in to ephemeral presence invalidations (revision 3).",
+                "description": "Opt in to ephemeral presence invalidations (revision 11).",
                 "type": "boolean"
               },
               "type": {
@@ -4608,6 +4688,68 @@
           },
           {
             "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "hidden": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "conversation_visibility_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "hidden",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "group": {
+                "$ref": "#/components/schemas/GroupConversation"
+              },
+              "type": {
+                "enum": [
+                  "group_conversation_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "group",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "type": {
+                "enum": [
+                  "group_conversation_left"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "account_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "conversation": {
                 "$ref": "#/components/schemas/Conversation"
               },
@@ -5460,6 +5602,28 @@
         ],
         "type": "string"
       },
+      "GroupConversation": {
+        "properties": {
+          "account_ids": {
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            "type": "array"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ConversationId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "account_ids"
+        ],
+        "type": "object"
+      },
       "HoistedRole": {
         "properties": {
           "color": {
@@ -5705,6 +5869,24 @@
             "required": [
               "workspace_id",
               "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "enum": [
+                  "group"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
               "kind"
             ],
             "type": "object"

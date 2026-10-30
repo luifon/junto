@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Junto server API",
-    "description": "The public application API of a Junto server. Every route is under the version prefix, except the server information route, which tells a client which versions the server supports. Junto-Event-Revision advertises a reader's document decoder revision; without it message reads use v1 paragraphs and quotes. Message extensions require the revision advertised by /api/v1/message-format.",
+    "description": "The public application API of a Junto server. Every route is under the version prefix, except the server information route, which tells a client which versions the server supports. Junto-Event-Revision advertises a reader's document decoder revision; without it message reads use v1 paragraphs and quotes. Message extensions require the document revision advertised in /api/server capabilities.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -6013,6 +6013,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -8569,48 +8581,6 @@
         ]
       }
     },
-    "/api/v1/message-format": {
-      "get": {
-        "tags": [
-          "messages"
-        ],
-        "operationId": "supported",
-        "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DocumentFormat"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "An error. The field `error.code` states which one.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
     "/api/v1/messages/{message_id}": {
       "get": {
         "tags": [
@@ -9185,6 +9155,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9708,6 +9690,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -11003,48 +10997,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchPage"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "An error. The field `error.code` states which one.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
-    "/api/v1/search/capabilities": {
-      "get": {
-        "tags": [
-          "messages"
-        ],
-        "operationId": "capabilities",
-        "responses": {
-          "200": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchCapabilities"
                 }
               }
             }
@@ -17768,6 +17720,12 @@
         "properties": {
           "channel_topics": {
             "type": "boolean"
+          },
+          "message_format": {
+            "$ref": "#/components/schemas/DocumentFormat"
+          },
+          "search": {
+            "$ref": "#/components/schemas/SearchCapabilities"
           }
         }
       },
@@ -18848,9 +18806,6 @@
       },
       "DocumentFormat": {
         "type": "object",
-        "required": [
-          "event_revision"
-        ],
         "properties": {
           "event_revision": {
             "type": "integer",

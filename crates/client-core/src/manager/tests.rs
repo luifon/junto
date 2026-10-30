@@ -4643,19 +4643,120 @@ fn removal_cleanup_preserves_a_replacement_selected_after_the_book_write() {
 async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
-    server.set_info(|info| info.capabilities.channel_topics = false);
+    server.set_info(|info| {
+        info.capabilities.channel_topics = false;
+        info.capabilities.message_format.event_revision = 0;
+        info.capabilities.search = junto_protocol::discovery::SearchCapabilities::default();
+    });
     let device = device(&network);
     let handle = device.add("acme").await;
     handle.dispatch(claim()).await.unwrap();
     assert!(!handle.entry().capabilities.channel_topics);
+    assert_eq!(handle.entry().capabilities.message_format.event_revision, 0);
+    assert_eq!(
+        handle.entry().capabilities.search,
+        junto_protocol::discovery::SearchCapabilities::default()
+    );
     for supported in [true, false] {
-        server.set_info(|info| info.capabilities.channel_topics = supported);
+        let search = if supported {
+            junto_protocol::discovery::SearchCapabilities::ALL
+        } else {
+            junto_protocol::discovery::SearchCapabilities::default()
+        };
+        let revision = if supported {
+            junto_protocol::events::EVENT_REVISION
+        } else {
+            0
+        };
+        server.set_info(|info| {
+            info.capabilities.channel_topics = supported;
+            info.capabilities.message_format.event_revision = revision;
+            info.capabilities.search = search;
+        });
         handle.connect().await.unwrap();
         assert_eq!(handle.entry().capabilities.channel_topics, supported);
+        assert_eq!(
+            handle.entry().capabilities.message_format.event_revision,
+            revision
+        );
+        assert_eq!(
+            handle
+                .api()
+                .capabilities()
+                .await
+                .unwrap()
+                .message_format
+                .event_revision,
+            revision
+        );
+        assert_eq!(handle.entry().capabilities.search, search);
+        assert_eq!(handle.api().search_capabilities().await.unwrap(), search);
         let reopened = device.reopened(&network);
         let saved = reopened.server(handle.id()).unwrap();
         assert_eq!(saved.entry().capabilities.channel_topics, supported);
+        assert_eq!(
+            saved.entry().capabilities.message_format.event_revision,
+            revision
+        );
+        assert_eq!(saved.entry().capabilities.search, search);
         saved.connect().await.unwrap();
         assert_eq!(saved.entry().capabilities.channel_topics, supported);
+        assert_eq!(
+            saved.entry().capabilities.message_format.event_revision,
+            revision
+        );
+        assert_eq!(saved.entry().capabilities.search, search);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn token_search_capabilities_use_server_discovery_and_reject_another_server() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let api = lock(&handle.server.state).api.clone().unwrap();
+    let fixed = api.with_token(SecretToken::new("fixture-token".to_owned()));
+    let partial = junto_protocol::discovery::SearchCapabilities {
+        files: true,
+        ..Default::default()
+    };
+    server.set_info(|info| info.capabilities.search = partial);
+    let before = server.count("/api/server");
+    assert_eq!(fixed.search_capabilities().await.unwrap(), partial);
+    assert_eq!(server.count("/api/server"), before + 1);
+    assert_eq!(server.count("/search/capabilities"), 0);
+    let error = fixed
+        .search(&crate::api::SearchQuery {
+            has_link: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ApiError::Request(_)));
+    assert_eq!(server.count("/search"), 0);
+    server.set_info(|info| info.capabilities.message_format.event_revision = 0);
+    let channel = junto_protocol::ids::ChannelId::generate();
+    let document = junto_protocol::message::Document {
+        blocks: vec![junto_protocol::message::Block::Heading {
+            level: 1,
+            content: vec![junto_protocol::message::Inline::Text {
+                text: "Modern document".to_owned(),
+                marks: Vec::new(),
+            }],
+        }],
+    };
+    assert!(
+        matches!(fixed.send_message(crate::model::PlaceId::Channel(channel), &junto_protocol::message::SendMessage {
+        document, reply_to: None, attachments: Vec::new()
+    }).await, Err(ApiError::Request(reason)) if reason.contains("update"))
+    );
+    assert_eq!(server.count(&format!("/channels/{channel}/messages")), 0);
+    assert_eq!(server.count("/message-format"), 0);
+    server.set_info(|info| info.server_id = ServerId::generate());
+    assert!(matches!(
+        fixed.capabilities().await,
+        Err(ApiError::InvalidResponse { status: 200, .. })
+    ));
 }

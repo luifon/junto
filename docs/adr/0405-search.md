@@ -51,9 +51,11 @@ The cursor records those chronological keys, rather than a computed text rank;
 a page applies private-reader and deletion checks before limiting messages and
 renders text only for the selected page. Removed attachments are excluded.
 
-`GET /search/capabilities` reports support for content/mention/direct filters,
-filter-only requests and explicit file lists. A missing route means none of those
-extensions is supported. Clients negotiate before sending extension parameters;
+The `search` object inside the general `GET /api/server` `capabilities` object
+reports support for content/mention/direct filters, filter-only requests and
+explicit file lists (ADR 0201). An absent object or flag means unsupported;
+unknown fields are ignored. There is no separate search-capability route.
+Clients check these flags before sending extension parameters;
 they never simulate server filters by filtering a returned page. Older servers
 continue to accept ordinary text, channel, author and date searches.
 

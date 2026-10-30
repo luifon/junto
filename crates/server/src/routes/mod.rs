@@ -73,7 +73,7 @@ pub const SESSION_SECURITY: &str = "session";
                        client which versions the server supports. Junto-Event-Revision \
                        advertises a reader's document decoder revision; without it message \
                        reads use v1 paragraphs and quotes. Message extensions require the \
-                       revision advertised by /api/v1/message-format.",
+                       document revision advertised in /api/server capabilities.",
         license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
     components(schemas(ErrorBody)),
@@ -144,7 +144,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         )
     });
     add(&mut router, || routes!(health::get_health));
-    add(&mut router, || routes!(message_format::supported));
     add(&mut router, || routes!(threads::history, threads::reply));
     add(&mut router, || routes!(threads::fork));
     add(&mut router, || routes!(messages::mark_unread));
@@ -160,7 +159,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(pins::list));
     add(&mut router, || routes!(pins::pin, pins::unpin));
     add(&mut router, || routes!(search::search));
-    add(&mut router, || routes!(search::capabilities));
     add(&mut router, || {
         routes!(notifications::get_settings, notifications::set_settings)
     });

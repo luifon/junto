@@ -1094,10 +1094,9 @@ fn older_servers_disable_unsupported_filters_and_never_receive_filtered_requests
     let server = world.server("Example Studio");
     let admin = world.owner(&server);
     let proxy = world.run(FaultProxy::start(&server));
-    proxy.fail_ending(
-        "/search/capabilities",
-        std::iter::repeat_n(Fault::NotFound, 30),
-    );
+    proxy.answer_json("GET", "/api/server", serde_json::to_vec(&serde_json::json!({
+        "server_id": admin.handle.id(), "name": "Example Studio", "logo_path": null, "api_versions": [1]
+    })).unwrap());
     let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
     window.until("history is loaded", |window| {
         window.feed().is_some_and(|feed| feed.loaded)

@@ -114,9 +114,10 @@ pub const MAX_LIST_ITEMS: usize = 5_500;
 pub const DOCUMENT_REVISION: u32 = 9;
 pub const FORWARD_SNAPSHOT_REVISION: u32 = 10;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DocumentFormat {
+    #[serde(default)]
     pub event_revision: u32,
 }
 

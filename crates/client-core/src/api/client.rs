@@ -92,6 +92,19 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    pub(crate) async fn capabilities(
+        &self,
+    ) -> Result<junto_protocol::server::Capabilities, ApiError> {
+        let info = server_info(self.transport.as_ref(), &self.address, &self.policy).await?;
+        if info.server_id != self.server_id {
+            return Err(ApiError::InvalidResponse {
+                status: 200,
+                reason: "server information is for another server",
+            });
+        }
+        Ok(info.capabilities)
+    }
+
     pub fn new(
         transport: Arc<dyn Transport>,
         address: ServerAddress,

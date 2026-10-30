@@ -56,7 +56,17 @@ pub(crate) type AuthorityFuture =
 pub(crate) type OpenAuthorityFuture =
     Pin<Box<dyn Future<Output = Result<OpenedResponse, ApiError>> + Send + 'static>>;
 
+pub(crate) type CapabilitiesFuture = Pin<
+    Box<
+        dyn Future<Output = Result<junto_protocol::server::Capabilities, ApiError>>
+            + Send
+            + 'static,
+    >,
+>;
+
 pub(crate) trait Authority: Send + Sync + 'static {
+    fn capabilities(&self) -> CapabilitiesFuture;
+
     fn send(&self, outline: Outline) -> AuthorityFuture;
 
     /// Asks for a file from the byte `from` on. The answer has a status below 400.
@@ -75,6 +85,11 @@ impl TokenAuthority {
 }
 
 impl Authority for TokenAuthority {
+    fn capabilities(&self) -> CapabilitiesFuture {
+        let api = self.api.clone();
+        Box::pin(async move { api.capabilities().await })
+    }
+
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (api, token) = (self.api.clone(), self.token.clone());
         Box::pin(async move { send_with_token(&api, &token, outline).await })
@@ -172,6 +187,10 @@ pub struct ServerApi {
 impl ServerApi {
     pub(crate) fn new(authority: Arc<dyn Authority>) -> Self {
         Self { authority }
+    }
+
+    pub async fn capabilities(&self) -> Result<junto_protocol::server::Capabilities, ApiError> {
+        self.authority.capabilities().await
     }
 
     pub(super) async fn call(

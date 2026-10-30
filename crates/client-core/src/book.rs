@@ -649,6 +649,10 @@ pub(crate) mod testing {
             api_versions: vec![1],
             capabilities: junto_protocol::server::Capabilities {
                 channel_topics: true,
+                message_format: junto_protocol::message::DocumentFormat {
+                    event_revision: junto_protocol::events::EVENT_REVISION,
+                },
+                search: junto_protocol::discovery::SearchCapabilities::ALL,
             },
         }
     }

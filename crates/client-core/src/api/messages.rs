@@ -111,8 +111,10 @@ impl ServerApi {
         if required == 0 {
             return Ok(());
         }
-        let format: junto_protocol::message::DocumentFormat =
-            self.get("/message-format".into()).await.map_err(|error| {
+        let format = self
+            .capabilities()
+            .await
+            .map_err(|error| {
                 ApiError::Request(
                     if error.code() == Some(junto_protocol::error::ErrorCode::NotFound) {
                         "The server needs an update to accept this message format.".to_owned()
@@ -122,7 +124,8 @@ impl ServerApi {
                         )
                     },
                 )
-            })?;
+            })?
+            .message_format;
         if format.event_revision < required {
             return Err(ApiError::Request(
                 "The server needs an update to accept this message format.".into(),

@@ -358,13 +358,6 @@ async fn world() -> World {
         ),
         operation(
             Method::GET,
-            "/api/v1/message-format",
-            &[],
-            none.clone(),
-            &[],
-        ),
-        operation(
-            Method::GET,
             "/api/v1/channels/{channel_id}",
             &[&absent],
             none.clone(),
@@ -1597,13 +1590,6 @@ async fn world() -> World {
             &unknown,
         ),
         operation(Method::GET, "/api/v1/search", &[], none.clone(), &own),
-        operation(
-            Method::GET,
-            "/api/v1/search/capabilities",
-            &[],
-            none.clone(),
-            &[],
-        ),
         operation(
             Method::GET,
             "/api/v1/threads/unread",

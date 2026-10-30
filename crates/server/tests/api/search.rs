@@ -936,13 +936,16 @@ async fn scoped_file_history_uses_a_chronological_index_on_first_and_later_spars
         .await
         .unwrap();
     drop(fixture);
-    let capabilities: junto_protocol::discovery::SearchCapabilities = server
-        .get(owner, "/api/v1/search/capabilities")
-        .await
-        .ok(StatusCode::OK);
+    let information: junto_protocol::server::ServerInfo =
+        server.get(owner, "/api/server").await.ok(StatusCode::OK);
     assert_eq!(
-        capabilities,
+        information.capabilities.search,
         junto_protocol::discovery::SearchCapabilities::ALL
+    );
+    assert!(information.capabilities.channel_topics);
+    assert_eq!(
+        information.capabilities.message_format.event_revision,
+        junto_protocol::events::EVENT_REVISION
     );
     let (_held, _role) = crate::messages_queries::measure_requests(server).await;
     let query = format!(

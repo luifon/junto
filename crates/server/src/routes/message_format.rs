@@ -1,5 +1,4 @@
 use axum::{
-    Json,
     body::Body,
     extract::{FromRequestParts, Request, State},
     http::{HeaderMap, header},
@@ -8,7 +7,7 @@ use axum::{
 };
 use junto_protocol::{
     events::EVENT_REVISION,
-    message::{Document, DocumentFormat, MessagePage},
+    message::{Document, MessagePage},
 };
 use serde_json::Value;
 
@@ -20,20 +19,6 @@ use crate::{
     read,
     state::AppState,
 };
-
-#[utoipa::path(get,path="/api/v1/message-format",tag="messages",security(("session"=[])),responses((status=200,body=DocumentFormat),ApiError))]
-pub async fn supported(
-    State(app): State<AppState>,
-    bearer: Bearer,
-) -> ApiResult<Json<DocumentFormat>> {
-    read!(app, |connection| {
-        Access::open(connection, &bearer, app.now()).await?;
-        Ok(DocumentFormat {
-            event_revision: EVENT_REVISION,
-        })
-    })
-    .map(Json)
-}
 
 pub fn revision(headers: &HeaderMap) -> u32 {
     headers

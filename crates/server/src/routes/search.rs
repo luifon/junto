@@ -21,18 +21,6 @@ mod files;
 
 pub use crate::access::visibility::places;
 
-#[utoipa::path(get,path="/api/v1/search/capabilities",tag="messages",security(("session"=[])),responses((status=200,body=junto_protocol::discovery::SearchCapabilities),ApiError))]
-pub async fn capabilities(
-    State(app): State<AppState>,
-    bearer: Bearer,
-) -> ApiResult<Json<junto_protocol::discovery::SearchCapabilities>> {
-    read!(app, |connection| {
-        Access::open(connection, &bearer, app.now()).await?;
-        Ok(junto_protocol::discovery::SearchCapabilities::ALL)
-    })
-    .map(Json)
-}
-
 pub fn read_rate(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
     if !*counted {
         app.message_history

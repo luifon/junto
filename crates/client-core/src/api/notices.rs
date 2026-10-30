@@ -116,22 +116,7 @@ impl SearchQuery {
 
 impl ServerApi {
     pub async fn search_capabilities(&self) -> Result<SearchCapabilities, ApiError> {
-        match self
-            .call(
-                Method::Get,
-                "/search/capabilities".to_owned(),
-                Vec::new(),
-                None,
-            )
-            .await
-        {
-            Ok(response) if response.status == 404 => Ok(SearchCapabilities::default()),
-            Ok(response) => read_json(&response),
-            Err(error) if error.category() == Some(super::ErrorCategory::NotFound) => {
-                Ok(SearchCapabilities::default())
-            }
-            Err(error) => Err(error),
-        }
+        Ok(self.capabilities().await?.search)
     }
     // Notices.
 

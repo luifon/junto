@@ -20,6 +20,10 @@ pub struct ServerInfo {
 pub struct Capabilities {
     #[serde(default)]
     pub channel_topics: bool,
+    #[serde(default)]
+    pub message_format: crate::message::DocumentFormat,
+    #[serde(default)]
+    pub search: crate::discovery::SearchCapabilities,
 }
 
 /// What the health route reports when the server can serve requests.
@@ -53,11 +57,61 @@ mod tests {
         let mut old = serde_json::json!({ "server_id": ServerId::generate(), "name": "Example Studio", "logo_path": null, "api_versions": [1] });
         let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
         assert!(!read.capabilities.channel_topics);
+        assert_eq!(read.capabilities.message_format.event_revision, 0);
+        assert_eq!(
+            read.capabilities.search,
+            crate::discovery::SearchCapabilities::default()
+        );
         old["capabilities"] = serde_json::json!({ "future_feature": true });
         let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
         assert!(!read.capabilities.channel_topics);
+        assert_eq!(read.capabilities.message_format.event_revision, 0);
         old["capabilities"]["channel_topics"] = serde_json::json!(true);
         let read: ServerInfo = serde_json::from_value(old).unwrap();
         assert!(read.capabilities.channel_topics);
+    }
+
+    #[test]
+    fn partial_search_capabilities_default_each_missing_feature_and_ignore_unknowns() {
+        let read: Capabilities = serde_json::from_value(serde_json::json!({
+            "search": { "filters": true, "future_feature": true }, "unknown": true
+        }))
+        .unwrap();
+        assert!(!read.channel_topics);
+        assert!(read.search.filters);
+        assert!(!read.search.filter_only && !read.search.files);
+        let topic: Capabilities =
+            serde_json::from_value(serde_json::json!({"channel_topics":true})).unwrap();
+        assert!(topic.channel_topics);
+        assert_eq!(
+            topic.search,
+            crate::discovery::SearchCapabilities::default()
+        );
+    }
+}
+
+#[cfg(test)]
+mod document_capability_tests {
+    use super::*;
+
+    #[test]
+    fn document_capabilities_default_to_zero_and_ignore_unknown_metadata() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"message_format":{}}),
+        ] {
+            let read: Capabilities = serde_json::from_value(value).unwrap();
+            assert_eq!(read.message_format.event_revision, 0);
+        }
+        let read: Capabilities = serde_json::from_value(serde_json::json!({
+            "message_format":{"event_revision":crate::events::EVENT_REVISION,"future_feature":true}
+        }))
+        .unwrap();
+        assert_eq!(
+            read.message_format.event_revision,
+            crate::events::EVENT_REVISION
+        );
+        assert!(!read.channel_topics);
+        assert_eq!(read.search, crate::discovery::SearchCapabilities::default());
     }
 }
