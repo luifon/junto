@@ -3043,13 +3043,14 @@ impl Shell {
     }
 
     fn thread_chip_menu(
-        &self,
+        &mut self,
         frame: gpui::Stateful<gpui::Div>,
         feed: &Feed,
         row: &MessageRow,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        use crate::ui::ContextMenuExt as _;
         let Some(owner) = self
             .state
             .read(cx)
@@ -3061,42 +3062,55 @@ impl Shell {
         let Some(channel) = crate::state::feed::channel_of(feed.place) else {
             return frame;
         };
-        let (server_id, root) = (feed.server_id, row.message.id);
-        let mut actions = vec![crate::ui::RowAction::new(
-            text::COPY_TARGET_LINK,
-            cx.listener(move |this, _, _, cx| {
-                let state = this.state.read(cx);
-                let link = state
-                    .server(server_id)
-                    .filter(|server| server.owner() == Some(owner))
-                    .and_then(|_| state.thread_link(server_id, root));
-                if let Some(link) = link {
-                    this.copy_text(link, cx);
+        let Some(workspace) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.workspace())
+            .map(|workspace| workspace.id)
+        else {
+            return frame;
+        };
+        let (root, place) = (row.message.id, feed.place);
+        let bounds = Rc::new(Cell::new(gpui::Bounds::<gpui::Pixels>::default()));
+        let painted = bounds.clone();
+        let shell = cx.entity().downgrade();
+        let popup = match self.layer {
+            Layer::ThreadMenu(open) if open.preview_of(owner, place, root) => self
+                .view
+                .as_ref()
+                .and_then(|view| open.preview_entry(view))
+                .map(|entry| self.render_thread_menu(open, &entry, cx)),
+            _ => None,
+        };
+        frame
+            .focusable()
+            .tab_stop(true)
+            .relative()
+            .on_context_menu(move |window, cx| {
+                let position = if window.last_input_was_keyboard() {
+                    let bounds = bounds.get();
+                    gpui::point(bounds.left(), bounds.bottom())
+                } else {
+                    window.mouse_position()
+                };
+                if let Some(shell) = shell.upgrade() {
+                    shell.update(cx, |this, cx| {
+                        this.open_thread_menu_target(
+                            super::thread_menu::ThreadMenuOpen::preview(
+                                owner, workspace, channel, root, place, position,
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
                 }
-            }),
-        )];
-        if row.can_thread && row.thread_refused.is_none() {
-            actions.push(crate::ui::RowAction::new(
-                text::OPEN_THREAD,
-                cx.listener(move |this, _, window, cx| {
-                    if this
-                        .state
-                        .read(cx)
-                        .server(server_id)
-                        .is_some_and(|server| server.owner() == Some(owner))
-                    {
-                        this.open_thread(server_id, channel, root, window, cx);
-                    }
-                }),
-            ));
-        }
-        crate::ui::bind_action_menu(
-            frame.focusable().tab_stop(true),
-            SharedString::from(format!("thread-preview-menu:{server_id}:{root}")),
-            actions,
-            window,
-            cx,
-        )
+            })
+            .child(
+                gpui::canvas(move |bounds, _, _| painted.set(bounds), |_, (), _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .children(popup)
     }
 
     /// What a message of a channel shows of its thread: the count of the replies, the

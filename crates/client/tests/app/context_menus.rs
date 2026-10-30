@@ -1493,11 +1493,11 @@ fn thread_preview_people_and_the_thread_have_separate_context_targets(cx: &mut T
     );
     assert!(!window.shows("message-menu"));
     window.right_click_named(format!("thread-chip:{root}"));
-    window.click("context-action:Copy link");
+    window.click("thread-copy-link");
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(copied.starts_with("junto://thread?") && copied.contains(&root.to_string()));
     window.right_click_named(format!("thread-chip:{root}"));
-    window.click("context-action:Open the thread");
+    window.click("thread-open");
     window.until("the thread is open", |window| window.shows("thread-panel"));
     window.click("close-thread");
     window.right_click_named(format!("thread-person:{root}:{ada}"));

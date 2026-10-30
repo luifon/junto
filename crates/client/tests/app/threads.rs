@@ -1139,3 +1139,99 @@ fn a_person_sends_a_mention_of_a_role_and_of_everyone(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(state.mentions, 2, "{state:?}");
 }
+
+#[gpui::test]
+fn an_inline_thread_preview_reads_and_toggles_follow_without_opening_the_thread(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, root) = with_root(cx, &world);
+    let own = window.own_account();
+    admin.reply(&world, root, crate::notices::mention("For ", own));
+    window.until("the inline preview is unread", |window| {
+        window.messages().iter().any(|row| {
+            row.message.id == root && row.thread.as_ref().is_some_and(|mark| mark.unread > 0)
+        })
+    });
+    let owner = window.handle().owner().unwrap();
+    let ready = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.thread_menu_control(owner, root)
+            })
+            .is_some_and(|control| !control.busy)
+    };
+    window.right_click_named(format!("thread-chip:{root}"));
+    assert!(window.shows("thread-menu"));
+    window.until("the inline menu state is ready", ready);
+    window.click("thread-read");
+    window.until("the inline thread is read", |window| {
+        !window.shows("thread-menu")
+            && world
+                .run(window.handle().api().thread_state(root))
+                .unwrap()
+                .unread
+                == 0
+    });
+    assert!(!window.shows("thread-panel"));
+    assert_eq!(window.selected_channel(), channel);
+    for _ in 0..2 {
+        let before = world
+            .run(window.handle().api().thread_state(root))
+            .unwrap()
+            .following;
+        window.right_click_named(format!("thread-chip:{root}"));
+        window.until("the inline follow action is ready", ready);
+        window.click("thread-follow");
+        window.until("the inline follow choice is stored", |window| {
+            !window.shows("thread-menu")
+                && world
+                    .run(window.handle().api().thread_state(root))
+                    .unwrap()
+                    .follow_setting
+                    == Some(!before)
+        });
+        assert!(!window.shows("thread-panel"));
+        assert_eq!(window.selected_channel(), channel);
+    }
+    world
+        .run(window.handle().api().set_thread_follow(root, true))
+        .unwrap();
+    window.until("the followed source is also displayed", |window| {
+        window.shows_named(format!("thread-row:{root}"))
+    });
+    window.right_click_named(format!("thread-row:{root}"));
+    window.until("the followed source menu is ready", ready);
+    window.right_click_named(format!("thread-chip:{root}"));
+    window.until("switching to the inline source keeps the controller", ready);
+    window.click("thread-copy-link");
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    let mut found = false;
+    for _ in 0..80 {
+        window.press("tab shift-f10");
+        if let Some(menu) = window.cx.debug_bounds("thread-menu") {
+            let preview = window
+                .cx
+                .debug_bounds(crate::harness::selector(format!("thread-chip:{root}")))
+                .unwrap();
+            if menu.left() >= preview.left() - gpui::px(4.0) {
+                found = true;
+                break;
+            }
+        }
+        window.press("escape");
+    }
+    assert!(
+        found,
+        "Tab reaches the inline preview and Shift+F10 opens its thread menu"
+    );
+    window.press("escape menu");
+    assert!(window.shows("thread-menu"));
+    window.press("escape");
+    window.right_click_named(format!("thread-chip:{root}"));
+    world.run(admin.handle.api().delete_message(root)).unwrap();
+    window.until("the removed preview closes its menu", |window| {
+        !window.shows("thread-menu")
+    });
+}
