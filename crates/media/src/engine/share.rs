@@ -359,6 +359,10 @@ impl CaptureSink for ShareSink {
                 .send(Internal::ShareEnded(self.generation, error));
         }
     }
+
+    fn stop_failed(&self, error: CaptureError) {
+        let _ = self.internal.send(Internal::ShareStopFailed(error));
+    }
 }
 
 /// Sends the last picture again while the capture gives none, and draws the own share for

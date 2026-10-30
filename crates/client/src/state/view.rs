@@ -4306,13 +4306,18 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         update: super::book::available(&known.updates),
         groups,
         book,
-        share_notice: known
-            .media
-            .calls
-            .call
-            .as_ref()
-            .filter(|_| !known.share_notice_dismissed)
-            .and_then(|call| call.share_ended.clone()),
+        share_notice: if known.share_notice_dismissed {
+            None
+        } else {
+            known.media.calls.share_stop_failed.clone().or_else(|| {
+                known
+                    .media
+                    .calls
+                    .call
+                    .as_ref()
+                    .and_then(|call| call.share_ended.clone())
+            })
+        },
     };
     view.call = call_strip(servers, known, view.shown());
     view.faces = people::faces(servers, &known.people).with_presence(&known.presence);

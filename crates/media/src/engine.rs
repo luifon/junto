@@ -312,6 +312,7 @@ enum Internal {
     /// The capture of a share has answered. The share holds the answer.
     ShareStarted(u64),
     ShareEnded(u64, CaptureError),
+    ShareStopFailed(CaptureError),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
     ShareSoundRetry(u64),
@@ -1185,6 +1186,10 @@ impl Actor {
             Internal::ShareStarted(generation) => self.share_started(generation),
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
+            Internal::ShareStopFailed(error) => {
+                self.share_ended = Some(error);
+                self.tell_shares();
+            }
             Internal::SharePicturePublished(generation, result) => {
                 self.share_picture_published(generation, result);
             }

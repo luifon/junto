@@ -89,6 +89,40 @@ fn the_notice_of_an_ended_share_goes_at_the_click_of_the_person(cx: &mut TestApp
     assert!(window.shows("share-notice"));
 }
 
+#[gpui::test]
+fn a_cleanup_failure_is_told_after_an_earlier_share_notice_was_dismissed(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let ended = call_with_share(&mut window, "Daily", Some(CaptureError::SourceGone));
+    give_calls(&mut window, ended.clone());
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    for call in [Some(ended), None] {
+        calls.show_view_for_test(CallsView {
+            call,
+            share_stop_failed: Some(CaptureError::StopFailed(
+                "the picture worker did not stop".into(),
+            )),
+            ..CallsView::default()
+        });
+        window.settle();
+        assert!(
+            window.shows("share-notice"),
+            "the new cleanup failure inherited the dismissal of the old notice"
+        );
+        window.click("dismiss-share-notice");
+        assert!(!window.shows("share-notice"));
+    }
+}
+
 /// The notices of the server open in the panel of the call of this device, in place of
 /// its tab, also in a narrow window, which draws the panel over the stage (ADR 0742).
 #[gpui::test]

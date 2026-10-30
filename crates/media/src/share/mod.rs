@@ -19,6 +19,11 @@ pub mod sound;
 pub mod synthetic;
 #[cfg(any(target_os = "windows", test))]
 pub mod windows;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", any(feature = "test-support", test))
+))]
+pub(crate) mod workers;
 
 use std::any::Any;
 use std::fmt;
@@ -243,6 +248,8 @@ pub enum CaptureError {
     TooMany,
     #[error("the capture failed: {0}")]
     Failed(String),
+    #[error("capture cleanup failed: {0}")]
+    StopFailed(String),
 }
 
 /// What a capture gives. The calls come from threads of the capture, in the order of the
@@ -256,16 +263,20 @@ pub trait CaptureSink: Send + Sync + 'static {
     fn sound(&self, samples: &[f32], format: Format);
 
     /// The capture ended by itself: the window was closed, or the system stopped it. No
-    /// further call follows.
+    /// further picture or sound follows.
     fn ended(&self, error: CaptureError);
+
+    /// Cleanup failed after cancellation; delivery has stopped, but native resources may remain.
+    fn stop_failed(&self, _error: CaptureError) {}
 }
 
-/// A capture that runs. It ends when this value is dropped.
+/// A running capture. Dropping it requests shutdown; `stop` also awaits its cleanup result.
 pub struct CaptureStream {
     /// The size of the pictures in pixels.
     pub width: u32,
     pub height: u32,
     _stream: Box<dyn Any + Send>,
+    stopped: Option<tokio::sync::oneshot::Receiver<Result<(), CaptureError>>>,
 }
 
 impl CaptureStream {
@@ -274,7 +285,40 @@ impl CaptureStream {
             width,
             height,
             _stream: Box::new(stream),
+            stopped: None,
         }
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", any(feature = "test-support", test))
+    ))]
+    pub(crate) fn with_stop_result(
+        mut self,
+        stopped: tokio::sync::oneshot::Receiver<Result<(), CaptureError>>,
+    ) -> Self {
+        self.stopped = Some(stopped);
+        self
+    }
+
+    /// Cancels the capture and awaits its cleanup acknowledgement when one is provided.
+    pub fn stop(mut self) -> Pending<Result<(), CaptureError>> {
+        let stopped = self.stopped.take();
+        drop(self);
+        Box::pin(async move {
+            let result = match stopped {
+                Some(stopped) => match tokio::time::timeout(std::time::Duration::from_secs(3), stopped).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(CaptureError::StopFailed("capture cleanup ended without a result".into())),
+                    Err(_) => Err(CaptureError::StopFailed("capture cleanup did not answer within 3 seconds; restart Junto to release its remaining capture resources".into())),
+                },
+                None => Ok(()),
+            };
+            if let Err(error) = &result {
+                tracing::error!(%error, "screen capture cleanup failed");
+            }
+            result
+        })
     }
 }
 

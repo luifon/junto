@@ -30,6 +30,8 @@ mod still;
 
 #[cfg(target_os = "windows")]
 pub use capture::SystemCapture;
+#[cfg(target_os = "windows")]
+pub(crate) use capture::worker_finished;
 /// The start of a program with arguments through the shell, for the tests of the start of
 /// applications outside the client's tree.
 #[cfg(all(target_os = "windows", feature = "test-support"))]

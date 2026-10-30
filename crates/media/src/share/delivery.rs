@@ -30,6 +30,11 @@ pub(crate) struct Life {
     /// The owner of the capture stopped it; the sink is not told an end.
     pub cancelled: AtomicBool,
     failure: Mutex<Option<CaptureError>>,
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", any(feature = "test-support", test))
+    ))]
+    cleanup_failure: Mutex<Option<CaptureError>>,
     /// Called when the capture stops, so that no thread waits for a time limit to see it.
     wakers: Mutex<Vec<Waker>>,
 }
@@ -42,7 +47,9 @@ impl Life {
     pub fn stop(&self) {
         let mut held = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
         self.stopped.store(true, Ordering::Release);
-        for wake in std::mem::take(&mut *held) {
+        let wakers = std::mem::take(&mut *held);
+        drop(held);
+        for wake in wakers {
             wake();
         }
     }
@@ -59,10 +66,36 @@ impl Life {
     }
     pub fn fail(&self, failure: CaptureError) {
         let mut held = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
-        if !self.stopped() {
+        if !self.stopped() && held.is_none() {
             *held = Some(failure);
+            drop(held);
             self.stop();
         }
+    }
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", any(feature = "test-support", test))
+    ))]
+    pub fn cleanup_failed(&self, failure: CaptureError) {
+        tracing::error!(%failure, "screen capture cleanup failed");
+        let mut held = self
+            .cleanup_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if held.is_none() {
+            *held = Some(failure);
+        }
+    }
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", any(feature = "test-support", test))
+    ))]
+    pub fn cleanup_result(&self) -> Result<(), CaptureError> {
+        self.cleanup_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .map_or(Ok(()), Err)
     }
     pub fn result(&self) -> Result<(), CaptureError> {
         self.failure

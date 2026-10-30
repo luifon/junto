@@ -6,6 +6,8 @@
 //! blocks that the server reports, connects again after a loss, and ends the engine when
 //! the server ends the place.
 
+mod capture_stop;
+
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -313,6 +315,8 @@ pub(crate) enum Entry {
 /// What an interface shows of the calls of this client.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallsView {
+    /// Capture cleanup failed. Retained across call changes until the person dismisses it.
+    pub share_stop_failed: Option<CaptureError>,
     /// The person closed the microphone. The setting holds in a call and outside one.
     pub muted: bool,
     /// The person turned the sound off.
@@ -895,6 +899,9 @@ impl Calls {
 
     /// Puts away the statement that a share ended by itself. The shares that run go on.
     pub fn forget_share_end(&self) {
+        self.inner
+            .view
+            .send_if_modified(|view| view.share_stop_failed.take().is_some());
         self.inner.tell(SessionCommand::ForgetShareEnd);
     }
 
@@ -1449,7 +1456,7 @@ fn start(
             camera: inner.options.camera.clone(),
             host: inner.options.host.clone(),
             permission: inner.options.permission.clone(),
-            capture: inner.options.capture.clone(),
+            capture: capture_stop::reporting(inner.options.capture.clone(), inner.view.clone()),
         },
         media_join(&answer),
         shared.voice.clone(),

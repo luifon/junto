@@ -669,14 +669,15 @@ pub fn capture_error(error: &CaptureError) -> String {
         CaptureError::Failed(reason) => {
             format!("The system reported: {}", sentence(reason))
         }
+        CaptureError::StopFailed(_) => "Junto stopped sending a screen share, but could not confirm that its capture stopped. If you are still in the call, you can leave it. Restart Junto before sharing again.".to_owned(),
     }
 }
 
-/// The notice about a share of this device that the person did not end, or that did not
-/// start because the person runs as many shares as one person can in the call, `limit`.
+/// The notice about a share that did not start, ended, or could not finish its cleanup.
 pub fn share_ended(error: &CaptureError, limit: u8) -> String {
     match error {
         CaptureError::TooMany => format!("Your new share did not start. {}", share_limit(limit)),
+        CaptureError::StopFailed(_) => capture_error(error),
         error => format!(
             "Your screen share ended. {} Start the share again when you want to continue.",
             capture_error(error)
@@ -3881,6 +3882,10 @@ mod tests {
             capture_error(&CaptureError::Failed("the stream stopped".to_owned()))
                 .ends_with("The stream stopped.")
         );
+        let stopped = share_ended(&CaptureError::StopFailed("worker did not stop".into()), 3);
+        assert!(stopped.contains("you can leave it."));
+        assert!(stopped.contains("Restart Junto before sharing again."));
+        assert!(!stopped.contains("Start the share again"));
         assert!(sound_of_window("Editor").contains("the sound of Editor,"));
         assert!(sound_includes_junto("Windows Explorer").starts_with(
             "Junto was started from Windows Explorer, so the sound of Windows Explorer includes"

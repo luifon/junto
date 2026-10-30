@@ -963,6 +963,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
     voice.set_volume(id(1), person("Marta"), 60);
     MediaSnapshot {
         calls: CallsView {
+            share_stop_failed: None,
             muted: false,
             deafened: false,
             joining: None,

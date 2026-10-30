@@ -211,7 +211,16 @@ impl Arrival {
             self.gpu.keep(&source, size)?;
             self.pictures.put(());
         }
-        let _ = frame.Close();
+        if let Err(error) = frame.Close() {
+            if error.code() == windows::Win32::Foundation::RO_E_CLOSED {
+                tracing::warn!(%error, "the captured frame was already closed");
+            } else {
+                let failure =
+                    CaptureError::Failed(format!("could not close a captured frame: {error}"));
+                self.life.cleanup_failed(failure.clone());
+                return Err(failure);
+            }
+        }
         if content.Width != self.size.Width || content.Height != self.size.Height {
             pool.Recreate(
                 &self.device,
@@ -247,6 +256,7 @@ pub(super) struct Session {
     item: GraphicsCaptureItem,
     arrived: i64,
     closed: i64,
+    life: Arc<Life>,
 }
 
 impl Session {
@@ -349,7 +359,7 @@ impl Session {
             size,
             gpu: gpu.clone(),
             pictures,
-            life,
+            life: life.clone(),
         });
         let arrived = pool
             .FrameArrived(&TypedEventHandler::new(
@@ -397,6 +407,7 @@ impl Session {
             item,
             arrived,
             closed,
+            life,
         };
         running.session.StartCapture().map_err(failed)?;
         Ok(running)
@@ -405,10 +416,27 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.pool.RemoveFrameArrived(self.arrived);
-        let _ = self.item.RemoveClosed(self.closed);
-        let _ = self.session.Close();
-        let _ = self.pool.Close();
+        let check = |operation: &str, result: windows::core::Result<()>| {
+            if let Err(error) = result {
+                if error.code() == windows::Win32::Foundation::RO_E_CLOSED {
+                    tracing::warn!(%error, operation, "the capture object was already closed");
+                } else {
+                    self.life.cleanup_failed(CaptureError::Failed(format!(
+                        "could not {operation}: {error}"
+                    )));
+                }
+            }
+        };
+        check(
+            "remove the capture picture handler",
+            self.pool.RemoveFrameArrived(self.arrived),
+        );
+        check(
+            "remove the captured source close handler",
+            self.item.RemoveClosed(self.closed),
+        );
+        check("close the capture session", self.session.Close());
+        check("close the capture frame pool", self.pool.Close());
     }
 }
 

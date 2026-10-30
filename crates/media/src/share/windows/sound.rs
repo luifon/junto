@@ -6,11 +6,11 @@
 //! client's process, which plays the sound of a call.
 
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
@@ -25,7 +25,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
 use windows::Win32::System::Com::BLOB;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{HRESULT, IUnknown, Interface, Ref, implement};
 
@@ -78,7 +78,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
 }
 
 /// An event of the system that resets itself when a wait ends, closed when dropped.
-pub(super) struct Event(HANDLE);
+pub(super) struct Event(HANDLE, Weak<Life>);
 
 // SAFETY: an event handle may be set and waited for from any thread.
 unsafe impl Send for Event {}
@@ -86,24 +86,36 @@ unsafe impl Send for Event {}
 unsafe impl Sync for Event {}
 
 impl Event {
-    pub(super) fn new() -> Result<Self, CaptureError> {
+    pub(super) fn new(life: &Arc<Life>) -> Result<Self, CaptureError> {
         // SAFETY: the call makes an unnamed event without security attributes.
         unsafe { CreateEventW(None, false, false, None) }
-            .map(Self)
+            .map(|handle| Self(handle, Arc::downgrade(life)))
             .map_err(failed)
     }
 
     /// Ends a wait for the event.
-    pub(super) fn set(&self) {
+    pub(super) fn set(&self) -> Result<(), CaptureError> {
         // SAFETY: the handle is valid while `self` lives.
-        let _ = unsafe { SetEvent(self.0) };
+        unsafe { SetEvent(self.0) }.map_err(|error| {
+            CaptureError::Failed(format!(
+                "could not signal the capture sound stop event: {error}"
+            ))
+        })
     }
 }
 
 impl Drop for Event {
     fn drop(&mut self) {
         // SAFETY: the handle was created by `CreateEventW` and is closed once.
-        let _ = unsafe { CloseHandle(self.0) };
+        if let Err(error) = unsafe { CloseHandle(self.0) } {
+            let failure =
+                CaptureError::Failed(format!("could not close a capture sound event: {error}"));
+            if let Some(life) = self.1.upgrade() {
+                life.cleanup_failed(failure);
+            } else {
+                tracing::error!(%failure, "screen capture cleanup failed");
+            }
+        }
     }
 }
 
@@ -112,12 +124,13 @@ pub(super) struct Capture {
     client: IAudioClient,
     capture: IAudioCaptureClient,
     event: Event,
+    life: Arc<Life>,
 }
 
 impl Capture {
     /// Activates and starts the capture. The calling thread is in the multithreaded
     /// apartment.
-    pub(super) fn start(loopback: Loopback) -> Result<Self, CaptureError> {
+    pub(super) fn start(loopback: Loopback, life: Arc<Life>) -> Result<Self, CaptureError> {
         let (process_id, mode) = match loopback {
             Loopback::Include(process) => {
                 (process, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE)
@@ -201,7 +214,7 @@ impl Capture {
                     None,
                 )
                 .map_err(failed)?;
-            let event = Event::new()?;
+            let event = Event::new(&life)?;
             client.SetEventHandle(event.0).map_err(failed)?;
             let capture: IAudioCaptureClient = client.GetService().map_err(failed)?;
             client.Start().map_err(failed)?;
@@ -209,6 +222,7 @@ impl Capture {
                 client,
                 capture,
                 event,
+                life,
             })
         }
     }
@@ -223,8 +237,8 @@ impl Capture {
     ) -> Result<(), CaptureError> {
         while !life.stopped() {
             // SAFETY: both handles are valid while `self` and `stop` live.
-            let woken = unsafe { WaitForMultipleObjects(&[self.event.0, stop.0], false, INFINITE) };
-            if woken == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+            let woken = unsafe { WaitForMultipleObjects(&[self.event.0, stop.0], false, 100) };
+            if woken == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) || woken == WAIT_TIMEOUT {
                 continue;
             }
             if woken != WAIT_OBJECT_0 {
@@ -232,7 +246,7 @@ impl Capture {
                     "the wait for the sound capture failed".to_owned(),
                 ));
             }
-            loop {
+            while !life.stopped() {
                 // SAFETY: each buffer that `GetBuffer` gives is read before `ReleaseBuffer`
                 // returns it, and holds `frames` frames of the format of the client.
                 unsafe {
@@ -269,6 +283,10 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         // SAFETY: the client was started; stopping a stopped client changes nothing.
-        let _ = unsafe { self.client.Stop() };
+        if let Err(error) = unsafe { self.client.Stop() } {
+            self.life.cleanup_failed(CaptureError::Failed(format!(
+                "could not stop the capture sound client: {error}"
+            )));
+        }
     }
 }

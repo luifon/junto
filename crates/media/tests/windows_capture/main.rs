@@ -479,7 +479,7 @@ fn a_window_share_shows_its_colours_follows_a_change_and_ends_when_the_window_cl
         count,
         "pictures came after the end"
     );
-    drop(stream);
+    runtime.block_on(stream.stop()).unwrap();
     assert_eq!(pictures.ended.lock().unwrap().len(), 1);
 }
 
@@ -524,7 +524,7 @@ fn a_screen_share_has_the_display_size_and_stops_when_dropped() {
         );
         std::thread::yield_now();
     }
-    drop(stream);
+    runtime.block_on(stream.stop()).unwrap();
     let count = *pictures.count.lock().unwrap();
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
@@ -577,17 +577,13 @@ fn a_share_with_the_sound_of_one_application_or_of_the_system_starts_and_gives_s
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        // The stop wakes the threads that wait for the system; none waits for a time limit,
-        // so a missing wake would hold the drop.
+        // The acknowledgement confirms that the native workers ended.
         let dropped = Instant::now();
-        let dropping = std::thread::spawn(move || drop(stream));
-        while !dropping.is_finished() {
-            assert!(
-                dropped.elapsed() < PATIENCE,
-                "{sound:?}: the drop did not return"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        runtime.block_on(stream.stop()).unwrap();
+        assert!(
+            dropped.elapsed() < PATIENCE,
+            "{sound:?}: cleanup did not return"
+        );
         eprintln!("{sound:?}: the drop took {:?}", dropped.elapsed());
         let blocks = pictures.sound.lock().unwrap().clone();
         let stereo = Format {
@@ -1316,7 +1312,7 @@ fn the_graphics_memory_of_a_window_share_does_not_grow_with_its_pictures() {
     let before = junto_media::share::windows::graphics_memory_in_use().unwrap();
     turn(&mut fixture, 120);
     let after = junto_media::share::windows::graphics_memory_in_use().unwrap();
-    drop(stream);
+    runtime.block_on(stream.stop()).unwrap();
     // A texture of the window is about 1.2 MB; one more texture for each picture would add
     // about 140 MB.
     let grown = after.saturating_sub(before);

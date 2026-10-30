@@ -208,10 +208,11 @@ fn shown_levels(levels: &Levels) -> ShownLevels {
 
 /// The calls state that the own share ended by itself, and have not put it away.
 fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
-    calls
-        .call
-        .as_ref()
-        .is_some_and(|call| call.share_ended.is_some())
+    calls.share_stop_failed.is_some()
+        || calls
+            .call
+            .as_ref()
+            .is_some_and(|call| call.share_ended.is_some())
 }
 
 /// The quality of a share as the media engine takes it.
@@ -1267,8 +1268,10 @@ impl AppState {
             self.pending.call_told = Some(text::microphone_closed(why).to_owned());
             self.calls.dismiss_closed();
         }
+        let new_stop_failure = view.share_stop_failed.is_some()
+            && view.share_stop_failed != self.known.media.calls.share_stop_failed;
         self.known.media.calls = view;
-        self.known.share_notice_dismissed &= share_ended(&self.shown_calls());
+        self.known.share_notice_dismissed &= !new_stop_failure && share_ended(&self.shown_calls());
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
             // that its acceptance does not replace this call.
@@ -2631,7 +2634,9 @@ impl AppState {
     /// uses it to draw a call without a media server.
     #[cfg(feature = "test-support")]
     pub fn show_media_fixture(&mut self, media: MediaSnapshot, cx: &mut Context<Self>) {
-        self.known.share_notice_dismissed &= share_ended(&media.calls);
+        let new_stop_failure = media.calls.share_stop_failed.is_some()
+            && media.calls.share_stop_failed != self.shown_calls().share_stop_failed;
+        self.known.share_notice_dismissed &= !new_stop_failure && share_ended(&media.calls);
         self.media_fixture = Some(media);
         self.changed(cx);
     }
