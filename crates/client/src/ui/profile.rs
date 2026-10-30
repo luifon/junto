@@ -1,13 +1,15 @@
+use super::ContextMenuExt;
 use crate::{text, theme::theme};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    App, Bounds, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Point,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
 use junto_client_core::protocol::ids::{AccountId, ServerId};
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 type OpenHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+type ContextHandler = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, gpui::Action)]
 #[action(namespace = junto, no_json)]
@@ -23,6 +25,7 @@ pub struct ProfileAccess {
     label: SharedString,
     child: gpui::AnyElement,
     on_open: Option<OpenHandler>,
+    on_context: Option<ContextHandler>,
 }
 impl ProfileAccess {
     pub fn new(
@@ -43,6 +46,7 @@ impl ProfileAccess {
             label: label.into(),
             child: child.into_any_element(),
             on_open: None,
+            on_context: None,
         }
     }
 }
@@ -79,6 +83,26 @@ impl RenderOnce for ProfileAccess {
                     cx.stop_propagation();
                 }
             })
+            .when_some(self.on_context, |frame, handler| {
+                let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+                let placed = bounds.clone();
+                frame
+                    .relative()
+                    .on_context_menu(move |window, cx| {
+                        let position = if window.last_input_was_keyboard() {
+                            let bounds = bounds.get();
+                            gpui::point(bounds.left(), bounds.bottom())
+                        } else {
+                            window.mouse_position()
+                        };
+                        handler(position, window, cx);
+                    })
+                    .child(
+                        canvas(move |value, _, _| placed.set(value), |_, (), _, _| {})
+                            .absolute()
+                            .inset_0(),
+                    )
+            })
             .child(self.child)
     }
 }
@@ -91,6 +115,7 @@ pub struct ProfileName {
     color: Option<gpui::Rgba>,
     role_color: Option<junto_client_core::protocol::appearance::RoleColor>,
     on_open: Option<OpenHandler>,
+    on_context: Option<ContextHandler>,
 }
 impl ProfileName {
     pub fn new(
@@ -105,6 +130,7 @@ impl ProfileName {
             color: None,
             role_color: None,
             on_open: None,
+            on_context: None,
         }
     }
     pub fn role_color(
@@ -120,6 +146,13 @@ impl ProfileName {
     }
     pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
+        self
+    }
+    pub fn on_context_menu(
+        mut self,
+        handler: impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_context = Some(Rc::new(handler));
         self
     }
 }
@@ -140,6 +173,7 @@ impl RenderOnce for ProfileName {
                 .child(super::paint_text(self.name, None)),
         );
         access.on_open = self.on_open;
+        access.on_context = self.on_context;
         div()
             .debug_selector(move || {
                 format!(

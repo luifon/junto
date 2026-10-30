@@ -334,6 +334,7 @@ pub struct Shell {
     pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
     account_volume: Option<VolumeControl>,
     account_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
+    reaction_menu: Option<Box<reaction_people::MenuParent>>,
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
@@ -861,6 +862,7 @@ impl Shell {
             volumes: HashMap::new(),
             account_volume: None,
             account_menu_placement: Default::default(),
+            reaction_menu: None,
             device_menu_closed_by_press: false,
             share_menu_closed_by_press: false,
             detached,
@@ -1449,9 +1451,26 @@ impl Shell {
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
         let reaction = match &layer {
-            Layer::ReactionPeople(dialog) => Some(dialog.key.clone()),
+            Layer::ReactionPeople(dialog) => {
+                self.reaction_menu = None;
+                Some(dialog.key.clone())
+            }
+            Layer::AccountMenu(open)
+                if matches!(
+                    open.source,
+                    Some(account_menus::AccountSource::Reactor { .. })
+                ) =>
+            {
+                self.retain_reaction_menu(window, cx);
+                self.reaction_menu
+                    .as_ref()
+                    .map(|parent| parent.people.key.clone())
+            }
             _ => None,
         };
+        if reaction.is_none() {
+            self.reaction_menu = None;
+        }
         let own = cx.entity_id();
         self.state.update(cx, |state, cx| {
             state.watch_reaction_people(own, reaction, cx)
@@ -1464,7 +1483,7 @@ impl Shell {
         }
         self.account_volume = None;
         self.account_menu_placement = Default::default();
-        if matches!(self.layer, Layer::None) {
+        if matches!(self.layer, Layer::None) && self.reaction_menu.is_none() {
             self.return_focus = window.focused(cx).map(|handle| handle.downgrade());
         }
         if let Layer::ThreadMenu(open) = self.layer
@@ -1495,6 +1514,9 @@ impl Shell {
         }
         if matches!(self.layer, Layer::QuickSwitcher) {
             self.close_switcher(window, cx);
+            return;
+        }
+        if self.close_reaction_menu(window, cx) {
             return;
         }
         let own = cx.entity_id();
@@ -2193,6 +2215,14 @@ impl Shell {
                 .inset_0()
                 .children(parent)
                 .child(self.render_profile(cx))
+                .into_any_element();
+        }
+        if matches!(self.layer, Layer::AccountMenu(_)) && self.reaction_menu.is_some() {
+            return div()
+                .absolute()
+                .inset_0()
+                .children(self.render_reaction_menu_parent(window, cx))
+                .child(self.render_account_menu(window, cx))
                 .into_any_element();
         }
         match &self.layer {

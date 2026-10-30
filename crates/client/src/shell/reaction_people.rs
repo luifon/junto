@@ -21,6 +21,11 @@ pub(crate) struct People {
     scroll: ScrollHandle,
 }
 
+pub(super) struct MenuParent {
+    pub(super) people: Box<People>,
+    focus: Option<gpui::WeakFocusHandle>,
+}
+
 struct NamesTooltip {
     state: Entity<AppState>,
     key: Key,
@@ -123,6 +128,60 @@ impl Render for NamesTooltip {
 }
 
 impl Shell {
+    pub(super) fn retain_reaction_menu(&mut self, window: &Window, cx: &App) {
+        if matches!(self.layer, Layer::ReactionPeople(_))
+            && let Layer::ReactionPeople(people) = std::mem::replace(&mut self.layer, Layer::None)
+        {
+            self.reaction_menu = Some(Box::new(MenuParent {
+                people,
+                focus: window.focused(cx).map(|focus| focus.downgrade()),
+            }));
+        }
+    }
+
+    pub(super) fn close_reaction_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(self.layer, Layer::AccountMenu(_)) {
+            return false;
+        }
+        let Some(parent) = self.reaction_menu.take() else {
+            return false;
+        };
+        if !self
+            .state
+            .read(cx)
+            .reaction_people_allowed(&parent.people.key)
+        {
+            return false;
+        }
+        self.layer = Layer::ReactionPeople(parent.people);
+        if let Some(focus) = parent.focus.and_then(|focus| focus.upgrade()) {
+            focus.focus(window, cx);
+        } else {
+            self.layer_focus.focus(window, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn render_reaction_menu_parent(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut parent = self.reaction_menu.take()?;
+        let menu = std::mem::replace(&mut self.layer, Layer::ReactionPeople(parent.people));
+        let shown = self.render_reaction_people(window, cx);
+        if let Layer::ReactionPeople(people) = std::mem::replace(&mut self.layer, menu) {
+            parent.people = people;
+            self.reaction_menu = Some(parent);
+        }
+        Some(shown)
+    }
+
     #[cfg(feature = "test-support")]
     pub fn show_reaction_people_fixture(
         &mut self,
@@ -333,6 +392,16 @@ impl Shell {
                                             target,
                                         )
                                         .role_color(faces.color(id))
+                                        .on_context_menu(super::account_menus::profile_menu(
+                                            key.owner,
+                                            id,
+                                            person_name(&person),
+                                            super::account_menus::AccountSource::Reactor {
+                                                window: own,
+                                                key: key.clone(),
+                                                account: id,
+                                            },
+                                        ))
                                         .on_open(
                                             move |window, cx| {
                                                 if state

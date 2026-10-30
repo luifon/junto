@@ -530,6 +530,13 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
             })
     });
     window.press("escape");
+    window.right_click_named(format!("forward-author-profile:{}", source.id));
+    assert!(window.shows("account-menu"));
+    window.click_named(format!("account-copy-id:{author}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        author.to_string()
+    );
     let copied = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap().message.id;
     window.right_click_named(format!("message:{copied}"));
     window.click("message-edit");
@@ -550,6 +557,9 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
             })
     });
     window.press("escape");
+    window.press("menu");
+    assert!(window.shows_named(format!("account-copy-id:{author}")));
+    window.press("escape");
     window.click("composer-view-0");
     window.type_into("composer-input", " revised");
     window.click("composer-view-1");
@@ -558,12 +568,15 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         |window| !window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
     );
     window.click("cancel-compose-state");
+    window.right_click_named(format!("forward-author-profile:{}", source.id));
+    assert!(window.shows("account-menu"));
     world
         .run(admin.handle.api().delete_message(source.id))
         .unwrap();
     window.until("the deleted source removes its author target", |window| {
         window.shows_named(format!("forward-unavailable:{}", source.id))
             && !window.shows_named(format!("forward-author-profile:{}", source.id))
+            && !window.shows("account-menu")
     });
     assert!(drawn(&mut window).contains("a shared plan"));
 }

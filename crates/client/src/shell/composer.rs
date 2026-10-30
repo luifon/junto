@@ -6,9 +6,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, FocusHandle, FontWeight, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    AnyElement, App, Context, Entity, ExternalPaths, FocusHandle, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::input::{
     self, InlineToken, InputContent, InputEditorStyle, InputEvent, InputState, Textarea,
@@ -532,7 +533,7 @@ impl Shell {
             .map(|(server_id, _, place)| (server_id, place))
     }
 
-    fn composer_feed(&self, pane: Pane) -> Option<&Feed> {
+    pub(super) fn composer_feed(&self, pane: Pane) -> Option<&Feed> {
         self.pane_feed(pane)
     }
 
@@ -1353,7 +1354,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn composer_document(&self, pane: Pane, cx: &Context<Self>) -> Document {
+    fn composer_document(&self, pane: Pane, cx: &App) -> Document {
         let content = self.pen(pane).input.read(cx).content();
         match &self.pen(pane).editing {
             Some(editing) => {
@@ -1364,11 +1365,7 @@ impl Shell {
         }
     }
 
-    pub(super) fn composer_preview_document(
-        &self,
-        pane: Pane,
-        cx: &Context<Self>,
-    ) -> Option<Document> {
+    pub(super) fn composer_preview_document(&self, pane: Pane, cx: &App) -> Option<Document> {
         self.pen(pane)
             .preview
             .then(|| self.composer_document(pane, cx))
@@ -2742,10 +2739,20 @@ impl Shell {
                         .child(
                             crate::ui::ProfileName::new(
                                 ("typing", account.as_uuid().as_u128() as u64),
-                                name,
+                                name.clone(),
                                 target,
                             )
                             .role_color(faces.color(account))
+                            .on_context_menu(super::account_menus::profile_menu(
+                                owner,
+                                account,
+                                name.clone(),
+                                super::account_menus::AccountSource::Typing {
+                                    pane,
+                                    place,
+                                    account,
+                                },
+                            ))
                             .on_open(Self::handler(
                                 cx,
                                 move |this, window, cx| {

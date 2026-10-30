@@ -263,14 +263,29 @@ fn a_typing_person_opens_its_profile_without_changing_the_draft(cx: &mut TestApp
         writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
         "an unsent plan"
     );
+    reader.press("escape");
+    writer.type_into("composer-input", " revised");
+    reader.right_click_named(format!("typing-person:{account}"));
+    assert!(reader.shows("account-menu"));
+    reader.click_named(format!("account-copy-id:{account}"));
+    assert_eq!(
+        reader.cx.read_from_clipboard().unwrap().text().unwrap(),
+        account.to_string()
+    );
+    assert_eq!(
+        writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "an unsent plan revised"
+    );
+    reader.right_click_named(format!("typing-person:{account}"));
+    assert!(reader.shows("account-menu"));
     writer.press("secondary-a");
     writer.press("backspace");
-    reader.press("escape");
     reader.until(
         "clearing the draft removes the old identity target",
         |window| {
             !window.shows("typing-indicator")
                 && !window.shows_named(format!("typing-person:{account}"))
+                && !window.shows("account-menu")
         },
     );
 }

@@ -312,4 +312,20 @@ fn a_reactor_opens_its_profile_and_shows_current_presence(cx: &mut TestAppContex
     });
     window.press("escape");
     assert!(window.shows("reaction-people-dialog"));
+    window.right_click_named(format!("reaction-profile:{author}"));
+    assert!(window.shows("account-menu"));
+    window.click_named(format!("account-copy-id:{author}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        author.to_string()
+    );
+    assert!(window.shows("reaction-people-dialog"));
+    window.press("menu");
+    assert!(window.shows_named(format!("account-copy-id:{author}")));
+    world
+        .run(admin.handle.api().remove_reaction(sent.id, "👍"))
+        .unwrap();
+    window.until("the removed reactor closes its identity menu", |window| {
+        !window.shows("account-menu") && !window.shows_named(format!("reaction-profile:{author}"))
+    });
 }

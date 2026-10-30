@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    AnyElement, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
     Styled, Subscription, Task, Window, div,
 };
 use gpui_base::input::InputState;
@@ -39,13 +39,13 @@ pub(crate) struct ForwardDialog {
     _find: Subscription,
 }
 
-#[derive(Clone)]
-struct ForwardAuthor {
-    owner: Owner,
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ForwardAuthor {
+    pub(super) owner: Owner,
     parent: DocumentSource,
     origin: Origin,
     message: MessageId,
-    account: AccountId,
+    pub(super) account: AccountId,
 }
 
 impl ForwardAuthor {
@@ -54,12 +54,15 @@ impl ForwardAuthor {
             Block::Forward { server, message_id, verified: true } if server == &self.origin && *message_id == self.message))
     }
 
-    fn is_present(&self, shell: &Shell, cx: &Context<Shell>) -> bool {
+    pub(super) fn is_readable(&self, state: &crate::state::AppState) -> bool {
+        state.owner(self.owner.entry.server_id) == Some(self.owner)
+            && matches!(state.forward_preview(&self.origin, self.message), Preview::Read(source) if source.message.author_id == Some(self.account))
+    }
+
+    pub(super) fn is_present(&self, shell: &Shell, cx: &App) -> bool {
         use crate::state::{feed::FeedRow, view::PinsState};
         let state = shell.state.read(cx);
-        if state.owner(self.owner.entry.server_id) != Some(self.owner)
-            || !matches!(state.forward_preview(&self.origin, self.message), Preview::Read(source) if source.message.author_id == Some(self.account))
-        {
+        if !self.is_readable(state) {
             return false;
         }
         let Some(view) = shell.view.as_ref().filter(|view| {
@@ -518,10 +521,18 @@ impl Shell {
                         .child(
                             crate::ui::ProfileName::new(
                                 ("forward-author", id.as_uuid().as_u128() as u64),
-                                name,
+                                name.clone(),
                                 target,
                             )
                             .role_color(faces.color(account))
+                            .on_context_menu(super::account_menus::profile_menu(
+                                owner,
+                                account,
+                                name,
+                                super::account_menus::AccountSource::ForwardAuthor(Box::new(
+                                    source.clone(),
+                                )),
+                            ))
                             .on_open(Self::handler(
                                 cx,
                                 move |this, window, cx| {

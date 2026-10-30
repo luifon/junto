@@ -37,6 +37,17 @@ pub(crate) enum CallSurface {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AccountSource {
+    Typing {
+        pane: super::Pane,
+        place: junto_client_core::model::PlaceId,
+        account: AccountId,
+    },
+    Reactor {
+        window: gpui::EntityId,
+        key: crate::state::reaction_people::Key,
+        account: AccountId,
+    },
+    ForwardAuthor(Box<super::forwarding::ForwardAuthor>),
     CallOccupant {
         seat: Box<junto_media::calls::Seat>,
         account_id: AccountId,
@@ -81,6 +92,27 @@ impl OpenAccountMenu {
             return true;
         };
         match source {
+            AccountSource::Typing { place, account, .. } => {
+                return self.people.len() == 1
+                    && self.people[0].account_id == *account
+                    && state.typing_profile_allowed(self.owner, *place, *account);
+            }
+            AccountSource::Reactor {
+                window,
+                key,
+                account,
+            } => {
+                return key.owner == self.owner
+                    && self.people.len() == 1
+                    && self.people[0].account_id == *account
+                    && state.reaction_profile_allowed(*window, key, *account);
+            }
+            AccountSource::ForwardAuthor(source) => {
+                return source.owner == self.owner
+                    && self.people.len() == 1
+                    && self.people[0].account_id == source.account
+                    && source.is_readable(state);
+            }
             AccountSource::CallOccupant {
                 seat,
                 account_id,
@@ -242,6 +274,29 @@ impl OpenAccountMenu {
             || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| {
                 matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(|row| row.message.id == *id && !row.message.deleted))
             })
+    }
+}
+
+pub(super) fn profile_menu(
+    owner: Owner,
+    account: AccountId,
+    name: String,
+    source: AccountSource,
+) -> impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static {
+    move |position, window, cx| {
+        window.dispatch_action(
+            Box::new(OpenAccountMenu {
+                owner,
+                people: vec![AccountTarget {
+                    account_id: account,
+                    name: name.clone(),
+                    departed: false,
+                }],
+                source: Some(source.clone()),
+                position,
+            }),
+            cx,
+        );
     }
 }
 
@@ -418,6 +473,25 @@ impl Shell {
         view: &crate::state::view::ShellView,
         cx: &App,
     ) -> bool {
+        match &open.source {
+            Some(AccountSource::Typing { pane, place, .. }) => {
+                return self.composer_feed(*pane).is_some_and(|feed| {
+                    feed.server_id == open.owner.entry.server_id
+                        && feed.place == *place
+                        && feed.loaded
+                        && feed.failed.is_none()
+                });
+            }
+            Some(AccountSource::ForwardAuthor(source)) => return source.is_present(self, cx),
+            Some(AccountSource::Reactor { key, .. }) => {
+                return self
+                    .reaction_menu
+                    .as_ref()
+                    .is_some_and(|parent| parent.people.key == *key)
+                    || matches!(&self.layer, Layer::ReactionPeople(people) if people.key == *key);
+            }
+            _ => {}
+        }
         let Some(AccountSource::CallOccupant {
             account_id,
             surface,
