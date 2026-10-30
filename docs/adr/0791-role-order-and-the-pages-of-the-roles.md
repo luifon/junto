@@ -69,6 +69,8 @@ The members panel follows ADR 0309's precedence and groups while keeping its vir
 
 Appearance maps are independent of avatar images. Member metadata seeds every loaded roster, including members outside the bounded profile cache. Renderers take shared maps for their server and workspace rather than rebuilding a map for every name. Message and thread rendering use their channel's workspace, and a detached call uses its own workspace.
 
+Window lifecycle tests wait until the permission control has no held reason before pressing it and after its chosen state arrives. The administration request list can already be empty while separate receipt tracking still holds the switch; a matching role value alone does not mean that another press is accepted. The controlled request and event tests continue to require that a held switch sends nothing until its receipt is applied.
+
 ## Consequences
 
 - Every screen of roles is designed in this record.

@@ -1,6 +1,6 @@
 use super::*;
-use junto_client::state::admin::RoleRef;
 use junto_client::state::admin::view::roles::RoleRow;
+use junto_client::state::admin::{RolePermission, RoleRef};
 
 fn type_field(window: &mut Window, field: &'static str, value: &str) {
     reveal_in_page(window, field);
@@ -11,6 +11,19 @@ fn type_field(window: &mut Window, field: &'static str, value: &str) {
 
 fn roles(window: &mut Window) -> Option<Vec<RoleRow>> {
     server_page!(window, Roles)?.roles.loaded().cloned()
+}
+
+fn permission_ready(window: &mut Window, role: RoleRef, permission: RolePermission) -> bool {
+    let Some(view) = window.admin() else {
+        return false;
+    };
+    let Some(row) = roles(window).and_then(|rows| rows.into_iter().find(|row| row.role == role))
+    else {
+        return false;
+    };
+    window
+        .in_shell(|shell, _, _| shell.role_permission_held(&view, &row, permission))
+        .is_none()
 }
 
 #[gpui::test]
@@ -71,10 +84,16 @@ fn server_roles_are_created_renamed_changed_ordered_given_taken_and_deleted(
     );
 
     click_in_page(&mut window, sel("role-permissions", helpers));
+    let role = RoleRef::Server(helpers);
+    let permission = RolePermission::Server(ServerPermission::CreateInvites);
     for on in [true, false, true] {
+        window.until("the server permission takes a press", |window| {
+            permission_ready(window, role, permission)
+        });
         click_in_page(&mut window, "role-permission-create_invites");
         window.until("the server permission has the chosen state", |window| {
             idle(window)
+                && permission_ready(window, role, permission)
                 && roles(window).is_some_and(|rows| {
                     rows.iter().any(|row| {
                         row.role == RoleRef::Server(helpers)
