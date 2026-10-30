@@ -478,7 +478,7 @@ impl Shell {
         target: (ServerId, RecordingId, &'static str),
         window: &mut Window,
         cx: &mut Context<Self>,
-        render: impl FnOnce(&mut Self, &mut Context<Self>) -> AnyElement,
+        render: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement,
     ) -> AnyElement {
         let (server_id, recording_id, surface) = target;
         let (line, copied) = (row.line, row.text.clone());
@@ -509,7 +509,7 @@ impl Shell {
                 )
                 .register();
             }
-            render(self, cx)
+            render(self, window, cx)
         });
         let key = SharedString::from(format!(
             "transcript-actions:{server_id}:{recording_id}:{surface}:{line}"
@@ -532,6 +532,79 @@ impl Shell {
         crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn transcript_identity_target(
+        &mut self,
+        row: &LineRow,
+        (server, recording, surface): (ServerId, RecordingId, &'static str),
+        part: &'static str,
+        child: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server)
+            .and_then(|server| server.owner())
+        else {
+            return child;
+        };
+        let name = match &row.source {
+            LineFrom::Microphone => row.name.clone(),
+            LineFrom::Shared { of } => of.clone(),
+        };
+        let departed = self
+            .state
+            .read(cx)
+            .account_departure(server, row.account_id)
+            .is_some();
+        let open = self.identity_context(
+            owner,
+            super::account_menus::AccountTarget {
+                account_id: row.account_id,
+                name: name.clone(),
+                departed,
+            },
+            super::account_menus::AccountSource::Transcript {
+                recording,
+                line: row.line,
+                preview: surface == "card",
+            },
+        );
+        let prefix = if part == "name" {
+            "transcript-identity"
+        } else {
+            "transcript-avatar"
+        };
+        let selector = format!("{prefix}:{surface}:{recording}:{}", row.line);
+        let theme = theme(cx);
+        let ring =
+            crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let frame = div()
+            .id(SharedString::from(selector.clone()))
+            .min_w_0()
+            .role(Role::Group)
+            .aria_label(name)
+            .debug_selector(move || selector)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .child(child);
+        self.bind_identity_context(
+            frame,
+            if part == "name" {
+                "transcript-name"
+            } else {
+                "transcript-avatar"
+            },
+            open,
+            window,
+            cx,
+        )
+        .into_any_element()
+    }
+
     /// One line of a transcript (view G of the design): its time, its speaker with the
     /// source of the sound, and its text.
     fn transcript_line(
@@ -540,6 +613,7 @@ impl Shell {
         wide: bool,
         marked: bool,
         theme: &Theme,
+        identity: impl FnMut(&'static str, AnyElement) -> AnyElement,
     ) -> AnyElement {
         let corrected = row.corrected.then(|| {
             div()
@@ -558,7 +632,9 @@ impl Shell {
             .ink(theme.colors.ink)
             .child(SharedString::from(row.text.clone()))
             .into_any_element();
-        Self::line_frame(row, picture, wide, marked, theme, corrected, spoken, None)
+        Self::line_frame(
+            row, picture, wide, marked, theme, corrected, spoken, None, identity,
+        )
     }
 
     /// A line of a transcript with the parts that the card or the side panel give it: the
@@ -574,7 +650,14 @@ impl Shell {
         corrected: Option<AnyElement>,
         spoken: AnyElement,
         trailing: Option<AnyElement>,
+        mut identity: impl FnMut(&'static str, AnyElement) -> AnyElement,
     ) -> AnyElement {
+        let spoken_line = row.line;
+        let spoken = div()
+            .flex_1()
+            .min_w_0()
+            .debug_selector(move || format!("transcript-spoken:{spoken_line}"))
+            .child(spoken);
         let colors = theme.colors;
         let line = row.line;
         let source: SharedString = match &row.source {
@@ -599,6 +682,28 @@ impl Shell {
                 .child(icon(Icon::Screen, 13.0, colors.bronze))
                 .into_any_element(),
         };
+        let mark = identity("avatar", mark);
+        let name = div()
+            .min_w_0()
+            .truncate()
+            .child(SharedString::from(row.name.clone()))
+            .into_any_element();
+        let name = if matches!(row.source, LineFrom::Microphone) {
+            identity("name", name)
+        } else {
+            name
+        };
+        let source = div()
+            .text_size(u(12.5))
+            .line_height(u(16.0))
+            .ink(colors.ink_2)
+            .child(source)
+            .into_any_element();
+        let source = if matches!(row.source, LineFrom::Shared { .. }) {
+            identity("name", source)
+        } else {
+            source
+        };
         let who = div()
             .flex_none()
             .min_w_0()
@@ -616,24 +721,13 @@ impl Shell {
                     .line_height(u(22.0))
                     .font_weight(FontWeight::BOLD)
                     .ink(colors.ink)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(row.name.clone())),
-                    )
+                    .child(name)
                     .when_some(row.was.clone(), |name, was| {
                         name.child(Chip::new(text::was_speaker(&was)))
                     })
                     .children(corrected),
             )
-            .child(
-                div()
-                    .text_size(u(12.5))
-                    .line_height(u(16.0))
-                    .ink(colors.ink_2)
-                    .child(source),
-            );
+            .child(source);
         let time = div()
             .flex_none()
             .w(u(68.0))
@@ -751,7 +845,18 @@ impl Shell {
                 (server_id, recording_id, "card"),
                 window,
                 cx,
-                |_, _| Self::transcript_line(row, picture, true, false, theme),
+                |this, window, cx| {
+                    Self::transcript_line(row, picture, true, false, theme, |part, child| {
+                        this.transcript_identity_target(
+                            row,
+                            (server_id, recording_id, "card"),
+                            part,
+                            child,
+                            window,
+                            cx,
+                        )
+                    })
+                },
             ));
         }
         let shown = transcript.lines.len().min(SHOWN_LINES);
@@ -1571,7 +1676,7 @@ impl Shell {
             (server_id, recording_id, "panel"),
             window,
             cx,
-            |this, cx| {
+            |this, window, cx| {
                 let corrected = row
                     .corrected
                     .then(|| this.corrected_mark(recording_id, row.line, theme, cx));
@@ -1580,8 +1685,26 @@ impl Shell {
                 let key = (recording_id, TranscriptChange::Line(row.line));
                 let open = this.transcript_edit.open.map(|(_, open)| open);
                 let picture = this.faces(server_id).image(row.account_id);
-                let line =
-                    Self::line_frame(row, picture, false, marked, theme, corrected, body, control);
+                let line = Self::line_frame(
+                    row,
+                    picture,
+                    false,
+                    marked,
+                    theme,
+                    corrected,
+                    body,
+                    control,
+                    |part, child| {
+                        this.transcript_identity_target(
+                            row,
+                            (server_id, recording_id, "panel"),
+                            part,
+                            child,
+                            window,
+                            cx,
+                        )
+                    },
+                );
                 this.transcript_edit
                     .space
                     .row(open, &[key], line)

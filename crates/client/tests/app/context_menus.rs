@@ -1723,3 +1723,40 @@ fn a_read_only_administration_member_row_still_has_identity_actions(cx: &mut Tes
     );
     assert!(window.admin().is_some());
 }
+
+#[gpui::test]
+fn profile_and_mention_completion_identities_copy_without_choosing_a_mention(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let own = window.own_account();
+    window.right_click_named("profile-name".to_owned());
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        own.to_string()
+    );
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@Ada", window, cx);
+        shell.focus_composer(Pane::Main, window, cx);
+    });
+    window.until("the mention suggestion appears", |window| {
+        window.shows("candidate:0")
+    });
+    window.right_click_named("candidate:0".to_owned());
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        admin.handle.account().unwrap().to_string()
+    );
+    assert!(window.shows("mention-picker"));
+    window.right_click_named("candidate:0".to_owned());
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@Nobody", window, cx);
+    });
+    assert!(!window.shows("row-context-menu"));
+    assert!(!window.shows("mention-picker"));
+}

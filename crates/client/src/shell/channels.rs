@@ -277,7 +277,7 @@ impl Shell {
             .when_some(view.call.as_ref(), |column, strip| {
                 column.child(self.render_call_strip(strip, &theme, cx))
             })
-            .child(self.render_profile_strip(view, &theme, cx))
+            .child(self.render_profile_strip(view, &theme, window, cx))
     }
 
     /// The lists of the selected server: the entry of its notices, the channels of the
@@ -1101,6 +1101,7 @@ impl Shell {
         &mut self,
         view: &ShellView,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
@@ -1119,6 +1120,55 @@ impl Shell {
             Some(account_id) => self.shown_faces().image(account_id),
             None => view.preset_picture.clone(),
         };
+        let identity = div()
+            .id("profile-identity")
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(u(9.0))
+            .child(Avatar::new(seed, 30.0).image(picture))
+            .child(
+                div()
+                    .id("profile-name")
+                    .debug_selector(|| "profile-name".to_owned())
+                    .aria_label(name.clone())
+                    .flex_1()
+                    .min_w_0()
+                    .typeface(theme.types.name, theme)
+                    .ink(colors.ink)
+                    .truncate()
+                    .child(name),
+            );
+        let owner = view
+            .selected
+            .as_ref()
+            .and_then(|server| self.state.read(cx).server(server.id)?.owner());
+        let identity = if let Some(owner) = owner {
+            let open = self.identity_context(
+                owner,
+                super::account_menus::AccountTarget {
+                    account_id: owner.account_id,
+                    name: view.person.name.clone(),
+                    departed: false,
+                },
+                super::account_menus::AccountSource::Profile,
+            );
+            let ring =
+                crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+            self.bind_identity_context(
+                identity
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring)),
+                "profile",
+                open,
+                window,
+                cx,
+            )
+        } else {
+            identity
+        };
         div()
             .id("profile-strip")
             .debug_selector(|| "profile-strip".to_owned())
@@ -1132,19 +1182,7 @@ impl Shell {
             .bg(Hsla::from(colors.limestone_lo))
             .border_t_1()
             .border_color(Hsla::from(colors.rule))
-            .child(Avatar::new(seed, 30.0).image(picture))
-            .child(
-                div()
-                    .id("profile-name")
-                    .debug_selector(|| "profile-name".to_owned())
-                    .aria_label(name.clone())
-                    .flex_1()
-                    .min_w_0()
-                    .typeface(theme.types.name, theme)
-                    .ink(colors.ink)
-                    .truncate()
-                    .child(name),
-            )
+            .child(identity)
             .child(
                 div()
                     .flex()

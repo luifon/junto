@@ -25,6 +25,7 @@ impl OpenAccountMenu {
         };
         let server_id = self.owner.entry.server_id;
         let present = match self.source.as_ref()? {
+            AccountSource::Profile | AccountSource::MentionCandidate { .. } | AccountSource::Transcript { .. } | AccountSource::Invitation(_) => self.additional_identity_present(view),
             AccountSource::Contacts => state.contacts_view().is_some_and(|view| view.server_id == server_id && self.people.iter().all(|person| view.rows.iter().flatten().any(|row| row.account_id == person.account_id))),
             AccountSource::Members(workspace) => view.selected.as_ref().is_some_and(|server| server.id == server_id) && view.workspace().is_some_and(|view| view.id == *workspace && matches!(&view.members, Members::Loaded(rows) if self.people.iter().all(|person| rows.iter().any(|row| row.account_id == person.account_id)))),
             AccountSource::AdminPeople | AccountSource::AdminMembers { .. } => state.admin_view().is_some_and(|view| {
@@ -59,7 +60,7 @@ impl Shell {
             })),
             Some(AccountSource::AdminMembers { .. }) => matches!(self.layer, Layer::Admin),
             Some(AccountSource::Members(_)) => matches!(self.layer, Layer::None) && self.members_open && view.lists().is_some_and(|lists| lists.call.is_none() && lists.notices.is_none()) && view.workspace().is_some_and(|workspace| workspace.thread.is_none() && workspace.pins.is_none() && workspace.transcript.is_none() && workspace.search.is_none()),
-            _ => true,
+            _ => self.additional_identity_visible(open, view),
         }
     }
 
@@ -109,7 +110,14 @@ impl Shell {
                 ),
             ));
         }
-        if person.account_id != open.owner.account_id && !person.departed {
+        if person.account_id != open.owner.account_id
+            && !person.departed
+            && self
+                .state
+                .read(cx)
+                .account_departure(open.owner.entry.server_id, person.account_id)
+                .is_none()
+        {
             for (id, label, call) in [
                 ("account-message", text::message_person(&person.name), false),
                 ("account-call", text::DIRECT_CALL.to_owned(), true),
@@ -121,7 +129,13 @@ impl Shell {
                     RowAction::new(
                         label,
                         cx.listener(move |this, _, window, cx| {
-                            if !this.account_context_current(&open, cx) {
+                            if !this.account_context_current(&open, cx)
+                                || this
+                                    .state
+                                    .read(cx)
+                                    .account_departure(open.owner.entry.server_id, account)
+                                    .is_some()
+                            {
                                 return;
                             }
                             this.close_layer(window, cx);

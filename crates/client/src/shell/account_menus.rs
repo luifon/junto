@@ -52,6 +52,18 @@ pub(crate) enum AccountSource {
         account: AccountId,
     },
     Mentions(Box<AccountSource>),
+    Profile,
+    MentionCandidate {
+        pane: super::Pane,
+        query: String,
+        place: junto_client_core::model::PlaceId,
+    },
+    Transcript {
+        recording: junto_client_core::protocol::ids::RecordingId,
+        line: u32,
+        preview: bool,
+    },
+    Invitation(junto_client_core::protocol::ids::CallInvitationId),
     Contacts,
     Members(junto_client_core::protocol::ids::WorkspaceId),
     AdminPeople,
@@ -248,7 +260,11 @@ impl OpenAccountMenu {
                             })
                     });
             }
-            AccountSource::Contacts
+            AccountSource::Profile
+            | AccountSource::MentionCandidate { .. }
+            | AccountSource::Transcript { .. }
+            | AccountSource::Invitation(_)
+            | AccountSource::Contacts
             | AccountSource::Members(_)
             | AccountSource::AdminPeople
             | AccountSource::AdminMembers { .. } => return false,

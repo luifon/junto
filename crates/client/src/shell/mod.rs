@@ -23,6 +23,7 @@ mod edges;
 mod feed;
 mod file_links;
 mod identity_menus;
+mod identity_sources;
 mod invited;
 mod join;
 mod keybinds;
@@ -1439,7 +1440,10 @@ impl Shell {
     /// while its action runs. The focus then returns to the open layer, so that Escape and
     /// Tab still reach it.
     fn keep_focus_in_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.layer, Layer::None) && !self.layer_focus.contains_focused(window, cx) {
+        if !matches!(self.layer, Layer::None)
+            && !self.layer_focus.contains_focused(window, cx)
+            && !crate::ui::has_focused_menu(window, cx)
+        {
             self.layer_focus.focus(window, cx);
         }
     }

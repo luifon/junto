@@ -803,3 +803,47 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
     });
     world.run(caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn an_incoming_caller_identity_keeps_the_current_dialog_and_expires_with_the_ring(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Incoming identity");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::direct(
+            admin.handle.account().unwrap(),
+            window.view().person.account_id.unwrap(),
+        ),
+    };
+    enter(&world, &caller, target);
+    window.until("the ring is visible", |window| {
+        window.shows("incoming-direct-call")
+    });
+    let invitation = window.view().invitations[0].clone();
+    window
+        .in_shell(|shell, window, cx| shell.open(junto_client::shell::Open::Settings, window, cx));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.click("context-action:Copy account ID");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        admin.handle.account().unwrap().to_string()
+    );
+    assert!(window.shows("settings-dialog"));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.press("escape");
+    assert!(window.shows("settings-dialog"));
+    window.right_click_named(format!("invitation-identity:{}", invitation.id));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.decline_invitation(&invitation, cx)
+    });
+    window.until("the ring and its identity menu disappear", |window| {
+        !window.shows("incoming-direct-call") && !window.shows("row-context-menu")
+    });
+    world.run(caller.calls.leave());
+}

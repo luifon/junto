@@ -619,7 +619,17 @@ impl Shell {
     /// members and the roles of its workspace; a message of a direct conversation mentions
     /// only its two participants, so the picker offers the other one (ADR 0408).
     fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
-        let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
+        self.view
+            .as_ref()
+            .map_or_else(Vec::new, |view| self.mention_candidates_in(pane, view))
+    }
+
+    fn mention_candidates_in(
+        &self,
+        pane: Pane,
+        view: &crate::state::view::ShellView,
+    ) -> Vec<Candidate> {
+        let Some(open) = &self.pen(pane).mention else {
             return Vec::new();
         };
         match self.composer_place(pane).map(|(_, place)| place) {
@@ -646,6 +656,24 @@ impl Shell {
                 })
                 .unwrap_or_default(),
         }
+    }
+
+    pub(super) fn mention_identity_current(
+        &self,
+        pane: Pane,
+        query: &str,
+        people: &[super::account_menus::AccountTarget],
+        view: &crate::state::view::ShellView,
+    ) -> bool {
+        self.pen(pane)
+            .mention
+            .as_ref()
+            .is_some_and(|open| open.query == query)
+            && people.iter().all(|person| {
+                self.mention_candidates_in(pane, view)
+                    .iter()
+                    .any(|candidate| candidate.target == MentionTarget::Account(person.account_id))
+            })
     }
 
     /// Puts a mention into the text in place of the typed `@` and its query.
@@ -1357,6 +1385,7 @@ impl Shell {
     /// The composer of a pane (view A of the design): of the place of the main area, or
     /// of the thread of the side panel. `draft` holds the files of the next message, and
     /// `permanent` states that a sent message of the place cannot be edited.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_composer(
         &mut self,
         pane: Pane,
@@ -1364,6 +1393,7 @@ impl Shell {
         compact: bool,
         permanent: bool,
         writing: Writing,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1780,7 +1810,7 @@ impl Shell {
                         MentionTarget::Account(account_id) => Some(account_id),
                         _ => None,
                     };
-                    div()
+                    let frame = div()
                         .id(("candidate", index))
                         .role(Role::ListBoxOption)
                         .aria_label(SharedString::from(candidate.name.clone()))
@@ -1821,7 +1851,53 @@ impl Shell {
                                 .text_size(u(12.5))
                                 .ink(colors.ink_3)
                                 .child(candidate.detail),
+                        );
+                    let owner = self.composer_place(pane).and_then(|(server, place)| {
+                        self.state
+                            .read(cx)
+                            .server(server)?
+                            .owner()
+                            .map(|owner| (owner, place))
+                    });
+                    if let Some((owner, place)) = owner
+                        && let Some(account_id) = person
+                    {
+                        let query = self
+                            .pen(pane)
+                            .mention
+                            .as_ref()
+                            .map(|open| open.query.clone())
+                            .unwrap_or_default();
+                        let open = self.identity_context(
+                            owner,
+                            super::account_menus::AccountTarget {
+                                account_id,
+                                name: candidate.name.clone(),
+                                departed: false,
+                            },
+                            super::account_menus::AccountSource::MentionCandidate {
+                                pane,
+                                query,
+                                place,
+                            },
+                        );
+                        let ring = crate::ui::focus_ring_inside(
+                            colors.terracotta_deep,
+                            theme.metrics.focus_ring,
+                        );
+                        self.bind_identity_context(
+                            frame
+                                .focusable()
+                                .tab_stop(true)
+                                .focus_visible(move |style| style.shadow(ring)),
+                            "mention",
+                            open,
+                            window,
+                            cx,
                         )
+                    } else {
+                        frame
+                    }
                 }))
         });
 

@@ -1195,7 +1195,7 @@ impl Shell {
         pane: Pane,
         shown: &PaneShown<'_>,
         mut notices: Vec<AnyElement>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1343,6 +1343,7 @@ impl Shell {
                         compact,
                         shown.permanent,
                         shown.writing,
+                        window,
                         cx,
                     ),
                 },
