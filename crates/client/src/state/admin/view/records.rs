@@ -282,6 +282,7 @@ impl AuditGroup {
             | AuditEvent::ChannelArchived
             | AuditEvent::ChannelRestored => Self::Structure,
             AuditEvent::ChannelCallSettingsUpdated { .. }
+            | AuditEvent::VoiceChannelStatusUpdated { .. }
             | AuditEvent::CallMicrophoneBlocked { .. }
             | AuditEvent::CallMicrophoneUnblocked { .. }
             | AuditEvent::CallSoundBlocked { .. }
@@ -328,7 +329,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 79] = [
+pub const ACTIONS: [(&str, AuditGroup); 80] = [
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -378,6 +379,7 @@ pub const ACTIONS: [(&str, AuditGroup); 79] = [
     ("channel_archived", AuditGroup::Structure),
     ("channel_restored", AuditGroup::Structure),
     ("channel_call_settings_updated", AuditGroup::Calls),
+    ("voice_channel_status_updated", AuditGroup::Calls),
     ("call_microphone_blocked", AuditGroup::Calls),
     ("call_microphone_unblocked", AuditGroup::Calls),
     ("call_sound_blocked", AuditGroup::Calls),
@@ -1217,6 +1219,7 @@ mod tests {
 
     fn channel(workspace_id: WorkspaceId, name: &str) -> Channel {
         Channel {
+            voice_status: String::new(),
             topic: String::new(),
             id: ChannelId::generate(),
             workspace_id,
@@ -1513,6 +1516,7 @@ mod tests {
             AuditEvent::ChannelRulesSynced { .. } => 77,
             AuditEvent::WorkspacePersonPermissionsSet { .. } => 78,
             AuditEvent::ServerPersonPermissionsSet { .. } => 79,
+            AuditEvent::VoiceChannelStatusUpdated { .. } => 80,
         }
     }
 
@@ -1824,6 +1828,12 @@ mod tests {
                     name: "general".to_owned(),
                 },
                 vec!["“general”"],
+            ),
+            (
+                AuditEvent::VoiceChannelStatusUpdated {
+                    status: "Design review".to_owned(),
+                },
+                vec!["Design review"],
             ),
             (
                 AuditEvent::ChannelCallSettingsUpdated {
@@ -2860,7 +2870,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..80).collect::<Vec<usize>>());
+        assert_eq!(places, (0..81).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

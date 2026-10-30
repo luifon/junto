@@ -141,6 +141,8 @@ actions of call:
   unshare
   hand <up|down>
   speaking <yes|no>
+  status <channel> <text>      set voice status (empty text clears it)
+  clear-status <channel>       clear voice status, including from watch
   settings <channel> [--limit <n> | --no-limit] [--hide <yes|no>]
   lock <channel>, unlock <channel>
   meeting <channel> <on|off>

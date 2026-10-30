@@ -955,6 +955,13 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
         AuditEvent::ChannelCreated { name, kind } => {
             format!("the {} “{name}” was created.", kind_of(*kind))
         }
+        AuditEvent::VoiceChannelStatusUpdated { status } => {
+            if status.is_empty() {
+                "the voice channel status was cleared.".to_owned()
+            } else {
+                format!("the voice channel status is “{status}”.")
+            }
+        }
         AuditEvent::ChannelUpdated {
             name,
             topic,

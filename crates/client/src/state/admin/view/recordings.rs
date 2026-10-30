@@ -276,6 +276,7 @@ mod tests {
 
     fn voice(workspace_id: WorkspaceId, name: &str) -> Channel {
         Channel {
+            voice_status: String::new(),
             topic: String::new(),
             id: ChannelId::generate(),
             workspace_id,

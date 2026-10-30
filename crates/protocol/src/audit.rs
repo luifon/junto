@@ -222,6 +222,9 @@ pub enum AuditEvent {
         position: i32,
         permanent_messages: bool,
     },
+    VoiceChannelStatusUpdated {
+        status: String,
+    },
     /// The messages of the channel are permanent from now on (ADR 0402).
     PermanentMessagesTurnedOn,
     /// Messages sent from now on are not permanent; earlier permanent messages stay
@@ -455,6 +458,7 @@ impl AuditEvent {
             Self::CategoryUpdated { .. } => "category_updated",
             Self::ChannelCreated { .. } => "channel_created",
             Self::ChannelUpdated { .. } => "channel_updated",
+            Self::VoiceChannelStatusUpdated { .. } => "voice_channel_status_updated",
             Self::PermanentMessagesTurnedOn => "permanent_messages_turned_on",
             Self::PermanentMessagesTurnedOff => "permanent_messages_turned_off",
             Self::ChannelOverrideSet { .. } => "channel_override_set",
@@ -628,6 +632,9 @@ mod tests {
             },
             AuditEvent::ChannelArchived,
             AuditEvent::ChannelRestored,
+            AuditEvent::VoiceChannelStatusUpdated {
+                status: "Planning".to_owned(),
+            },
             AuditEvent::PermanentMessagesTurnedOn,
             AuditEvent::PermanentMessagesTurnedOff,
             AuditEvent::ArchivePeriodChanged { days: None },

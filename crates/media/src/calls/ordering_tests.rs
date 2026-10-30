@@ -134,6 +134,7 @@ fn fixture() -> Fixture {
             roles: vec![],
             categories: vec![],
             channels: vec![Channel {
+                voice_status: String::new(),
                 topic: String::new(),
                 id: channel_id,
                 workspace_id,

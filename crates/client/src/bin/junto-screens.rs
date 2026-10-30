@@ -206,6 +206,7 @@ fn participant(name: &str) -> CallParticipant {
 
 fn channel(number: u32, workspace_id: WorkspaceId, kind: ChannelKind, name: &str) -> Channel {
     Channel {
+        voice_status: String::new(),
         topic: String::new(),
         id: id(number),
         workspace_id,
@@ -272,7 +273,8 @@ fn studio() -> WorkspaceState {
     ];
     studio.roles = vec![everyone, role(21, "Leads", 2), role(22, "Engineers", 1)];
     let voice = |number, name: &str| channel(number, workspace_id, ChannelKind::Voice, name);
-    let daily = voice(34, "Daily");
+    let mut daily = voice(34, "Daily");
+    daily.voice_status = "Design review".to_owned();
     let focus = voice(35, "Focus room");
     let mut hidden = voice(36, "HR");
     hidden.hides_occupants = true;

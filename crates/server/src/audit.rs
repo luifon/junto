@@ -66,6 +66,7 @@ pub async fn record(
             AuditEvent::RecordingStarted { .. }
                 | AuditEvent::RecordingStopped { .. }
                 | AuditEvent::ChannelUpdated { .. }
+                | AuditEvent::VoiceChannelStatusUpdated { .. }
         )
     {
         let recording_id = match event {

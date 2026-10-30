@@ -906,6 +906,9 @@ impl Shell {
                 }))
                 .into_any_element(),
         ];
+        if let Some(status) = self.voice_status_item(server_id, channel, cx) {
+            items.push(status);
+        }
         if let Some(owner) = self
             .state
             .read(cx)

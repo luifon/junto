@@ -85,6 +85,9 @@ pub struct Channel {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(max_length = 1024))]
     pub topic: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(max_length = 500))]
+    pub voice_status: String,
     pub position: i32,
     /// The channel setting that makes each message sent under it permanent.
     pub permanent_messages: bool,

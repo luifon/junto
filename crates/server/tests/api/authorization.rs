@@ -1030,6 +1030,13 @@ async fn world() -> World {
         ),
         operation(
             Method::PUT,
+            "/api/v1/channels/{channel_id}/voice-status",
+            &[&hall_id],
+            json!({ "status": "Planning" }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
             "/api/v1/channels/{channel_id}/call/lock",
             &[&hall_id],
             none.clone(),

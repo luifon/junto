@@ -1072,6 +1072,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         E::CategoryCreated { category_id, .. }
         | E::CategoryUpdated { category_id, .. }
         | E::CategoryDeleted { category_id, .. } => vec![pair("category", category_id)],
+        E::VoiceChannelStatusUpdated { status } => vec![format!("status: {}", shown(status))],
         E::ChannelUpdated { category_id, .. } => category_id
             .iter()
             .map(|category_id| pair("category", category_id))
@@ -1638,6 +1639,7 @@ mod tests {
 
     fn channel(name: &str) -> Channel {
         Channel {
+            voice_status: String::new(),
             topic: String::new(),
             id: ChannelId::generate(),
             workspace_id: WorkspaceId::generate(),

@@ -42,6 +42,7 @@ fn reachable() -> Reach {
 
 fn channel(workspace_id: WorkspaceId, kind: ChannelKind, name: &str, position: i32) -> Channel {
     Channel {
+        voice_status: String::new(),
         topic: String::new(),
         id: ChannelId::generate(),
         workspace_id,

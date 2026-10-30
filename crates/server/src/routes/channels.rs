@@ -462,6 +462,7 @@ pub(crate) async fn create_channel_in(
         category_id: new.category_id,
         kind: new.kind,
         name: new.name.to_owned(),
+        voice_status: String::new(),
         topic: validate::channel_topic(new.topic)?,
         position,
         permanent_messages: false,

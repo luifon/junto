@@ -551,6 +551,14 @@ pub enum MeetingEnd {
     PresenterLeft,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SetVoiceChannelStatus {
+    #[cfg_attr(feature = "openapi", schema(max_length = 500))]
+    pub status: String,
+}
+
 /// An absent field keeps its value. `user_limit: null` removes the limit.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

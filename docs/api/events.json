@@ -2775,6 +2775,10 @@
               "null"
             ]
           },
+          "voice_status": {
+            "maxLength": 500,
+            "type": "string"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }

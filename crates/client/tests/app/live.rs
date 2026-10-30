@@ -46,6 +46,7 @@ mod rules;
 mod sound_help;
 mod tones;
 mod tray;
+mod voice_status;
 #[cfg(target_os = "windows")]
 mod windows_share;
 

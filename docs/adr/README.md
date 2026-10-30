@@ -140,6 +140,7 @@ Status values:
 | [0519](0519-positions-of-call-answers.md) | The position in the event log that a call answer names | Accepted | `CallJoin` and `OwnCallView` carry an optional event cursor that is read in one read transaction with the call. A route that gives a place commits first and reads its answer and the token rights in a second, read-only transaction, which also checks that the seat exists. A caller whom that read refuses gets the refusal; when the seat has ended or the read could not be completed, the route gives the answer of the first one without a cursor. |
 | [0520](0520-a-request-for-a-token-names-the-seat-that-it-renews.md) | A request for a token names the seat that it renews | Accepted | `renews` on the two join routes: a token for that seat or `seat_ended` with the reason in `error.left`; such a request makes, ends and takes no seat. The server keeps the last ended seat of each account. |
 | [0521](0521-the-state-of-a-call-states-a-grant-of-meeting-mode.md) | The state of a call states a grant of meeting mode | Accepted | A mark on the seat, set when a block ends as a grant, cleared by a new block and by a report that opens the microphone; only the person reads it, in `GET /api/v1/call` and in the join answer. |
+| [0522](0522-voice-channel-status.md) | Voice channel status | Accepted | Plain text activity below a voice channel; a confirmed participant or channel manager with the status permission edits it, and the channel event carries it. |
 
 ## 0601–0699 Recording and transcripts
 

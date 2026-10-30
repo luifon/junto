@@ -674,6 +674,8 @@ impl Shell {
                 let held = self.state.clone();
                 let hover = self.state.clone();
                 let drag_name: SharedString = channel.name.clone().into();
+                let status = server_id
+                    .and_then(|server| self.voice_status_row(server, channel, theme, window, cx));
                 let frame = div()
                     .id(SharedString::from(format!("channel-drop:{channel_id}")))
                     .relative()
@@ -706,6 +708,7 @@ impl Shell {
                     // and need not be the only one.
                     .debug_selector(move || format!("channel-row:{channel_id}"))
                     .child(row)
+                    .children(status)
                     .children(menu)
                     .when_some(account_owner, |frame, owner| {
                         frame.on_drag(

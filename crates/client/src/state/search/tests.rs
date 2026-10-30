@@ -34,6 +34,7 @@ fn scene() -> Scene {
     let (own, ana) = (AccountId::generate(), AccountId::generate());
     let studio = WorkspaceId::generate();
     let channel = |kind, name: &str, position| Channel {
+        voice_status: String::new(),
         topic: String::new(),
         id: ChannelId::generate(),
         workspace_id: studio,
@@ -585,6 +586,7 @@ fn the_results_of_a_later_page_follow_the_listed_ones_in_the_order_of_the_server
     // The archived list answers: the second page joins the list after the first one, and
     // its messages do not go before the line of the transcript.
     let channel = Channel {
+        voice_status: String::new(),
         topic: String::new(),
         id: archived,
         workspace_id: scene.studio,

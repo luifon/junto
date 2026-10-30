@@ -5299,6 +5299,68 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/voice-status": {
+      "put": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "set_voice_channel_status",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetVoiceChannelStatus"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/conversations": {
       "get": {
         "tags": [
@@ -13851,6 +13913,24 @@
           },
           {
             "type": "object",
+            "required": [
+              "status",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "voice_channel_status_updated"
+                ]
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The messages of the channel are permanent from now on (ADR 0402).",
             "required": [
               "action"
@@ -15688,6 +15768,10 @@
             "format": "int32",
             "description": "The largest number of people in the call of a voice channel. Absent: no limit. A\nperson who is invited or moved in can pass it (ADR 0504).",
             "minimum": 0
+          },
+          "voice_status": {
+            "type": "string",
+            "maxLength": 500
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -19522,6 +19606,19 @@
         "properties": {
           "following": {
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetVoiceChannelStatus": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 500
           }
         },
         "additionalProperties": false

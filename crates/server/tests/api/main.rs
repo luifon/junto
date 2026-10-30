@@ -78,6 +78,7 @@ mod time_limits;
 mod transcriber_real;
 mod transcripts;
 mod upgrades;
+mod voice_status;
 
 mod call_lines;
 mod messages;

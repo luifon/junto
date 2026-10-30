@@ -52,6 +52,7 @@ mod threads;
 pub mod title_bar;
 mod transcript_edit;
 mod viewer;
+mod voice_status;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -124,6 +125,7 @@ pub(crate) enum Layer {
     /// The dialog that names a group.
     RenameGroup(junto_client_core::arrangement::GroupId),
     PersonalSection(personal::SectionDialog),
+    VoiceStatus(voice_status::Editor),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
     /// The dialog of the notification settings of a scope.
@@ -430,6 +432,7 @@ pub struct Shell {
     pub(crate) record_language_closed_by_press: bool,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
+    voice_status_field: Entity<InputState>,
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
@@ -520,6 +523,7 @@ impl Shell {
         let fork_name = Field::state(text::FORK_NAME, window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
+        let voice_status_field = Field::state("Status", window, cx);
         let search_from = Field::state("YYYY-MM-DD", window, cx);
         let search_through = Field::state("YYYY-MM-DD", window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
@@ -544,6 +548,15 @@ impl Shell {
         let book = book::BookUi::new(window, cx);
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
+            Field::observe(
+                &voice_status_field,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Submitted => this.save_voice_status(false, window, cx),
+                    FieldEvent::Changed => this.voice_status_changed(cx),
+                },
+            ),
             Field::observe(
                 &arrange.section_name,
                 window,
@@ -882,6 +895,7 @@ impl Shell {
             recording_parts_closed_by_press: false,
             record_language_closed_by_press: false,
             search_field,
+            voice_status_field,
             search_from,
             search_through,
             search_date_invalid: false,
@@ -1983,6 +1997,7 @@ impl Shell {
                 }),
             // The server shows no content any more, or the channel of the open
             // settings is gone.
+            Layer::VoiceStatus(_) => self.voice_status_editor_stale(cx),
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
             Layer::Account => self.state.read(cx).account_view().is_none(),
@@ -2056,6 +2071,7 @@ impl Shell {
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
             Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
             Layer::PersonalSection(dialog) => self.render_personal_section(*dialog, cx),
+            Layer::VoiceStatus(_) => self.render_voice_status(cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)
                 .into_any_element(),

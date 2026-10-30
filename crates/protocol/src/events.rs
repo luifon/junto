@@ -257,7 +257,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 3;
+pub const EVENT_REVISION: u32 = 4;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -1048,6 +1048,7 @@ mod tests {
         let export_id = crate::ids::ExportId::generate();
         let archived = crate::structure::ArchivedChannel {
             channel: Channel {
+                voice_status: String::new(),
                 topic: String::new(),
                 id: channel_id,
                 workspace_id,
@@ -1082,6 +1083,7 @@ mod tests {
             is_default: true,
         };
         let channel = Channel {
+            voice_status: String::new(),
             topic: String::new(),
             id: channel_id,
             workspace_id,
