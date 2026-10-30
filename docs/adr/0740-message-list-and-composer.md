@@ -168,7 +168,7 @@ the existing message menu opens the full roster, with an emoji selector and page
 reaction-toggle action. Both windows share at most eight roster pages, pinned to the
 saved entry/account; late responses are discarded after eviction or replacement. Message,
 profile and access changes clear their old names before rereading; owner changes discard
-them. A roster and tooltip recheck current place access before drawing names.
+them. A roster and tooltip recheck current place access before drawing names. Current named reactors in the roster use the shared pointer and keyboard profile control, role colour and presence mark. Departed and deleted reactors remain plain labels. Opening rechecks the saved owner, current roster page and message access. Only the current page of an open roster, at most 50 people per window, contributes profile and presence interest; paging, closure, access loss and window release withdraw that interest. Profile overlays preserve the roster for return. Tooltip names remain noninteractive. Window tests in `reaction_people::` cover profile opening, live presence, pagination and access withdrawal.
 
 A reply quote is a focusable link. A pointer press, Enter or Space opens its original
 through the shared message-link reader, which checks the current account and loads the

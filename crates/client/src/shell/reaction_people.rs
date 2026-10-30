@@ -229,6 +229,7 @@ impl Shell {
             .reaction_emojis(&key)
             .unwrap_or_else(|| dialog.emojis.clone());
         let scroll = dialog.scroll.clone();
+        let faces = self.faces(key.server_id()).for_place(key.place);
         let allowed = self.state.read(cx).reaction_people_allowed(&key);
         let read = self
             .state
@@ -299,8 +300,55 @@ impl Shell {
                 previous = page.previous_before;
                 next = page.next_after;
                 let empty = page.people.is_empty();
-                for person in page.people {
+                for person in page.people.into_iter().take(50) {
                     let id = person.id;
+                    let name = person_name(&person);
+                    let name = if person.name.is_some() && !person.departed {
+                        let state = self.state.clone();
+                        let source = key.clone();
+                        let own = cx.entity_id();
+                        let target = crate::ui::OpenProfile {
+                            server: key.server_id(),
+                            account: id,
+                        };
+                        let presence = faces.presence(id);
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(5.0))
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("reaction-presence:{id}:{presence:?}")
+                                    })
+                                    .child(crate::ui::PresenceMark::new(presence, 10.0)),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("reaction-profile:{id}"))
+                                    .child(
+                                        crate::ui::ProfileName::new(
+                                            ("reactor", id.as_uuid().as_u128() as u64),
+                                            name,
+                                            target,
+                                        )
+                                        .role_color(faces.color(id))
+                                        .on_open(
+                                            move |window, cx| {
+                                                if state
+                                                    .read(cx)
+                                                    .reaction_profile_allowed(own, &source, id)
+                                                {
+                                                    window.dispatch_action(Box::new(target), cx);
+                                                }
+                                            },
+                                        ),
+                                    ),
+                            )
+                            .into_any_element()
+                    } else {
+                        div().min_w_0().truncate().child(name).into_any_element()
+                    };
                     list = list.child(
                         div()
                             .debug_selector(move || format!("reaction-person:{id}"))
@@ -310,13 +358,7 @@ impl Shell {
                             .py(u(7.0))
                             .px(u(10.0))
                             .gap(u(2.0))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .ink(theme.colors.ink)
-                                    .child(person_name(&person)),
-                            )
+                            .child(div().min_w_0().truncate().ink(theme.colors.ink).child(name))
                             .when(person.departed, |row| {
                                 row.child(
                                     div()
@@ -391,8 +433,10 @@ impl Shell {
     }
 
     fn select_reaction_page(&mut self, key: Key, cx: &mut Context<Self>) {
+        let own = cx.entity_id();
         self.state.update(cx, |state, cx| {
-            state.read_reaction_people(key.clone(), false, cx)
+            state.read_reaction_people(key.clone(), false, cx);
+            state.watch_reaction_people(own, Some(key.clone()), cx);
         });
         if let Layer::ReactionPeople(dialog) = &mut self.layer {
             dialog.key = key;

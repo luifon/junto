@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gpui::{Context, Task};
+use gpui::{Context, EntityId, Task};
 use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId};
 use junto_client_core::protocol::message::ReactionPeople;
 use junto_client_core::protocol::{WorkspacePermission, events::Event};
@@ -37,6 +37,7 @@ pub(crate) struct Read {
 #[derive(Default)]
 pub(crate) struct Reactions {
     entries: HashMap<Key, Read>,
+    windows: HashMap<EntityId, Key>,
     number: u64,
     #[cfg(feature = "test-support")]
     page_size: Option<u32>,
@@ -45,6 +46,55 @@ pub(crate) struct Reactions {
 }
 
 impl AppState {
+    pub(crate) fn watch_reaction_people(
+        &mut self,
+        window: EntityId,
+        key: Option<Key>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reactions.windows.get(&window) == key.as_ref() {
+            return;
+        }
+        self.reactions.windows.remove(&window);
+        if let Some(key) = key {
+            self.reactions.windows.insert(window, key);
+        }
+        self.want_people(cx);
+    }
+
+    pub(crate) fn reaction_profile_allowed(
+        &self,
+        window: EntityId,
+        key: &Key,
+        account: AccountId,
+    ) -> bool {
+        self.reactions.windows.get(&window) == Some(key)
+            && self.reaction_people_read(key).is_some_and(|read| {
+                !read.failed
+                    && read.page.as_ref().is_some_and(|page| {
+                        page.people.iter().take(50).any(|person| {
+                            person.id == account && !person.departed && person.name.is_some()
+                        })
+                    })
+            })
+    }
+
+    pub(super) fn reaction_profile_people(&self) -> Vec<(ServerId, AccountId)> {
+        self.reactions
+            .windows
+            .values()
+            .flat_map(|key| {
+                self.reaction_people_read(key)
+                    .filter(|read| !read.failed)
+                    .and_then(|read| read.page.as_ref())
+                    .into_iter()
+                    .flat_map(|page| page.people.iter().take(50))
+                    .filter(|person| !person.departed && person.name.is_some())
+                    .map(|person| (key.server_id(), person.id))
+            })
+            .collect()
+    }
+
     pub(crate) fn reaction_people_owner_matches(&self, key: &Key) -> bool {
         #[cfg(feature = "test-support")]
         if self.reactions.fixtures.contains(key) {
@@ -249,6 +299,9 @@ impl AppState {
     }
 
     pub(super) fn reaction_people_forget(&mut self, server: ServerId) {
+        self.reactions
+            .windows
+            .retain(|_, key| key.server_id() != server);
         self.reactions
             .entries
             .retain(|key, _| key.server_id() != server);

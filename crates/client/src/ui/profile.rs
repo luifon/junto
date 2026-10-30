@@ -5,6 +5,9 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div,
 };
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use std::rc::Rc;
+
+type OpenHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, gpui::Action)]
 #[action(namespace = junto, no_json)]
@@ -19,6 +22,7 @@ pub struct ProfileAccess {
     target: OpenProfile,
     label: SharedString,
     child: gpui::AnyElement,
+    on_open: Option<OpenHandler>,
 }
 impl ProfileAccess {
     pub fn new(
@@ -38,6 +42,7 @@ impl ProfileAccess {
             target,
             label: label.into(),
             child: child.into_any_element(),
+            on_open: None,
         }
     }
 }
@@ -46,6 +51,10 @@ impl RenderOnce for ProfileAccess {
         let theme = theme(cx);
         let focus = super::reveal::handle(&self.id, window, cx);
         let target = self.target;
+        let open = self.on_open.unwrap_or_else(|| {
+            Rc::new(move |window, cx| window.dispatch_action(Box::new(target), cx))
+        });
+        let click = open.clone();
         let ring = super::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
         div()
             .id(self.id)
@@ -61,12 +70,12 @@ impl RenderOnce for ProfileAccess {
             .children(super::reveal::report(&focus, window))
             .focus_visible(move |style| style.shadow(ring))
             .on_click(move |_, window, cx| {
-                window.dispatch_action(Box::new(target), cx);
+                click(window, cx);
                 cx.stop_propagation();
             })
             .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    window.dispatch_action(Box::new(target), cx);
+                    open(window, cx);
                     cx.stop_propagation();
                 }
             })
@@ -81,6 +90,7 @@ pub struct ProfileName {
     target: OpenProfile,
     color: Option<gpui::Rgba>,
     role_color: Option<junto_client_core::protocol::appearance::RoleColor>,
+    on_open: Option<OpenHandler>,
 }
 impl ProfileName {
     pub fn new(
@@ -94,6 +104,7 @@ impl ProfileName {
             target,
             color: None,
             role_color: None,
+            on_open: None,
         }
     }
     pub fn role_color(
@@ -107,6 +118,10 @@ impl ProfileName {
         self.color = color;
         self
     }
+    pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_open = Some(Rc::new(handler));
+        self
+    }
 }
 impl RenderOnce for ProfileName {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -114,6 +129,17 @@ impl RenderOnce for ProfileName {
             self.role_color
                 .map(|color| crate::theme::role_name_ink(color, &theme(cx)))
         });
+        let mut access = ProfileAccess::new(
+            self.id,
+            self.target,
+            text::profile::open_for(&self.name),
+            div()
+                .min_w_0()
+                .truncate()
+                .when_some(color, |name, color| name.text_color(color))
+                .child(super::paint_text(self.name, None)),
+        );
+        access.on_open = self.on_open;
         div()
             .debug_selector(move || {
                 format!(
@@ -124,16 +150,7 @@ impl RenderOnce for ProfileName {
             .flex()
             .min_w_0()
             .max_w_full()
-            .child(ProfileAccess::new(
-                self.id,
-                self.target,
-                text::profile::open_for(&self.name),
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .when_some(color, |name, color| name.text_color(color))
-                    .child(super::paint_text(self.name, None)),
-            ))
+            .child(access)
     }
 }
 

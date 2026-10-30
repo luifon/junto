@@ -1623,7 +1623,11 @@ impl AppState {
                 .as_ref()
                 .map(|(server_id, listed)| (*server_id, listed)),
         );
-        for (server, account) in self.profile_people() {
+        for (server, account) in self
+            .profile_people()
+            .into_iter()
+            .chain(self.reaction_profile_people())
+        {
             wanted
                 .entry(server)
                 .or_default()

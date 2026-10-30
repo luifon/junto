@@ -605,6 +605,7 @@ impl Shell {
                 this.state.update(cx, |state, cx| {
                     state.close_switcher(own_entity, cx);
                     state.close_profile(own_entity, cx);
+                    state.watch_reaction_people(own_entity, None, cx);
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
                 });
@@ -1447,6 +1448,14 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        let reaction = match &layer {
+            Layer::ReactionPeople(dialog) => Some(dialog.key.clone()),
+            _ => None,
+        };
+        let own = cx.entity_id();
+        self.state.update(cx, |state, cx| {
+            state.watch_reaction_people(own, reaction, cx)
+        });
         if matches!(self.layer, Layer::Profile) {
             self.close_profile(window, cx);
         }
@@ -1488,6 +1497,9 @@ impl Shell {
             self.close_switcher(window, cx);
             return;
         }
+        let own = cx.entity_id();
+        self.state
+            .update(cx, |state, cx| state.watch_reaction_people(own, None, cx));
         if let Layer::ThreadMenu(open) = self.layer {
             self.state.update(cx, |state, cx| {
                 state.end_thread_menu(open.owner, open.root_id, cx)
