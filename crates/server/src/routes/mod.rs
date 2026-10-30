@@ -36,6 +36,7 @@ pub mod health;
 pub mod internal;
 pub mod invites;
 pub mod layout;
+pub mod message_format;
 pub mod messages;
 pub mod moderation;
 pub mod moderation_notices;
@@ -65,7 +66,10 @@ pub const SESSION_SECURITY: &str = "session";
         title = "Junto server API",
         description = "The public application API of a Junto server. Every route is under the \
                        version prefix, except the server information route, which tells a \
-                       client which versions the server supports.",
+                       client which versions the server supports. Junto-Event-Revision \
+                       advertises a reader's document decoder revision; without it message \
+                       reads use v1 paragraphs and quotes. Message extensions require the \
+                       revision advertised by /api/v1/message-format.",
         license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
     components(schemas(ErrorBody)),
@@ -136,6 +140,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         )
     });
     add(&mut router, || routes!(health::get_health));
+    add(&mut router, || routes!(message_format::supported));
     add(&mut router, || routes!(threads::history, threads::reply));
     add(&mut router, || routes!(threads::fork));
     add(&mut router, || routes!(messages::mark_unread));
@@ -520,6 +525,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(unknown_path)
         .method_not_allowed_fallback(wrong_method)
         .layer(middleware::from_fn_with_state(state.clone(), whole_body))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            message_format::middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::receipts::middleware,

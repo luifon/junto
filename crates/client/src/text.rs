@@ -2348,6 +2348,8 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
     }
 }
 
+pub const SERVER_MESSAGE_UPDATE: &str = "The server needs an update to accept this message format.";
+
 /// The file dialog was answered after the composer had changed to another place or to
 /// another account.
 pub const FILES_OF_ANOTHER_PLACE: &str = "The files were not attached: the composer shows another place than the one that they were chosen for.";

@@ -9,7 +9,11 @@ use crate::{
     messages::{self, Place, Purpose, document},
     read, store, transact,
 };
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use junto_authz::{Request, ServerPermission, WorkspacePermission};
 use junto_protocol::{
     error::ErrorCode,
@@ -165,7 +169,9 @@ pub(super) async fn send(
     bearer: &Bearer,
     target: Target,
     body: &SendMessage,
+    client_revision: u32,
 ) -> ApiResult<Message> {
+    super::message_format::require(&body.document, client_revision)?;
     let named = messages::threads::named(&document::validate(&body.document)?);
     if !document::has_content(&body.document) && body.attachments.is_empty() {
         return Err(ApiError::invalid("a message needs text or an attachment"));
@@ -334,8 +340,11 @@ pub async fn edit_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<EditMessage>,
 ) -> ApiResult<Json<Message>> {
+    let client_revision = super::message_format::revision(&headers);
+    super::message_format::require(&body.document, client_revision)?;
     let named = messages::threads::named(&document::validate(&body.document)?);
     let now = app.now();
     let mut counted = false;
@@ -347,6 +356,9 @@ pub async fn edit_message(
         }
         place.require_open()?;
         place.edit(&access, &message)?;
+        if let Some(document) = &message.document {
+            super::message_format::require(document, client_revision)?;
+        }
         place.require_send(&access, message.thread_root.is_some())?;
         rate(&app, &access, &mut counted)?;
         if !document::has_content(&body.document) && message.attachments.is_empty() {
@@ -691,11 +703,21 @@ pub async fn send_channel_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<ChannelId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Channel(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Channel(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 #[utoipa::path(put,path="/api/v1/channels/{channel_id}/messages/read",tag="messages",params(("channel_id"=ChannelId,Path)),request_body=MarkRead,security(("session"=[])),responses((status=200,body=MessageState),ApiError))]
@@ -726,11 +748,21 @@ pub async fn send_conversation_message(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<ConversationId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Direct(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Direct(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 #[utoipa::path(put,path="/api/v1/conversations/{conversation_id}/messages/read",tag="messages",params(("conversation_id"=ConversationId,Path)),request_body=MarkRead,security(("session"=[])),responses((status=200,body=MessageState),ApiError))]

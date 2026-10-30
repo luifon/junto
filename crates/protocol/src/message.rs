@@ -104,6 +104,13 @@ pub enum Inline {
 pub const MAX_INLINE_DEPTH: usize = 8;
 pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
 pub const MAX_LIST_ITEMS: usize = 5_500;
+pub const DOCUMENT_REVISION: u32 = 9;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DocumentFormat {
+    pub event_revision: u32,
+}
 
 pub struct InlineNodes<'a> {
     stack: Vec<(std::slice::Iter<'a, Inline>, usize)>,
@@ -133,6 +140,22 @@ impl<'a> Iterator for InlineNodes<'a> {
 }
 
 impl Document {
+    pub fn required_revision(&self) -> u32 {
+        if self.blocks.iter().any(|block| {
+            matches!(
+                block,
+                Block::Heading { .. } | Block::Small { .. } | Block::Forward { .. }
+            )
+        }) || self
+            .inlines()
+            .any(|(node, _)| matches!(node, Inline::Spoiler { .. } | Inline::Channel { .. }))
+        {
+            DOCUMENT_REVISION
+        } else {
+            0
+        }
+    }
+
     pub fn list_items(&self) -> usize {
         self.blocks
             .iter()

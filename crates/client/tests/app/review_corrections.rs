@@ -135,3 +135,59 @@ fn forwarding_unicode_mentions_above_32_kib_is_confirmed_in_the_desktop(cx: &mut
         copied.message.document
     );
 }
+
+#[gpui::test]
+fn a_new_client_refuses_new_document_writes_to_an_old_server(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    use junto_client_core::protocol::message::Inline;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.write("an ordinary v1 message");
+    let id = window.until_message("an ordinary v1 message").message.id;
+    let server_id = window.view().selected.unwrap().id;
+    let place = PlaceId::Channel(window.selected_channel());
+    let api = window.state.read_with(&window.cx, |state, _| {
+        state.client().server(server_id).unwrap().api()
+    });
+    let body = Document {
+        blocks: vec![Block::Heading {
+            level: 2,
+            content: vec![Inline::Text {
+                text: "a new format".into(),
+                marks: vec![],
+            }],
+        }],
+    };
+    proxy.fail("/api/v1/message-format", [Fault::NotFound, Fault::NotFound]);
+    let before = proxy.all().len();
+    for editing in [false, true] {
+        let result = world.run(async {
+            if editing {
+                api.edit_message(id, body.clone()).await
+            } else {
+                api.send_message(
+                    place,
+                    &SendMessage {
+                        document: body.clone(),
+                        reply_to: None,
+                        attachments: vec![],
+                    },
+                )
+                .await
+            }
+        });
+        assert!(
+            matches!(result, Err(junto_client_core::api::ApiError::Request(ref reason)) if reason.contains("update")),
+            "{result:?}"
+        );
+    }
+    let send_path = format!("/api/v1/channels/{}/messages", window.selected_channel());
+    let edit_path = format!("/api/v1/messages/{id}");
+    assert!(!proxy.all()[before..].iter().any(|request| {
+        (request.method == "POST" && request.path == send_path)
+            || (request.method == "PUT" && request.path == edit_path)
+    }));
+}

@@ -1404,6 +1404,19 @@ impl Shell {
             return;
         };
         let document = self.composer_document(pane, cx);
+        let required = document.required_revision();
+        if required > 0
+            && self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.live().view().server_events)
+                .is_some_and(|revision| revision < required)
+        {
+            self.pen_mut(pane).problem = Some(text::SERVER_MESSAGE_UPDATE.into());
+            cx.notify();
+            return;
+        }
         let editing = self
             .pen(pane)
             .editing

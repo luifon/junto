@@ -1,5 +1,9 @@
 //! Thread history and transactional copies into channels.
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
 use junto_authz::{Request, WorkspacePermission};
 use junto_protocol::{
     audit::AuditEvent,
@@ -93,11 +97,21 @@ pub async fn reply(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SendMessage>,
 ) -> ApiResult<(StatusCode, Json<Message>)> {
     Ok((
         StatusCode::CREATED,
-        Json(send(&app, &bearer, Target::Thread(id), &body).await?),
+        Json(
+            send(
+                &app,
+                &bearer,
+                Target::Thread(id),
+                &body,
+                super::message_format::revision(&headers),
+            )
+            .await?,
+        ),
     ))
 }
 

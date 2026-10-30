@@ -301,6 +301,10 @@ fn build(
         .request(method, request.url)
         .header(reqwest::header::ACCEPT, accepted)
         .header("Junto-Notification-Preferences", "1");
+    builder = builder.header(
+        "Junto-Event-Revision",
+        junto_protocol::events::EVENT_REVISION.to_string(),
+    );
     if let Some(token) = &request.bearer {
         builder = builder.bearer_auth(token.expose());
     }

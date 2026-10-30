@@ -364,6 +364,13 @@ for the envelope and a thread root. Export batches use the same byte budget
 and continue from the last retained message; their JSON and HTML output keeps
 the full document. Search excerpts contain at most 512 Unicode characters.
 
+API v1 readers negotiate document extensions through Junto-Event-Revision
+(ADR 0206). Older readers get visible text in original v1 node kinds; copied
+messages are quotes with a source line. Concealed spoilers remain concealed.
+Typed documents remain in PostgreSQL and exports, and only the response is
+projected. An older editor cannot replace an extension document with the
+plaintext fallback it saw.
+
 Search still indexes spoiler contents, so an authorized reader can find the message. Its returned snippet substitutes Spoiler for each concealed subtree while retaining ordinary surrounding text. Quotes and notification excerpts likewise conceal those subtrees. Explicit whole-message copying preserves their plain text. HTML exports use native, initially closed details controls; no script is needed.
 
 Search matching and ranking use stored vectors. Message excerpts are constructed from the returned documents after the result limit, with the same spoiler masking as other excerpts; transcript hits use their stored text. Excerpt construction is bounded by the page size rather than the number of matching messages.

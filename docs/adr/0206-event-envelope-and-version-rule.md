@@ -60,7 +60,7 @@ Later events:
 - A program in another language can generate its types from `docs/api/events.json`.
 - The server sends no binary frames and accepts none.
 
-Revision 3 introduces the forwarded-message reference in the typed message document (ADR 0408). A server advertises this revision so that an older client states that an update is needed to read the new document kind, even though event delivery still names messages by ID.
+Revision 3 introduced the forwarded-message reference in the typed message document (ADR 0408). Revision 9 supplies the negotiated document representation described below; an event revision warning alone is insufficient for older fixed document decoders.
 
 Revision 4 adds `message_marked_unread`, with the place, optional thread root, backward
 position and read revision. The account alone receives it under current place access.
@@ -69,6 +69,26 @@ Revision 5 identifies typed channel-reference inline nodes. They carry an ID and
 
 Revision 6 identifies heading and small-text blocks and spoiler inline containers. All descendants remain subject to the document and client trust bounds (ADR 0408, ADR 0747).
 
-Revision 7 changes forwarded messages to destination-owned copies with permission-checked origin metadata (ADR 0408). Earlier reference-only clients must update before reading this revision.
+Revision 7 changes forwarded messages to destination-owned copies with permission-checked origin metadata (ADR 0408). Unnegotiated v1 readers receive the quoted representation described below.
 
 Revision 8 adds transient typing and watch frames. Clients send them only after a server has advertised revision 8 or later; dropping a connection discards pending activity rather than replaying it.
+
+Revision 9 negotiates document extensions without changing the fixed enum sets of
+unnegotiated API v1. Hello advertises the server revision; HTTP requests advertise
+the client's decoder through `Junto-Event-Revision`. An absent header is revision
+0. A modern reader opts into the typed extensions; an older reader receives a
+paragraph with visible text, or a quote for a forwarded copy with its source server
+and message identifier. Mention labels use current ViewAccount access and channel names use
+the reader's current ViewChannel access. Concealed spoilers become Spoiler, so a
+fallback cannot disclose them in notifications or previews. The stored document
+is unchanged. History pages are bounded again after projection because expanded
+labels can increase their bytes.
+
+`GET /api/v1/message-format` is capability metadata for an authenticated session. Before a modern write,
+the client checks its advertised revision; a missing route or an older format is
+refused locally before POST or PUT. A request-construction refusal is known not
+sent and stays in the outbox as such. The composer also refuses unsupported
+formatting when hello already identifies an older server, retaining its draft.
+The server requires the decoder revision for extension writes and refuses an
+older editor changing a document whose format it cannot read, preventing a
+plaintext fallback from overwriting concealed content or typed references.

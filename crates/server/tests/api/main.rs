@@ -84,6 +84,7 @@ mod call_lines;
 mod messages;
 mod messages_access;
 mod messages_attachments;
+mod messages_compat;
 mod messages_content;
 mod messages_migration;
 mod messages_queries;

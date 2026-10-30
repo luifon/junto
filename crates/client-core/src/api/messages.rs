@@ -106,6 +106,30 @@ fn emoji_segment(emoji: &str) -> String {
 }
 
 impl ServerApi {
+    async fn check_document_format(&self, document: &Document) -> Result<(), ApiError> {
+        let required = document.required_revision();
+        if required == 0 {
+            return Ok(());
+        }
+        let format: junto_protocol::message::DocumentFormat =
+            self.get("/message-format".into()).await.map_err(|error| {
+                ApiError::Request(
+                    if error.code() == Some(junto_protocol::error::ErrorCode::NotFound) {
+                        "The server needs an update to accept this message format.".to_owned()
+                    } else {
+                        format!(
+                            "The message format could not be checked; nothing was sent: {error}"
+                        )
+                    },
+                )
+            })?;
+        if format.event_revision < required {
+            return Err(ApiError::Request(
+                "The server needs an update to accept this message format.".into(),
+            ));
+        }
+        Ok(())
+    }
     // History and writes.
 
     /// One page of the messages of a place, in the order of their positions. For a
@@ -144,6 +168,7 @@ impl ServerApi {
         place: PlaceId,
         message: &SendMessage,
     ) -> Result<Changed<Message>, ApiError> {
+        self.check_document_format(&message.document).await?;
         let sent: Changed<Message> = self
             .change(Method::Post, messages_of(place), Some(message))
             .await?;
@@ -163,6 +188,7 @@ impl ServerApi {
         message_id: MessageId,
         document: Document,
     ) -> Result<Message, ApiError> {
+        self.check_document_format(&document).await?;
         let path = format!("/messages/{message_id}");
         bounded(
             self.send(Method::Put, path, &EditMessage { document })

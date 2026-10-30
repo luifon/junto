@@ -1826,6 +1826,10 @@ impl Client {
                 sending.attempted_at = None;
                 self.set_send_state(id, SendState::Failed(SendFailure::NotSent));
             }
+            Err(ApiError::Request(_)) => {
+                sending.attempted_at = None;
+                self.set_send_state(id, SendState::Failed(SendFailure::NotSent));
+            }
             Err(error) => {
                 tracing::debug!(%error, "a message was sent and no answer arrived");
                 self.set_send_state(id, SendState::Unconfirmed);
