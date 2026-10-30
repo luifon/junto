@@ -1116,9 +1116,8 @@ async fn the_worker_is_ended_when_its_recording_is_removed() {
 }
 
 /// The worker reads the audio of its recording until it ends. A removal of the recording
-/// while it runs ends the worker at once, and the files of the recording wait for the lease
-/// of the job: the worker never finds its audio gone, which it would answer with the exit code
-/// of a refused job (ADR 0608).
+/// while it runs ends the worker at once, before the files become eligible for deletion
+/// (ADR 0608).
 #[cfg(unix)]
 #[tokio::test]
 async fn a_removed_recording_keeps_its_files_until_its_worker_has_ended() {
@@ -1130,7 +1129,8 @@ async fn a_removed_recording_keeps_its_files_until_its_worker_has_ended() {
     let id = done.recording.id;
     worker.give(&two_lines(&done));
     worker.behave(
-        "touch \"$here/started\"\n\
+        "echo $$ > \"$here/worker\"\n\
+         touch \"$here/started\"\n\
          while [ -d \"$6\" ]; do sleep 0.05; done\n\
          touch \"$here/audio-gone\"\n\
          exit 2",
@@ -1142,32 +1142,63 @@ async fn a_removed_recording_keeps_its_files_until_its_worker_has_ended() {
             .unwrap()
     });
     let waited = std::time::Instant::now();
-    while worker.runs().is_empty() {
+    while !worker.path_exists("started") {
         assert!(waited.elapsed() < std::time::Duration::from_secs(60));
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    let directory = server.recordings_dir().join(id.to_string());
+    assert!(directory.exists());
     server
         .delete(owner, &format!("/api/v1/recordings/{id}"))
         .await
         .empty(StatusCode::NO_CONTENT);
-    // The files are not deleted while the run holds them.
-    server.process().await;
-    let directory = server.recordings_dir().join(id.to_string());
-    assert!(directory.exists());
-
     // The run learns of the removal without waiting for its heartbeat, and ends the worker.
     let ended = tokio::time::timeout(std::time::Duration::from_secs(60), run).await;
     assert!(ended.unwrap().unwrap());
+    assert!(!alive(&worker, "worker"));
     assert!(
         !worker.path_exists("audio-gone"),
         "the worker found the audio of its recording gone"
     );
     assert_eq!(server.count("transcripts").await, 0);
-    assert!(directory.exists());
+    // An ended worker releases the files without waiting for its lease.
+    server.process().await;
+    assert!(!directory.exists());
+}
 
-    // After the lease of the job the files are deleted.
+#[tokio::test]
+async fn a_removed_recording_keeps_its_files_until_an_unreachable_workers_lease_ends() {
+    let worker = FakeWorker::new();
+    let studio = Studio::on(worker.server().await).await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let done = studio.finished_after(length()).await;
+    let id = done.recording.id;
+    sqlx::query(
+        "update transcripts set state = 'running', attempts = 1, claimed_by = $1,
+             claimed_at = $2, heartbeat_at = $2 where recording_id = $3",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(server.clock.now())
+    .bind(id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    server
+        .delete(owner, &format!("/api/v1/recordings/{id}"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let directory = server.recordings_dir().join(id.to_string());
+    server.process().await;
+    assert!(directory.exists());
+    assert_eq!(server.count("transcripts").await, 0);
+
     let lease = server.state.config.limits.recordings.transcription.lease;
-    server.clock.advance(lease + Duration::seconds(1));
+    server.clock.advance(lease - Duration::seconds(1));
+    server.process().await;
+    assert!(directory.exists());
+    server.clock.advance(Duration::seconds(2));
     server.process().await;
     assert!(!directory.exists());
 }
