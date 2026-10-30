@@ -435,6 +435,7 @@ fn word<T: serde::Serialize>(value: &T) -> String {
 fn place(place: &CallPlace) -> String {
     match place {
         CallPlace::Channel { channel_id, .. } => format!("channel {channel_id}"),
+        CallPlace::Group { conversation_id } => format!("group {conversation_id}"),
         CallPlace::Direct {
             low_account_id,
             high_account_id,
@@ -978,6 +979,13 @@ fn event_details(event: &Event) -> String {
         Event::CallAccessEnded {} => String::new(),
         Event::DirectMuteSet { mute } => format!("account={}", mute.account_id),
         Event::DirectMuteRemoved { account_id } => format!("account={account_id}"),
+        Event::GroupConversationChanged { group } => {
+            format!("group={} name={}", group.id, group.name)
+        }
+        Event::GroupConversationLeft {
+            conversation_id,
+            account_id,
+        } => format!("group={conversation_id} account={account_id}"),
         Event::ConversationOpened { conversation } => format!(
             "conversation={} accounts={},{}",
             conversation.id, conversation.low_account_id, conversation.high_account_id
@@ -1065,13 +1073,15 @@ fn message_place(place: &MessagePlace) -> String {
         MessagePlace::Channel { channel_id, .. } => format!("channel={channel_id}"),
         MessagePlace::Direct {
             conversation_id, ..
-        } => format!("conversation={conversation_id}"),
+        }
+        | MessagePlace::Group { conversation_id } => format!("conversation={conversation_id}"),
     }
 }
 
 fn pair(place: &CallPlace) -> String {
     match place {
         CallPlace::Channel { channel_id, .. } => format!("channel={channel_id}"),
+        CallPlace::Group { conversation_id } => format!("group={conversation_id}"),
         CallPlace::Direct {
             low_account_id,
             high_account_id,

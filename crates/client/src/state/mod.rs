@@ -1211,14 +1211,12 @@ impl AppState {
             // that its acceptance does not replace this call.
             self.withdraw_entry(cx);
             self.refresh_devices(cx);
-            if self
-                .known
-                .media
-                .calls
-                .call
-                .as_ref()
-                .is_some_and(|call| matches!(call.target.place, CallPlace::Direct { .. }))
-            {
+            if self.known.media.calls.call.as_ref().is_some_and(|call| {
+                matches!(
+                    call.target.place,
+                    CallPlace::Direct { .. } | CallPlace::Group { .. }
+                )
+            }) {
                 self.show_call(cx);
             }
         }
@@ -2203,6 +2201,10 @@ impl AppState {
             return;
         };
         let target = call.target;
+        if let CallPlace::Group { conversation_id } = target.place {
+            self.select_conversation(target.server_id, conversation_id, cx);
+            return;
+        }
         if let CallPlace::Direct {
             low_account_id,
             high_account_id,

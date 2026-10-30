@@ -1105,3 +1105,67 @@ fn a_pin_list_and_the_named_messages_hold_a_bounded_weight() {
     assert_eq!(read, roots.len() - 3);
     assert_eq!(model.named(roots.last().unwrap().id), Some(&Named::Failed));
 }
+
+#[test]
+fn leaving_a_group_or_losing_contact_withdraws_cached_messages_before_a_reload() {
+    for leaving in [false, true] {
+        let scene = scene();
+        let mut model = scene.model();
+        let group = junto_protocol::message::GroupConversation {
+            id: ConversationId::generate(),
+            name: "Project".to_owned(),
+            account_ids: vec![
+                scene.account_id,
+                AccountId::generate(),
+                AccountId::generate(),
+            ],
+        };
+        model.apply(&Event::GroupConversationChanged {
+            group: group.clone(),
+        });
+        let place = PlaceId::Direct(group.id);
+        let protocol_place = MessagePlace::Group {
+            conversation_id: group.id,
+        };
+        model.open_timeline(place);
+        let message = message(
+            protocol_place,
+            1,
+            group.account_ids[1],
+            "Private project message",
+        );
+        model
+            .timeline_mut(place)
+            .unwrap()
+            .replace(vec![message.clone()], false, false);
+        model.set_message_state(state(protocol_place, 0, 1, 1));
+        model
+            .named
+            .push((message.id, Named::Read(Arc::new(message.clone()))));
+        model.notices.push(junto_protocol::discovery::Notification {
+            id: uuid::Uuid::now_v7(),
+            message_id: message.id,
+            kind: junto_protocol::discovery::NotificationKind::Direct,
+            created_at: time(),
+            read_at: None,
+        });
+        let follow = model.apply(&if leaving {
+            Event::GroupConversationLeft {
+                conversation_id: group.id,
+                account_id: scene.account_id,
+            }
+        } else {
+            Event::PermissionsChanged { workspace_id: None }
+        });
+        assert!(follow.reload && follow.withdrawn);
+        assert!(model.group_conversations.is_empty());
+        assert!(
+            model
+                .timeline(place)
+                .is_none_or(|timeline| timeline.messages.is_empty())
+        );
+        assert!(model.message_state(place).is_none());
+        assert!(model.notices.is_empty());
+        assert!(model.named(message.id).is_none());
+    }
+}

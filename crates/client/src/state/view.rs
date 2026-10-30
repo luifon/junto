@@ -458,7 +458,8 @@ pub struct FollowControl {
 pub struct DirectRow {
     pub id: ConversationId,
     /// The other account of the conversation.
-    pub account_id: AccountId,
+    pub account_id: Option<AccountId>,
+    pub members: Vec<(AccountId, String)>,
     /// Absent while the client has not read the name of the account.
     pub name: Option<String>,
     pub selected: bool,
@@ -468,6 +469,17 @@ pub struct DirectRow {
     /// The other account left the server or was deleted: the conversation is read only
     /// (ADR 0121).
     pub departure: Option<Departure>,
+}
+
+impl DirectRow {
+    pub fn call_place(&self, own: AccountId) -> CallPlace {
+        self.account_id.map_or(
+            CallPlace::Group {
+                conversation_id: self.id,
+            },
+            |other| CallPlace::direct(own, other),
+        )
+    }
 }
 
 /// The thread that the side panel shows (ADR 0403).
@@ -1243,8 +1255,8 @@ pub struct ServerLists {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCall {
-    /// The other account of the call.
-    pub other: AccountId,
+    /// The other account of a pair call; absent in a group.
+    pub other: Option<AccountId>,
     /// Absent while the client has not read the name of the account.
     pub name: Option<String>,
     /// The other account has a place in the call. Before that the call rings.
@@ -2571,7 +2583,10 @@ fn directs(
             };
             DirectRow {
                 id: conversation.id,
-                account_id: other,
+                account_id: Some(other),
+                members: name_of(server_id, other, workspace, model, known)
+                    .map(|name| vec![(other, name)])
+                    .unwrap_or_default(),
                 name: name_of(server_id, other, workspace, model, known),
                 selected: selected == Some(conversation.id),
                 unread: unreads.at(PlaceId::Direct(conversation.id)),
@@ -2580,6 +2595,25 @@ fn directs(
             }
         })
         .collect();
+    rows.extend(model.group_conversations.iter().map(|group| {
+        DirectRow {
+            id: group.id,
+            account_id: None,
+            members: group
+                .account_ids
+                .iter()
+                .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
+                .filter_map(|id| {
+                    name_of(server_id, *id, workspace, model, known).map(|name| (*id, name))
+                })
+                .collect(),
+            name: Some(crate::text::label(&group.name)),
+            selected: selected == Some(group.id),
+            unread: unreads.at(PlaceId::Direct(group.id)),
+            mute: Mute::of_group(group.id, model, known),
+            departure: None,
+        }
+    }));
     rows.sort_by(|one, other| {
         let key = |row: &DirectRow| {
             (
@@ -2635,7 +2669,10 @@ fn server_lists(
         .conversations
         .get(&server_id)
         .copied()
-        .filter(|id| model.conversations.iter().any(|held| held.id == *id));
+        .filter(|id| {
+            model.conversations.iter().any(|held| held.id == *id)
+                || model.group_conversations.iter().any(|held| held.id == *id)
+        });
     let directs = directs(
         server_id,
         workspace,
@@ -2653,7 +2690,7 @@ fn server_lists(
         .and_then(|row| {
             let active = known.media.calls.call.as_ref().filter(|active| {
                 active.target.server_id == server_id
-                    && active.target.place == CallPlace::direct(model.account.id, row.account_id)
+                    && active.target.place == row.call_place(model.account.id)
             })?;
             Some(direct_panel(
                 server_id,
@@ -2696,7 +2733,7 @@ fn server_lists(
                 administrator: model.is_administrator(),
                 open_thread: None,
                 target: target_of_jump(server_id, timeline, known),
-                threads: true,
+                threads: false,
                 writes: feed::Writes::ALL,
                 quoted: &known.quoted,
                 zone: known.zone,
@@ -3543,7 +3580,7 @@ fn call_panel(
 /// shows.
 fn direct_panel(
     server_id: ServerId,
-    other: AccountId,
+    other: Option<AccountId>,
     active: &ActiveCall,
     workspace: Option<&WorkspaceModel>,
     model: &ServerModel,
@@ -3553,8 +3590,24 @@ fn direct_panel(
     let people = call_people(server_id, call, Some(active), workspace, model, known);
     let place = PanelPlace::Direct(DirectCall {
         other,
-        name: name_of(server_id, other, workspace, model, known),
-        joined: call.is_some_and(|call| call.participant(other).is_some()),
+        name: other
+            .and_then(|other| name_of(server_id, other, workspace, model, known))
+            .or_else(|| {
+                if let CallPlace::Group { conversation_id } = active.target.place {
+                    model
+                        .group_conversations
+                        .iter()
+                        .find(|group| group.id == conversation_id)
+                        .map(|group| crate::text::label(&group.name))
+                } else {
+                    None
+                }
+            }),
+        joined: call.is_some_and(|call| {
+            other.map_or(call.participants.len() > 1, |other| {
+                call.participant(other).is_some()
+            })
+        }),
     });
     media_panel(server_id, active, workspace, model, known, people, place)
 }
@@ -3738,7 +3791,7 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
             };
             let workspace = match invitation.place {
                 CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id),
-                CallPlace::Direct { .. } => None,
+                CallPlace::Direct { .. } | CallPlace::Group { .. } => None,
             };
             let by = workspace
                 .and_then(|workspace| {
@@ -3767,13 +3820,23 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                 caller: invitation.invited_by,
                 target,
                 by,
-                channel: channel_of(servers, &target),
+                channel: channel_of(servers, &target).or_else(|| {
+                    if let CallPlace::Group { conversation_id } = target.place {
+                        model
+                            .group_conversations
+                            .iter()
+                            .find(|group| group.id == conversation_id)
+                            .map(|group| crate::text::label(&group.name))
+                    } else {
+                        None
+                    }
+                }),
                 created_at: invitation.created_at,
                 may_connect: match invitation.place {
                     CallPlace::Channel { channel_id, .. } => model
                         .permissions_in(channel_id)
                         .is_none_or(|held| held.contains(&WorkspacePermission::Connect)),
-                    CallPlace::Direct { .. } => true,
+                    CallPlace::Direct { .. } | CallPlace::Group { .. } => true,
                 },
             });
         }
@@ -3798,7 +3861,7 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
     };
     let workspace = match active.target.place {
         CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id),
-        CallPlace::Direct { .. } => None,
+        CallPlace::Direct { .. } | CallPlace::Group { .. } => None,
     };
     model
         .entry_requests
@@ -3841,7 +3904,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         let model = shown_model(server)?;
         let workspace = match active.target.place {
             CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id)?,
-            CallPlace::Direct { .. } => return None,
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => return None,
         };
         name_of(server.id, account_id, Some(workspace), model, known)
     };
@@ -3894,7 +3957,7 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
             workspace_id,
             channel_id,
         } => (Some(workspace_id), Some(channel_id)),
-        CallPlace::Direct { .. } => (None, None),
+        CallPlace::Direct { .. } | CallPlace::Group { .. } => (None, None),
     };
     let model = servers
         .iter()
@@ -3907,6 +3970,16 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         workspace_id,
         channel_id,
         name: channel_of(servers, &active.target).or_else(|| {
+            if let CallPlace::Group { conversation_id } = active.target.place {
+                return model
+                    .and_then(|model| {
+                        model
+                            .group_conversations
+                            .iter()
+                            .find(|group| group.id == conversation_id)
+                    })
+                    .map(|group| crate::text::label(&group.name));
+            }
             let CallPlace::Direct {
                 low_account_id,
                 high_account_id,

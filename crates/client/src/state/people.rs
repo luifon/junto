@@ -1051,7 +1051,19 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
         }
         panel_people(view, &mut people);
         if let Some(lists) = lists {
-            people.extend(lists.directs.iter().map(|direct| direct.account_id));
+            people.extend(lists.directs.iter().filter_map(|direct| direct.account_id));
+            if let Some(model) = servers
+                .iter()
+                .find(|server| server.id == server_id)
+                .and_then(shown_model)
+            {
+                people.extend(
+                    model
+                        .group_conversations
+                        .iter()
+                        .flat_map(|group| group.account_ids.iter().copied()),
+                );
+            }
             // The account of a conversation that the server did not open is named in the
             // statement of the refusal.
             people.extend(
@@ -1113,7 +1125,7 @@ pub(super) fn add_call_people(
             CallPlace::Channel { workspace_id, .. } => shown
                 .workspace()
                 .is_some_and(|workspace| workspace.id == workspace_id),
-            CallPlace::Direct { .. } => true,
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => true,
         };
     let (people, own) = if holds_place {
         let people = match call.place {
@@ -1127,6 +1139,13 @@ pub(super) fn add_call_people(
                 .flat_map(|voice| &voice.occupants)
                 .map(|occupant| occupant.account_id)
                 .collect(),
+            CallPlace::Group { conversation_id } => call_people_of(
+                servers
+                    .iter()
+                    .find(|server| server.id == call.server_id)
+                    .and_then(shown_model),
+                CallPlace::Group { conversation_id },
+            ),
             CallPlace::Direct {
                 low_account_id,
                 high_account_id,
@@ -1199,6 +1218,15 @@ fn call_people_of(model: Option<&ServerModel>, place: CallPlace) -> Vec<AccountI
             }
             people
         }
+        CallPlace::Group { conversation_id } => model
+            .and_then(|model| {
+                model
+                    .group_conversations
+                    .iter()
+                    .find(|group| group.id == conversation_id)
+            })
+            .map(|group| group.account_ids.clone())
+            .unwrap_or_default(),
         CallPlace::Direct {
             low_account_id,
             high_account_id,

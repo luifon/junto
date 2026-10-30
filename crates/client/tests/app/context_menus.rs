@@ -714,7 +714,7 @@ fn a_member_row_copies_identity_and_opens_its_existing_direct_action(cx: &mut Te
             lists
                 .conversation
                 .as_ref()
-                .is_some_and(|conversation| conversation.account_id == account)
+                .is_some_and(|conversation| conversation.account_id == Some(account))
         })
     });
 }
@@ -778,7 +778,7 @@ fn message_author_names_and_avatars_have_account_actions_instead_of_message_acti
             lists
                 .conversation
                 .as_ref()
-                .is_some_and(|conversation| conversation.account_id == account)
+                .is_some_and(|conversation| conversation.account_id == Some(account))
         })
     });
     window.click_channel("general");

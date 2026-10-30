@@ -136,7 +136,7 @@ impl Shell {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .child(self.render_direct_call(server.id, conversation.account_id, cx))
+                        .child(self.render_conversation_call(server.id, conversation, cx))
                         .child(self.render_feed(
                             lists,
                             false,

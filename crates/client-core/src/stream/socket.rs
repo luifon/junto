@@ -128,6 +128,7 @@ impl StreamTransport for ReqwestStreamTransport {
                 .get(request.url)
                 .bearer_auth(request.bearer.expose())
                 .header(ACCEPT, "application/json")
+                .header(junto_protocol::message::GROUPS_HEADER, "1")
                 .header(CONNECTION, "upgrade")
                 .header(UPGRADE, "websocket")
                 .header(SEC_WEBSOCKET_VERSION, "13")

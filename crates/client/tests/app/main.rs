@@ -50,6 +50,7 @@ mod files;
 mod flows;
 mod glossary;
 mod gpui_panics;
+mod group_conversations;
 mod keybinds;
 mod message_links;
 mod rule_changes;

@@ -248,7 +248,7 @@ impl Withheld {
             CallPlace::Channel { channel_id, .. } => {
                 model.permissions_in(*channel_id).map(Self::of)
             }
-            CallPlace::Direct { .. } => Some(Self::default()),
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => Some(Self::default()),
         }
     }
 }
@@ -1213,6 +1213,7 @@ async fn request(
         return api.accept_call_invitation(invitation_id).await;
     }
     match place {
+        CallPlace::Group { conversation_id } => api.join_group_call(*conversation_id).await,
         CallPlace::Channel { channel_id, .. } => api.join_channel_call(*channel_id).await,
         CallPlace::Direct {
             low_account_id,
@@ -1238,6 +1239,9 @@ async fn request_renewal(
 ) -> Result<CallJoin, ApiError> {
     let api = server.api();
     match place {
+        CallPlace::Group { conversation_id } => {
+            api.renew_group_call(*conversation_id, identity).await
+        }
         CallPlace::Channel { channel_id, .. } => {
             api.renew_channel_call(*channel_id, identity).await
         }

@@ -606,6 +606,26 @@ impl AppState {
     }
 
     /// Mutes a channel for a time, or ends its mute with `None` (ADR 0404).
+    pub fn set_group_mute(
+        &mut self,
+        server_id: ServerId,
+        id: junto_client_core::protocol::ids::ConversationId,
+        length: Option<MuteFor>,
+        cx: &mut Context<Self>,
+    ) {
+        let zone = self.known.zone;
+        self.change_scope(
+            server_id,
+            SettingsScope::Conversation(id),
+            cx,
+            move |settings| {
+                settings.mute = length.is_some();
+                settings.muted_until =
+                    length.and_then(|length| length.until(OffsetDateTime::now_utc(), zone));
+            },
+        );
+    }
+
     pub fn set_channel_mute(
         &mut self,
         server_id: ServerId,

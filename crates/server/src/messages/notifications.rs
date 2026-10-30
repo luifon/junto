@@ -162,7 +162,7 @@ pub async fn create(
              unnest(mm.recipients) as id from message_mentions mm where mm.message_id=$1 union select tr.account_id
              from thread_reads tr join message m on tr.root_id=m.thread_root where not $2 and coalesce(tr.follow_setting,tr.writer) union select
              cv.low_account_id from conversations cv join message m on m.place_id=cv.id union select cv.high_account_id
-             from conversations cv join message m on m.place_id=cv.id union select ns.account_id from
+             from conversations cv join message m on m.place_id=cv.id union select gm.account_id from conversation_members gm join message m on m.place_id=gm.conversation_id union select ns.account_id from
              notification_settings ns cross join message m join channels ch on ch.id=m.place_id where not $2 and
              m.thread_root is null and ns.scope_id in(ch.id,ch.workspace_id, '00000000-0000-0000-0000-000000000000' )
              and ns.settings->> 'level' = 'all'

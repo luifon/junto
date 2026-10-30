@@ -2529,7 +2529,7 @@ fn voice_person_menus_copy_identities_and_open_directs_without_leaving_the_call(
                 lists
                     .conversation
                     .as_ref()
-                    .is_some_and(|conversation| conversation.account_id == ada)
+                    .is_some_and(|conversation| conversation.account_id == Some(ada))
             })
         });
     assert!(connected(&mut scene.window));
@@ -2589,7 +2589,7 @@ fn call_tiles_offer_account_actions_in_both_windows_and_close_with_their_source(
                 .view()
                 .lists()
                 .and_then(|lists| lists.conversation.as_ref())
-                .is_some_and(|conversation| conversation.account_id == ada)
+                .is_some_and(|conversation| conversation.account_id == Some(ada))
         });
     assert!(connected(&mut scene.window));
     scene.window.click_channel(ROOM);

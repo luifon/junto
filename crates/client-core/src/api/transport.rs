@@ -300,7 +300,8 @@ fn build(
     let mut builder = client
         .request(method, request.url)
         .header(reqwest::header::ACCEPT, accepted)
-        .header("Junto-Notification-Preferences", "1");
+        .header("Junto-Notification-Preferences", "1")
+        .header(junto_protocol::message::GROUPS_HEADER, "1");
     if let Some(token) = &request.bearer {
         builder = builder.bearer_auth(token.expose());
     }

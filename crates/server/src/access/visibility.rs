@@ -171,9 +171,10 @@ async fn load_for(
         .bind(accounts)
         .bind(named)
         .bind(directs)
-        .fetch_all(connection)
+        .fetch_all(&mut *connection)
         .await?;
-    rows.into_iter()
+    let mut result: Vec<(AccountId, Places)> = rows
+        .into_iter()
         .map(|Json(row)| {
             let actor = make_actor(row.owner, row.roles, row.person)?;
             let mut scopes = std::collections::HashMap::new();
@@ -257,5 +258,22 @@ async fn load_for(
             }
             Ok((row.account_id, places))
         })
-        .collect()
+        .collect::<ApiResult<_>>()?;
+    if directs && crate::messages::groups::supported() {
+        for (account, places) in &mut result {
+            let Some(access) = Access::of_account(connection, *account).await? else {
+                continue;
+            };
+            let ids: Vec<ConversationId> = sqlx::query_scalar("select conversation_id from conversation_members where account_id=$1 and ($2::uuid[] is null or conversation_id=any($2))")
+                .bind(*account).bind(named).fetch_all(&mut *connection).await?;
+            for id in ids {
+                match crate::messages::groups::readable(connection, &access, id).await {
+                    Ok(_) => places.directs.push(id),
+                    Err(error) if error.code() == junto_protocol::error::ErrorCode::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(result)
 }

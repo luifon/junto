@@ -15,6 +15,60 @@ use junto_client_core::protocol::{
 };
 
 impl Shell {
+    pub(crate) fn render_conversation_call(
+        &self,
+        server: ServerId,
+        conversation: &crate::state::view::DirectRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(other) = conversation.account_id {
+            return self.render_direct_call(server, other, cx);
+        }
+        let id = conversation.id;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server)
+            .and_then(|server| server.owner());
+        let separate = self.state.read(cx).is_call_detached()
+            && self.state.read(cx).media_calls().call.is_some_and(|call| {
+                call.target.server_id == server
+                    && call.target.place
+                        == CallPlace::Group {
+                            conversation_id: id,
+                        }
+            });
+        if separate {
+            return Notice::new(text::CALL_SEPARATE)
+                .action(self.return_call_button(cx))
+                .into_any_element();
+        }
+        div()
+            .flex_none()
+            .p(u(12.0))
+            .child(
+                Button::new("start-group-call")
+                    .label(text::DIRECT_CALL)
+                    .icon(Icon::Phone)
+                    .kind(ButtonKind::Primary)
+                    .selector("start-group-call")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if owner.is_some()
+                            && this
+                                .state
+                                .read(cx)
+                                .server(server)
+                                .and_then(|server| server.owner())
+                                == owner
+                        {
+                            this.state
+                                .update(cx, |state, cx| state.start_group_call(server, id, cx));
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// What a direct conversation shows above its messages while the main window does not
     /// draw its call: the button that starts a direct-message call, or the statement that
     /// the call window draws the call of the conversation with Return, and the outcome of

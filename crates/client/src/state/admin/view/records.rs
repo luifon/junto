@@ -780,6 +780,13 @@ pub(crate) fn export_of(
             },
             None => ExportOf::ChannelGone,
         },
+        MessagePlace::Group { conversation_id } => ExportOf::Direct {
+            other: model
+                .group_conversations
+                .iter()
+                .find(|group| group.id == conversation_id)
+                .map(|group| crate::text::label(&group.name)),
+        },
         MessagePlace::Direct {
             low_account_id,
             high_account_id,
@@ -1302,6 +1309,7 @@ mod tests {
                 ],
                 own_call: None,
                 direct_calls: Vec::new(),
+                group_conversations: Vec::new(),
                 call_invitations: Vec::new(),
                 sent_call_invitations: Vec::new(),
                 call_moves: Vec::new(),

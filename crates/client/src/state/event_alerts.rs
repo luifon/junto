@@ -228,7 +228,9 @@ pub fn fact_of(event: &Event, scene: &EventScene<'_>) -> Option<Fact> {
             let place = match export.place {
                 MessagePlace::Channel { channel_id, .. } => channel_name(model, channel_id)
                     .map_or_else(|| text::A_CHANNEL.to_owned(), |name| format!("#{name}")),
-                MessagePlace::Direct { .. } => text::A_DIRECT_CONVERSATION.to_owned(),
+                MessagePlace::Direct { .. } | MessagePlace::Group { .. } => {
+                    text::A_DIRECT_CONVERSATION.to_owned()
+                }
             };
             Some(Fact::ExportDone { place, ready })
         }

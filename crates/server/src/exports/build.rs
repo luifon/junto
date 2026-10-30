@@ -824,6 +824,11 @@ impl Job {
                     .await?
             }
             MessagePlace::Direct { .. } => "Direct messages".to_owned(),
+            MessagePlace::Group { conversation_id } => {
+                crate::messages::groups::load(connection, conversation_id)
+                    .await?
+                    .name
+            }
         }))
     }
 
@@ -907,6 +912,16 @@ impl Job {
                 .fetch_all(connection)
                 .await?;
                 names.roles = found.into_iter().collect();
+            }
+            MessagePlace::Group { conversation_id } => {
+                let group = crate::messages::groups::load(connection, conversation_id).await?;
+                let found: Vec<(AccountId, String)> =
+                    sqlx::query_as("select id,name from accounts where id=any($1) and id=any($2)")
+                        .bind(&group.account_ids)
+                        .bind(&accounts)
+                        .fetch_all(&mut *connection)
+                        .await?;
+                names.accounts = found.into_iter().collect();
             }
             MessagePlace::Direct {
                 low_account_id,

@@ -102,6 +102,9 @@ pub enum Frame {
 fn request(server: &TestServer, token: Option<&str>) -> tungstenite::handshake::client::Request {
     let url = format!("ws://{}{STREAM_PATH}", server.address);
     let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert(junto_protocol::message::GROUPS_HEADER, "1".parse().unwrap());
     if let Some(token) = token {
         request
             .headers_mut()
@@ -128,6 +131,17 @@ impl TestServer {
         }
     }
 
+    pub async fn legacy_stream(&self, member: &Member) -> Stream {
+        let tcp = TcpStream::connect(self.address).await.unwrap();
+        let mut request = request(self, Some(&member.token));
+        request
+            .headers_mut()
+            .remove(junto_protocol::message::GROUPS_HEADER);
+        let (socket, _) = tokio_tungstenite::client_async(request, Wire::of(tcp))
+            .await
+            .unwrap();
+        Stream::greeted(socket).await
+    }
     pub async fn stream(&self, member: &Member) -> Stream {
         self.open_stream(Some(&member.token))
             .await

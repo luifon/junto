@@ -51,7 +51,7 @@ impl Window {
     /// The account of the direct conversation that the main area shows.
     fn conversation_with(&mut self) -> Option<(AccountId, Option<String>)> {
         let conversation = self.view().lists()?.conversation.clone()?;
-        Some((conversation.account_id, conversation.name))
+        Some((conversation.account_id?, conversation.name))
     }
 
     /// Types a text into the composer of the main area and sends it with Enter.

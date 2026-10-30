@@ -179,6 +179,7 @@ fn row(row: Row) -> ApiResult<ExportRow> {
                 high_account_id,
             }
         }
+        (_, _, Some(conversation_id), None, None) => MessagePlace::Group { conversation_id },
         _ => return Err(ApiError::internal(&"an export without a place")),
     };
     Ok(ExportRow {
@@ -241,7 +242,8 @@ pub async fn permitted(
         }
         MessagePlace::Direct {
             conversation_id, ..
-        } => {
+        }
+        | MessagePlace::Group { conversation_id } => {
             Place::direct(
                 connection,
                 access,
@@ -296,6 +298,7 @@ pub async fn holds_hidden_recording(
 
 fn call_place(place: MessagePlace) -> CallPlace {
     match place {
+        MessagePlace::Group { conversation_id } => CallPlace::Group { conversation_id },
         MessagePlace::Channel {
             workspace_id,
             channel_id,

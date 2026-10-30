@@ -935,7 +935,12 @@ impl TestServer {
             tasks,
         ));
 
-        let http = reqwest::Client::new();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(junto_protocol::message::GROUPS_HEADER, "1".parse().unwrap());
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
         let info = http
             .get(format!("{base}/api/server"))
             .send()

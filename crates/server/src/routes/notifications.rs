@@ -61,6 +61,21 @@ async fn scope(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiR
             .await?;
         access.require(Request::ViewWorkspace(&scope))?;
         Ok(false)
+    } else if sqlx::query_scalar::<_, bool>(
+        "select exists(select 1 from conversations where id=$1 and name is not null)",
+    )
+    .bind(id)
+    .fetch_one(&mut *connection)
+    .await?
+    {
+        Place::direct(
+            connection,
+            access,
+            junto_protocol::ids::ConversationId::from_uuid(id),
+            crate::messages::Purpose::Read,
+        )
+        .await
+        .map(|_| true)
     } else {
         Place::channel(connection, access, ChannelId::from_uuid(id))
             .await
@@ -68,7 +83,7 @@ async fn scope(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiR
     }
 }
 
-#[utoipa::path(get,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path,description="Nil UUID for account/server defaults, otherwise workspace or channel"),("Junto-Notification-Preferences"=Option<String>,Header,description="1 includes the text privacy and presentation preferences")),security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
+#[utoipa::path(get,path="/api/v1/notification-settings/{scope_id}",tag="messages",params(("scope_id"=Uuid,Path,description="Nil UUID for account/server defaults, otherwise workspace, channel or group conversation"),("Junto-Notification-Preferences"=Option<String>,Header,description="1 includes the text privacy and presentation preferences")),security(("session"=[])),responses((status=200,body=NotificationSettings),ApiError))]
 pub async fn get_settings(
     State(app): State<AppState>,
     bearer: Bearer,

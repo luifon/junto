@@ -1245,6 +1245,7 @@ pub(crate) mod tests {
             workspaces: Vec::new(),
             own_call: None,
             direct_calls: Vec::new(),
+            group_conversations: Vec::new(),
             call_invitations: Vec::new(),
             sent_call_invitations: Vec::new(),
             call_moves: Vec::new(),

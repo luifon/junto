@@ -86,7 +86,7 @@ Status values:
 | Number | Title | Status | Summary |
 |---|---|---|---|
 | [0301](0301-roles-and-permission-evaluation.md) | Two levels of roles and one evaluation rule | Accepted | Server roles and workspace roles, channel overrides (none per category), one evaluation function, and limits that apply to administrators too. |
-| [0302](0302-direct-message-privacy.md) | Direct messages and their privacy | Accepted | One-to-one direct messages inside one server, closed to everyone except their two participants. |
+| [0302](0302-direct-message-privacy.md) | Direct messages and their privacy | Accepted | Pair and named group direct messages inside one server, closed to everyone except their current participants; group membership governs messages, events, files, exports and calls. |
 | [0303](0303-audit-log.md) | Audit log | Accepted | A read-only log of administrative actions, visible according to channel access, with system lines in the channel. |
 | [0304](0304-permission-evaluation-details.md) | Details of the permission function: view permission, grant rule and stored sets | Accepted | A "view channel" permission, the grant rule including what the channel overrides of a role allow, the permissions for actions that ADR 0301 does not name, and permission sets stored as fixed bits; a route that moves several channels of a workspace in one transaction, refused whole when a channel is not where the client read it. |
 | [0305](0305-audit-log-storage.md) | Storage and reading of the audit log | Accepted | Typed events stored with the change they describe, a trigger that refuses changes, and one read route per level with visibility decided per channel from one snapshot. |
@@ -119,7 +119,7 @@ Status values:
 
 | Number | Title | Status | Summary |
 |---|---|---|---|
-| [0501](0501-voice-channels-and-direct-message-calls.md) | Voice channels and direct-message calls | Accepted | Calls happen in permanent voice channels with their own text chat; direct-message calls have no recording and no meeting mode. |
+| [0501](0501-voice-channels-and-direct-message-calls.md) | Voice channels and direct-message calls | Accepted | Calls happen in permanent voice channels with their own text chat; pair and conversation-keyed group direct-message calls have no recording and no meeting mode. |
 | [0502](0502-screen-share-sound.md) | Screen share with sound | Accepted, pending step 0 | The sharer chooses the sound explicitly, the application's own sound is excluded, and shared sound is its own track. |
 | [0503](0503-mute-and-sound-blocks.md) | Mute, sound blocks and moderation in a call | Accepted | A person's own mute and a moderator's block are separate states; the server enforces microphone blocks only. |
 | [0504](0504-voice-channel-privacy-invite-and-move.md) | Voice channel privacy, invite and move | Accepted | User limit, lock, hidden occupants and requests to enter; invitations pass the lock and limit only; the server performs moves. |

@@ -718,7 +718,7 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
             && call
                 .view()
                 .lists()
-                .and_then(|lists| lists.conversation.as_ref().map(|row| row.account_id))
+                .and_then(|lists| lists.conversation.as_ref().and_then(|row| row.account_id))
                 == Some(other)
     });
     call.until_message("From the main window");

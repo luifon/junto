@@ -1573,6 +1573,20 @@
           "messages"
         ],
         "operationId": "get_limits",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -1613,6 +1627,20 @@
           "messages"
         ],
         "operationId": "set_limits",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1665,6 +1693,20 @@
           "messages"
         ],
         "operationId": "start_upload",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1735,6 +1777,18 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -1798,6 +1852,18 @@
             "schema": {
               "$ref": "#/components/schemas/AttachmentId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1856,6 +1922,18 @@
             "name": "Range",
             "in": "header",
             "description": "One range of bytes",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -1936,6 +2014,18 @@
             "schema": {
               "$ref": "#/components/schemas/AttachmentId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1988,6 +2078,18 @@
             "schema": {
               "$ref": "#/components/schemas/AttachmentId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2037,6 +2139,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AttachmentId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2368,6 +2482,20 @@
         ],
         "summary": "The call that the caller's account is in. An account that may no longer be at the place\nof its call gets no call.",
         "operationId": "get_own_call",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -2418,6 +2546,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2464,6 +2604,18 @@
             "schema": {
               "$ref": "#/components/schemas/EntryRequestId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2509,6 +2661,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/EntryRequestId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2558,6 +2722,20 @@
         ],
         "summary": "Raises the person's hand in the call.",
         "operationId": "raise_hand",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "204": {
             "headers": {
@@ -2592,6 +2770,20 @@
         ],
         "summary": "Lowers the person's hand.",
         "operationId": "lower_hand",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "204": {
             "headers": {
@@ -2635,6 +2827,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CallInvitationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2693,6 +2897,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2746,6 +2962,18 @@
             "schema": {
               "$ref": "#/components/schemas/CallInvitationId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2791,6 +3019,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CallMoveId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2849,6 +3089,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2894,6 +3146,20 @@
         ],
         "summary": "Reports that the person shares a screen or a window in one slot, and which sound the\nshare sends. A person runs up to `MAX_SHARES` shares. The server shows a share for as\nlong as the media server lists its picture track (ADR 0510).",
         "operationId": "report_screen_share",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2949,6 +3215,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2987,6 +3265,20 @@
         ],
         "summary": "Reports whether the person speaks. The server relays a mark, not a level, to the people\nwho may see who is in the voice channel, at most once per second for one call.",
         "operationId": "report_speaking",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3033,6 +3325,20 @@
         ],
         "summary": "Reports the person's own microphone and sound settings, for the people who see the call.",
         "operationId": "report_call_state",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3079,6 +3385,20 @@
         ],
         "summary": "Reports which share of another person in the call the person watches now, or none. The\nsharer and the people who see the call read it on the participant (ADR 0502). A share of a\nperson who is not in the call, and the own share, are refused.",
         "operationId": "report_watching",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3395,6 +3715,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3448,6 +3780,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3500,6 +3844,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3584,6 +3940,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3637,6 +4005,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3680,6 +4060,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3727,6 +4119,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3770,6 +4174,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3825,6 +4241,18 @@
             "schema": {
               "$ref": "#/components/schemas/AccountId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3878,6 +4306,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3933,6 +4373,18 @@
             "schema": {
               "$ref": "#/components/schemas/AccountId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3984,6 +4436,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4038,6 +4502,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4110,6 +4586,18 @@
             "schema": {
               "$ref": "#/components/schemas/AccountId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4161,6 +4649,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4315,6 +4815,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -4377,6 +4889,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4516,6 +5040,18 @@
                 }
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4565,6 +5101,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4628,6 +5176,18 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4677,6 +5237,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -4792,6 +5364,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -5261,6 +5845,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5305,6 +5901,20 @@
           "messages"
         ],
         "operationId": "list_conversations",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -5348,6 +5958,20 @@
           "messages"
         ],
         "operationId": "open_conversation",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5408,6 +6032,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -5547,6 +6183,18 @@
                 }
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5596,6 +6244,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -5659,6 +6319,18 @@
             "schema": {
               "$ref": "#/components/schemas/ConversationId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5708,6 +6380,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -5840,6 +6524,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5893,6 +6589,18 @@
             "schema": {
               "$ref": "#/components/schemas/AccountId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5930,6 +6638,20 @@
           "messages"
         ],
         "operationId": "get_direct",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -5970,6 +6692,20 @@
           "messages"
         ],
         "operationId": "set_direct",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6060,6 +6796,18 @@
               ],
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -6206,6 +6954,20 @@
         ],
         "summary": "Opens the event stream of the caller's device as a WebSocket. The messages are described\nin `docs/api/events.json`.",
         "operationId": "open_event_stream",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group conversation messages and calls; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "101": {
             "description": "The connection is now a WebSocket."
@@ -6235,6 +6997,20 @@
         ],
         "summary": "The exports of the caller, the newest first.",
         "operationId": "list_exports",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "headers": {
@@ -6289,6 +7065,18 @@
             "schema": {
               "$ref": "#/components/schemas/ExportId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6339,6 +7127,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/ExportId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -6398,6 +7198,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6436,6 +7248,418 @@
                   "type": "string",
                   "format": "binary"
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/group-conversations": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "list_groups",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupConversation"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "create_group",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupConversation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupConversation"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/group-conversations/{conversation_id}": {
+      "patch": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "rename_group",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameGroupConversation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupConversation"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/group-conversations/{conversation_id}/call/join": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "join_group_call",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "renews",
+            "in": "query",
+            "description": "The identity of the seat that the request renews. The answer is a token for that\nseat, or `seat_ended` when the device can no longer use it; such a request makes,\nends and takes no seat (ADR 0520). Absent: the request asks for a place.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "shares",
+            "in": "query",
+            "description": "How many shares of one person the client shows at once, each with its own picture\nand sound. The join token states it to the other participants of the room, so that\na device that runs several shares sends the further ones only to the participants\nthat show them. Absent: a client from before several shares, which shows one.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallJoin"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/group-conversations/{conversation_id}/members": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "add_group_member",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenConversation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupConversation"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/group-conversations/{conversation_id}/membership": {
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "leave_group",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
               }
             }
           },
@@ -7067,6 +8291,18 @@
             "schema": {
               "$ref": "#/components/schemas/MessageId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7116,6 +8352,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7177,6 +8425,18 @@
             "schema": {
               "$ref": "#/components/schemas/MessageId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7221,6 +8481,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7284,6 +8556,18 @@
             "schema": {
               "$ref": "#/components/schemas/MessageId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7326,6 +8610,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7371,6 +8667,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7434,6 +8742,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7549,6 +8869,18 @@
                 }
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7598,6 +8930,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7662,6 +9006,18 @@
             "schema": {
               "$ref": "#/components/schemas/MessageId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -7723,6 +9079,18 @@
             "schema": {
               "$ref": "#/components/schemas/MessageId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -7767,6 +9135,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7817,6 +9197,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -7876,7 +9268,7 @@
           {
             "name": "scope_id",
             "in": "path",
-            "description": "Nil UUID for account/server defaults, otherwise workspace or channel",
+            "description": "Nil UUID for account/server defaults, otherwise workspace, channel or group conversation",
             "required": true,
             "schema": {
               "type": "string",
@@ -7887,6 +9279,18 @@
             "name": "Junto-Notification-Preferences",
             "in": "header",
             "description": "1 includes the text privacy and presentation preferences",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -7950,6 +9354,18 @@
             "name": "Junto-Notification-Preferences",
             "in": "header",
             "description": "1 replaces the text privacy and presentation preferences; otherwise they are preserved",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
             "required": false,
             "schema": {
               "type": [
@@ -8036,6 +9452,18 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -8081,6 +9509,20 @@
         ],
         "summary": "Marks every notice that the caller reads now and that was created at or before `until`,\nin one request (ADR 0412). The devices of the account get one event.",
         "operationId": "mark_all_read",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8141,6 +9583,18 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -8924,6 +10378,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9446,6 +10912,18 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -9609,6 +11087,18 @@
               ],
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -10931,6 +12421,18 @@
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -10980,6 +12482,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -11723,6 +13237,18 @@
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11773,6 +13299,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -11835,6 +13373,18 @@
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
             }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11879,6 +13429,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -11929,6 +13491,18 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -15325,6 +16899,24 @@
           {
             "type": "object",
             "required": [
+              "conversation_id",
+              "kind"
+            ],
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "group"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "workspace_id",
               "channel_id",
               "kind"
@@ -16102,6 +17694,25 @@
           }
         }
       },
+      "CreateGroupConversation": {
+        "type": "object",
+        "required": [
+          "name",
+          "account_ids"
+        ],
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateInvite": {
         "type": "object",
         "properties": {
@@ -16730,6 +18341,28 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "GroupConversation": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "account_ids"
+        ],
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          "id": {
+            "$ref": "#/components/schemas/ConversationId"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -17428,6 +19061,24 @@
               },
               "workspace_id": {
                 "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "conversation_id",
+              "kind"
+            ],
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "group"
+                ]
               }
             }
           },
@@ -18595,6 +20246,18 @@
           }
         }
       },
+      "RenameGroupConversation": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "RenameSpeaker": {
         "type": "object",
         "required": [
@@ -19540,6 +21203,12 @@
               "$ref": "#/components/schemas/EntryRequest"
             },
             "description": "The requests of the account to enter a voice channel that wait for an answer."
+          },
+          "group_conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupConversation"
+            }
           },
           "messages": {
             "type": "array",

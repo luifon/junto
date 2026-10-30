@@ -25,6 +25,7 @@ pub struct Fresh {
     pub room: RoomName,
     seat: String,
     pub invitation_id: CallInvitationId,
+    group_invitations: [CallInvitationId; 10],
 }
 
 impl Fresh {
@@ -34,6 +35,7 @@ impl Fresh {
             room: RoomName::generate(app.calls.namespace())?,
             seat: media::seat()?,
             invitation_id: CallInvitationId::generate(),
+            group_invitations: std::array::from_fn(|_| CallInvitationId::generate()),
         })
     }
 
@@ -314,11 +316,30 @@ pub async fn enter(
             &call,
             access.account_id,
             other,
-            fresh,
+            fresh.invitation_id,
         )
         .await?;
     }
 
+    if !seated && let CallPlace::Group { conversation_id } = place {
+        let group = crate::messages::groups::readable(connection, access, conversation_id).await?;
+        for (index, other) in group.account_ids.iter().enumerate() {
+            if *other != access.account_id
+                && crate::store::may_reach(connection, access, *other).await?
+            {
+                ring(
+                    connection,
+                    app,
+                    now,
+                    &call,
+                    access.account_id,
+                    *other,
+                    fresh.group_invitations[index],
+                )
+                .await?;
+            }
+        }
+    }
     if !seated {
         let own = Event::OwnCallChanged {
             call: Some(junto_protocol::call::OwnCall {
@@ -428,7 +449,7 @@ async fn ring(
     call: &CallRow,
     caller: AccountId,
     other: AccountId,
-    fresh: &Fresh,
+    invitation_id: CallInvitationId,
 ) -> ApiResult<()> {
     let reached: bool = sqlx::query_scalar(
         "select exists (select 1 from call_members where call_id = $1 and account_id = $2)
@@ -441,25 +462,28 @@ async fn ring(
     if reached {
         return Ok(());
     }
-    let silent = store::has_muted(&mut *connection, now, other, caller).await?
+    let group_muted = if let CallPlace::Group { conversation_id } = call.place {
+        sqlx::query_scalar::<_, bool>("select muted from notification_policy($1,$2,$3)")
+            .bind(other)
+            .bind(conversation_id)
+            .bind(now)
+            .fetch_one(&mut *connection)
+            .await?
+    } else {
+        false
+    };
+    let silent = group_muted
+        || store::has_muted(&mut *connection, now, other, caller).await?
         || crate::messages::notifications::quiet(&mut *connection, other, now).await?;
     let limits = &app.config.limits.calls;
-    store::count_ring(
-        &mut *connection,
-        now,
-        limits,
-        fresh.invitation_id,
-        caller,
-        other,
-    )
-    .await?;
+    store::count_ring(&mut *connection, now, limits, invitation_id, caller, other).await?;
     let expires_at = now + limits.invitation_lifetime;
     sqlx::query(
         "insert into call_invitations
              (id, call_id, account_id, invited_by, created_at, expires_at, silent)
          values ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(fresh.invitation_id)
+    .bind(invitation_id)
     .bind(call.id)
     .bind(other)
     .bind(caller)
@@ -469,7 +493,7 @@ async fn ring(
     .execute(&mut *connection)
     .await
     .map_err(ApiError::concurrent)?;
-    let row = (fresh.invitation_id, other, caller, now, expires_at, silent);
+    let row = (invitation_id, other, caller, now, expires_at, silent);
     let waiting = store::invitation(call, row);
     let invited = Event::CallInvited {
         invitation: waiting.invitation.clone(),
@@ -479,7 +503,7 @@ async fn ring(
     }
     // A later ring of the same call, after a new seat of an account that waits alone,
     // starts no second call.
-    if call.direct_caller.is_none() {
+    if matches!(call.place, CallPlace::Direct { .. }) && call.direct_caller.is_none() {
         store::direct_call_rung(connection, now, call, caller, other).await?;
     }
     Ok(())

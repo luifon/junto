@@ -188,7 +188,7 @@ fn a_direct_conversation_is_shown_in_place_of_a_channel() {
         .map(|row| row.name.as_deref())
         .collect();
     assert_eq!(names, [Some("Ana"), None]);
-    assert_eq!(lists.directs[0].account_id, ana);
+    assert_eq!(lists.directs[0].account_id, Some(ana));
     assert!(lists.directs[0].unread.sign);
     assert_eq!(view.shown().place(), Some(PlaceId::Channel(scene.general)));
 
@@ -258,7 +258,7 @@ fn a_server_without_a_workspace_shows_its_direct_conversations_and_notices() {
     let row = &lists.directs[0];
     assert_eq!(
         (row.account_id, row.name.as_deref(), row.selected),
-        (ana, Some("Ana"), false)
+        (Some(ana), Some("Ana"), false)
     );
     assert!(row.unread.sign);
     assert!(view.servers[0].unread.any());
@@ -295,7 +295,7 @@ fn a_server_without_a_workspace_shows_its_direct_conversations_and_notices() {
     assert_eq!(
         call.direct()
             .map(|direct| (direct.other, direct.name.as_deref())),
-        Some((ana, Some("Ana")))
+        Some((Some(ana), Some("Ana")))
     );
     // The side panel is the panel of the call, which shows the notices in place of its
     // tab (ADR 0742).

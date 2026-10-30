@@ -207,7 +207,20 @@ pub async fn list_exports(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(junto_authz::Request::OwnAccount)?;
         let stored = exports::of_account(connection, access.account_id).await?;
-        Ok(stored.into_iter().map(|stored| stored.export).collect())
+        let mut visible = Vec::new();
+        for stored in stored {
+            if matches!(
+                stored.export.place,
+                junto_protocol::message::MessagePlace::Group { .. }
+            ) && exports::permitted(connection, &access, stored.export.place)
+                .await?
+                .is_none()
+            {
+                continue;
+            }
+            visible.push(stored.export);
+        }
+        Ok(visible)
     })
     .map(Json)
 }
@@ -242,7 +255,17 @@ pub async fn get_export(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        Ok(own(connection, &access, export_id, false).await?.export)
+        let export = own(connection, &access, export_id, false).await?.export;
+        if matches!(
+            export.place,
+            junto_protocol::message::MessagePlace::Group { .. }
+        ) && exports::permitted(connection, &access, export.place)
+            .await?
+            .is_none()
+        {
+            return Err(ApiError::not_found());
+        }
+        Ok(export)
     })
     .map(Json)
 }

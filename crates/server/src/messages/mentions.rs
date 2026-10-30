@@ -140,6 +140,15 @@ pub async fn mentions(
                         )?;
                     }
                 }
+                MessagePlace::Group { conversation_id } => {
+                    let group = super::groups::load(connection, conversation_id).await?;
+                    if role.is_some()
+                        || everyone
+                        || account.is_some_and(|id| !group.account_ids.contains(&id))
+                    {
+                        return Err(ApiError::invalid("a group mentions only its participants"));
+                    }
+                }
                 MessagePlace::Direct {
                     low_account_id,
                     high_account_id,

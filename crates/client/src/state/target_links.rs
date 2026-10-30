@@ -84,17 +84,28 @@ impl Readers {
         id: ConversationId,
     ) -> Option<ConversationId> {
         let listed = self.server.api_for(account).conversations().await.ok()?;
-        if !listed.iter().any(|conversation| conversation.id == id) {
+        if !listed.iter().any(|conversation| conversation.id == id)
+            && !self
+                .server
+                .api_for(account)
+                .groups()
+                .await
+                .ok()?
+                .iter()
+                .any(|group| group.id == id)
+        {
             return None;
         }
         self.server.live().refresh().await.ok()?;
-        self.server
-            .live()
-            .view()
-            .model?
+        let model = self.server.live().view().model?;
+        if !model
             .conversations
             .iter()
-            .find(|conversation| conversation.id == id)?;
+            .any(|conversation| conversation.id == id)
+            && !model.group_conversations.iter().any(|group| group.id == id)
+        {
+            return None;
+        }
         Some(id)
     }
 

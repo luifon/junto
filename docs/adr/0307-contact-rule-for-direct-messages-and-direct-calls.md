@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR 0302 decides that a direct message is a conversation between two accounts and is closed to everyone else. It does not decide which two accounts may start one. A server hosts several workspaces (ADR 0102), and two accounts on one server can have nothing in common.
+ADR 0302 decides that a direct message is a pair or group conversation and is closed to everyone else. It does not decide which two accounts may start one. A server hosts several workspaces (ADR 0102), and two accounts on one server can have nothing in common.
 
 The first version of ADR 0510 allowed a direct-message call when the caller could see the profile of the other account (ADR 0119). A profile is visible to an account with "ban members", so a moderator could call every account, and the rule for calls followed from a rule that was made for another purpose. The rule was checked when a call was started. The events of the call, their replay and the snapshot did not check it again after the two accounts had lost what connected them.
 
@@ -37,9 +37,15 @@ Who can be chosen:
 - The route needs a session of the account (`own_account`), as the direct messages do.
 - The rows that the route reads follow what the caller may reach. For an account that does not administer the server the statement starts from the candidates: the members of its workspaces, the server owner and the holders of a server role with the administrator permission, each read by key in a lateral subquery, so neither a merge join nor a hash join reads the other accounts, members or role holders. The decision on each account of a page reads the same way (`store::CONTACT_STANDING`, `store::FELLOW_MEMBERS`): for each account of the page its row, its role assignments and their roles, and for each workspace of the caller one membership by key, so it reads no role assignment and no membership of another account. Reason: work that grows with the accounts that the caller may not see costs the server and lets the time of an answer tell their number. An administrator reaches every active account; its statement reads the active accounts in the order of the index `accounts_contact_order` (lower-case name, identifier), so a page reads about its own rows. Test: `contacts::the_contacts_of_a_member_read_the_candidates_and_not_the_hidden_accounts` in `crates/server` adds ten thousand other accounts that sort first, hold a server role and are members of a workspace of their own, and bounds the rows that each statement reads, the two statements of the decision included, under each way of joining that the planner can choose.
 
+Group conversations:
+
+- All active members of a group must be mutually reachable by this same contact decision. The server uses the existing contact facts and the permission function for each pair. A person added to the group must be active and reachable by every active member.
+- History, changes, events, replay, snapshots, search, notices, attachments, exports and call admission require current membership and this rule for the active members. Administrator status does not replace membership.
+- When any active pair loses contact, the group is unavailable until contact returns or the affected member leaves the group. A member can leave while the group is unavailable. A departed account retains its membership and attribution, without preventing the remaining active members from exchanging messages; it receives no new event while inactive.
+
 What it does not decide:
 
-- A direct message that exists stays closed to everyone except its two participants (ADR 0302). This record decides only whether the two may exchange something now.
+- A direct message that exists stays closed to everyone except its current participants (ADR 0302). This record decides only whether the two may exchange something now.
 
 ## Consequences
 

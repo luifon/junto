@@ -37,6 +37,10 @@ pub(crate) enum CallSurface {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AccountSource {
+    GroupMember {
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
+        account_id: AccountId,
+    },
     CallOccupant {
         seat: Box<junto_media::calls::Seat>,
         account_id: AccountId,
@@ -81,6 +85,28 @@ impl OpenAccountMenu {
             return true;
         };
         match source {
+            AccountSource::GroupMember {
+                conversation_id,
+                account_id,
+            } => {
+                return self.people.len() == 1
+                    && self.people[0].account_id == *account_id
+                    && view
+                        .selected
+                        .as_ref()
+                        .is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && state
+                        .server(self.owner.entry.server_id)
+                        .is_some_and(|server| {
+                            server.owner() == Some(self.owner)
+                                && server.live().view().model.is_some_and(|model| {
+                                    model.group_conversations.iter().any(|group| {
+                                        group.id == *conversation_id
+                                            && group.account_ids.contains(account_id)
+                                    })
+                                })
+                        });
+            }
             AccountSource::CallOccupant {
                 seat,
                 account_id,

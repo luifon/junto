@@ -1012,9 +1012,21 @@ impl Shell {
                 .clone()
                 .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
                 .into();
-            let row = ChannelRow::new(("direct", index), Icon::Person, name)
-                .avatar(direct.account_id.as_uuid().as_u128())
-                .picture(faces.image(direct.account_id))
+            let mut row = ChannelRow::new(
+                ("direct", index),
+                if direct.account_id.is_some() {
+                    Icon::Person
+                } else {
+                    Icon::Chat
+                },
+                name,
+            );
+            if let Some(account_id) = direct.account_id {
+                row = row
+                    .avatar(account_id.as_uuid().as_u128())
+                    .picture(faces.image(account_id));
+            }
+            let row = row
                 .selected(direct.selected)
                 .unread(direct_sign(direct.unread))
                 .muted(direct.unread.muted || direct.mute.is_on())

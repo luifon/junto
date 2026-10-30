@@ -866,7 +866,8 @@ fn export_line(export: &Export) -> String {
         MessagePlace::Channel { channel_id, .. } => format!("channel:{channel_id}"),
         MessagePlace::Direct {
             conversation_id, ..
-        } => format!("direct:{conversation_id}"),
+        }
+        | MessagePlace::Group { conversation_id } => format!("direct:{conversation_id}"),
     };
     let mut marks = String::new();
     if let Some(failure) = &export.failure {

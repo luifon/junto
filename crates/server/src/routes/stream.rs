@@ -19,6 +19,7 @@ use crate::state::AppState;
     get,
     path = "/api/v1/events",
     tag = "events",
+    params(("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group conversation messages and calls; omitted readers receive pairs and channels")),
     security(("session" = [])),
     responses(
         (status = 101, description = "The connection is now a WebSocket."),
@@ -50,6 +51,7 @@ pub async fn open_event_stream(
         .streams
         .open(who.account_id, who.device_id, who.session_id, now)?;
 
+    let groups = crate::messages::groups::supported();
     let link = registration.link().clone();
     let response = upgrade.response();
     let task = tokio::spawn(async move {
@@ -57,7 +59,13 @@ pub async fn open_event_stream(
         let upgraded =
             tokio::time::timeout(limits.send_timeout.unsigned_abs(), upgrade.socket(&limits));
         match upgraded.await {
-            Ok(Ok(socket)) => connection::run(app, socket, who, epoch, registration).await,
+            Ok(Ok(socket)) => {
+                crate::messages::groups::with_support(
+                    groups,
+                    connection::run(app, socket, who, epoch, registration),
+                )
+                .await
+            }
             Ok(Err(error)) => tracing::debug!(%error, "a WebSocket upgrade did not complete"),
             Err(_) => tracing::debug!("a WebSocket upgrade did not complete in time"),
         }

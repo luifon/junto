@@ -28,6 +28,8 @@ pub struct Snapshot {
     pub own_call: Option<OwnCall>,
     /// The direct-message calls of the account that are in progress.
     pub direct_calls: Vec<Call>,
+    #[serde(default)]
+    pub group_conversations: Vec<crate::message::GroupConversation>,
     /// The invitations into calls that wait for an answer of the account.
     pub call_invitations: Vec<CallInvitation>,
     /// The invitations into calls that the account made and that wait for an answer.

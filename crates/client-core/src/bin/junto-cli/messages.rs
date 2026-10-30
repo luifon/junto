@@ -302,7 +302,8 @@ pub(crate) fn state_line(state: &MessageState) -> String {
         MessagePlace::Channel { channel_id, .. } => format!("channel:{channel_id}"),
         MessagePlace::Direct {
             conversation_id, ..
-        } => format!("direct:{conversation_id}"),
+        }
+        | MessagePlace::Group { conversation_id } => format!("direct:{conversation_id}"),
     };
     let sign = match (state.muted, state.unread_sign) {
         (true, _) => "muted",

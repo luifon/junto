@@ -88,7 +88,7 @@ fn level_word(level: NotificationLevel) -> &'static str {
 /// A scope of notification settings as the tool takes it: `account`, `workspace:<id>` or
 /// `channel:<id>`.
 fn scope(text: &str) -> Result<SettingsScope, Failure> {
-    let wrong = || usage("a scope is account, workspace:<id> or channel:<id>");
+    let wrong = || usage("a scope is account, workspace:<id>, channel:<id> or conversation:<id>");
     match text.split_once(':') {
         None if text == "account" => Ok(SettingsScope::Account),
         Some(("workspace", id)) => id
@@ -98,6 +98,10 @@ fn scope(text: &str) -> Result<SettingsScope, Failure> {
         Some(("channel", id)) => id
             .parse::<ChannelId>()
             .map(SettingsScope::Channel)
+            .map_err(|_| wrong()),
+        Some(("conversation", id)) => id
+            .parse()
+            .map(SettingsScope::Conversation)
             .map_err(|_| wrong()),
         _ => Err(wrong()),
     }
@@ -195,6 +199,7 @@ fn settings_lines(scope: SettingsScope, settings: &NotificationSettings) -> Vec<
         SettingsScope::Account => "account".to_owned(),
         SettingsScope::Workspace(workspace_id) => format!("workspace:{workspace_id}"),
         SettingsScope::Channel(channel_id) => format!("channel:{channel_id}"),
+        SettingsScope::Conversation(id) => format!("conversation:{id}"),
     };
     scoped_settings_lines(&name, settings)
 }

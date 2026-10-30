@@ -38,6 +38,7 @@ mod cameras;
 mod channels;
 mod detached;
 mod direct;
+mod groups;
 mod lines;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;

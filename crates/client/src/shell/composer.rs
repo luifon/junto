@@ -170,20 +170,29 @@ fn mention_query(text: &str, cursor: usize) -> Option<(usize, String)> {
         .then(|| (start, query.to_owned()))
 }
 
-/// The other participant of a direct conversation, when the query finds the name. A
+/// The other participants of a direct conversation, when the query finds their names. A
 /// participant whose name the client has not read yet is not offered: the mention would
 /// have no name to show.
 fn direct_candidates(row: &DirectRow, query: &str) -> Vec<Candidate> {
-    row.name
-        .as_ref()
-        .map(|name| Candidate {
-            target: MentionTarget::Account(row.account_id),
-            name: name.clone(),
-            detail: text::IN_THIS_CONVERSATION,
+    let query = query.to_lowercase();
+    let mut found: Vec<_> = row
+        .members
+        .iter()
+        .filter_map(|(account, name)| {
+            let candidate = Candidate {
+                target: MentionTarget::Account(*account),
+                name: name.clone(),
+                detail: text::IN_THIS_CONVERSATION,
+            };
+            rank(&candidate, &query).map(|rank| (rank, candidate))
         })
-        .filter(|candidate| rank(candidate, &query.to_lowercase()).is_some())
-        .into_iter()
-        .collect()
+        .collect();
+    found.sort_by(|one, other| {
+        one.0
+            .cmp(&other.0)
+            .then_with(|| one.1.name.to_lowercase().cmp(&other.1.name.to_lowercase()))
+    });
+    found.into_iter().map(|(_, candidate)| candidate).collect()
 }
 
 /// Where a candidate stands for a query in lower case: 0 when its name starts with the
@@ -617,7 +626,7 @@ impl Shell {
 
     /// The entries of the mention picker of a pane. A message of a channel mentions the
     /// members and the roles of its workspace; a message of a direct conversation mentions
-    /// only its two participants, so the picker offers the other one (ADR 0408).
+    /// only its participants (ADR 0408).
     fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();

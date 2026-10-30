@@ -21,6 +21,7 @@ mod direct;
 mod edges;
 mod feed;
 mod file_links;
+mod groups;
 mod invited;
 mod join;
 mod keybinds;
@@ -149,6 +150,7 @@ pub(crate) enum Layer {
     /// The chooser of a new direct conversation (ADR 0307). The state of the application
     /// holds the accounts that it lists.
     NewDirect,
+    GroupConversation,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
     FileLink(Box<crate::state::OpenFileLink>),
@@ -409,6 +411,7 @@ pub struct Shell {
     pub(crate) fork_name: Entity<InputState>,
     /// The part of a name that the chooser of a direct conversation searches.
     pub(crate) contact_part: Entity<InputState>,
+    pub(crate) groups: groups::Groups,
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notice_list: notices::NoticeList,
@@ -514,6 +517,7 @@ impl Shell {
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let groups = groups::Groups::new(window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
@@ -858,6 +862,7 @@ impl Shell {
             pins_scroll: ScrollHandle::new(),
             fork_name,
             contact_part,
+            groups,
             contacts_scroll: ScrollHandle::new(),
             notice_list: notices::NoticeList::new(),
             badge: None,
@@ -1377,6 +1382,12 @@ impl Shell {
                 state.end_thread_menu(open.owner, open.root_id, cx)
             });
         }
+        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation)
+            && !matches!(layer, Layer::NewDirect | Layer::GroupConversation)
+        {
+            self.groups.reset();
+            self.state.update(cx, |state, cx| state.close_contacts(cx));
+        }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
         if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
@@ -1412,7 +1423,8 @@ impl Shell {
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_account(cx));
         }
-        if matches!(self.layer, Layer::NewDirect) {
+        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation) {
+            self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
         if matches!(self.layer, Layer::LinkAll) {
@@ -1973,7 +1985,17 @@ impl Shell {
                 .call
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
-            Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
+            Layer::NewDirect => {
+                self.state.read(cx).contacts_view().is_none()
+                    || self
+                        .groups
+                        .mode
+                        .is_some_and(|mode| !self.group_current(mode, cx))
+            }
+            Layer::GroupConversation => self
+                .groups
+                .mode
+                .is_none_or(|mode| !self.group_current(mode, cx)),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
@@ -2046,6 +2068,7 @@ impl Shell {
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::NewDirect => self.render_new_direct(cx),
+            Layer::GroupConversation => self.render_group_details(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
             Layer::AccountMenu(_) => self.render_account_menu(window, cx),

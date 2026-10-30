@@ -1025,11 +1025,16 @@ impl Shell {
                         .map(|place| (Icon::Speaker, text::in_channel(place).into())),
                 })
                 .collect(),
-            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
-                account_id: direct.other,
-                name: panel.place_name().to_owned().into(),
-                state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
-            }],
+            PanelPlace::Direct(direct) if !direct.joined => direct
+                .other
+                .map(|other| {
+                    vec![OutsideRow {
+                        account_id: other,
+                        name: panel.place_name().to_owned().into(),
+                        state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
+                    }]
+                })
+                .unwrap_or_default(),
             PanelPlace::Direct(_) => Vec::new(),
         });
         // The list lays out only the rows in view: a call in a workspace of hundreds of

@@ -10,6 +10,7 @@ use junto_client_core::protocol::ids::ServerId;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::text;
+use crate::text::conversations as words;
 use crate::theme::{theme, u};
 use crate::ui::{Button, ChannelRow, Dialog, Field, Notice, ScrollArea, StyleExt, dialog_footer};
 
@@ -25,6 +26,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.groups.reset();
         self.contact_part
             .update(cx, |field, cx| field.set_value("", window, cx));
         self.state
@@ -93,19 +95,30 @@ impl Shell {
             .selector("contacts-list");
         for row in view.rows.iter().flatten() {
             let account_id = row.account_id;
+            if !self.group_candidate(account_id, cx) {
+                continue;
+            }
             // The element is named by the account, so that a press that starts on one
             // account and ends on another after an answer chooses nobody.
+            let group_mode = self.groups.mode.is_some();
+            let selected = self.groups.selected.contains_key(&account_id);
+            let name = row.name.clone();
             let choice = ChannelRow::new(
                 ("contact", account_id.as_uuid().as_u128() as u64),
                 Icon::Person,
                 row.name.clone(),
             )
+            .selected(selected)
             .avatar(account_id.as_uuid().as_u128())
             .picture(faces.image(account_id))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.state
-                    .update(cx, |state, cx| state.choose_contact(account_id, cx));
-                this.close_layer(window, cx);
+                if group_mode {
+                    this.toggle_group_person(account_id, &name, cx);
+                } else {
+                    this.state
+                        .update(cx, |state, cx| state.choose_contact(account_id, cx));
+                    this.close_layer(window, cx);
+                }
             }));
             list = list.child(
                 div()
@@ -130,36 +143,104 @@ impl Shell {
                     this.state.update(cx, |state, cx| state.more_contacts(cx));
                 })),
         );
-        Dialog::new(text::NEW_DIRECT_TITLE, self.layer_focus())
-            .selector("new-direct-dialog")
-            .on_close(Self::handler(cx, |this, window, cx| {
-                this.close_layer(window, cx);
-            }))
-            .child(
-                div()
-                    .typeface(theme.types.notice, &theme)
-                    .ink(theme.colors.ink_2)
-                    .child(text::NEW_DIRECT_ABOUT),
-            )
-            .child(
-                div().mt(u(10.0)).child(
-                    Field::new(&self.contact_part, text::CONTACT_PART).selector("contact-part"),
-                ),
-            )
-            .child(
-                div()
-                    .mt(u(6.0))
-                    .h(u(LIST_HEIGHT))
-                    .flex()
-                    .flex_col()
-                    .child(list),
-            )
-            .child(more)
-            .child(dialog_footer([Button::new("cancel-new-direct")
+        let mut footer = vec![
+            Button::new("cancel-new-direct")
                 .label(text::CANCEL)
                 .selector("cancel-new-direct")
                 .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
-                .into_any_element()]))
-            .into_any_element()
+                .into_any_element(),
+        ];
+        if self.groups.mode.is_some() {
+            footer.push(
+                Button::new("group-save")
+                    .label(
+                        if matches!(self.groups.mode, Some(super::groups::Mode::Add(..))) {
+                            words::ADD_SELECTED
+                        } else {
+                            words::CREATE
+                        },
+                    )
+                    .selector("group-save")
+                    .disabled(
+                        self.groups.busy
+                            || self.groups.selected.len()
+                                < if matches!(
+                                    self.groups.mode,
+                                    Some(super::groups::Mode::Create(_))
+                                ) {
+                                    2
+                                } else {
+                                    1
+                                },
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.save_group(false, window, cx)))
+                    .into_any_element(),
+            );
+        } else {
+            footer.push(
+                Button::new("new-group")
+                    .label(words::NEW)
+                    .selector("new-group")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_group_create(window, cx)))
+                    .into_any_element(),
+            );
+        }
+        let mut dialog = Dialog::new(
+            if self.groups.mode.is_some() {
+                words::TITLE
+            } else {
+                text::NEW_DIRECT_TITLE
+            },
+            self.layer_focus(),
+        )
+        .selector("new-direct-dialog")
+        .on_close(Self::handler(cx, |this, window, cx| {
+            this.close_layer(window, cx);
+        }))
+        .child(
+            div()
+                .typeface(theme.types.notice, &theme)
+                .ink(theme.colors.ink_2)
+                .child(if self.groups.mode.is_some() {
+                    words::PEOPLE_HELP
+                } else {
+                    text::NEW_DIRECT_ABOUT
+                }),
+        )
+        .children(
+            matches!(self.groups.mode, Some(super::groups::Mode::Create(_)))
+                .then(|| Field::new(&self.groups.name, words::NAME).selector("group-name")),
+        )
+        .child(
+            div()
+                .mt(u(10.0))
+                .child(Field::new(&self.contact_part, text::CONTACT_PART).selector("contact-part")),
+        )
+        .child(
+            div()
+                .mt(u(6.0))
+                .h(u(LIST_HEIGHT))
+                .flex()
+                .flex_col()
+                .child(list),
+        )
+        .child(more)
+        .child(dialog_footer(footer));
+        if self.groups.mode.is_some() {
+            dialog = dialog.child(
+                div().debug_selector(|| "group-selected".to_owned()).child(
+                    self.groups
+                        .selected
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            );
+        }
+        if let Some(reason) = &self.groups.failed {
+            dialog = dialog.child(Notice::error(reason.clone()));
+        }
+        dialog.into_any_element()
     }
 }

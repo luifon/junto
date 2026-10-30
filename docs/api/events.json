@@ -1120,6 +1120,46 @@
       ],
       "type": "object"
     },
+    "group_conversation_changed": {
+      "properties": {
+        "group": {
+          "$ref": "#/components/schemas/GroupConversation"
+        },
+        "type": {
+          "enum": [
+            "group_conversation_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "group",
+        "type"
+      ],
+      "type": "object"
+    },
+    "group_conversation_left": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "conversation_id": {
+          "$ref": "#/components/schemas/ConversationId"
+        },
+        "type": {
+          "enum": [
+            "group_conversation_left"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "account_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "invite_changed": {
       "description": "The workspaces granted by an existing invite were narrowed.",
       "properties": {
@@ -2654,6 +2694,24 @@
       "CallPlace": {
         "description": "Where a call takes place.",
         "oneOf": [
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "enum": [
+                  "group"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "kind"
+            ],
+            "type": "object"
+          },
           {
             "properties": {
               "channel_id": {
@@ -4483,6 +4541,46 @@
           },
           {
             "properties": {
+              "group": {
+                "$ref": "#/components/schemas/GroupConversation"
+              },
+              "type": {
+                "enum": [
+                  "group_conversation_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "group",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "type": {
+                "enum": [
+                  "group_conversation_left"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "account_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "conversation": {
                 "$ref": "#/components/schemas/Conversation"
               },
@@ -5295,6 +5393,28 @@
         ],
         "type": "string"
       },
+      "GroupConversation": {
+        "properties": {
+          "account_ids": {
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            "type": "array"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ConversationId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "account_ids"
+        ],
+        "type": "object"
+      },
       "ImageType": {
         "description": "The formats in which the server stores an avatar.",
         "enum": [
@@ -5510,6 +5630,24 @@
             "required": [
               "workspace_id",
               "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "enum": [
+                  "group"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
               "kind"
             ],
             "type": "object"

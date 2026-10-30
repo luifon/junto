@@ -25,6 +25,7 @@ use crate::state::view::{
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod conversations;
 pub mod followed;
 pub mod people;
 pub mod permissions;
@@ -2743,7 +2744,9 @@ pub const NOTIFICATION_SETTINGS_ITEM: &str = "Notification settings…";
 pub fn notifications_of(scope: junto_client_core::api::SettingsScope, name: &str) -> String {
     use junto_client_core::api::SettingsScope;
     match scope {
-        SettingsScope::Account | SettingsScope::Workspace(_) => format!("Notifications of {name}"),
+        SettingsScope::Account | SettingsScope::Workspace(_) | SettingsScope::Conversation(_) => {
+            format!("Notifications of {name}")
+        }
         SettingsScope::Channel(_) => format!("Notifications of #{name}"),
     }
 }

@@ -7,8 +7,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
 
 use crate::ids::{
-    AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, DeviceId, EntryRequestId,
-    WorkspaceId,
+    AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, ConversationId, DeviceId,
+    EntryRequestId, WorkspaceId,
 };
 use crate::recording::Recording;
 use crate::secret::CallToken;
@@ -18,6 +18,9 @@ use crate::secret::CallToken;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CallPlace {
+    Group {
+        conversation_id: ConversationId,
+    },
     Channel {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
@@ -41,7 +44,7 @@ impl CallPlace {
     pub const fn channel_id(&self) -> Option<ChannelId> {
         match self {
             Self::Channel { channel_id, .. } => Some(*channel_id),
-            Self::Direct { .. } => None,
+            Self::Direct { .. } | Self::Group { .. } => None,
         }
     }
 }

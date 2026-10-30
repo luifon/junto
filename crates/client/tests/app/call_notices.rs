@@ -366,7 +366,9 @@ fn the_cards_of_invitations_are_bounded_and_lie_over_the_call(cx: &mut TestAppCo
         place: CallPlace::Channel {
             workspace_id: match target.place {
                 CallPlace::Channel { workspace_id, .. } => workspace_id,
-                CallPlace::Direct { .. } => unreachable!("a voice channel"),
+                CallPlace::Direct { .. } | CallPlace::Group { .. } => {
+                    unreachable!("a voice channel")
+                }
             },
             channel_id: daily,
         },
@@ -501,7 +503,9 @@ fn a_card_of_an_invitation_fits_a_narrow_call_window(cx: &mut TestAppContext) {
         place: CallPlace::Channel {
             workspace_id: match target.place {
                 CallPlace::Channel { workspace_id, .. } => workspace_id,
-                CallPlace::Direct { .. } => unreachable!("a voice channel"),
+                CallPlace::Direct { .. } | CallPlace::Group { .. } => {
+                    unreachable!("a voice channel")
+                }
             },
             channel_id: daily,
         },

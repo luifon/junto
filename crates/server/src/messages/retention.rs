@@ -77,7 +77,7 @@ pub async fn run(app: &AppState) -> ApiResult<()> {
     cursor = Uuid::nil();
     loop {
         let outcome = transact!(app, |connection| {
-            let place: Option<(ConversationId, AccountId, AccountId, i32)> =
+            let place: Option<(ConversationId, Option<AccountId>, Option<AccountId>, i32)> =
                 sqlx::query_as("select c.id,c.low_account_id,c.high_account_id,r.days from conversations c
                  cross join direct_message_retention r where r.days is not null and c.id>=$1 and exists(select 1 from messages m
                      where m.place_id=c.id and not m.deleted and m.created_at<=$2-make_interval(days=>r.days))
@@ -101,10 +101,15 @@ pub async fn run(app: &AppState) -> ApiResult<()> {
                 super::changed(
                     connection,
                     app.now(),
-                    MessagePlace::Direct {
-                        conversation_id: conversation,
-                        low_account_id: low,
-                        high_account_id: high,
+                    match (low, high) {
+                        (Some(low_account_id), Some(high_account_id)) => MessagePlace::Direct {
+                            conversation_id: conversation,
+                            low_account_id,
+                            high_account_id,
+                        },
+                        _ => MessagePlace::Group {
+                            conversation_id: conversation,
+                        },
                     },
                     *id,
                     *position as u64,

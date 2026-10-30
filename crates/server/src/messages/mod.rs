@@ -1,6 +1,7 @@
 //! Text messages, current mentions and resumable attachment storage (ADR 0408).
 pub mod direct_calls;
 pub mod document;
+pub mod groups;
 mod mentions;
 pub mod notifications;
 mod place;
