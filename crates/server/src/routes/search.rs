@@ -108,20 +108,28 @@ pub async fn search(
                 .require(&access, junto_authz::WorkspacePermission::ReadMessageHistory)?;
         }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
-             line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
+             line,m.place_id,m.author_id,m.created_at,m.search_vector as
              vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms
              from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
              not null and (m.readers is null or $3=any(m.readers)) union all select
-             l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true,
+             l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_vector,true,
              null::bigint,null::uuid,l.start_ms from
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
              reads_call(r.call_id,$3) ), hits as (select
              content.*,ts_rank_cd(vector,q) as rank from content,query where vector @@ q and ($4::uuid is null or
              place_id=$4) and ($5::uuid is null or author_id=$5) and ($6::timestamptz is null or created_at >= $6) and
-             ($7::timestamptz is null or created_at < $7)) select hits.*,ch.workspace_id from hits left join channels ch on
-             ch.id=hits.place_id where (rank,hits.id,line)<($8,$9,$10) order by rank desc,hits.id desc,line desc limit
-             $11")
+             ($7::timestamptz is null or created_at < $7)), page as materialized (
+             select hits.id,hits.line,hits.place_id,hits.author_id,hits.created_at,hits.transcript,
+                    hits.position,hits.thread_root,hits.start_ms,hits.rank,ch.workspace_id
+             from hits left join channels ch on ch.id=hits.place_id
+             where (rank,hits.id,line)<($8,$9,$10)
+             order by rank desc,hits.id desc,line desc limit $11)
+             select page.*,case when page.transcript then (
+                 select l.search_text from transcript_lines l
+                 where l.recording_id=page.id and l.line=page.line)
+             else (select message_search_text(m.document) from messages m where m.id=page.id)
+             end as text from page order by page.rank desc,page.id desc,page.line desc")
             .bind(&query.q)
             .bind(allowed.ids())
             .bind(access.account_id)

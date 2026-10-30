@@ -14,6 +14,7 @@ Members need to find earlier messages and the content of recorded calls. All str
 - A search has filters for channel, author and date.
 - Results follow permissions. The permission function of ADR 0301 decides which results a user receives.
 - The search uses the full-text search of PostgreSQL.
+- Permission checks and rank ordering select a materialized page before message documents are converted to text. Only that page, including its continuation row, reads message and transcript text by identifier. A common word can match the whole history without rendering every matching document. Rank, identifier and transcript line keep the cursor order.
 
 ## Consequences
 
