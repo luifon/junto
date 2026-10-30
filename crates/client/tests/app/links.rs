@@ -24,9 +24,10 @@ fn an_invite_opens_the_join_step_with_the_code_without_spending_it(cx: &mut Test
     window.until_ready();
     assert_eq!(window.view().servers.len(), 1);
     assert!(!window.shows("join-dialog"));
-    // Opening it again for an existing account navigates without another redemption.
+    // Reopening requires confirmation even for an existing account.
     window.in_shell(|shell, window, cx| shell.open_url(&link, window, cx));
-    assert!(!window.shows("join-dialog"));
+    assert!(window.shows("redeem-invite"));
+    window.press("escape");
 }
 
 #[gpui::test]
@@ -114,4 +115,62 @@ fn a_message_url_navigates_and_a_missing_message_has_a_dismissible_refusal(
     });
     window.click("dismiss-message-link");
     assert!(!window.shows("message-link-unavailable"));
+}
+
+#[gpui::test]
+fn an_existing_account_confirms_an_invite_into_another_workspace(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::invite::CreateInvite;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) =
+        crate::harness::member(cx, &world, &server.address(), &admin, "Member");
+    let account = window.own_account();
+    let workspace = world
+        .run(admin.handle.api().create_workspace("Lab".into()))
+        .unwrap();
+    let code = world
+        .run(admin.handle.api().create_invite(&CreateInvite {
+            workspace_ids: vec![workspace.id],
+            max_uses: Some(1),
+            ..CreateInvite::default()
+        }))
+        .unwrap()
+        .code;
+    let link = links::format(&AppLink::Invite {
+        server: ServerAddress::parse(&server.address()).unwrap(),
+        code,
+    });
+    window.in_shell(|shell, window, cx| shell.open_url(&link, window, cx));
+    assert!(
+        window.shows("join-dialog"),
+        "an existing account must be offered its invitation"
+    );
+    assert!(window.shows("redeem-invite"));
+    assert!(
+        !window.view().servers[0]
+            .workspaces
+            .iter()
+            .any(|row| row.id == workspace.id)
+    );
+    window.press("escape");
+    window.in_shell(|shell, window, cx| shell.open_url(&link, window, cx));
+    window.click("redeem-invite");
+    window.until(
+        "the invitation adds Lab to the existing account",
+        |window| {
+            window.own_account() == account
+                && window.view().servers[0]
+                    .workspaces
+                    .iter()
+                    .any(|row| row.id == workspace.id)
+        },
+    );
+    assert!(!window.shows("join-dialog"));
+    window.in_shell(|shell, window, cx| shell.open_url(&link, window, cx));
+    window.click("redeem-invite");
+    window.until("a spent invitation is refused in its form", |window| {
+        window.in_shell(|shell, _, _| shell.join_error().is_some())
+    });
+    assert!(window.shows("join-dialog"));
 }

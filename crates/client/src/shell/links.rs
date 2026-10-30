@@ -48,10 +48,8 @@ impl Shell {
                 if let Some(saved) = saved {
                     self.state
                         .update(cx, |state, cx| state.select_server(saved.id(), cx));
-                    if saved.owner().is_none() {
-                        self.open_join_for(saved.id(), window, cx);
-                        self.type_code(code.expose(), window, cx);
-                    }
+                    self.open_join_for(saved.id(), window, cx);
+                    self.type_code(code.expose(), window, cx);
                 } else {
                     self.prefill_link_server(server.as_str(), window, cx);
                     self.pending_link = Some(AppLink::Invite { server, code });

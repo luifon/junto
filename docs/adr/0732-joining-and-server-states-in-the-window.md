@@ -57,3 +57,5 @@ The server's public `/join?code=…` page shows the code, server origin, an expl
 - A typed code is held by the text input of the component library, in memory that this crate cannot overwrite (ADR 0714 states the same of the HTTP library). A code is used once.
 - The failure of an action of a state panel is drawn under its actions, not between the sentence and the actions.
 - Test: `states::a_ban_a_removal_and_a_forgotten_account_show_their_states` in `crates/client` holds the read of the notice of a ban, and requires that the actions of the state have the same bounds before and after the notice is drawn.
+
+An application invite link for a saved server with an authenticated account opens an explicit invitation confirmation. Its code stays in the form and is sent only when the person chooses Join invited workspaces, through the authenticated redemption API; it creates no second account or device. Cancellation spends nothing. A spent or refused code stays as an error in that form. Closing or superseding the form, or replacing its account, discards an older result. A server without an account still uses its normal join form.

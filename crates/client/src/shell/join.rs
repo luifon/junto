@@ -35,6 +35,7 @@ pub(crate) enum Target {
     Preview(AddServerFlow),
     /// A server of the server book on which this device has no account.
     Saved(ServerId),
+    Member(junto_client_core::Owner),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,8 +82,14 @@ impl Join {
 
     /// True when the dialog has nothing to show any more: its server left the server book,
     /// the preview was given up, or this device has its account now.
-    pub(crate) fn is_stale(&self, view: &ShellView) -> bool {
+    pub(crate) fn is_stale(&self, view: &ShellView, client: &junto_client_core::Client) -> bool {
         match &self.target {
+            Target::Member(owner) => {
+                client
+                    .server(owner.entry.server_id)
+                    .and_then(|server| server.owner())
+                    != Some(*owner)
+            }
             Target::Preview(flow) => matches!(flow.view().state, AddServerState::EnterAddress),
             Target::Saved(server_id) => {
                 match view.servers.iter().find(|row| row.id == *server_id) {
@@ -115,6 +122,7 @@ enum Body {
     Paths {
         found: bool,
     },
+    Redeem,
     /// The server and this build share no API version. It can still be saved.
     Incompatible(Incompatibility),
     KeyOfOtherAddress(String),
@@ -137,7 +145,17 @@ impl Shell {
         self.code
             .update(cx, |code, cx| code.set_value("", window, cx));
         let opened = self.next_join();
-        self.open_layer(Layer::Join(Join::saved(opened, server_id)), window, cx);
+        let mut join = Join::saved(opened, server_id);
+        if let Some(owner) = self
+            .state
+            .read(cx)
+            .client()
+            .server(server_id)
+            .and_then(|server| server.owner())
+        {
+            join.target = Target::Member(owner);
+        }
+        self.open_layer(Layer::Join(join), window, cx);
         self.focus_field(&self.code.clone(), window, cx);
     }
 
@@ -177,6 +195,10 @@ impl Shell {
             cx.notify();
             return;
         }
+        if let Target::Member(owner) = join.target {
+            self.redeem_invitation(owner, InviteCode::new(code), window, cx);
+            return;
+        }
         let device_name = text::device_name();
         // The two codes differ in their length, so one field takes both.
         let action = if symbols == OWNER_CODE_SYMBOLS {
@@ -193,6 +215,57 @@ impl Shell {
             }
         };
         self.run_access(Running::Joining, action, window, cx);
+    }
+
+    fn redeem_invitation(
+        &mut self,
+        owner: junto_client_core::Owner,
+        code: InviteCode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self
+            .state
+            .read(cx)
+            .client()
+            .server(owner.entry.server_id)
+            .filter(|server| server.owner() == Some(owner))
+        else {
+            return;
+        };
+        let Layer::Join(join) = &mut self.layer else {
+            return;
+        };
+        let opened = join.opened;
+        join.running = Some(Running::Joining);
+        join.error = None;
+        let api = server.api_for(owner.account_id);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = api
+                .redeem_invite(code)
+                .await
+                .map(|_| ())
+                .map_err(|error| FlowError::from(&error));
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .state
+                    .read(cx)
+                    .client()
+                    .server(owner.entry.server_id)
+                    .and_then(|server| server.owner())
+                    != Some(owner)
+                {
+                    return;
+                }
+                let succeeded = result.is_ok();
+                this.join_action_ended(opened, result, cx);
+                if succeeded && this.join_opened(opened).is_some() {
+                    this.close_layer(window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn request_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -242,6 +315,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let saved = match target {
                 Target::Saved(server_id) => Ok(server_id),
+                Target::Member(_) => Err(FlowError::UnknownServer),
                 Target::Preview(flow) => save(&flow).await,
             };
             let result = match saved {
@@ -390,6 +464,23 @@ impl Shell {
                     return div().into_any_element();
                 }
             },
+            Target::Member(owner) => {
+                let Some(row) = view
+                    .servers
+                    .iter()
+                    .find(|row| row.id == owner.entry.server_id)
+                else {
+                    return div().into_any_element();
+                };
+                (
+                    Card {
+                        seed: row.id.as_uuid().as_u128(),
+                        name: row.name.clone().into(),
+                        address: row.address.clone().into(),
+                    },
+                    Body::Redeem,
+                )
+            }
             Target::Saved(server_id) => {
                 let Some(row) = view.servers.iter().find(|row| row.id == *server_id) else {
                     return div().into_any_element();
@@ -473,6 +564,28 @@ impl Shell {
         }));
         let busy = running.is_some() || cancelling;
         match body {
+            Body::Redeem => {
+                dialog = dialog
+                    .child(div().mt(u(12.0)).child(text::INVITATION_EXISTING_ACCOUNT))
+                    .child(
+                        Field::new(&self.code, text::CODE_FIELD)
+                            .kind(FieldKind::Code)
+                            .selector("code-field"),
+                    )
+                    .child(dialog_footer([Button::new("redeem-invite")
+                        .label(if busy {
+                            text::JOINING
+                        } else {
+                            text::JOIN_INVITED_WORKSPACES
+                        })
+                        .kind(ButtonKind::Primary)
+                        .disabled(busy)
+                        .selector("redeem-invite")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.join_with_code(window, cx)),
+                        )
+                        .into_any_element()]));
+            }
             Body::Paths { .. } => {
                 dialog = dialog.child(
                     div()

@@ -3296,6 +3296,10 @@ pub const CAMERA_RESTRICTED: &str = "This system restricts camera access, and Ju
 
 pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailable in this start. Open the installed application to enable them.";
 
+pub const INVITATION_EXISTING_ACCOUNT: &str =
+    "Use this invitation with your existing account. It may add you to workspaces on this server.";
+pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

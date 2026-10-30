@@ -1144,6 +1144,7 @@ impl Shell {
         match &self.layer {
             Layer::Join(join) => match &join.target {
                 join::Target::Saved(server_id) => Some(*server_id),
+                join::Target::Member(owner) => Some(owner.entry.server_id),
                 join::Target::Preview(_) => None,
             },
             _ => None,
@@ -1870,7 +1871,7 @@ impl Shell {
         let stale = match &self.layer {
             Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
-            Layer::Join(join) => join.is_stale(view),
+            Layer::Join(join) => join.is_stale(view, self.state.read(cx).client()),
             // The list of devices belongs to the sound settings of the call.
             Layer::DeviceMenu(_) => {
                 self.call_tab != CallTab::Settings
