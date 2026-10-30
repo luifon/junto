@@ -133,3 +133,5 @@ Reply previews have a separate context menu for their displayed text, the quoted
 ### Context target lifetime
 
 Mention account menus capture the source message or pending outbox entry separately from author targets. Retention and execution require every captured account to remain mentioned in the current document, including thread roots and pinned messages. Tests cover actions present → empty → present with focus restoration, and editing a displayed mention to another account or to ordinary text while its menu is open.
+
+The common shell OpenLink handler parses every AppLink kind and calls Shell::open_app_link, which dispatches to the permission-checked message, thread, channel, conversation, file or recording opener. External links retain the system opener. An unknown origin reveals and fills the existing add-server field, including a collapsed or narrow book, without saving a server. The typed router is also the entry point for operating-system URL delivery; it does not register or receive URLs itself. Rendered Open tests cover all six destinations, and an unknown-origin window test covers both book widths.

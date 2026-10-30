@@ -1812,9 +1812,15 @@ impl Shell {
                     this.copy_text(action.text.clone(), cx);
                 }),
             )
-            .on_action(cx.listener(|_, action: &crate::ui::OpenLink, _, cx| {
-                crate::opening::open_link(&action.link, cx);
-            }))
+            .on_action(
+                cx.listener(|this, action: &crate::ui::OpenLink, window, cx| {
+                    if let Some(link) = junto_client_core::links::parse(action.link.as_str()) {
+                        this.open_app_link(link, window, cx);
+                    } else {
+                        crate::opening::open_link(&action.link, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(
                 |this, action: &account_menus::OpenAccountMenu, window, cx| {
                     this.open_account_menu(action.clone(), window, cx);

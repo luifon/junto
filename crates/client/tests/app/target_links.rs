@@ -214,9 +214,13 @@ fn a_file_link_opens_its_message_and_shows_the_file_with_copy_and_download_actio
     window.state.update(&mut window.cx, |state, _| {
         state.set_download_directory(directory)
     });
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.open_file_link(&origin, file, cx)
-    }));
+    open_rendered(
+        &mut window,
+        AppLink::File {
+            server: origin.clone(),
+            id: file,
+        },
+    );
     window.until("the linked file is shown", |window| {
         window.shows("linked-file-dialog")
     });
@@ -527,4 +531,146 @@ fn a_late_thread_link_does_not_replace_a_newly_opened_thread_on_the_same_channel
         second
     );
     assert!(!window.shows("message-link-refusal"));
+}
+
+pub(crate) fn open_rendered(window: &mut Window, link: junto_client_core::links::AppLink) {
+    let address = junto_client_core::links::format(&link);
+    let label = format!("Open {}", uuid::Uuid::new_v4());
+    window.write(&format!("[{label}]({address})"));
+    let message = window.until_message(&label).message.id;
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{message}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(
+            bounds.left() + gpui::px(65.0),
+            bounds.bottom() - gpui::px(12.0),
+        ),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("link-menu"));
+    window.click_named("link-open:0".to_owned());
+}
+
+#[gpui::test]
+fn rendered_links_open_channels_conversations_messages_and_threads(cx: &mut TestAppContext) {
+    use junto_client_core::links::AppLink;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let root = admin.send(&world, target, document("The destination"));
+    open_rendered(
+        &mut window,
+        AppLink::Channel {
+            server: origin.clone(),
+            id: target,
+        },
+    );
+    window.until(
+        "the rendered channel link opens its destination",
+        |window| window.selected_channel() == target,
+    );
+    window.click_channel("general");
+    open_rendered(
+        &mut window,
+        AppLink::Message {
+            server: origin.clone(),
+            id: root.id,
+        },
+    );
+    window.until(
+        "the rendered message link marks its destination",
+        |window| {
+            window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == root.id && row.target)
+        },
+    );
+    window.click_channel("general");
+    open_rendered(
+        &mut window,
+        AppLink::Thread {
+            server: origin.clone(),
+            id: root.id,
+        },
+    );
+    window.until("the rendered thread link opens its panel", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .is_some_and(|thread| thread.root_id == root.id)
+    });
+    window.press("escape");
+    window.click_channel("general");
+    let direct = world
+        .run(admin.handle.api().open_conversation(window.own_account()))
+        .unwrap();
+    world
+        .run(admin.handle.api().send_message(
+            PlaceId::Direct(direct.id),
+            &SendMessage {
+                document: document("Direct destination"),
+                reply_to: None,
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    open_rendered(
+        &mut window,
+        AppLink::Conversation {
+            server: origin,
+            id: direct.id,
+        },
+    );
+    window.until(
+        "the rendered conversation link opens its destination",
+        |window| {
+            window
+                .feed()
+                .is_some_and(|feed| feed.place == PlaceId::Direct(direct.id) && feed.loaded)
+        },
+    );
+}
+
+#[gpui::test]
+fn an_unknown_application_origin_shows_the_address_field_in_collapsed_and_narrow_books(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::links::AppLink;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let selected = window.selected_channel();
+    let unknown = ServerAddress::parse("https://unknown.example.test").unwrap();
+    for width in [1440.0, 720.0] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0))));
+        window.state.update(&mut window.cx, |state, cx| {
+            state.set_server_book_collapsed(true, cx)
+        });
+        window.settle();
+        assert!(!window.shows("address-field"));
+        let link = AppLink::Channel {
+            server: unknown.clone(),
+            id: ChannelId::generate(),
+        };
+        window.in_shell(|shell, window, cx| shell.open_app_link(link, window, cx));
+        window.settle();
+        assert!(window.shows("address-field"));
+        window.click("address-field");
+        window.press("secondary-a secondary-c");
+        assert_eq!(
+            window.cx.read_from_clipboard().unwrap().text().unwrap(),
+            unknown.as_str()
+        );
+        assert_eq!(window.selected_channel(), selected);
+        assert_eq!(window.server_names(), ["Example Studio"]);
+    }
 }

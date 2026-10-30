@@ -1253,9 +1253,13 @@ fn recording_links_open_the_recording_under_history_permissions_and_support_arch
     let id = world.run(server.record(voice, &[&admin.handle, &luca]));
     world.run(server.transcribe(id, &[spoken(ada, Some(1), 100, "The plan is ready.")]));
     window.click_channel("general");
-    assert!(window.state.update(&mut window.cx, |state, cx| {
-        state.open_recording_link(&origin, id, cx)
-    }));
+    crate::target_links::open_rendered(
+        &mut window,
+        junto_client_core::links::AppLink::Recording {
+            server: origin.clone(),
+            id,
+        },
+    );
     window.until(
         "the linked recording is in its transcript panel",
         |window| {
