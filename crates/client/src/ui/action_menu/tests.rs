@@ -35,6 +35,7 @@ impl Render for Host {
                         .on_click(cx.listener(|this, _, _, _| this.calls += 100)),
                 )
         });
+        let actions = if step == 0 { Vec::new() } else { actions };
         let row = bind_action_menu(frame, "action-row-menu", actions, window, cx);
         div()
             .relative()
@@ -267,4 +268,31 @@ fn a_context_action_of_a_menu_row_keeps_the_enclosing_list_open(cx: &mut TestApp
     );
     settle(cx);
     assert!(host.read_with(cx, |host, _| host.closed));
+}
+
+#[gpui::test]
+fn losing_all_actions_closes_the_menu_restores_focus_and_does_not_reopen_it(
+    cx: &mut TestAppContext,
+) {
+    let (host, cx) = open(cx);
+    cx.simulate_keystrokes("menu");
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
+    host.update(cx, |host, cx| {
+        host.step = 0;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    let focus = host.read_with(cx, |host, _| host.row.clone());
+    assert!(cx.update(|window, _| focus.is_focused(window)));
+    host.update(cx, |host, cx| {
+        host.step = 1;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_none());
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert!(cx.debug_bounds("row-context-menu").is_some());
 }

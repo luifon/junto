@@ -110,7 +110,9 @@ pub fn bind_action_menu(
                 .zip(&actions)
                 .any(|(old, new)| !old.same_presentation(new));
         popup.actions = actions;
-        if popup.shown && changed {
+        if popup.shown && popup.actions.is_empty() {
+            popup.close(window, cx);
+        } else if popup.shown && changed {
             cx.notify();
         }
         popup.bounds.clone()
