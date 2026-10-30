@@ -53,6 +53,10 @@ pub(crate) enum AccountSource {
         account: AccountId,
     },
     ForwardAuthor(Box<super::forwarding::ForwardAuthor>),
+    GroupMember {
+        conversation_id: junto_client_core::protocol::ids::ConversationId,
+        account_id: AccountId,
+    },
     CallOccupant {
         seat: Box<junto_media::calls::Seat>,
         account_id: AccountId,
@@ -184,6 +188,28 @@ impl OpenAccountMenu {
                         || thread.and_then(|thread| thread.feed.as_ref()).is_some_and(held)
                         || thread.and_then(|thread| thread.root.as_ref()).is_some_and(message)
                         || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(message))));
+            }
+            AccountSource::GroupMember {
+                conversation_id,
+                account_id,
+            } => {
+                return self.people.len() == 1
+                    && self.people[0].account_id == *account_id
+                    && view
+                        .selected
+                        .as_ref()
+                        .is_some_and(|server| server.id == self.owner.entry.server_id)
+                    && state
+                        .server(self.owner.entry.server_id)
+                        .is_some_and(|server| {
+                            server.owner() == Some(self.owner)
+                                && server.live().view().model.is_some_and(|model| {
+                                    model.group_conversations.iter().any(|group| {
+                                        group.id == *conversation_id
+                                            && group.account_ids.contains(account_id)
+                                    })
+                                })
+                        });
             }
             AccountSource::CallOccupant {
                 seat,
@@ -623,6 +649,7 @@ impl Shell {
             CallSurface::Tile => {
                 (self.detached || !self.state.read(cx).is_call_detached())
                     && (!panel.hide_without_video
+                        || self.state.read(cx).pinned_call_person() == Some(*account_id)
                         || self
                             .people_with_video(&panel.people, cx)
                             .contains(account_id))
@@ -706,6 +733,7 @@ impl Shell {
             .call_volume_row(&open, window, cx)
             .into_iter()
             .collect();
+        items.extend(self.pin_call_controls(&open, cx));
         items.extend(self.share_call_controls(&open, cx));
         items.extend(self.own_call_controls(&open, cx));
         items.extend(self.participant_controls(&open, cx));

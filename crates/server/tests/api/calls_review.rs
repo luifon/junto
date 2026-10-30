@@ -752,6 +752,11 @@ async fn every_request_that_changes_a_call_is_limited() {
         ),
         (
             Method::POST,
+            format!("/api/v1/group-conversations/{absent}/call/join"),
+            none.clone(),
+        ),
+        (
+            Method::POST,
             format!("/api/v1/direct-calls/{person}/join"),
             none.clone(),
         ),

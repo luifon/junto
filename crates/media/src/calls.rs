@@ -248,7 +248,7 @@ impl Withheld {
             CallPlace::Channel { channel_id, .. } => {
                 model.permissions_in(*channel_id).map(Self::of)
             }
-            CallPlace::Direct { .. } => Some(Self::default()),
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => Some(Self::default()),
         }
     }
 }
@@ -430,6 +430,7 @@ struct Shared {
 type Turn = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 struct Inner {
+    device_checks: crate::device_check::DeviceChecks,
     camera_pictures: watch::Sender<HashMap<Person, Arc<VideoPicture>>>,
     client: Client,
     runtime: tokio::runtime::Handle,
@@ -527,15 +528,22 @@ impl Calls {
         let runtime = client.runtime().handle().clone();
         let (turns_given, turns_taken) = mpsc::unbounded_channel();
         runtime.spawn(turns(runtime.clone(), turns_taken));
+        let levels = watch::Sender::new(Levels::default());
+        let device_checks = crate::device_check::DeviceChecks::new(
+            options.clone(),
+            runtime.clone(),
+            levels.clone(),
+        );
         Self {
             inner: Arc::new(Inner {
+                device_checks,
                 camera_pictures: watch::Sender::new(HashMap::new()),
                 client,
                 runtime,
                 options,
                 shared: Mutex::new(Shared::default()),
                 view: watch::Sender::new(CallsView::default()),
-                levels: watch::Sender::new(Levels::default()),
+                levels,
                 main_picture: watch::Sender::new(None),
                 small_pictures: watch::Sender::new(HashMap::new()),
                 turns: turns_given,
@@ -659,6 +667,44 @@ impl Calls {
         self.inner.tell(SessionCommand::Config(voice));
     }
 
+    pub fn device_check_view(&self) -> crate::device_check::DeviceCheckView {
+        self.inner.device_checks.view()
+    }
+    pub fn watch_device_checks(&self) -> watch::Receiver<crate::device_check::DeviceCheckView> {
+        self.inner.device_checks.watch()
+    }
+    pub fn preview_picture(&self) -> watch::Receiver<Option<Arc<VideoPicture>>> {
+        self.inner.device_checks.picture()
+    }
+    pub fn camera_preview(&self) -> (u64, Option<Arc<VideoPicture>>) {
+        self.inner.device_checks.preview()
+    }
+    pub fn start_audio_check(&self, kind: crate::device_check::AudioCheckKind) {
+        self.stop_input_test();
+        let shared = self.inner.shared();
+        if shared.active.is_some() || shared.joining.is_some() {
+            return;
+        }
+        let voice = shared.voice.clone();
+        self.inner.device_checks.start_audio(kind, voice);
+    }
+    pub fn stop_audio_check(&self) {
+        self.inner.device_checks.stop_audio();
+    }
+    pub fn start_camera_preview(&self, device: Option<String>) {
+        let shared = self.inner.shared();
+        if shared.active.is_some() || shared.joining.is_some() {
+            return;
+        }
+        drop(self.inner.device_checks.start_camera(device));
+    }
+    pub fn stop_camera_preview(&self) {
+        self.inner.device_checks.stop_camera();
+    }
+    pub fn stop_device_checks(&self) {
+        self.inner.device_checks.stop();
+    }
+
     /// Opens the microphone of the sound settings outside a call, so that `levels` carries
     /// its input level (ADR 0733). Nothing is opened while a call runs, without the
     /// permission of the system (no question is shown), or when the device fails. A second
@@ -673,7 +719,10 @@ impl Calls {
         self.inner.runtime.spawn_blocking(move || {
             let voice = {
                 let shared = inner.shared();
-                if shared.input_tests != generation || shared.active.is_some() {
+                if shared.input_tests != generation
+                    || shared.active.is_some()
+                    || shared.joining.is_some()
+                {
                     return;
                 }
                 shared.voice.clone()
@@ -695,7 +744,10 @@ impl Calls {
                     // test ends, and the settings state why no level shows.
                     let ended = {
                         let mut shared = inner.shared();
-                        if shared.input_tests != generation || shared.active.is_some() {
+                        if shared.input_tests != generation
+                            || shared.active.is_some()
+                            || shared.joining.is_some()
+                        {
                             return;
                         }
                         shared.input_test.take()
@@ -711,7 +763,10 @@ impl Calls {
             };
             let replaced = {
                 let mut shared = inner.shared();
-                if shared.input_tests == generation && shared.active.is_none() {
+                if shared.input_tests == generation
+                    && shared.active.is_none()
+                    && shared.joining.is_none()
+                {
                     inner
                         .view
                         .send_if_modified(|view| view.input_test_failed.take().is_some());
@@ -1107,8 +1162,9 @@ impl Calls {
         target: CallTarget,
         entry: Entry,
     ) -> impl Future<Output = Result<(), JoinError>> + Send + 'static + use<> {
-        // The call opens the microphone itself.
+        // The call opens the devices itself.
         self.stop_input_test();
+        self.stop_device_checks();
         let asked = ask(&self.inner, target, entry);
         async move {
             asked?
@@ -1170,6 +1226,7 @@ fn ask(
     shared.next_key += 1;
     let key = shared.next_key;
     shared.joining = Some(Joining { key, target });
+    inner.device_checks.stop();
     inner.view.send_modify(|view| {
         view.joining = Some(target);
         view.outcome = None;
@@ -1213,6 +1270,7 @@ async fn request(
         return api.accept_call_invitation(invitation_id).await;
     }
     match place {
+        CallPlace::Group { conversation_id } => api.join_group_call(*conversation_id).await,
         CallPlace::Channel { channel_id, .. } => api.join_channel_call(*channel_id).await,
         CallPlace::Direct {
             low_account_id,
@@ -1238,6 +1296,9 @@ async fn request_renewal(
 ) -> Result<CallJoin, ApiError> {
     let api = server.api();
     match place {
+        CallPlace::Group { conversation_id } => {
+            api.renew_group_call(*conversation_id, identity).await
+        }
         CallPlace::Channel { channel_id, .. } => {
             api.renew_channel_call(*channel_id, identity).await
         }

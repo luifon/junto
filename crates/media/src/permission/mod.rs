@@ -84,6 +84,7 @@ impl MicrophonePermission for SystemPermission {
 #[derive(Debug, Clone)]
 pub struct FixedPermission {
     state: std::sync::Arc<std::sync::Mutex<(MicrophoneAccess, MicrophoneAccess, u32)>>,
+    held: tokio::sync::watch::Sender<bool>,
 }
 
 #[cfg(feature = "test-support")]
@@ -97,6 +98,7 @@ impl FixedPermission {
     pub fn new(state: MicrophoneAccess, answer: MicrophoneAccess) -> Self {
         Self {
             state: std::sync::Arc::new(std::sync::Mutex::new((state, answer, 0))),
+            held: tokio::sync::watch::channel(false).0,
         }
     }
 
@@ -109,6 +111,19 @@ impl FixedPermission {
     /// The person changed the permission in the settings of the system.
     pub fn set(&self, state: MicrophoneAccess) {
         self.lock().0 = state;
+    }
+
+    /// Keeps a new system question pending until `release` supplies its answer.
+    pub fn hold(&self) {
+        self.held.send_replace(true);
+    }
+
+    pub fn release(&self) {
+        let mut state = self.lock();
+        if state.0 == MicrophoneAccess::NotAsked {
+            state.0 = state.1;
+        }
+        self.held.send_replace(false);
     }
 
     /// How often the system was made to ask.
@@ -127,12 +142,25 @@ impl MicrophonePermission for FixedPermission {
         let mut held = self.lock();
         if held.0 == MicrophoneAccess::NotAsked {
             held.2 += 1;
-            held.0 = held.1;
+            if !*self.held.borrow() {
+                held.0 = held.1;
+            }
         }
-        let answer = held.0;
+        drop(held);
+        let permission = self.clone();
+        let mut gate = self.held.subscribe();
         Box::pin(async move {
             crate::executor::require_runtime("the request of the fixed microphone permission");
-            answer
+            loop {
+                let waiting = *gate.borrow_and_update();
+                if !waiting {
+                    break;
+                }
+                if gate.changed().await.is_err() {
+                    break;
+                }
+            }
+            permission.state()
         })
     }
 }

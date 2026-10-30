@@ -96,7 +96,7 @@ fn filtering_a_pressed_row_never_messages_its_replacement_and_a_new_server_clear
             .view()
             .lists()
             .and_then(|lists| lists.conversation.as_ref())
-            .is_some_and(|person| person.account_id == bravo_id)
+            .is_some_and(|person| person.account_id == Some(bravo_id))
     });
     let writes: Vec<_> = proxy
         .all()

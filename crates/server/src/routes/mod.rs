@@ -33,6 +33,7 @@ pub mod contacts;
 pub mod departures;
 pub mod exports;
 pub mod glossary;
+pub mod groups;
 pub mod health;
 pub mod internal;
 mod invite_page;
@@ -224,8 +225,20 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(messages::add_reaction));
     add(&mut router, || routes!(messages::remove_reaction));
     add(&mut router, || {
-        routes!(messages::open_conversation, messages::list_conversations)
+        routes!(
+            messages::open_conversation,
+            messages::list_conversations,
+            messages::set_conversation_visibility
+        )
     });
+    add(&mut router, || {
+        routes!(groups::create_group, groups::list_groups)
+    });
+    add(&mut router, || routes!(groups::rename_group));
+    add(&mut router, || routes!(groups::list_group_memberships));
+    add(&mut router, || routes!(groups::add_group_member));
+    add(&mut router, || routes!(groups::leave_group));
+    add(&mut router, || routes!(calls::join_group_call));
     add(&mut router, || routes!(contacts::list_contacts));
     add(&mut router, || routes!(auth::create_challenge));
     add(&mut router, || routes!(auth::log_in));
@@ -494,6 +507,9 @@ fn documented_routes() -> OpenApiRouter<AppState> {
 /// The OpenAPI document of every route that [`router`] serves.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let mut document = documented_routes().into_openapi();
+    let group_capability = document.paths.paths.get("/api/v1/snapshot").and_then(|item| item.get.as_ref())
+        .and_then(|operation| operation.parameters.as_ref())
+        .and_then(|parameters| parameters.iter().find(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER)))).cloned();
     for item in document.paths.paths.values_mut() {
         for operation in [
             &mut item.get,
@@ -505,6 +521,14 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         .into_iter()
         .flatten()
         {
+            if operation.tags.as_ref().is_some_and(|tags| {
+                tags.iter()
+                    .any(|tag| matches!(tag.as_str(), "messages" | "calls" | "events" | "exports"))
+            }) && let Some(capability) = &group_capability
+            {
+                let parameters = operation.parameters.get_or_insert_with(Vec::new);
+                if !parameters.iter().any(|parameter| matches!(parameter, utoipa::openapi::RefOr::T(value) if value.name.eq_ignore_ascii_case(junto_protocol::message::GROUPS_HEADER))) { parameters.push(capability.clone()); }
+            }
             for (status, response) in &mut operation.responses.responses {
                 if status.starts_with('2')
                     && let utoipa::openapi::RefOr::T(response) = response
@@ -534,6 +558,7 @@ pub fn router(state: AppState) -> Router {
         .route(layout::FILE, axum::routing::get(layout::file))
         .fallback(unknown_path)
         .method_not_allowed_fallback(wrong_method)
+        .layer(middleware::from_fn(crate::messages::groups::negotiate))
         .layer(middleware::from_fn_with_state(state.clone(), whole_body))
         .layer(middleware::from_fn_with_state(
             state.clone(),

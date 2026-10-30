@@ -114,7 +114,7 @@ fn channels_and_people_are_found_across_servers_and_unread_channels_come_first(
                 lists
                     .conversation
                     .as_ref()
-                    .is_some_and(|row| row.account_id == ada)
+                    .is_some_and(|row| row.account_id == Some(ada))
             })
     });
     window.press("secondary-k");
@@ -336,4 +336,122 @@ fn a_cold_switcher_finds_a_departed_conversation_peer_on_another_server(
                     .is_some_and(|row| row.id == conversation.id)
             })
     });
+}
+
+#[gpui::test]
+fn named_groups_follow_unread_order_rename_and_membership_in_the_switcher(cx: &mut TestAppContext) {
+    use crate::admin_pages::{invite, joined};
+    use junto_client_core::{model::PlaceId, protocol::message::SendMessage};
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_writer_device, writer) = joined(&world, &server, &code, "Writer");
+    let code = invite(&world, &admin.handle, Vec::new());
+    let (_third_device, third) = joined(&world, &server, &code, "Third");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let mut groups = Vec::new();
+    for name in ["Planning", "Planning later"] {
+        groups.push(
+            world
+                .run(
+                    window
+                        .handle()
+                        .api()
+                        .create_group(name.to_owned(), vec![logged_in(&writer), logged_in(&third)]),
+                )
+                .unwrap(),
+        );
+    }
+    let server_id = window.handle().id();
+    window.until("both group sources are current", |window| {
+        groups
+            .iter()
+            .all(|group| window.shows_named(format!("direct-row:{}", group.id)))
+    });
+    world
+        .run(writer.api().send_message(
+            PlaceId::Direct(groups[1].id),
+            &SendMessage {
+                document: crate::messages::document("an unread plan"),
+                reply_to: None,
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until("the second group has unread content", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists
+                .directs
+                .iter()
+                .any(|row| row.id == groups[1].id && row.unread.unread())
+        })
+    });
+    window.press("secondary-k");
+    query(&mut window, "plan");
+    window.until("contact discovery is finished", |window| {
+        !choices(window).reading
+    });
+    let rows = choices(&mut window).rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].destination,
+        Destination::Conversation(server_id, groups[1].id)
+    );
+    assert!(rows[0].unread);
+    assert_eq!(
+        rows[1].destination,
+        Destination::Conversation(server_id, groups[0].id)
+    );
+    world
+        .run(
+            writer
+                .api()
+                .rename_group(groups[0].id, "Plans revised".to_owned()),
+        )
+        .unwrap();
+    window.until("the same group identity has its fresh label", |window| {
+        choices(window).rows.iter().any(|row| {
+            row.destination == Destination::Conversation(server_id, groups[0].id)
+                && row.name == "Plans revised"
+        })
+    });
+    window.press("enter");
+    window.until("the first unread group opens", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.place == PlaceId::Direct(groups[1].id))
+    });
+    assert!(!window.shows("quick-switcher"));
+    window.press("secondary-k");
+    query(&mut window, "Plans revised");
+    window.until("the renamed group is the only destination", |window| {
+        !choices(window).reading && choices(window).rows.len() == 1
+    });
+    world
+        .run(window.handle().api().leave_group(groups[0].id))
+        .unwrap();
+    window.until("a departed group is no longer selectable", |window| {
+        !choices(window).reading
+            && choices(window)
+                .rows
+                .iter()
+                .all(|row| row.destination != Destination::Conversation(server_id, groups[0].id))
+    });
+    window.press("enter");
+    assert!(
+        window
+            .feed()
+            .is_none_or(|feed| feed.place != PlaceId::Direct(groups[0].id))
+    );
+    assert!(
+        world
+            .run(
+                window
+                    .handle()
+                    .api()
+                    .messages(PlaceId::Direct(groups[0].id), &Default::default())
+            )
+            .is_err()
+    );
 }

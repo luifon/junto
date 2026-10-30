@@ -2353,3 +2353,39 @@ pub async fn unmute_direct_conversation(
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[utoipa::path(post,path="/api/v1/group-conversations/{conversation_id}/call/join",tag="calls",params(("conversation_id"=junto_protocol::ids::ConversationId,Path),CallJoinQuery,ViewerQuery),security(("session"=[])),responses((status=200,body=CallJoin),ApiError))]
+pub async fn join_group_call(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(conversation_id): ApiPath<junto_protocol::ids::ConversationId>,
+    ApiQuery(query): ApiQuery<CallJoinQuery>,
+    ApiQuery(viewer): ApiQuery<ViewerQuery>,
+) -> ApiResult<Json<CallJoin>> {
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    let fresh = Fresh::new(&app)?;
+    let (entered, caller) = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        crate::messages::groups::readable(connection, &access, conversation_id).await?;
+        app.calls.admitting()?;
+        let entered = entry::enter(
+            connection,
+            &app,
+            now,
+            &access,
+            CallPlace::Group { conversation_id },
+            None,
+            &fresh,
+            Pass::None,
+            query.renews.as_deref(),
+        )
+        .await?;
+        Ok((entered, access.account_id))
+    })?;
+    let media = app.calls.admitting()?.clone();
+    app.streams.calls().enter(caller, entered.key);
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true, &viewer)
+        .await
+        .map(Json)
+}

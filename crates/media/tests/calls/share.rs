@@ -881,7 +881,7 @@ async fn packets_received(track: &livekit::prelude::RemoteTrack) -> u64 {
     track
         .get_stats()
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|error| panic!("cannot measure received share packets: {error}"))
         .iter()
         .map(|stat| match stat {
             RtcStats::InboundRtp(stat) => stat.received.packets_received,
@@ -938,6 +938,39 @@ async fn received_slots(room: &livekit::prelude::Room, of: AccountId) -> (Vec<u8
     pictures.sort_unstable();
     sounds.sort_unstable();
     (pictures, sounds)
+}
+
+/// Every sample excludes forbidden slots; the whole observation must receive every
+/// expected track. Routing does not require packets in each one-second sample.
+async fn observe_received_slots(
+    room: &livekit::prelude::Room,
+    of: AccountId,
+    expected: (Vec<u8>, Vec<u8>),
+    samples: usize,
+    pause: Duration,
+) {
+    let mut observed = Vec::new();
+    let mut seen = (Vec::new(), Vec::new());
+    for _ in 0..samples {
+        if !pause.is_zero() {
+            tokio::time::sleep(pause).await;
+        }
+        let received = received_slots(room, of).await;
+        assert!(
+            received.0.iter().all(|slot| expected.0.contains(slot))
+                && received.1.iter().all(|slot| expected.1.contains(slot)),
+            "forbidden share packets: {received:?}; allowed: {expected:?}"
+        );
+        seen.0.extend_from_slice(&received.0);
+        seen.1.extend_from_slice(&received.1);
+        observed.push(received);
+    }
+    seen.0.sort_unstable();
+    seen.0.dedup();
+    seen.1.sort_unstable();
+    seen.1.dedup();
+    println!("share packet samples: {observed:?}");
+    assert_eq!(seen, expected, "share packet samples: {observed:?}");
 }
 
 /// Waits until a room connection of the call library receives the shares `expected` of
@@ -1013,10 +1046,14 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
         ben.calls.watch_share(ShareId::of(ann_id, 1));
         ben.until_heard_tone(PLAYER.0).await;
         // Cara keeps the one share of the lowest slot, also some seconds later.
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![0]));
-        }
+        observe_received_slots(
+            &old,
+            ann_id,
+            (vec![0], vec![0]),
+            10,
+            Duration::from_millis(500),
+        )
+        .await;
 
         // Ann ends the screen: one share is left, and Cara receives it.
         ann.calls.stop_share(Some(0));
@@ -1064,9 +1101,7 @@ async fn a_client_of_one_share_receives_one_of_several_shares_and_they_end_with_
             "Cara receives the share of the lowest slot after the new connection of Ann",
         )
         .await;
-        for _ in 0..5 {
-            assert_eq!(received_slots(&old, ann_id).await, (vec![0], vec![]));
-        }
+        observe_received_slots(&old, ann_id, (vec![0], vec![]), 5, Duration::ZERO).await;
 
         // Ann leaves the call: each of her shares ends at Ben and at the server.
         ann.calls.leave().await;

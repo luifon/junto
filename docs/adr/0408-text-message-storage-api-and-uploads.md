@@ -56,7 +56,7 @@ Documents:
   have no credentials or controls, and contain at most 2,048 bytes.
 - An empty document needs an attachment. Account mentions in a channel name active
   workspace members; role mentions name roles of that workspace. Everyone mentions need
-  `mention_everyone`, including a mention of the built-in everyone role. Direct conversations mention only their two participants.
+  `mention_everyone`, including a mention of the built-in everyone role. Pair conversations mention only their two participants; named groups mention only their current members (ADR 0302).
 - Reactions use the canonical spelling of Unicode emoji recognized by the `emojis` table.
   One account has one reaction per emoji per message, with at most 20 distinct emoji on a
   message. Adding and removing a reaction is idempotent. Responses give counts and the
@@ -393,3 +393,9 @@ incoming verification claim for a remote origin. Editing a copied document also
 clears verification; the unchanged source link is historical context only.
 Existing stored origins without the flag default to unverified. This avoids
 claiming that earlier client-supplied bodies were authenticated snapshots.
+
+### Hiding a conversation
+
+`PUT /api/v1/conversations/{conversation_id}/visibility` stores `hidden` for the caller, for a pair or a named group. It requires current readable participation, including for a departed read-only pair; an administrator cannot change another conversation. Hiding changes no content or read permission. The snapshot carries currently readable hidden conversation identifiers, and the control event `conversation_visibility_changed` synchronizes the caller's sessions. A group preference event rechecks current group access at delivery and replay.
+
+Creating a message clears the hidden preference of its current recipients and records their visibility events in the same transaction. This includes call system messages; edits, reactions and read changes do not restore the row. Leaving a group deletes that member's preference. Later group activity cannot restore a former member's row or tell them its visibility. Explicit reopening clears the preference; opening an existing pair through the contact route also clears it.

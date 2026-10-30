@@ -23,6 +23,8 @@ pub enum SettingsScope {
     Workspace(WorkspaceId),
     /// The level, the mute and the two mention switches of one channel.
     Channel(ChannelId),
+    /// The mute of a named group conversation.
+    Conversation(junto_protocol::ids::ConversationId),
 }
 
 impl SettingsScope {
@@ -33,6 +35,7 @@ impl SettingsScope {
             Self::Account => Uuid::nil(),
             Self::Workspace(workspace_id) => workspace_id.as_uuid(),
             Self::Channel(channel_id) => channel_id.as_uuid(),
+            Self::Conversation(id) => id.as_uuid(),
         }
     }
 }

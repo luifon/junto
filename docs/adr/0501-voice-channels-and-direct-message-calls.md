@@ -19,6 +19,7 @@ Voice channels:
 Direct-message calls:
 
 - A direct-message call has voice, camera and screen share.
+- A group direct-message call names its conversation identifier and requires current membership and the group contact rule of ADR 0307 at admission and delivery. It uses the same device seats, invitations and one-call-per-account rule as other calls. Joining invites the other active members. Group departure marks the room for an admission check. It has no meeting mode or recording, and its text conversation holds system lines for call start, end, arrivals and departures.
 - A direct-message call has no recording and no meeting mode.
 - People who need a recording use a voice channel, which can be private or locked (ADR 0504).
 
@@ -40,3 +41,5 @@ A call invitation is the invitation of an existing member to a call (ADR 0506). 
 - The text chat of a voice channel holds the recording and transcript of a call as a system message (ADR 0602).
 - Recording of direct-message calls is not planned (`docs/scope.md`).
 - A fork of a thread can create a voice channel (ADR 0403).
+
+Group-call arrival notes read the participant's latest transition through a partial message index on call identifier, actor identifier, creation time and message identifier, restricted to arrival and departure actions. The lookup reads that participant's transition without scanning unrelated message history.

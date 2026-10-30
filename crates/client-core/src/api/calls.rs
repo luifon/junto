@@ -399,6 +399,21 @@ impl ServerApi {
 
     /// Asks for a place in the direct-message call with an account. The first account
     /// that enters rings the other one.
+    pub async fn join_group_call(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+    ) -> Result<CallJoin, ApiError> {
+        self.join(format!("/group-conversations/{id}/call/join"))
+            .await
+    }
+    pub async fn renew_group_call(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+        identity: &str,
+    ) -> Result<CallJoin, ApiError> {
+        self.renew(format!("/group-conversations/{id}/call/join"), identity)
+            .await
+    }
     pub async fn join_direct_call(&self, account_id: AccountId) -> Result<CallJoin, ApiError> {
         self.join(format!("/direct-calls/{account_id}/join")).await
     }

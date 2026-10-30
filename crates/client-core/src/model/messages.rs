@@ -65,7 +65,8 @@ impl PlaceId {
             MessagePlace::Channel { channel_id, .. } => Self::Channel(*channel_id),
             MessagePlace::Direct {
                 conversation_id, ..
-            } => Self::Direct(*conversation_id),
+            }
+            | MessagePlace::Group { conversation_id } => Self::Direct(*conversation_id),
         }
     }
 
@@ -550,6 +551,12 @@ impl ServerModel {
                     conversation_id,
                     low_account_id: held.low_account_id,
                     high_account_id: held.high_account_id,
+                })
+                .or_else(|| {
+                    self.group_conversations
+                        .iter()
+                        .find(|group| group.id == conversation_id)
+                        .map(|_| MessagePlace::Group { conversation_id })
                 }),
         }
     }

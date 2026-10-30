@@ -165,6 +165,9 @@ impl AppState {
         conversation_id: ConversationId,
         cx: &mut Context<Self>,
     ) {
+        if self.open_hidden_conversation(server_id, conversation_id, cx) {
+            return;
+        }
         self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(server_id);
@@ -251,11 +254,7 @@ impl AppState {
                     // which the event of the server brings.
                     Ok(_) if !stayed => {}
                     Ok(conversation) => {
-                        this.navigations += 1;
-                        this.selection.server = Some(server_id);
-                        this.selection
-                            .conversations
-                            .insert(server_id, conversation.id);
+                        this.select_conversation(server_id, conversation.id, cx);
                     }
                     Err(error) => {
                         let reason = match error.category() {

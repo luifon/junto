@@ -9,7 +9,8 @@ use junto_protocol::account::AccountStatus;
 use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{
-    AccountId, CallId, CategoryId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
+    AccountId, CallId, CategoryId, ChannelId, ConversationId, ServerRoleId, WorkspaceId,
+    WorkspaceRoleId,
 };
 use junto_protocol::structure::RulePlace;
 use serde::{Deserialize, Serialize};
@@ -86,13 +87,17 @@ impl Class {
             | Event::ExportUpdated { .. }
             | Event::ExportRemoved { .. }
             | Event::NotificationsRead { .. }
+            | Event::ConversationVisibilityChanged { .. }
             | Event::ThreadFollowChanged { .. }
             | Event::NotificationDefaultChanged { .. } => Self::Control,
-            Event::ConversationOpened { .. } => Self::DirectMessage,
+            Event::ConversationOpened { .. }
+            | Event::GroupConversationChanged { .. }
+            | Event::GroupConversationLeft { .. } => Self::DirectMessage,
             Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
             Event::MessageChanged { place, .. } => match place {
-                junto_protocol::message::MessagePlace::Direct { .. } => Self::DirectMessage,
+                junto_protocol::message::MessagePlace::Direct { .. }
+                | junto_protocol::message::MessagePlace::Group { .. } => Self::DirectMessage,
                 _ => Self::General,
             },
             Event::ChannelHistoryWithdrawn { .. } => Self::General,
@@ -229,6 +234,8 @@ pub enum Audience {
         channels: Vec<Seen>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accounts: Vec<AccountId>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        groups: Vec<ConversationId>,
     },
     /// The accounts that may see the profile of the account: the account itself, the members
     /// of a workspace that it is a member of, and the accounts with `ban_members`.
@@ -300,6 +307,9 @@ pub enum Audience {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_id: Option<AccountId>,
     },
+    Group {
+        conversation_id: ConversationId,
+    },
     /// The two participants of a direct message.
     Direct {
         low_account_id: AccountId,
@@ -365,6 +375,7 @@ pub enum Audience {
 /// only what every account at the place may know.
 fn of_call(place: &CallPlace, inside: Option<(CallId, CallReach)>) -> Audience {
     match (*place, inside) {
+        (CallPlace::Group { conversation_id }, _) => Audience::Group { conversation_id },
         (
             CallPlace::Channel {
                 workspace_id,
@@ -458,7 +469,7 @@ pub fn of_the_inside(event: &Event) -> Option<Audience> {
     };
     match place {
         CallPlace::Channel { .. } => Some(of_call(place, Some((call_id, CallReach::Inside)))),
-        CallPlace::Direct { .. } => None,
+        CallPlace::Direct { .. } | CallPlace::Group { .. } => None,
     }
 }
 
@@ -502,8 +513,14 @@ impl Audience {
     pub fn addressed_at(account_id: AccountId, places: &[CallPlace]) -> Self {
         let mut channels: Vec<Seen> = Vec::new();
         let mut accounts: Vec<AccountId> = Vec::new();
+        let mut groups = Vec::new();
         for place in places {
             match *place {
+                CallPlace::Group { conversation_id } => {
+                    if !groups.contains(&conversation_id) {
+                        groups.push(conversation_id);
+                    }
+                }
                 CallPlace::Channel {
                     workspace_id,
                     channel_id,
@@ -528,13 +545,14 @@ impl Audience {
                 }
             }
         }
-        if channels.is_empty() && accounts.is_empty() {
+        if channels.is_empty() && accounts.is_empty() && groups.is_empty() {
             Self::Account { account_id }
         } else {
             Self::AccountSeeing {
                 account_id,
                 channels,
                 accounts,
+                groups,
             }
         }
     }
@@ -594,7 +612,8 @@ impl Audience {
             | Self::AccountViewers { .. }
             | Self::ServerPermission { .. }
             | Self::ServerRoleHolders { .. }
-            | Self::Direct { .. } => None,
+            | Self::Direct { .. }
+            | Self::Group { .. } => None,
         }
     }
 
@@ -648,6 +667,7 @@ impl Audience {
     /// receives every event of that call (ADR 0107).
     pub const fn call_key(&self) -> Option<CallKey> {
         match self {
+            Self::Group { conversation_id } => Some(CallKey::Group(*conversation_id)),
             Self::SystemMessage { channel_id, .. }
             | Self::Channel { channel_id, .. }
             | Self::ChannelMessage { channel_id, .. }
@@ -666,6 +686,12 @@ impl Audience {
         let permission = |permission| Some(Self::ServerPermission { permission });
         let workspace = |workspace_id| Some(Self::Workspace { workspace_id });
         match event {
+            Event::GroupConversationChanged { group } => Some(Self::Group {
+                conversation_id: group.id,
+            }),
+            Event::GroupConversationLeft { account_id, .. } => Some(Self::Account {
+                account_id: *account_id,
+            }),
             Event::WorkspaceMemberRemoved {
                 workspace_id,
                 account_id,
@@ -681,7 +707,9 @@ impl Audience {
                 Some(Self::ActiveAccounts)
             }
             // Its writer states the stored list and the moderators (ADR 0121).
-            Event::AccountDepartureChanged { .. } => None,
+            Event::AccountDepartureChanged { .. } | Event::ConversationVisibilityChanged { .. } => {
+                None
+            }
             Event::MessageMentioned {
                 workspace_id,
                 channel_id,
@@ -971,6 +999,7 @@ impl Audience {
             }
             (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
             (Event::AccountDepartureChanged { .. }, Self::Listed { .. }) => true,
+            (Event::AccountDepartureChanged { .. }, Self::Group { .. }) => true,
             (
                 Event::AccountDepartureChanged { .. },
                 Self::ServerPermission {
@@ -1006,7 +1035,9 @@ impl Audience {
                 },
             ) => workspace_id == deleted,
             (
-                Event::ExportUpdated { .. } | Event::ExportRemoved { .. },
+                Event::ExportUpdated { .. }
+                | Event::ExportRemoved { .. }
+                | Event::ConversationVisibilityChanged { .. },
                 Self::Account { .. } | Self::AccountSeeing { .. },
             ) => true,
             (
@@ -1063,6 +1094,7 @@ pub struct Recipient<'a> {
     /// direct message or a direct call, and to the accounts of a profile that is no
     /// fellow's. An account that is not active has no entry.
     pub contacts: &'a HashMap<AccountId, Contact>,
+    pub groups: &'a HashSet<ConversationId>,
     /// The lists of `event_receivers`, of the ones that the audiences of a batch name, that
     /// hold the recipient.
     pub listed: &'a HashSet<uuid::Uuid>,
@@ -1202,12 +1234,15 @@ pub fn receives<'a>(
         Audience::Account { account_id } => {
             *account_id == recipient.account_id && allows(Request::OwnAccount)
         }
+        Audience::Group { conversation_id } => recipient.groups.contains(conversation_id),
         Audience::AccountSeeing {
             account_id,
             channels,
             accounts,
+            groups,
         } => {
             *account_id == recipient.account_id
+                && groups.iter().all(|id| recipient.groups.contains(id))
                 && allows(Request::OwnAccount)
                 && channels.iter().all(|seen| {
                     standing(seen.workspace_id)
@@ -1360,6 +1395,9 @@ pub fn receives<'a>(
 
 fn message_call_place(place: junto_protocol::message::MessagePlace) -> CallPlace {
     match place {
+        junto_protocol::message::MessagePlace::Group { conversation_id } => {
+            CallPlace::Group { conversation_id }
+        }
         junto_protocol::message::MessagePlace::Channel {
             workspace_id,
             channel_id,
@@ -1415,6 +1453,9 @@ mod tests {
     static NO_CALLS: std::sync::LazyLock<HashMap<CallId, CallStanding>> =
         std::sync::LazyLock::new(HashMap::new);
 
+    static NO_GROUPS: std::sync::LazyLock<HashSet<ConversationId>> =
+        std::sync::LazyLock::new(HashSet::new);
+
     fn recipient(actor: &Actor) -> Recipient<'_> {
         Recipient {
             account_id: AccountId::generate(),
@@ -1422,6 +1463,7 @@ mod tests {
             server_role_ids: &[],
             fellows: &NO_FELLOWS,
             contacts: &NO_CONTACTS,
+            groups: &NO_GROUPS,
             listed: &NO_LISTS,
             memberships: &NO_MEMBERSHIPS,
             calls: &NO_CALLS,
@@ -1786,6 +1828,7 @@ mod tests {
                     channel_id: place.channel_id
                 }],
                 accounts: vec![],
+                groups: vec![],
             }
         );
         assert_eq!(audience.account_id(), Some(me.account_id));
@@ -1860,6 +1903,7 @@ mod tests {
                 account_id: me.account_id,
                 channels: vec![],
                 accounts: vec![caller],
+                groups: vec![],
             }
         );
         assert!(!may_receive(me, &rung, None));

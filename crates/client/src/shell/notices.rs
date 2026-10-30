@@ -1079,6 +1079,27 @@ impl Shell {
             .server(server_id)
             .and_then(|server| server.owner())
         {
+            items.push(
+                MenuItem::new("direct-hide", text::conversations::HIDE)
+                    .selector("direct-hide")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id)
+                            || this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .and_then(|server| server.owner())
+                                != Some(owner)
+                        {
+                            return;
+                        }
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.hide_conversation(owner, conversation_id, cx)
+                        });
+                    }))
+                    .into_any_element(),
+            );
             items.insert(
                 0,
                 MenuItem::new("direct-open", text::OPEN)
@@ -1102,7 +1123,8 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if direct.departure.is_none()
+        if let Some(account_id) = account_id
+            && direct.departure.is_none()
             && let Some(owner) = self
                 .state
                 .read(cx)
@@ -1122,7 +1144,7 @@ impl Shell {
                             && state.view().lists().is_some_and(|lists| {
                                 lists.directs.iter().any(|row| {
                                     row.id == conversation_id
-                                        && row.account_id == account_id
+                                        && row.account_id == Some(account_id)
                                         && row.departure.is_none()
                                 })
                             });
@@ -1137,13 +1159,49 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        items.extend(
-            self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.set_direct_mute(server_id, account_id, length, cx);
-                });
-            }),
-        );
+        if account_id.is_none()
+            && let Some(owner) = self
+                .state
+                .read(cx)
+                .server(server_id)
+                .and_then(|server| server.owner())
+        {
+            items.extend(
+                self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
+                    if this
+                        .state
+                        .read(cx)
+                        .server(server_id)
+                        .and_then(|server| server.owner())
+                        == Some(owner)
+                    {
+                        this.state.update(cx, |state, cx| {
+                            state.set_group_mute(server_id, conversation_id, length, cx)
+                        });
+                    }
+                }),
+            );
+            items.push(
+                MenuItem::new("group-details", text::conversations::MENU)
+                    .selector("group-details-open")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
+                            return;
+                        }
+                        this.open_group_details(owner, conversation_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if let Some(account_id) = account_id {
+            items.extend(
+                self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_direct_mute(server_id, account_id, length, cx);
+                    });
+                }),
+            );
+        }
         self.row_menu(
             "direct-menu",
             format!("{}: {name}", text::CONVERSATION_MENU),
@@ -1278,7 +1336,9 @@ impl Shell {
         let about_level: SharedString = match scope {
             SettingsScope::Account => text::LEVEL_SERVER_HELP.into(),
             SettingsScope::Workspace(_) => text::LEVEL_WORKSPACE_HELP.into(),
-            SettingsScope::Channel(_) => text::LEVEL_CHANNEL_HELP.into(),
+            SettingsScope::Channel(_) | SettingsScope::Conversation(_) => {
+                text::LEVEL_CHANNEL_HELP.into()
+            }
         };
         let about_default: Option<SharedString> = inherits.then(|| match panel.level.inherited {
             Some(level) => text::level_default_now(level).into(),

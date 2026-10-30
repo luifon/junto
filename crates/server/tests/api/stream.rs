@@ -777,7 +777,10 @@ pub fn sorted(mut snapshot: Snapshot) -> Snapshot {
         junto_protocol::message::MessagePlace::Channel { channel_id, .. } => channel_id.as_uuid(),
         junto_protocol::message::MessagePlace::Direct {
             conversation_id, ..
-        } => conversation_id.as_uuid(),
+        }
+        | junto_protocol::message::MessagePlace::Group { conversation_id } => {
+            conversation_id.as_uuid()
+        }
     });
     snapshot.workspaces.sort_by_key(|state| state.workspace.id);
     for state in &mut snapshot.workspaces {
@@ -811,7 +814,10 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
             }
             junto_protocol::message::MessagePlace::Direct {
                 conversation_id, ..
-            } => format!("/api/v1/conversations/{conversation_id}/messages/read"),
+            }
+            | junto_protocol::message::MessagePlace::Group { conversation_id } => {
+                format!("/api/v1/conversations/{conversation_id}/messages/read")
+            }
         };
         let reply = server.get(member, &path).await;
         if reply.status == StatusCode::NOT_FOUND {

@@ -1,4 +1,6 @@
 //! Text messages and attachment uploads (ADR 0408).
+
+pub const GROUPS_HEADER: &str = "junto-group-conversations";
 use crate::ids::{
     AccountId, AttachmentId, ChannelId, ConversationId, MessageId, RecordingId, WorkspaceId,
     WorkspaceRoleId,
@@ -14,6 +16,9 @@ pub enum MessagePlace {
     Channel {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
+    },
+    Group {
+        conversation_id: ConversationId,
     },
     Direct {
         conversation_id: ConversationId,
@@ -479,8 +484,46 @@ pub struct ReactionPerson {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GroupConversation {
+    pub id: ConversationId,
+    pub name: String,
+    pub account_ids: Vec<AccountId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReactionPeople {
     pub people: Vec<ReactionPerson>,
     pub next_after: Option<AccountId>,
     pub previous_before: Option<AccountId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct GroupMembership {
+    pub id: ConversationId,
+    pub name: String,
+}
+
+/// Starts a named group of three to ten people. Each account may belong to 256 groups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CreateGroupConversation {
+    pub name: String,
+    pub account_ids: Vec<AccountId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RenameGroupConversation {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SetConversationVisibility {
+    pub hidden: bool,
 }

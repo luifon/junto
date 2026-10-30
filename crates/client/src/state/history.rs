@@ -82,6 +82,11 @@ impl AppState {
             to.push(current);
         }
         self.history.stepping = true;
+        if let Some(id) = place.conversation
+            && self.open_hidden_conversation(place.server, id, cx)
+        {
+            return true;
+        }
         self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(place.server);

@@ -124,6 +124,13 @@ pub async fn may_be_at(
     place: &CallPlace,
 ) -> ApiResult<bool> {
     match *place {
+        CallPlace::Group { conversation_id } => {
+            match crate::messages::groups::readable(connection, access, conversation_id).await {
+                Ok(_) => Ok(true),
+                Err(error) if error.code() == ErrorCode::NotFound => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
         CallPlace::Channel { channel_id, .. } => {
             match access.channel(connection, channel_id).await {
                 Ok((record, scope)) => Ok(record.channel.kind == ChannelKind::Voice

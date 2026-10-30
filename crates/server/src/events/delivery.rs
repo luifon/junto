@@ -400,6 +400,7 @@ fn decide(
         server_role_ids: &access.server_role_ids,
         fellows: &standing.fellows,
         contacts: &standing.contacts,
+        groups: &standing.groups,
         listed: &standing.listed,
         memberships: &standing.memberships,
         calls: &standing.calls,
@@ -936,6 +937,7 @@ struct Standing {
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
+    groups: HashSet<junto_protocol::ids::ConversationId>,
     listed: HashSet<Uuid>,
     /// The workspaces, of the ones that the invites of the batch name, that the account is
     /// a member of. Read only for an account that holds `create_invites`.
@@ -1238,7 +1240,29 @@ impl Standing {
                 },
             );
         }
+        let mut group_ids = Vec::new();
+        for candidate in candidates {
+            match &candidate.audience {
+                Some(Audience::Group { conversation_id }) => group_ids.push(*conversation_id),
+                Some(Audience::AccountSeeing { groups, .. }) => {
+                    group_ids.extend(groups.iter().copied())
+                }
+                _ => {}
+            }
+        }
+        group_ids.sort_unstable();
+        group_ids.dedup();
+        let named: Vec<_> = group_ids.iter().map(|id| id.as_uuid()).collect();
+        let groups: HashSet<_> =
+            crate::messages::groups::for_accounts(connection, &[access.account_id], Some(&named))
+                .await?
+                .remove(&access.account_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|group| group.id)
+                .collect();
         Ok(Self {
+            groups,
             quiet: candidates.iter().any(|candidate| {
                 matches!(
                     candidate.audience,

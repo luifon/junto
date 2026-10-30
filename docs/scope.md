@@ -12,7 +12,7 @@ This file lists what the first version of Junto contains, what later versions ca
 Text:
 
 - Text channels
-- Direct messages
+- Direct messages, including named group conversations
 - Replies
 - Mentions
 - Reactions
@@ -79,7 +79,6 @@ Client:
 - Search inside attached files
 - Link previews
 - Custom emoji
-- Group direct messages
 - Inline video and audio players
 - A built-in recording player that jumps to a transcript line
 - "Also send to the channel" for thread replies

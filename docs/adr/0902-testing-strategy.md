@@ -48,7 +48,9 @@ Tests on real systems:
   runs two windows of the application through its first use: owner code, invite,
   messages, a thread, a call, shares, a recording with known speech, the saved files,
   the transcript, search, and a second start on both profiles. The steps are in
-  `crates/client/tests/app/rehearsal.rs`.
+  `crates/client/tests/app/rehearsal.rs`. Its share-stop step opens the current
+  multi-share menu and chooses Stop all shares, then checks that the own capture and
+  the other window's received share end.
   - On macOS the test target `rehearsal` runs them in two real windows of the system on
     the main thread. The windows are drawn by Metal, and the picture of each step is read
     from the GPU with `Window::render_to_image`, without screen capture. A shared screen

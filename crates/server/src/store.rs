@@ -552,7 +552,10 @@ pub async fn acquaintance(
                          where d.account_id = $1 and m.account_id = $2)
                  or exists (select 1 from conversations
                             where (low_account_id = $1 and high_account_id = $2)
-                               or (low_account_id = $2 and high_account_id = $1)))",
+                               or (low_account_id = $2 and high_account_id = $1))
+                 or exists(select 1 from (select conversation_id from conversation_members where account_id=$1
+                    union select conversation_id from conversation_former_members where account_id=$1) mine
+                    join conversation_members peer using(conversation_id) where peer.account_id=$2))",
     )
     .bind(account_id)
     .bind(access.account_id)
@@ -584,7 +587,8 @@ pub async fn contact_changed(
 ) -> ApiResult<()> {
     let has_peers: bool = sqlx::query_scalar(
         "select exists (select 1 from conversations where low_account_id = $1)
-             or exists (select 1 from conversations where high_account_id = $1)",
+             or exists (select 1 from conversations where high_account_id = $1)
+             or exists(select 1 from conversation_members where account_id=$1)",
     )
     .bind(account_id)
     .fetch_one(&mut *connection)
@@ -611,7 +615,8 @@ pub async fn contact_changed_for_holders(
              or exists (
                  select 1 from account_server_roles h
                  join conversations c on c.high_account_id = h.account_id
-                 where h.role_id = $1)",
+                 where h.role_id = $1)
+             or exists(select 1 from account_server_roles h join conversation_members m on m.account_id=h.account_id where h.role_id=$1)",
     )
     .bind(role_id)
     .fetch_one(&mut *connection)

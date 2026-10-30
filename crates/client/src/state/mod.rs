@@ -16,6 +16,8 @@ mod typing;
 pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
+mod conversations;
+mod device_checks;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
@@ -257,6 +259,7 @@ struct Asked {
 /// What the person asked for and that has not ended yet, or has failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
+    pub(super) opening_hidden: Option<conversations::Opening>,
     /// Account deletions still awaiting their server answer or local cleanup.
     pub deleting: HashSet<Owner>,
     /// The recoveries whose acknowledgement is on its way, each with the owner of the
@@ -507,6 +510,10 @@ pub struct AppState {
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
+    device_checks: Option<device_checks::CheckSession>,
+    device_check_sequence: u64,
+    device_check_call: Option<Seat>,
+    pinned_call: Option<call_pin::PinnedPerson>,
     /// What is told about the recording of the call of this device.
     recording: recording::RecordingTold,
     /// The media snapshot that the view is derived from in place of the calls.
@@ -578,6 +585,7 @@ pub struct AppState {
     /// The answers to requests to enter that arrived while the request of the person had
     /// no identifier yet.
     early_entry_answers: Vec<(EntryRequestId, EntryOutcome)>,
+    group_membership_changes: HashMap<ServerId, u64>,
     /// The number of requests about a call that the person made.
     call_asks: u64,
     /// The invitations into a call that the person made on this device and that can
@@ -723,7 +731,7 @@ pub struct AppState {
     panic_notice: Option<PanicNotice>,
     _changes: Task<()>,
     _retry: Task<()>,
-    _media: [Task<()>; 3],
+    _media: [Task<()>; 4],
     _panics: Task<()>,
 }
 
@@ -785,6 +793,8 @@ impl Drop for AppState {
     fn drop(&mut self) {
         // The call does not outlive the application. The leave runs to its end on the
         // runtime of the client.
+        self.calls.stop_device_checks();
+        self.calls.stop_input_test();
         drop(self.calls.leave());
     }
 }
@@ -851,6 +861,14 @@ impl AppState {
                         calls_watch.mark_changed();
                         cx.background_executor().timer(PAUSE_AFTER_A_PANIC).await;
                     }
+                }
+            }
+        });
+        let mut checks = calls.watch_device_checks();
+        let follow_checks = cx.spawn(async move |this, cx| {
+            while checks.changed().await.is_ok() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
                 }
             }
         });
@@ -1026,6 +1044,10 @@ impl AppState {
             calls,
             voice_failed,
             camera_devices: Vec::new(),
+            device_checks: None,
+            device_check_sequence: 0,
+            device_check_call: None,
+            pinned_call: None,
             recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
             media_fixture: None,
@@ -1066,6 +1088,7 @@ impl AppState {
             notice_readers: HashMap::new(),
             entry_asks: 0,
             early_entry_answers: Vec::new(),
+            group_membership_changes: HashMap::new(),
             call_asks: 0,
             made_invitations: HashSet::new(),
             invitations_on_the_way: 0,
@@ -1134,7 +1157,7 @@ impl AppState {
             panic_notice: None,
             _changes: follow,
             _retry: retry,
-            _media: [follow_calls, follow_levels, clock],
+            _media: [follow_calls, follow_levels, clock, follow_checks],
             _panics: panics,
         };
         if state.voice_failed.is_some() {
@@ -1274,14 +1297,12 @@ impl AppState {
             // that its acceptance does not replace this call.
             self.withdraw_entry(cx);
             self.refresh_devices(cx);
-            if self
-                .known
-                .media
-                .calls
-                .call
-                .as_ref()
-                .is_some_and(|call| matches!(call.target.place, CallPlace::Direct { .. }))
-            {
+            if self.known.media.calls.call.as_ref().is_some_and(|call| {
+                matches!(
+                    call.target.place,
+                    CallPlace::Direct { .. } | CallPlace::Group { .. }
+                )
+            }) {
                 self.show_call(cx);
             }
         }
@@ -1908,6 +1929,14 @@ impl AppState {
                             .into_iter()
                             .find(|(answered, _)| *answered == request.id);
                         if let Some((_, outcome)) = early {
+                            this.tell_event(
+                                server_id,
+                                &Event::CallEntryAnswered {
+                                    request_id: request.id,
+                                    outcome,
+                                },
+                                cx,
+                            );
                             this.entry_answered(outcome, cx);
                         }
                         true
@@ -2057,10 +2086,30 @@ impl AppState {
         self.noticed(server_id, notice, cx);
     }
 
+    pub(crate) fn group_membership_generation(&self, server_id: ServerId) -> u64 {
+        self.group_membership_changes
+            .get(&server_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
         if let Notice::Typing(activity) = notice {
             self.heard_typing(server_id, activity.as_ref(), cx);
             return;
+        }
+        let membership_changed = match notice {
+            Notice::Reloaded { .. } | Notice::Ended { .. } => true,
+            Notice::PresenceChanged | Notice::Typing(_) => false,
+            Notice::Event { event, .. } => {
+                matches!(event.as_ref(), Event::GroupConversationLeft { account_id, .. }
+                if self.client.server(server_id).and_then(|server| server.account()) == Some(*account_id))
+            }
+        };
+        if membership_changed {
+            let generation = self.group_membership_changes.entry(server_id).or_default();
+            *generation = generation.wrapping_add(1);
+            cx.notify();
         }
         self.people_noticed(server_id, notice, cx);
         self.followed_noticed(server_id, notice, cx);
@@ -2362,6 +2411,10 @@ impl AppState {
             return;
         };
         let target = call.target;
+        if let CallPlace::Group { conversation_id } = target.place {
+            self.select_conversation(target.server_id, conversation_id, cx);
+            return;
+        }
         if let CallPlace::Direct {
             low_account_id,
             high_account_id,
@@ -2461,7 +2514,7 @@ impl AppState {
     /// Opens the microphone outside a call while the sound settings are shown, for the level
     /// under the sensitivity, and closes it (ADR 0733). A call opens the microphone itself.
     pub fn set_input_test(&mut self, on: bool) {
-        if on && self.calls.view().call.is_none() {
+        if on && self.calls.view().call.is_none() && self.calls.view().joining.is_none() {
             self.calls.start_input_test();
         } else {
             self.calls.stop_input_test();
@@ -2500,8 +2553,9 @@ impl AppState {
     ) {
         change(&mut self.known.media.voice);
         self.calls.set_voice(voice_config(&self.known.media.voice));
-        // The level test opens the device again with the changed device or processing.
-        if self.calls.input_test_runs() {
+        if let Some(kind) = self.calls.device_check_view().audio.kind() {
+            self.calls.start_audio_check(kind);
+        } else if self.calls.input_test_runs() {
             self.calls.start_input_test();
         }
         self.write_voice(cx, change);
@@ -2727,6 +2781,8 @@ impl AppState {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.keep_profiles();
         self.refresh_switchers(cx);
+        self.reconcile_device_checks(cx);
+        self.reconcile_call_pin();
         self.reconcile_direct(cx);
         self.play_call_sounds();
         let servers = self.client.servers();
@@ -2807,8 +2863,9 @@ impl AppState {
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
-        self.keep_typing_owners();
         let snapshots = self.snapshots();
+        self.keep_typing_owners(&snapshots);
+        self.settle_conversation_visibility(&snapshots);
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
@@ -3522,6 +3579,7 @@ pub mod event_alerts;
 
 mod camera;
 
+mod call_pin;
 mod call_window;
 
 pub mod role_appearance;

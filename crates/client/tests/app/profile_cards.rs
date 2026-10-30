@@ -48,7 +48,7 @@ fn pressing_a_message_avatar_opens_the_persons_profile_card(cx: &mut TestAppCont
             .view()
             .lists()
             .and_then(|lists| lists.conversation.as_ref())
-            .is_some_and(|person| person.account_id == other)
+            .is_some_and(|person| person.account_id == Some(other))
     });
     assert!(!window.shows("profile-card"));
 }
@@ -218,7 +218,7 @@ fn background_server_cards_and_two_windows_keep_their_owner_and_query(cx: &mut T
                     .view()
                     .lists()
                     .and_then(|lists| lists.conversation.as_ref())
-                    .is_some_and(|person| person.account_id == other)
+                    .is_some_and(|person| person.account_id == Some(other))
         },
     );
 }

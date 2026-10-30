@@ -1867,11 +1867,15 @@ impl Shell {
         // The setting affects only the tiles; the member list stays complete.
         let people = panel.people.as_slice();
         let ids: Vec<_> = people.iter().map(|person| person.account_id).collect();
-        let hidden_ids = super::camera::hidden_people(
+        let pinned = self.state.read(cx).pinned_call_person();
+        let hidden_ids: Vec<_> = super::camera::hidden_people(
             &ids,
             &self.people_with_video(people, cx),
             panel.hide_without_video,
-        );
+        )
+        .into_iter()
+        .filter(|person| Some(*person) != pinned)
+        .collect();
         let hidden = !hidden_ids.is_empty();
         let tiles: Vec<AnyElement> = {
             people

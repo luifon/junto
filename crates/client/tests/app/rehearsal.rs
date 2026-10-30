@@ -1064,7 +1064,7 @@ fn turn_processing_off(window: &mut Window) {
     window.click("app-settings");
     window.click("settings-section-voice");
     for part in ["echo-cancellation", "noise-suppression", "automatic-gain"] {
-        window.click(part);
+        window.click_in_settings(part);
     }
     window.until("the processing is off", |window| {
         let voice = window
@@ -1166,6 +1166,10 @@ fn share_and_watch(sharing: &mut Window, watching: &mut Window, native: bool, so
 /// Stops the share of a window, and waits until the other window no longer shows it.
 fn stop_share(sharing: &mut Window, watching: &mut Window) {
     sharing.click("call-share");
+    sharing.until("the share controls are open", |window| {
+        window.shows("share-stop-all")
+    });
+    sharing.click("share-stop-all");
     sharing.until("the own share is off", |window| {
         own_share(window) == OwnShare::Off
     });

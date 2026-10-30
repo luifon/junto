@@ -3,6 +3,7 @@ pub mod compat;
 pub mod direct_calls;
 pub mod document;
 pub mod forwarding;
+pub mod groups;
 mod mentions;
 pub mod notifications;
 pub mod page;
@@ -12,6 +13,7 @@ mod store;
 pub mod threads;
 pub mod transfers;
 pub mod uploads;
+pub mod visibility;
 
 pub use mentions::{mentioned_among, mentions};
 pub use place::{Place, Purpose};

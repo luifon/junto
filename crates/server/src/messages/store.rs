@@ -42,6 +42,7 @@ pub async fn created(
     message_id: MessageId,
     position: u64,
 ) -> ApiResult<()> {
+    super::visibility::restore_for_message(connection, now, place).await?;
     record_message(connection, now, place, message_id, position, false, true).await
 }
 
@@ -228,7 +229,8 @@ async fn states(
             MessagePlace::Channel { channel_id, .. } => channel_id.as_uuid(),
             MessagePlace::Direct {
                 conversation_id, ..
-            } => conversation_id.as_uuid(),
+            }
+            | MessagePlace::Group { conversation_id } => conversation_id.as_uuid(),
         })
         .collect();
     let query = state_query();
@@ -328,6 +330,11 @@ pub async fn snapshot(
             conversation_id: conversation.id,
             low_account_id: conversation.low_account_id,
             high_account_id: conversation.high_account_id,
+        });
+    }
+    for group in super::groups::list(connection, access).await? {
+        places.push(MessagePlace::Group {
+            conversation_id: group.id,
         });
     }
     states(connection, access, &places, now).await

@@ -6,6 +6,7 @@
 //! the two ends convert, in steps that are whole samples on both sides ([`rate::Span`]).
 
 pub mod capture;
+pub(crate) mod check;
 pub mod cpal_host;
 pub mod host;
 pub mod input_test;
@@ -53,4 +54,4 @@ pub(crate) fn to_f32(sample: i16) -> f32 {
 pub mod ring;
 pub mod sounds;
 #[cfg(test)]
-mod test_output;
+pub(crate) mod test_output;

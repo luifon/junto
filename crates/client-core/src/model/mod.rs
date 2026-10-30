@@ -106,6 +106,22 @@ fn cut(text: &str, most: usize) -> String {
     text.chars().take(most).collect()
 }
 
+fn usable_group(
+    group: &junto_protocol::message::GroupConversation,
+    own: junto_protocol::ids::AccountId,
+) -> bool {
+    !group.name.trim().is_empty()
+        && group.name.chars().count() <= 80
+        && !group.name.chars().any(char::is_control)
+        && (1..=10).contains(&group.account_ids.len())
+        && group.account_ids.contains(&own)
+        && group
+            .account_ids
+            .iter()
+            .enumerate()
+            .all(|(at, id)| !group.account_ids[..at].contains(id))
+}
+
 /// How many notices a snapshot carries at most (ADR 0409).
 const SNAPSHOT_NOTICES: usize = 50;
 
@@ -377,6 +393,8 @@ pub struct ServerModel {
     pub message_states: Vec<MessageState>,
     /// The direct conversations of the account that the contact rule allows now.
     pub conversations: Vec<Conversation>,
+    pub group_conversations: Vec<junto_protocol::message::GroupConversation>,
+    pub hidden_conversations: std::collections::BTreeSet<junto_protocol::ids::ConversationId>,
     /// The limits of the server for the files of a message. They are read when a reader
     /// opens the messages of a place.
     pub attachment_limits: Option<AttachmentLimits>,
@@ -478,7 +496,7 @@ impl ServerModel {
                     low_account_id,
                     high_account_id,
                 }),
-                MessagePlace::Channel { .. } => None,
+                MessagePlace::Channel { .. } | MessagePlace::Group { .. } => None,
             })
             .collect();
         conversations.sort_by_key(|held| held.id);
@@ -495,6 +513,11 @@ impl ServerModel {
                 invitations.push(sent);
             }
         }
+        let group_conversations = snapshot
+            .group_conversations
+            .into_iter()
+            .filter(|group| usable_group(group, snapshot.account.id))
+            .collect();
         Self {
             cursor: snapshot.cursor,
             account: snapshot.account,
@@ -519,6 +542,8 @@ impl ServerModel {
             direct_mutes: snapshot.direct_mutes,
             message_states: snapshot.messages,
             conversations,
+            group_conversations,
+            hidden_conversations: snapshot.hidden_conversations.into_iter().collect(),
             attachment_limits: None,
             timelines: Vec::new(),
             outbox: Vec::new(),
@@ -552,6 +577,25 @@ impl ServerModel {
     /// the selection, the open panels and the calls keep their place; the snapshot
     /// replaces it.
     pub(crate) fn withdraw(&mut self, scope: Option<WorkspaceId>) {
+        if scope.is_none() {
+            let groups: Vec<_> = self
+                .group_conversations
+                .iter()
+                .map(|group| group.id)
+                .collect();
+            for id in groups {
+                let place = PlaceId::Direct(id);
+                self.forget_named_of(place);
+                for timeline in &mut self.timelines {
+                    if timeline.place == place {
+                        Arc::make_mut(timeline).withdraw();
+                    }
+                }
+                self.message_states
+                    .retain(|state| PlaceId::of(&state.place) != place);
+            }
+            self.group_conversations.clear();
+        }
         let channels: Vec<ChannelId> = self
             .workspaces
             .iter()
@@ -614,7 +658,9 @@ impl ServerModel {
     pub fn call_at(&self, place: &CallPlace) -> Option<&CallModel> {
         match place {
             CallPlace::Channel { channel_id, .. } => self.channel(*channel_id)?.call.as_ref(),
-            CallPlace::Direct { .. } => self.direct_calls.iter().find(|call| call.place == *place),
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => {
+                self.direct_calls.iter().find(|call| call.place == *place)
+            }
         }
     }
 
@@ -751,7 +797,7 @@ impl ServerModel {
                     channel.call = Some(call);
                 }
             }
-            CallPlace::Direct { .. } => {
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => {
                 self.direct_calls.retain(|held| held.place != call.place);
                 self.direct_calls.push(call);
             }

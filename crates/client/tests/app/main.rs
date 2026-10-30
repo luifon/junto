@@ -48,6 +48,7 @@ mod context_menus;
 mod copying;
 mod data_directory;
 mod departures;
+mod device_checks;
 mod drafts;
 mod emoji_completion;
 mod event_alerts;
@@ -57,6 +58,8 @@ mod formatting_marks;
 mod forwarding;
 mod glossary;
 mod gpui_panics;
+mod group_conversations;
+mod hidden_conversations;
 mod keybinds;
 mod message_copy_actions;
 mod message_links;
@@ -129,3 +132,7 @@ mod zoom;
 
 mod clock_format;
 mod switcher;
+
+mod group_identity_join;
+mod group_message_join;
+mod group_search_join;

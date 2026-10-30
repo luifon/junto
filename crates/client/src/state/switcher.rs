@@ -463,6 +463,16 @@ impl AppState {
                     account_id: Some(other),
                 });
             }
+            for group in &model.group_conversations {
+                view.rows.push(SwitchRow {
+                    destination: Destination::Conversation(server.id, group.id),
+                    name: group.name.clone(),
+                    context: text::switcher::server_context(&server.name, &server.address),
+                    unread: unreads.at(PlaceId::Direct(group.id)).unread(),
+                    voice: false,
+                    account_id: None,
+                });
+            }
             if search.part.is_empty() {
                 continue;
             }

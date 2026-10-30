@@ -60,3 +60,33 @@ The notice area is the fixed scrolling area at the end of a call stage, the area
 - During a direct-message call the conversation is read in the panel of the call, which is narrower than the main area. A person who wants the conversation in the whole main area detaches the call (ADR 0772) or leaves it.
 
 Tests: `live::direct::a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a_call` in the window live tier of `crates/client` starts a direct-message call in the window, reads the ringing call, sets the volume of the other person, reads and writes the conversation in the panel, chooses the microphone, the speaker and the camera, shares a screen with its sound, watches the share of the other person, sets the volume of the watched share and the quality of the own share.
+
+
+A device check is available beside the join control of a voice channel, the start controls of
+pair and group conversations, and an invitation's accept control. Quick join remains available.
+The check shows the same device choices and local tests as the personal Voice settings. Its
+Join action retains the exact server owner, call place and invitation identifier. Closing it
+joins nothing. Losing that owner, leaving the target group, or resolving the invitation closes
+the check and its previews; a stale Join action is refused. A real join cancels all local tests
+before the call takes the devices, and a camera preview never enables the call camera. While
+already in a call, the check states that the running call's settings control its devices.
+
+Each person can pin one participant, including themselves, to their own person stage from the
+tile or member menu. A pin overrides speaker focus and the grid, including for an avatar without
+video and when other audio-only tiles are hidden. It follows the account rather than a tile's
+position. Camera and speaking changes keep the pin. A banner names the pinned person and offers
+Unpin; the account menu offers the same action. The automatic-layout control is disabled while
+a person is pinned.
+
+The pin and the choice between its person stage and the screen-share stage live in the shared
+application state of the local call, so the main and detached windows keep the same choice.
+Pinning shows the person; Show screen shares and Show pinned person switch the stage without
+changing the selected watched share. Unpin returns to the ordinary stage and layout. The pin
+belongs to the exact server owner and local call seat. Ending or replacing that seat, changing
+its owner, or the participant leaving clears it; a connection retry at the same seat keeps it.
+It is local presentation state, with no server spotlight or change to recording layout. Channel,
+pair and group calls use the same state and renderer.
+
+Tests: `live::pinning::` exercises avatar and video pins, speaking changes, share selection,
+main/detached transfer, both unpin controls, hidden audio-only people, person/group departure,
+pair-call end, and rejection of old owners and seats.

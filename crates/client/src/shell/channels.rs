@@ -1152,22 +1152,34 @@ impl Shell {
                 .clone()
                 .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
                 .into();
-            let row = ChannelRow::new(("direct", index), Icon::Person, name)
+            let mut row = ChannelRow::new(
+                ("direct", index),
+                if direct.account_id.is_some() {
+                    Icon::Person
+                } else {
+                    Icon::Chat
+                },
+                name,
+            );
+            if let Some(account_id) = direct.account_id {
+                row = row
+                    .avatar(account_id.as_uuid().as_u128())
+                    .presence(faces.presence(account_id))
+                    .name_color(faces.color(account_id))
+                    .when_some(faces.server_id(), |row, server| {
+                        row.profile(crate::ui::OpenProfile {
+                            server,
+                            account: account_id,
+                        })
+                    })
+                    .picture(faces.image(account_id));
+            }
+            let row = row
                 .states(self.draft_mark(
                     server_id,
                     junto_client_core::model::PlaceId::Direct(conversation_id),
                     cx,
                 ))
-                .avatar(direct.account_id.as_uuid().as_u128())
-                .presence(faces.presence(direct.account_id))
-                .name_color(faces.color(direct.account_id))
-                .when_some(faces.server_id(), |row, server| {
-                    row.profile(crate::ui::OpenProfile {
-                        server,
-                        account: direct.account_id,
-                    })
-                })
-                .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
                 .unread(direct_sign(direct.unread))
                 .muted(direct.unread.muted || direct.mute.is_on())

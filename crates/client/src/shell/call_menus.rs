@@ -164,6 +164,7 @@ enum CallMenuAction {
     Sound(bool),
     Camera(crate::state::CameraAction),
     Hand(bool),
+    Pin(bool),
     Leave,
     WatchShare(junto_media::engine::ShareId),
     StopShare(u8),
@@ -191,6 +192,45 @@ struct CallControl {
 }
 
 impl Shell {
+    pub(super) fn pin_call_controls(
+        &self,
+        open: &OpenAccountMenu,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(AccountSource::CallOccupant {
+            seat, account_id, ..
+        }) = &open.source
+        else {
+            return Vec::new();
+        };
+        let state = self.state.read(cx);
+        if !self.call_menu_current(open, cx)
+            || !state.can_pin_call_person(open.owner, seat, *account_id)
+        {
+            return Vec::new();
+        }
+        let pinned = state.pinned_call_person() == Some(*account_id);
+        self.call_controls(
+            open,
+            vec![CallControl {
+                id: if pinned {
+                    "call-person-unpin"
+                } else {
+                    "call-person-pin"
+                },
+                label: if pinned {
+                    crate::text::call_pin::UNPIN
+                } else {
+                    crate::text::call_pin::PIN
+                },
+                action: CallMenuAction::Pin(!pinned),
+                disabled: false,
+                detail: None,
+            }],
+            cx,
+        )
+    }
+
     pub(super) fn share_call_controls(
         &self,
         open: &OpenAccountMenu,
@@ -371,6 +411,9 @@ impl Shell {
                             return;
                         }
                         this.close_layer(window, cx);
+                        if matches!(&control.action, CallMenuAction::Pin(_)) {
+                            this.focus.focus(window, cx);
+                        }
                         let participant = match &context.source {
                             Some(AccountSource::CallOccupant {
                                 seat, account_id, ..
@@ -388,6 +431,20 @@ impl Shell {
                             CallMenuAction::Sound(off) => state.set_sound_off(*off),
                             CallMenuAction::Camera(action) => state.use_camera(action, cx),
                             CallMenuAction::Hand(raised) => state.set_hand(*raised, cx),
+                            CallMenuAction::Pin(pinned) => {
+                                if let Some(AccountSource::CallOccupant {
+                                    seat, account_id, ..
+                                }) = &context.source
+                                {
+                                    state.pin_call_person(
+                                        context.owner,
+                                        seat,
+                                        *account_id,
+                                        *pinned,
+                                        cx,
+                                    );
+                                }
+                            }
                             CallMenuAction::Leave => state.leave_call(cx),
                             CallMenuAction::WatchShare(id) => state.watch_share(*id),
                             CallMenuAction::StopShare(slot) => state.stop_share(Some(*slot)),

@@ -11,8 +11,8 @@ use junto_protocol::call::{
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{
-    AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, DeviceId, EntryRequestId,
-    WorkspaceId,
+    AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, ConversationId, DeviceId,
+    EntryRequestId, WorkspaceId,
 };
 use junto_protocol::structure::Channel;
 use sqlx::{AssertSqlSafe, PgConnection};
@@ -161,16 +161,19 @@ pub async fn note_joined(
     call: &CallRow,
     account_id: AccountId,
 ) -> ApiResult<()> {
-    let latest: Option<String> = sqlx::query_scalar(
+    let query = if matches!(call.place, CallPlace::Group { .. }) {
+        crate::messages::groups::CALL_ARRIVAL_QUERY
+    } else {
         "select kind from call_notes where call_id = $1 and account_id = $2
              and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left',
                  'person_out')
-         order by occurred_at desc, id desc limit 1",
-    )
-    .bind(call.id)
-    .bind(account_id)
-    .fetch_optional(&mut *connection)
-    .await?;
+         order by occurred_at desc, id desc limit 1"
+    };
+    let latest: Option<String> = sqlx::query_scalar(query)
+        .bind(call.id)
+        .bind(account_id)
+        .fetch_optional(&mut *connection)
+        .await?;
     let out = [Note::PersonLeft.stored(), Note::PersonOut.stored()];
     if latest.is_some_and(|kind| !out.contains(&kind.as_str())) {
         return Ok(());
@@ -256,6 +259,24 @@ pub async fn note_with(
     account_id: Option<AccountId>,
     duration_seconds: Option<u64>,
 ) -> ApiResult<()> {
+    if let CallPlace::Group { conversation_id } = call.place {
+        if matches!(
+            kind,
+            Note::CallStarted | Note::CallEnded | Note::PersonJoined | Note::PersonLeft
+        ) {
+            crate::messages::groups::call_line(
+                connection,
+                now,
+                conversation_id,
+                call.id,
+                kind.stored(),
+                account_id,
+                duration_seconds,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
     let CallPlace::Channel {
         workspace_id,
         channel_id,
@@ -329,6 +350,7 @@ impl CallRow {
 
 pub fn key_of(place: &CallPlace) -> CallKey {
     match *place {
+        CallPlace::Group { conversation_id } => CallKey::Group(conversation_id),
         CallPlace::Channel { channel_id, .. } => CallKey::Channel(channel_id),
         CallPlace::Direct {
             low_account_id,
@@ -339,6 +361,7 @@ pub fn key_of(place: &CallPlace) -> CallKey {
 
 #[derive(sqlx::FromRow)]
 struct CallRecord {
+    conversation_id: Option<ConversationId>,
     id: CallId,
     room_name: String,
     workspace_id: Option<WorkspaceId>,
@@ -358,27 +381,31 @@ struct CallRecord {
     direct_ring_settled: bool,
 }
 
-const CALL_COLUMNS: &str = "id, room_name, workspace_id, channel_id, direct_low, direct_high, \
+const CALL_COLUMNS: &str = "conversation_id, id, room_name, workspace_id, channel_id, direct_low, direct_high, \
      started_at, locked_by, locked_at, meeting_presenter, meeting_started_at, \
      meeting_presenter_gone_since, hides_occupants, direct_caller, direct_answered_at, \
      direct_alone_since, direct_ring_settled";
 
 fn call_row(record: CallRecord) -> ApiResult<CallRow> {
-    let place = match (
-        record.workspace_id,
-        record.channel_id,
-        record.direct_low,
-        record.direct_high,
-    ) {
-        (Some(workspace_id), Some(channel_id), None, None) => CallPlace::Channel {
-            workspace_id,
-            channel_id,
-        },
-        (None, None, Some(low_account_id), Some(high_account_id)) => CallPlace::Direct {
-            low_account_id,
-            high_account_id,
-        },
-        _ => return Err(ApiError::internal(&"a stored call has no place")),
+    let place = if let Some(conversation_id) = record.conversation_id {
+        CallPlace::Group { conversation_id }
+    } else {
+        match (
+            record.workspace_id,
+            record.channel_id,
+            record.direct_low,
+            record.direct_high,
+        ) {
+            (Some(workspace_id), Some(channel_id), None, None) => CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            (None, None, Some(low_account_id), Some(high_account_id)) => CallPlace::Direct {
+                low_account_id,
+                high_account_id,
+            },
+            _ => return Err(ApiError::internal(&"a stored call has no place")),
+        }
     };
     Ok(CallRow {
         id: record.id,
@@ -431,6 +458,11 @@ pub async fn call(
     for_change: bool,
 ) -> ApiResult<Option<CallRow>> {
     let (filter, first, second) = match by {
+        By::Place(CallPlace::Group { conversation_id }) => (
+            "conversation_id=$1 and $2::uuid is null",
+            conversation_id.as_uuid(),
+            None,
+        ),
         By::Id(id) => ("id = $1 and $2::uuid is null", id.as_uuid(), None),
         By::Place(CallPlace::Channel { channel_id, .. }) => (
             "channel_id = $1 and $2::uuid is null",
@@ -470,20 +502,27 @@ pub async fn call_for_entry(
     if let Some(existing) = call(&mut *connection, By::Place(place), true).await? {
         return Ok(existing);
     }
-    let (workspace_id, channel_id, low, high) = match place {
+    let (workspace_id, channel_id, low, high, group) = match place {
+        CallPlace::Group { conversation_id } => (None, None, None, None, Some(conversation_id)),
         CallPlace::Channel {
             workspace_id,
             channel_id,
-        } => (Some(workspace_id), Some(channel_id), None, None),
+        } => (Some(workspace_id), Some(channel_id), None, None, None),
         CallPlace::Direct {
             low_account_id,
             high_account_id,
-        } => (None, None, Some(low_account_id), Some(high_account_id)),
+        } => (
+            None,
+            None,
+            Some(low_account_id),
+            Some(high_account_id),
+            None,
+        ),
     };
     let hides_occupants: bool = sqlx::query_scalar(
         "insert into calls
-             (id, room_name, workspace_id, channel_id, direct_low, direct_high, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7)
+             (id, room_name, workspace_id, channel_id, direct_low, direct_high, created_at, conversation_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
          returning hides_occupants",
     )
     .bind(new_id)
@@ -493,6 +532,7 @@ pub async fn call_for_entry(
     .bind(low)
     .bind(high)
     .bind(now)
+    .bind(group)
     .fetch_one(&mut *connection)
     .await
     .map_err(ApiError::concurrent)?;
@@ -1996,8 +2036,14 @@ pub async fn seat_key(
     connection: &mut PgConnection,
     account_id: AccountId,
 ) -> ApiResult<Option<CallKey>> {
-    let row: Option<(Option<ChannelId>, Option<AccountId>, Option<AccountId>)> = sqlx::query_as(
-        "select c.channel_id, c.direct_low, c.direct_high
+    type Row = (
+        Option<ChannelId>,
+        Option<AccountId>,
+        Option<AccountId>,
+        Option<ConversationId>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "select c.channel_id, c.direct_low, c.direct_high, c.conversation_id
          from call_members m
          join calls c on c.id = m.call_id
          where m.account_id = $1",
@@ -2005,13 +2051,14 @@ pub async fn seat_key(
     .bind(account_id)
     .fetch_optional(connection)
     .await?;
-    Ok(
-        row.and_then(|(channel_id, low, high)| match (channel_id, low, high) {
+    Ok(row.and_then(
+        |(channel_id, low, high, group)| match (channel_id, low, high, group) {
+            (_, _, _, Some(id)) => Some(CallKey::Group(id)),
             (Some(channel_id), ..) => Some(CallKey::Channel(channel_id)),
-            (None, Some(low), Some(high)) => Some(CallKey::Direct(low, high)),
+            (None, Some(low), Some(high), None) => Some(CallKey::Direct(low, high)),
             _ => None,
-        }),
-    )
+        },
+    ))
 }
 
 /// Every account that is a member of a call, with the place of its call.
@@ -2023,9 +2070,10 @@ pub async fn everyone_in_a_call(
         Option<ChannelId>,
         Option<AccountId>,
         Option<AccountId>,
+        Option<ConversationId>,
     );
     let rows: Vec<Row> = sqlx::query_as(
-        "select m.account_id, c.channel_id, c.direct_low, c.direct_high
+        "select m.account_id, c.channel_id, c.direct_low, c.direct_high, c.conversation_id
          from call_members m
          join calls c on c.id = m.call_id",
     )
@@ -2033,10 +2081,11 @@ pub async fn everyone_in_a_call(
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(account_id, channel_id, low, high)| {
-            let key = match (channel_id, low, high) {
+        .filter_map(|(account_id, channel_id, low, high, group)| {
+            let key = match (channel_id, low, high, group) {
+                (_, _, _, Some(id)) => CallKey::Group(id),
                 (Some(channel_id), ..) => CallKey::Channel(channel_id),
-                (None, Some(low), Some(high)) => CallKey::Direct(low, high),
+                (None, Some(low), Some(high), None) => CallKey::Direct(low, high),
                 _ => return None,
             };
             Some((account_id, key))

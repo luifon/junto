@@ -136,7 +136,7 @@ impl Shell {
                         .flex_col()
                         .flex_1()
                         .min_h_0()
-                        .child(self.render_direct_call(server.id, conversation.account_id, cx))
+                        .child(self.render_conversation_call(server.id, conversation, cx))
                         .child(self.render_feed(
                             lists,
                             false,
@@ -591,25 +591,30 @@ impl Shell {
                         .typeface(theme.types.title, theme)
                         .ink(colors.ink)
                         .child(icon(shown, 17.0, colors.terracotta_deep))
-                        .when_some(conversation.zip(server_id), |title, (person, server)| {
-                            title.child(
-                                div()
-                                    .debug_selector(|| "direct-header-presence".to_owned())
-                                    .child(crate::ui::PresenceMark::new(
-                                        self.faces(server).presence(person.account_id),
-                                        12.,
-                                    )),
-                            )
-                        })
+                        .when_some(
+                            conversation
+                                .and_then(|person| person.account_id)
+                                .zip(server_id),
+                            |title, (account, server)| {
+                                title.child(
+                                    div()
+                                        .debug_selector(|| "direct-header-presence".to_owned())
+                                        .child(crate::ui::PresenceMark::new(
+                                            self.faces(server).presence(account),
+                                            12.,
+                                        )),
+                                )
+                            },
+                        )
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .min_w_0()
-                                .child(match conversation {
-                                    Some(person) => super::people::person_name(
+                                .child(match conversation.and_then(|person| person.account_id) {
+                                    Some(account) => super::people::person_name(
                                         &self.shown_faces(),
-                                        person.account_id,
+                                        account,
                                         name,
                                         "conversation-name",
                                     ),

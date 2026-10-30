@@ -95,6 +95,8 @@ pub fn model_at(position: u64) -> ServerModel {
         workspaces: Vec::new(),
         own_call: None,
         direct_calls: Vec::new(),
+        group_conversations: Vec::new(),
+        hidden_conversations: Vec::new(),
         call_invitations: Vec::new(),
         sent_call_invitations: Vec::new(),
         call_moves: Vec::new(),

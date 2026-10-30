@@ -99,7 +99,7 @@ async fn own_entry_requests(
     path = "/api/v1/snapshot",
     tag = "events",
     security(("session" = [])),
-    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences")),
+    params(("Junto-Notification-Preferences" = Option<String>, Header, description = "1 includes the text privacy and presentation preferences"),("Junto-Group-Conversations"=Option<String>,Header,description="1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels")),
     responses((status = 200, body = SnapshotResponse), ApiError)
 )]
 pub async fn get_snapshot(
@@ -111,6 +111,8 @@ pub async fn get_snapshot(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        let groups=crate::messages::groups::list(connection,&access).await?;
+        crate::messages::groups::with_readable(access.account_id,groups,async {
         let log = log::state(connection).await?;
         let account = store::own_account(connection, &access).await?;
         let default_workspace = store::default_workspace(connection).await?;
@@ -184,7 +186,7 @@ pub async fn get_snapshot(
         }
         let direct_ids: Vec<CallId> = sqlx::query_scalar(
             "select id from calls
-             where (direct_low = $1 or direct_high = $1) and started_at is not null
+             where (direct_low = $1 or direct_high = $1 or conversation_id in (select conversation_id from conversation_members where account_id=$1)) and started_at is not null
              order by id",
         )
         .bind(access.account_id)
@@ -245,6 +247,8 @@ pub async fn get_snapshot(
             super::moderation_notices::page(connection, now, Some(access.account_id), None, None)
                 .await?;
         let snapshot = Snapshot {
+            hidden_conversations: crate::messages::visibility::list(connection, access.account_id, &messages).await?,
+            group_conversations: crate::messages::groups::list(connection, &access).await?,
             cursor: log.cursor(log.head)?,
             account,
             workspaces,
@@ -273,6 +277,7 @@ pub async fn get_snapshot(
             moderation_notices: notices.notices,
             moderation_notices_next: notices.next_before,
         })
+        }).await
     })
     .map(|mut response| {
         let extended = super::notifications::extended_preferences(&headers);

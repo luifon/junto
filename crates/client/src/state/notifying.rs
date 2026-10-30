@@ -225,6 +225,19 @@ impl AppState {
     /// thread of a reply is opened, and the messages around the message are read when
     /// the list does not hold it. The list marks the message.
     pub fn go_to(&mut self, jump: Jump, cx: &mut Context<Self>) {
+        if let PlaceId::Direct(id) = jump.place
+            && self.open_hidden_conversation(jump.server_id, id, cx)
+        {
+            if let Some(opening) = &mut self.pending.opening_hidden {
+                opening.jump = Some(jump);
+            }
+            return;
+        }
+        self.place_jump(jump);
+        self.changed(cx);
+    }
+
+    pub(super) fn place_jump(&mut self, jump: Jump) {
         let server_id = jump.server_id;
         self.navigations += 1;
         if let Some(search) = &mut self.known.search {
@@ -264,7 +277,6 @@ impl AppState {
             number: self.navigations,
             waiting: true,
         });
-        self.changed(cx);
     }
 
     /// The place whose list shows the message of a jump.
@@ -606,6 +618,26 @@ impl AppState {
     }
 
     /// Mutes a channel for a time, or ends its mute with `None` (ADR 0404).
+    pub fn set_group_mute(
+        &mut self,
+        server_id: ServerId,
+        id: junto_client_core::protocol::ids::ConversationId,
+        length: Option<MuteFor>,
+        cx: &mut Context<Self>,
+    ) {
+        let zone = self.known.zone;
+        self.change_scope(
+            server_id,
+            SettingsScope::Conversation(id),
+            cx,
+            move |settings| {
+                settings.mute = length.is_some();
+                settings.muted_until =
+                    length.and_then(|length| length.until(OffsetDateTime::now_utc(), zone));
+            },
+        );
+    }
+
     pub fn set_channel_mute(
         &mut self,
         server_id: ServerId,

@@ -411,6 +411,18 @@ fn place_of(
             Some((channel.workspace_id, channel_id)),
         );
     }
+    if let Some(group) = model
+        .group_conversations
+        .iter()
+        .find(|group| group.id.as_uuid() == place_id)
+    {
+        return (
+            Whereabouts::Direct {
+                name: Some(text::label(&group.name)),
+            },
+            None,
+        );
+    }
     match model
         .conversations
         .iter()
@@ -601,6 +613,22 @@ fn panel(
                     .collect()
             }
         });
+    if let Some(group) = search.filters.conversation.and_then(|id| {
+        model
+            .group_conversations
+            .iter()
+            .find(|group| group.id == id)
+    }) {
+        authors = group
+            .account_ids
+            .iter()
+            .filter_map(|account| {
+                accounts
+                    .get(account)
+                    .map(|name| (*account, crate::text::label(name)))
+            })
+            .collect();
+    }
     authors.sort_by(|one, other| {
         one.1
             .to_lowercase()

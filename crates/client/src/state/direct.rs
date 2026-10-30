@@ -94,7 +94,10 @@ impl DirectCalls {
         invitation: &CallInvitation,
         now: Instant,
     ) {
-        if matches!(invitation.place, CallPlace::Channel { .. }) {
+        if matches!(
+            invitation.place,
+            CallPlace::Channel { .. } | CallPlace::Group { .. }
+        ) {
             self.voice_invitations.insert((server, invitation.id), now);
             return;
         }
@@ -279,6 +282,81 @@ impl super::AppState {
         self.ringer.is_ringing()
     }
 
+    pub fn group_person_departure(
+        &self,
+        server: ServerId,
+        account: AccountId,
+    ) -> Option<junto_client_core::protocol::account::Departure> {
+        self.known.people.departure(server, account)
+    }
+    pub fn group_person_name(&self, server: ServerId, account: AccountId) -> String {
+        if let Some(model) = self
+            .client
+            .server(server)
+            .and_then(|server| server.live().view().model)
+            && model.account.id == account
+        {
+            return model.account.name.clone();
+        }
+        self.known
+            .people
+            .name(server, account)
+            .unwrap_or_else(|| crate::text::UNKNOWN_PERSON.to_owned())
+    }
+    pub fn start_group_call(
+        &mut self,
+        server: ServerId,
+        id: junto_client_core::protocol::ids::ConversationId,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let Some(model) = self
+            .client
+            .server(server)
+            .and_then(|s| s.live().view().model)
+        else {
+            return;
+        };
+        if !model.group_conversations.iter().any(|group| group.id == id) {
+            return;
+        }
+        let joining = self.calls.join(junto_media::calls::CallTarget {
+            server_id: server,
+            place: CallPlace::Group {
+                conversation_id: id,
+            },
+        });
+        cx.spawn(async move |_, _| {
+            let _ = joining.await;
+        })
+        .detach();
+    }
+    pub(crate) fn navigation_generation(&self) -> u64 {
+        self.navigations
+    }
+    pub fn select_created_group(
+        &mut self,
+        owner: junto_client_core::Owner,
+        id: junto_client_core::protocol::ids::ConversationId,
+        navigation: u64,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if self.navigations != navigation {
+            return;
+        }
+        if self
+            .client
+            .server(owner.entry.server_id)
+            .is_none_or(|server| server.owner() != Some(owner))
+        {
+            return;
+        }
+        self.selection.server = Some(owner.entry.server_id);
+        self.selection
+            .conversations
+            .insert(owner.entry.server_id, id);
+        self.navigations += 1;
+        self.changed(cx);
+    }
     pub fn start_direct_call(
         &mut self,
         server: ServerId,

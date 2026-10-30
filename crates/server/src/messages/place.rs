@@ -1,4 +1,4 @@
-//! Access and ordered positions in a channel or private two-account conversation.
+//! Access and ordered positions in a channel or private conversation.
 use crate::access::Access;
 use crate::error::{ApiError, ApiResult};
 use crate::store;
@@ -100,6 +100,23 @@ impl Place {
         id: ConversationId,
         purpose: Purpose,
     ) -> ApiResult<Self> {
+        let group: bool = sqlx::query_scalar(
+            "select exists(select 1 from conversations where id=$1 and name is not null)",
+        )
+        .bind(id)
+        .fetch_one(&mut *connection)
+        .await?;
+        if group {
+            super::groups::readable(connection, access, id).await?;
+            return Ok(Self {
+                id: id.as_uuid(),
+                value: MessagePlace::Group {
+                    conversation_id: id,
+                },
+                scope: None,
+                archived: false,
+            });
+        }
         let row: Option<(AccountId, AccountId)> = sqlx::query_as(
             "select low_account_id, high_account_id from conversations where id = $1",
         )
@@ -279,7 +296,8 @@ impl Place {
             MessagePlace::Channel { channel_id, .. } => (Some(channel_id), None),
             MessagePlace::Direct {
                 conversation_id, ..
-            } => (None, Some(conversation_id)),
+            }
+            | MessagePlace::Group { conversation_id } => (None, Some(conversation_id)),
         };
         sqlx::query(
             "insert into message_places (id, channel_id, conversation_id)

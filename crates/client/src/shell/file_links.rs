@@ -36,10 +36,7 @@ impl OpenFileLink {
             PlaceId::Channel(id) => {
                 model.channel(id).is_none() && model.admin.archived_channel(id).is_none()
             }
-            PlaceId::Direct(id) => !model
-                .conversations
-                .iter()
-                .any(|conversation| conversation.id == id),
+            PlaceId::Direct(id) => model.place(PlaceId::Direct(id)).is_none(),
             PlaceId::Thread { .. } => true,
         }
     }

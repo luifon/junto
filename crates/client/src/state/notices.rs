@@ -54,7 +54,7 @@ impl Jump {
             server_id,
             workspace_id: match message.place {
                 MessagePlace::Channel { workspace_id, .. } => Some(workspace_id),
-                MessagePlace::Direct { .. } => None,
+                MessagePlace::Direct { .. } | MessagePlace::Group { .. } => None,
             },
             place: PlaceId::of(&message.place),
             thread_root: message.thread_root,
@@ -155,7 +155,7 @@ fn names_of(
                     .collect()
             })
             .unwrap_or_default(),
-        MessagePlace::Direct { .. } => HashMap::new(),
+        MessagePlace::Direct { .. } | MessagePlace::Group { .. } => HashMap::new(),
     };
     Names {
         role_colors: match place {
@@ -165,7 +165,7 @@ fn names_of(
                 .flat_map(|workspace| workspace.roles.iter())
                 .filter_map(|role| Some((role.id, role.color?)))
                 .collect(),
-            MessagePlace::Direct { .. } => HashMap::new(),
+            MessagePlace::Direct { .. } | MessagePlace::Group { .. } => HashMap::new(),
         },
         server_id: None,
         channels: super::view::channel_names(model),
@@ -190,6 +190,14 @@ pub fn whereabouts(
             },
             None => Whereabouts::Unknown,
         },
+        MessagePlace::Group { conversation_id } => model
+            .group_conversations
+            .iter()
+            .find(|group| group.id == *conversation_id)
+            .map(|group| Whereabouts::Direct {
+                name: Some(text::label(&group.name)),
+            })
+            .unwrap_or(Whereabouts::Unknown),
         MessagePlace::Direct {
             conversation_id,
             low_account_id,
@@ -359,7 +367,7 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
                         names
                             .entry(match message.place {
                                 MessagePlace::Channel { workspace_id, .. } => Some(workspace_id),
-                                MessagePlace::Direct { .. } => None,
+                                MessagePlace::Direct { .. } | MessagePlace::Group { .. } => None,
                             })
                             .or_insert_with(|| names_of(&message.place, model, &accounts)),
                     ),
@@ -490,6 +498,16 @@ impl Mute {
     }
 
     /// The mute that the account stored for a channel.
+    pub fn of_group(
+        id: junto_client_core::protocol::ids::ConversationId,
+        model: &ServerModel,
+        known: &Known,
+    ) -> Self {
+        match model.notification_settings(SettingsScope::Conversation(id)) {
+            Some(settings) => Self::of(settings.mute, settings.muted_until, known),
+            None => Self::Off,
+        }
+    }
     pub fn of_channel(channel_id: ChannelId, model: &ServerModel, known: &Known) -> Self {
         match model.notification_settings(SettingsScope::Channel(channel_id)) {
             Some(settings) => Self::of(settings.mute, settings.muted_until, known),
@@ -627,6 +645,7 @@ fn inherited_level(
         Some(shown_default(server_id, workspace, known).unwrap_or(account))
     };
     match scope {
+        SettingsScope::Conversation(_) => Some(NotificationLevel::All),
         SettingsScope::Account => Some(NotificationLevel::Mentions),
         SettingsScope::Workspace(workspace_id) => below_workspace(workspace_id),
         SettingsScope::Channel(channel_id) => {
@@ -650,6 +669,7 @@ pub fn notify_panel(
 ) -> Option<NotifyPanel> {
     let settings = stored_settings(server_id, scope, model, known);
     let (name, channel, workspace_default) = match scope {
+        SettingsScope::Conversation(_) => return None,
         SettingsScope::Account => (server_name.to_owned(), None, None),
         SettingsScope::Workspace(workspace_id) => {
             let workspace = model.workspace(workspace_id)?;
@@ -1111,6 +1131,10 @@ pub(super) fn one_line(text: &str, most: usize) -> String {
 fn place_held(place: &MessagePlace, model: &ServerModel) -> bool {
     match place {
         MessagePlace::Channel { channel_id, .. } => model.channel(*channel_id).is_some(),
+        MessagePlace::Group { conversation_id } => model
+            .group_conversations
+            .iter()
+            .any(|group| group.id == *conversation_id),
         MessagePlace::Direct {
             conversation_id, ..
         } => model
@@ -1145,6 +1169,9 @@ fn muted(scene: &AlertScene<'_>, message: &Message) -> bool {
                 .is_some_and(|state| state.muted)
                 || Mute::of_channel(channel_id, model, scene.known).is_on()
         }
+        MessagePlace::Group { conversation_id } => model
+            .message_state(PlaceId::Direct(conversation_id))
+            .is_some_and(|state| state.muted),
         MessagePlace::Direct {
             low_account_id,
             high_account_id,

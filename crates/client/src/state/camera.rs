@@ -43,6 +43,10 @@ impl AppState {
     pub fn choose_camera(&mut self, device: Option<String>, cx: &mut Context<Self>) {
         // A camera that runs starts again with the chosen device, at the seat where it
         // runs.
+        let preview = matches!(
+            self.calls.device_check_view().camera,
+            junto_media::camera::CameraState::Starting | junto_media::camera::CameraState::Running
+        );
         let running = self
             .calls
             .view()
@@ -50,6 +54,10 @@ impl AppState {
             .filter(camera_is_on)
             .map(|call| call.seat());
         self.change_voice(cx, move |voice| voice.camera_device.clone_from(&device));
+        if preview {
+            self.calls
+                .start_camera_preview(self.known.media.voice.camera_device.clone());
+        }
         if let Some(seat) = running {
             self.calls
                 .start_camera_in(&seat, self.known.media.voice.camera_device.clone());

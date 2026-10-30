@@ -73,9 +73,10 @@ struct Standing {
     channels: Vec<Channel>,
     channel_people: Vec<(ChannelId, i64, i64)>,
     directs: Vec<Direct>,
+    groups: Vec<ConversationId>,
 }
 
-fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
+pub(crate) fn make_actor(owner: bool, roles: Vec<i64>, person: (i64, i64)) -> ApiResult<Actor> {
     Ok(Actor {
         server_override: super::permissions::server_rule(person.0, person.1)?,
         position: if owner {
@@ -166,15 +167,22 @@ async fn load_for(
              c.low_account_id=a.id then c.high_account_id else c.low_account_id end where $3 and (peer.status= 'active'
              or (peer.departed_at is not null and peer.status in ('inactive', 'deleted', 'removed')))
              and (c.low_account_id=a.id or c.high_account_id=a.id) and ($2::uuid[] is null or c.id=any($2))), '[]'
-             ::jsonb)) from accounts a cross join (select owner_account_id from server_state limit 1) s cross join channels_json cj where a.id=any($1) and
+             ::jsonb), 'groups', coalesce((select jsonb_agg(m.conversation_id) from conversation_members m
+             where $4 and m.account_id=a.id and ($2::uuid[] is null or m.conversation_id=any($2))), '[]'::jsonb)) from accounts a cross join (select owner_account_id from server_state limit 1) s cross join channels_json cj where a.id=any($1) and
              a.status= 'active'")
         .bind(accounts)
         .bind(named)
         .bind(directs)
-        .fetch_all(connection)
+        .bind(directs && crate::messages::groups::supported())
+        .fetch_all(&mut *connection)
         .await?;
-    rows.into_iter()
+    let mut group_candidates = std::collections::HashMap::new();
+    let mut result: Vec<(AccountId, Places)> = rows
+        .into_iter()
         .map(|Json(row)| {
+            if !row.groups.is_empty() {
+                group_candidates.insert(row.account_id, row.groups);
+            }
             let actor = make_actor(row.owner, row.roles, row.person)?;
             let mut scopes = std::collections::HashMap::new();
             let mut places = Places::default();
@@ -257,5 +265,23 @@ async fn load_for(
             }
             Ok((row.account_id, places))
         })
-        .collect()
+        .collect::<ApiResult<_>>()?;
+    if directs && crate::messages::groups::supported() {
+        let candidates: Vec<_> = group_candidates.keys().copied().collect();
+        let mut groups =
+            crate::messages::groups::for_accounts(connection, &candidates, named).await?;
+        for (account, places) in &mut result {
+            if let Some(candidates) = group_candidates.remove(account) {
+                places.directs.extend(
+                    groups
+                        .remove(account)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|group| candidates.contains(&group.id))
+                        .map(|group| group.id),
+                );
+            }
+        }
+    }
+    Ok(result)
 }

@@ -11,6 +11,7 @@ mod book;
 pub mod call;
 mod call_identity_targets;
 mod call_menus;
+mod call_pin;
 mod camera;
 mod channels;
 mod composer;
@@ -19,6 +20,7 @@ mod context_targets;
 mod copying;
 mod decode;
 pub mod detached;
+mod device_checks;
 mod direct;
 pub(crate) mod draft_storage;
 mod edges;
@@ -26,6 +28,8 @@ mod feed;
 mod file_links;
 mod files;
 mod forwarding;
+mod group_memberships;
+mod groups;
 mod identity_menus;
 mod identity_sources;
 mod invited;
@@ -101,6 +105,7 @@ pub(crate) enum Layer {
     /// The first start: the person chooses a name.
     Welcome,
     Settings,
+    Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
     ServerMenu,
     Presence(junto_client_core::Owner),
@@ -172,6 +177,8 @@ pub(crate) enum Layer {
     /// holds the accounts that it lists.
     NewDirect,
     QuickSwitcher,
+    GroupConversation,
+    GroupMemberships,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
     FileLink(Box<crate::state::OpenFileLink>),
@@ -350,6 +357,7 @@ pub struct Shell {
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
     pub(crate) cameras: camera::ShownCameras,
+    pub(crate) device_ui: device_checks::DeviceUi,
     drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
     /// The pictures that the follower converted for the next frame of the display.
@@ -445,6 +453,8 @@ pub struct Shell {
     pub(crate) fork_name: Entity<InputState>,
     /// The part of a name that the chooser of a direct conversation searches.
     pub(crate) contact_part: Entity<InputState>,
+    pub(crate) groups: groups::Groups,
+    memberships: group_memberships::Memberships,
     pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notice_list: notices::NoticeList,
@@ -558,6 +568,7 @@ impl Shell {
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
         let switcher = switcher::Switcher::new(window, cx);
+        let groups = groups::Groups::new(window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let voice_status_field = Field::state("Status", window, cx);
@@ -609,12 +620,16 @@ impl Shell {
             ),
             cx.on_release(move |this: &mut Self, cx| {
                 this.save_composers(cx);
+                let detached = this.detached;
                 this.state.update(cx, |state, cx| {
                     state.close_switcher(own_entity, cx);
                     state.close_profile(own_entity, cx);
                     state.watch_reaction_people(own_entity, None, cx);
                     state.release_window_keys(own_entity);
                     state.end_keybind_recording(own_entity);
+                    if !detached {
+                        state.set_device_checks(false, cx);
+                    }
                 });
             }),
             switcher.observe(window, cx),
@@ -884,6 +899,7 @@ impl Shell {
             share_dialog_parent: None,
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
+            device_ui: Default::default(),
             drawing_call: false,
             picture_tasks: Vec::new(),
             pictures_prepared: None,
@@ -938,6 +954,8 @@ impl Shell {
             pins_scroll: ScrollHandle::new(),
             fork_name,
             contact_part,
+            groups,
+            memberships: group_memberships::Memberships::default(),
             contacts_scroll: ScrollHandle::new(),
             notice_list: notices::NoticeList::new(),
             badge: None,
@@ -971,6 +989,7 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         shell.follow_pictures(window, cx);
+        shell.follow_device_preview(window, cx);
         if detached {
             // The text that a call window holds when it closes goes to the main window
             // (ADR 0772). The state closes the window and tells the main window.
@@ -1499,20 +1518,36 @@ impl Shell {
                 state.end_thread_menu(open.owner, open.root_id, cx)
             });
         }
+        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation)
+            && !matches!(layer, Layer::NewDirect | Layer::GroupConversation)
+        {
+            self.groups.reset();
+            self.state.update(cx, |state, cx| state.close_contacts(cx));
+        }
         self.close_hover_menu(cx);
         self.release_share_previews(cx);
-        if matches!(self.layer, Layer::Settings) && !matches!(layer, Layer::Settings) {
+        if matches!(self.layer, Layer::Settings | Layer::Prejoin(_)) {
             self.state
-                .update(cx, |state, _| state.set_input_test(false));
+                .update(cx, |state, cx| state.set_device_checks(false, cx));
+            self.device_ui.menu = None;
+            prepared::take(&mut self.device_ui.preview, HashMap::new(), cx);
             self.stop_keybind_recording(cx);
         }
         self.release_viewer_picture(cx);
+        if matches!(self.layer, Layer::GroupMemberships)
+            && !matches!(layer, Layer::GroupMemberships)
+        {
+            self.memberships.reset();
+        }
         self.layer = layer;
         self.layer_focus.focus(window, cx);
         cx.notify();
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::GroupMemberships) {
+            self.memberships.reset();
+        }
         self.account_volume = None;
         if matches!(self.layer, Layer::Profile) {
             self.close_profile(window, cx);
@@ -1548,7 +1583,8 @@ impl Shell {
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_account(cx));
         }
-        if matches!(self.layer, Layer::NewDirect) {
+        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation) {
+            self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
         if matches!(self.layer, Layer::LinkAll) {
@@ -1557,9 +1593,11 @@ impl Shell {
             self.state.update(cx, |state, cx| state.close_link_all(cx));
         }
         self.release_share_previews(cx);
-        if matches!(self.layer, Layer::Settings) {
+        if matches!(self.layer, Layer::Settings | Layer::Prejoin(_)) {
             self.state
-                .update(cx, |state, _| state.set_input_test(false));
+                .update(cx, |state, cx| state.set_device_checks(false, cx));
+            self.device_ui.menu = None;
+            prepared::take(&mut self.device_ui.preview, HashMap::new(), cx);
             self.stop_keybind_recording(cx);
         }
         self.release_viewer_picture(cx);
@@ -2183,7 +2221,18 @@ impl Shell {
             Layer::Presence(owner) => {
                 self.state.read(cx).owner(owner.entry.server_id) != Some(*owner)
             }
-            Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
+            Layer::NewDirect => {
+                self.state.read(cx).contacts_view().is_none()
+                    || self
+                        .groups
+                        .mode
+                        .is_some_and(|mode| !self.group_current(mode, cx))
+            }
+            Layer::GroupMemberships => !self.group_memberships_current(cx),
+            Layer::GroupConversation => self
+                .groups
+                .mode
+                .is_none_or(|mode| !self.group_current(mode, cx)),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
@@ -2198,6 +2247,9 @@ impl Shell {
                         .read(cx)
                         .server(open.owner.entry.server_id)
                         .is_none_or(|server| server.owner() != Some(open.owner))
+            }
+            Layer::Prejoin(prejoin) => {
+                !prejoin.current(self.state.read(cx)) || !self.state.read(cx).device_checks_open()
             }
             Layer::None
             | Layer::Welcome
@@ -2268,6 +2320,7 @@ impl Shell {
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
+            Layer::Prejoin(prejoin) => self.render_prejoin(**prejoin, cx),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
@@ -2286,8 +2339,10 @@ impl Shell {
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::Profile => self.render_profile(cx),
             Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
-            Layer::NewDirect => self.render_new_direct(window, cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
+            Layer::NewDirect => self.render_new_direct(window, cx),
+            Layer::GroupConversation => self.render_group_details(cx),
+            Layer::GroupMemberships => self.render_group_memberships(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),
             Layer::AccountMenu(_) => self.render_account_menu(window, cx),

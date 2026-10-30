@@ -130,6 +130,79 @@ impl ServerApi {
         }
         Ok(())
     }
+    pub async fn set_conversation_hidden(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+        hidden: bool,
+    ) -> Result<(), ApiError> {
+        let body =
+            super::client::encode(&junto_protocol::message::SetConversationVisibility { hidden })?;
+        self.call(
+            Method::Put,
+            format!("/conversations/{id}/visibility"),
+            Vec::new(),
+            Some(body),
+        )
+        .await
+        .map(|_| ())
+    }
+    pub async fn groups(
+        &self,
+    ) -> Result<Vec<junto_protocol::message::GroupConversation>, ApiError> {
+        self.get("/group-conversations".to_owned()).await
+    }
+    pub async fn group_memberships(
+        &self,
+    ) -> Result<Vec<junto_protocol::message::GroupMembership>, ApiError> {
+        self.get("/group-conversations/memberships".to_owned())
+            .await
+    }
+    pub async fn create_group(
+        &self,
+        name: String,
+        account_ids: Vec<AccountId>,
+    ) -> Result<junto_protocol::message::GroupConversation, ApiError> {
+        self.send(
+            Method::Post,
+            "/group-conversations".to_owned(),
+            &junto_protocol::message::CreateGroupConversation { name, account_ids },
+        )
+        .await
+    }
+    pub async fn rename_group(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+        name: String,
+    ) -> Result<junto_protocol::message::GroupConversation, ApiError> {
+        self.send(
+            Method::Patch,
+            format!("/group-conversations/{id}"),
+            &junto_protocol::message::RenameGroupConversation { name },
+        )
+        .await
+    }
+    pub async fn add_group_member(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+        account_id: AccountId,
+    ) -> Result<junto_protocol::message::GroupConversation, ApiError> {
+        self.send(
+            Method::Post,
+            format!("/group-conversations/{id}/members"),
+            &OpenConversation { account_id },
+        )
+        .await
+    }
+    pub async fn leave_group(
+        &self,
+        id: junto_protocol::ids::ConversationId,
+    ) -> Result<(), ApiError> {
+        self.act(
+            Method::Delete,
+            format!("/group-conversations/{id}/membership"),
+        )
+        .await
+    }
     // History and writes.
 
     /// One page of the messages of a place, in the order of their positions. For a

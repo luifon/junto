@@ -281,10 +281,11 @@ impl Shell {
             self.settings_section = section;
             self.settings_scroll().set_offset(gpui::Point::default());
         }
+        self.device_ui.menu = None;
         // The microphone is open for its level while the Voice section is shown (ADR 0733).
         // The permissions are read again when a section shows them (ADR 0708).
         self.state.update(cx, |state, cx| {
-            state.set_input_test(section == SettingsSection::Voice);
+            state.set_device_checks(section == SettingsSection::Voice, cx);
             if section == SettingsSection::Interface {
                 state.refresh_startup(cx);
             }
@@ -331,6 +332,7 @@ impl Shell {
             SettingsSection::Interface => self.render_interface_section(&theme, cx),
             SettingsSection::Voice => {
                 let mut parts = vec![group_label(text::VOICE, &theme).into_any_element()];
+                parts.push(self.render_device_checks(&theme, cx));
                 parts.extend(self.render_voice_settings(&theme, window, cx));
                 parts
             }
@@ -911,7 +913,10 @@ impl Shell {
         let colors = theme.colors;
         let shown = {
             let state = self.state.read(cx);
-            state.media_calls().call.is_some() || state.calls().input_test_runs()
+            state.media_calls().call.is_some()
+                || state.calls().input_test_runs()
+                || state.calls().device_check_view().audio.kind()
+                    == Some(junto_media::device_check::AudioCheckKind::Microphone)
         };
         let level = shown.then(|| {
             self.state.read(cx).shown_levels().input as f32

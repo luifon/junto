@@ -209,7 +209,7 @@ async fn mention_event_statements_do_not_grow_per_recipient() {
     server.require_no_statement_eviction(evictions).await;
 }
 
-fn visited_rows(plan: &serde_json::Value) -> u64 {
+pub(crate) fn visited_rows(plan: &serde_json::Value) -> u64 {
     let loops = plan["Actual Loops"].as_u64().unwrap_or(1);
     let rows = plan["Actual Rows"].as_u64().unwrap_or(0)
         + plan["Rows Removed by Filter"].as_u64().unwrap_or(0);

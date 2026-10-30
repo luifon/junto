@@ -326,6 +326,14 @@ impl Shell {
                     .flex()
                     .justify_end()
                     .gap(u(6.0))
+                    .children(invited.may_connect.then(|| {
+                        self.device_check_button(
+                            invited.target,
+                            Some(invitation_id),
+                            "check-invitation-devices",
+                            cx,
+                        )
+                    }))
                     .child(
                         div()
                             .debug_selector(move || format!("invitation-decline:{invitation_id}"))

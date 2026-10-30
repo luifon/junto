@@ -104,6 +104,15 @@ impl AppState {
                     label: format!("{name} · {other}"),
                 });
             }
+            for group in &model.group_conversations {
+                rows.push(Destination {
+                    server_id,
+                    owner,
+                    workspace_id: None,
+                    place: PlaceId::Direct(group.id),
+                    label: format!("{name} · {}", group.name),
+                });
+            }
             let roots = model
                 .timelines
                 .iter()
@@ -205,6 +214,16 @@ impl AppState {
                     })
                     .unwrap_or(text::MESSAGES);
                 (model.workspace(workspace_id), format!("#{name}"))
+            }
+            MessagePlace::Group { conversation_id } => {
+                let Some(group) = model
+                    .group_conversations
+                    .iter()
+                    .find(|group| group.id == conversation_id)
+                else {
+                    return Preview::Unavailable;
+                };
+                (None, group.name.clone())
             }
             MessagePlace::Direct {
                 conversation_id, ..
@@ -391,22 +410,25 @@ impl AppState {
             PlaceId::Thread { channel_id, .. } => {
                 model.holds_in(channel_id, WorkspacePermission::SendMessagesInThreads)
             }
-            PlaceId::Direct(id) => model
-                .conversations
-                .iter()
-                .find(|conversation| conversation.id == id)
-                .is_some_and(|conversation| {
-                    let other = if conversation.low_account_id == model.account.id {
-                        conversation.high_account_id
-                    } else {
-                        conversation.low_account_id
-                    };
-                    !self
-                        .known
-                        .people
-                        .departures(destination.server_id)
-                        .contains_key(&other)
-                }),
+            PlaceId::Direct(id) => {
+                model.group_conversations.iter().any(|group| group.id == id)
+                    || model
+                        .conversations
+                        .iter()
+                        .find(|conversation| conversation.id == id)
+                        .is_some_and(|conversation| {
+                            let other = if conversation.low_account_id == model.account.id {
+                                conversation.high_account_id
+                            } else {
+                                conversation.low_account_id
+                            };
+                            !self
+                                .known
+                                .people
+                                .departures(destination.server_id)
+                                .contains_key(&other)
+                        })
+            }
         }
     }
 

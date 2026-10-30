@@ -705,7 +705,7 @@ impl ServerModel {
                             channel.call = None;
                         }
                     }
-                    CallPlace::Direct { .. } => {
+                    CallPlace::Direct { .. } | CallPlace::Group { .. } => {
                         self.direct_calls.retain(|held| held.id != *call_id);
                     }
                 }
@@ -899,6 +899,41 @@ impl ServerModel {
             Event::DirectMuteRemoved { account_id } => {
                 self.direct_mutes
                     .retain(|held| held.account_id != *account_id);
+            }
+            Event::ConversationVisibilityChanged {
+                conversation_id,
+                hidden,
+            } => {
+                if *hidden && self.place(PlaceId::Direct(*conversation_id)).is_some() {
+                    self.hidden_conversations.insert(*conversation_id);
+                } else if !*hidden {
+                    self.hidden_conversations.remove(conversation_id);
+                }
+            }
+            Event::GroupConversationChanged { group } => {
+                if super::usable_group(group, self.account.id) {
+                    self.group_conversations.retain(|held| held.id != group.id);
+                    self.group_conversations.push(group.clone());
+                }
+            }
+            Event::GroupConversationLeft {
+                conversation_id,
+                account_id,
+            } => {
+                if *account_id == self.account.id {
+                    self.hidden_conversations.remove(conversation_id);
+                    self.forget_named_of(PlaceId::Direct(*conversation_id));
+                    self.group_conversations
+                        .retain(|held| held.id != *conversation_id);
+                    self.message_states.retain(|held| {
+                        PlaceId::of(&held.place) != PlaceId::Direct(*conversation_id)
+                    });
+                    self.timelines
+                        .retain(|held| held.place != PlaceId::Direct(*conversation_id));
+                    self.outbox
+                        .retain(|held| held.place != PlaceId::Direct(*conversation_id));
+                    return Follow::withdrawn();
+                }
             }
             Event::ConversationOpened { conversation } => {
                 self.put_conversation(conversation);
@@ -1213,6 +1248,11 @@ impl ServerModel {
             MessagePlace::Channel { channel_id, .. } => {
                 self.readable_channel(*channel_id).is_some()
             }
+            MessagePlace::Group { conversation_id } => {
+                self.group_conversations.iter().any(|group| {
+                    group.id == *conversation_id && group.account_ids.contains(&self.account.id)
+                })
+            }
             MessagePlace::Direct {
                 conversation_id,
                 low_account_id,
@@ -1305,7 +1345,7 @@ impl ServerModel {
                         .unwrap_or(channel.channel.hides_occupants),
                 })
             }
-            CallPlace::Direct { .. } => Some(false),
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => Some(false),
         }
     }
 
@@ -1373,7 +1413,7 @@ impl ServerModel {
                 }
                 channel.call.as_mut()
             }
-            CallPlace::Direct { .. } => {
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => {
                 if !held {
                     self.direct_calls.retain(|call| call.place != *place);
                     self.direct_calls
@@ -1399,7 +1439,7 @@ impl ServerModel {
                     channel.call = None;
                 }
             }
-            CallPlace::Direct { .. } => self
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => self
                 .direct_calls
                 .retain(|call| call.place != *place || call.started_at.is_some()),
         }

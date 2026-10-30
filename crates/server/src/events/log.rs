@@ -252,7 +252,10 @@ async fn list_receivers(
             "insert into event_receivers (event_id, account_id)
              select $1, high_account_id from conversations where low_account_id = $2
              union
-             select $1, low_account_id from conversations where high_account_id = $2",
+             select $1, low_account_id from conversations where high_account_id = $2
+             union select $1, peer.account_id from conversation_members mine
+             join conversation_members peer using(conversation_id)
+             where mine.account_id=$2 and peer.account_id<>$2",
             id.as_uuid(),
         ),
         Receivers::ConversationPeersOfServerRole(id) => (
@@ -265,7 +268,10 @@ async fn list_receivers(
              select $1, c.low_account_id
              from account_server_roles h
              join conversations c on c.high_account_id = h.account_id
-             where h.role_id = $2",
+             where h.role_id = $2
+             union select $1, peer.account_id from account_server_roles h
+             join conversation_members mine on mine.account_id=h.account_id
+             join conversation_members peer using(conversation_id) where h.role_id=$2",
             id.as_uuid(),
         ),
         Receivers::DepartureWitnesses(id) => (
@@ -320,7 +326,25 @@ pub async fn departure_changed(
     let moderators = Audience::ServerPermission {
         permission: junto_authz::ServerPermission::BanMembers,
     };
-    record(connection, now, &moderators, &event).await
+    record(&mut *connection, now, &moderators, &event).await?;
+    let groups: Vec<junto_protocol::ids::ConversationId> = sqlx::query_scalar(
+        "select conversation_id from conversation_members where account_id=$1
+         union select conversation_id from conversation_former_members where account_id=$1
+         order by conversation_id",
+    )
+    .bind(account_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    for conversation_id in groups {
+        record(
+            &mut *connection,
+            now,
+            &Audience::Group { conversation_id },
+            &event,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Records the notice that tells the accounts that `holders` selects now to load a

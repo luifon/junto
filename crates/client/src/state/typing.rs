@@ -27,22 +27,85 @@ pub(super) struct Activity {
     people: HashMap<(ServerId, PlaceId, AccountId), Person>,
     timer: Option<Task<()>>,
 }
+type Owners<'a> = HashMap<ServerId, (Owner, Option<&'a junto_client_core::model::ServerModel>)>;
+
+fn allowed(
+    model: Option<&junto_client_core::model::ServerModel>,
+    place: PlaceId,
+    account: Option<AccountId>,
+) -> bool {
+    let Some(model) = model else {
+        return false;
+    };
+    if model.place(place).is_none() {
+        return false;
+    }
+    let PlaceId::Direct(id) = place else {
+        return true;
+    };
+    if let Some(pair) = model.conversations.iter().find(|pair| pair.id == id) {
+        let member = |account| account == pair.low_account_id || account == pair.high_account_id;
+        return member(model.account.id) && account.is_none_or(member);
+    }
+    model
+        .group_conversations
+        .iter()
+        .find(|group| group.id == id)
+        .is_some_and(|group| {
+            group.account_ids.contains(&model.account.id)
+                && account.is_none_or(|account| group.account_ids.contains(&account))
+        })
+}
+
+impl Activity {
+    fn keep(&mut self, owners: &Owners<'_>, now: Instant) {
+        self.local.retain(|(owner, place), local| {
+            local.sources.retain(|_, until| *until > now);
+            owners
+                .get(&owner.entry.server_id)
+                .is_some_and(|(held, model)| held == owner && allowed(*model, *place, None))
+                && !local.sources.is_empty()
+        });
+        self.people.retain(|(server, place, account), person| {
+            owners.get(server).is_some_and(|(owner, model)| {
+                *owner == person.owner && allowed(*model, *place, Some(*account))
+            }) && person.until > now
+        });
+    }
+}
+
 impl AppState {
-    pub(super) fn keep_typing_owners(&mut self) {
-        let owners: HashMap<_, _> = self
+    pub(super) fn keep_typing_owners(&mut self, snapshots: &[super::view::ServerSnapshot]) {
+        let models: HashMap<_, _> = snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                super::view::shown_model(snapshot).map(|model| (snapshot.id, model))
+            })
+            .collect();
+        let owners: Owners<'_> = self
             .client
             .servers()
             .iter()
-            .filter_map(|server| self.owner(server.id()).map(|owner| (server.id(), owner)))
+            .filter_map(|server| {
+                self.owner(server.id())
+                    .map(|owner| (server.id(), (owner, models.get(&server.id()).copied())))
+            })
             .collect();
-        let now = Instant::now();
-        self.typing.local.retain(|(owner, _), local| {
-            local.sources.retain(|_, until| *until > now);
-            owners.get(&owner.entry.server_id) == Some(owner) && !local.sources.is_empty()
-        });
-        self.typing.people.retain(|(server, _, _), person| {
-            owners.get(server) == Some(&person.owner) && person.until > now
-        });
+        self.typing.keep(&owners, Instant::now());
+    }
+
+    fn typing_allowed(&self, server: ServerId, place: PlaceId, account: Option<AccountId>) -> bool {
+        #[cfg(feature = "test-support")]
+        if let Some(entry) = self
+            .fixture
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.id == server))
+        {
+            return allowed(super::view::shown_model(entry), place, account);
+        }
+        self.client
+            .server(server)
+            .is_some_and(|server| allowed(server.live().view().model.as_deref(), place, account))
     }
 
     fn typing_owner(&self, server: ServerId) -> Option<Owner> {
@@ -69,7 +132,9 @@ impl AppState {
         place: PlaceId,
         active: bool,
     ) {
-        if self.owner(owner.entry.server_id) != Some(owner) {
+        if self.owner(owner.entry.server_id) != Some(owner)
+            || !self.typing_allowed(owner.entry.server_id, place, None)
+        {
             return;
         }
         let now = Instant::now();
@@ -129,8 +194,12 @@ impl AppState {
             .typing
             .people
             .iter()
-            .filter(|((saved, target, _), person)| {
-                *saved == server && *target == place && person.owner == owner && person.until > now
+            .filter(|((saved, target, account), person)| {
+                *saved == server
+                    && *target == place
+                    && person.owner == owner
+                    && person.until > now
+                    && self.typing_allowed(server, place, Some(*account))
             })
             .map(|((_, _, account), person)| (*account, person.name.clone()))
             .collect();
@@ -148,6 +217,7 @@ impl AppState {
         account: AccountId,
     ) -> bool {
         self.typing_owner(owner.entry.server_id) == Some(owner)
+            && self.typing_allowed(owner.entry.server_id, place, Some(account))
             && self.typing_people(owner.entry.server_id, place).len() <= 3
             && self
                 .typing
@@ -206,6 +276,7 @@ impl AppState {
             if !activity.active {
                 self.typing.people.remove(&key);
             } else if activity.account_id != owner.account_id
+                && self.typing_allowed(server, place, Some(activity.account_id))
                 && (self.typing.people.len() < 256 || self.typing.people.contains_key(&key))
             {
                 self.typing.people.insert(
@@ -281,3 +352,6 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

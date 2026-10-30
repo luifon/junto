@@ -711,7 +711,7 @@ impl Room {
             CallPlace::Channel { channel_id, .. } => {
                 format!("/api/v1/channels/{channel_id}/call/join")
             }
-            CallPlace::Direct { .. } => panic!("a voice channel"),
+            CallPlace::Direct { .. } | CallPlace::Group { .. } => panic!("a voice channel"),
         }
     }
 }

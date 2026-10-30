@@ -654,7 +654,7 @@ impl AppState {
             .filter(|state| match (&state.place, workspace) {
                 (_, None) => true,
                 (MessagePlace::Channel { workspace_id, .. }, Some(only)) => *workspace_id == only,
-                (MessagePlace::Direct { .. }, Some(_)) => false,
+                (MessagePlace::Direct { .. } | MessagePlace::Group { .. }, Some(_)) => false,
             })
             .map(|state| (PlaceId::of(&state.place), state.latest))
             .collect();

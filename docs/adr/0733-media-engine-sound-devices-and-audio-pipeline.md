@@ -194,3 +194,33 @@ TLS implementation references: [platform selection](https://github.com/webrtc-sd
 - A device with more than two input channels gives its first two as the microphone. A device with more than two output channels plays the mix on its first two.
 - A future of `Calls` that reads from a device costs one task of the runtime of the client. The device interfaces are not an interface for the window: a future of one of them that the window polled would fail on macOS and on Linux.
 - A build of the desktop client downloads and links the WebRTC library. The build directory grows by about 1 GiB for it.
+
+
+The personal Voice settings and the device check before joining a call offer the saved input,
+output and camera choices, system defaults, disconnected saved choices and a refresh of the
+lists. The microphone test plays the processed microphone through the selected output; the
+output test plays a quiet repeating tone without opening the microphone. Only an explicit
+microphone test asks for a permission that the system has not asked yet. The ordinary input
+meter starts only when permission is already granted and never asks for it. The tests use the same format conversion and processing
+as call sound, without a network connection. Failures of opening or of a running stream are
+shown, and another press retries. Audio follows the existing fallback to the system default
+for a disconnected saved choice; that saved choice remains stored.
+
+A camera preview opens a local capture after an explicit press, asks for permission only when
+it was never asked, and draws mirrored pictures independently of call camera publications.
+A missing camera, refused permission or ended capture clears the picture and states the error;
+the person can choose another camera and retry. A preview creates no media track. Closing the
+check, leaving the Voice section, changing its account or server, starting a real call, or
+closing the application cancels pending requests and releases running streams. Device changes
+replace the tests with the new choices. Request generations reject delayed permission and
+open answers; audio callbacks also test an atomic cancellation flag, so a late output is silent
+before its stream is released. Preview conversion runs in the background, holds one latest
+picture, and releases replaced window images through the existing picture lifetime rules.
+
+Tests: `device_check::tests` verifies selected-device listen-back, an output tone and stream
+failure, local mirrored camera capture with removal and retry, cancellation during a permission
+request, and a held output open that returns after close. Window tests `device_checks::` exercise
+the choices, audible test signals, rendered preview, errors and retry, persistence, closing and
+source changes. `live::device_checks::` checks that call entry releases local test devices and
+that the preview is not published. Native permission dialogs and physical devices remain in
+the native device tier of ADR 0913.

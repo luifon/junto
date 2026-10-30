@@ -36,6 +36,8 @@ mod exports;
 mod first_start;
 mod forwarding_review;
 mod glossary;
+mod group_conversations;
+mod hidden_conversations;
 mod history_permissions;
 mod host_commands;
 mod http_errors;
@@ -144,3 +146,5 @@ mod review_rank;
 mod review_rules;
 
 mod server_requests;
+
+mod group_search_join;

@@ -151,7 +151,7 @@ fn a_window_that_starts_after_a_call_that_was_not_answered_shows_its_lines_and_a
                     .directs
                     .iter()
                     .find(|row| {
-                        row.account_id == ada_id
+                        row.account_id == Some(ada_id)
                             && row.unread.messages == 1
                             && row.name.as_deref() == Some("Ada")
                     })

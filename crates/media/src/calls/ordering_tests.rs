@@ -166,6 +166,8 @@ fn fixture() -> Fixture {
             identity: "seat".into(),
         }),
         direct_calls: vec![],
+        group_conversations: Vec::new(),
+        hidden_conversations: Vec::new(),
         call_invitations: vec![],
         sent_call_invitations: vec![],
         call_moves: vec![],

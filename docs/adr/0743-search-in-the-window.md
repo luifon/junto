@@ -100,3 +100,5 @@ Opening Files starts without saved hits from an earlier visit.
 File and picture search results expose retained files through the common file
 controls, even when their message has no caption.
 Replacing server state also drops saved file metadata before rereading the open page.
+
+An explicitly scoped group search retains the conversation identifier across filter changes and file pages. Author choices belong to that currently readable group's member identifiers. Group results retain their conversation identity and source position when opened; leaving the group withdraws results and any linked-file dialog. The group join API and window tests combine these rules with each of the five search switches, author/date filters and captionless file pages.

@@ -154,6 +154,7 @@ struct Registry {
 /// The place of a call, as the audience of an event names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallKey {
+    Group(junto_protocol::ids::ConversationId),
     Channel(ChannelId),
     /// A direct-message call, the smaller account identifier first.
     Direct(AccountId, AccountId),

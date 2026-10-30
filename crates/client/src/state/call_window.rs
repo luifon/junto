@@ -174,6 +174,7 @@ impl AppState {
         let call = self.media_calls().call?;
         let server_id = call.target.server_id;
         let place = match call.target.place {
+            CallPlace::Group { conversation_id } => PlaceId::Direct(conversation_id),
             CallPlace::Channel { channel_id, .. } => PlaceId::Channel(channel_id),
             CallPlace::Direct {
                 low_account_id,
@@ -202,6 +203,9 @@ impl AppState {
                 selection.notices = Some(server_id);
             }
             match call.target.place {
+                CallPlace::Group { conversation_id } => {
+                    selection.conversations.insert(server_id, conversation_id);
+                }
                 CallPlace::Channel {
                     workspace_id,
                     channel_id,

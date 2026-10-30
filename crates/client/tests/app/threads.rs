@@ -545,7 +545,7 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
             .is_some_and(|lists| lists.conversation.is_some())
     });
     let conversation = window.view().lists().unwrap().conversation.clone().unwrap();
-    assert_eq!(conversation.account_id, ada);
+    assert_eq!(conversation.account_id, Some(ada));
     assert_eq!(conversation.name.as_deref(), Some("Ada"));
     assert!(window.view().workspace().unwrap().channel.is_none());
     assert!(window.shows_named(format!("direct-row:{}", conversation.id)));
