@@ -113,6 +113,8 @@ fn cached(account: AccountId) -> Option<Vec<GroupConversation>> {
         .flatten()
 }
 
+type StandingRow = (AccountId, bool, Vec<i64>, i64, i64, Vec<WorkspaceId>);
+
 struct Standing {
     actor: Actor,
     workspaces: HashSet<WorkspaceId>,
@@ -129,11 +131,10 @@ async fn standing(
         "select contact.*,array(select workspace_id from workspace_members where account_id=contact.id) from ({}) contact(id,owner,roles,allow,deny)",
         store::CONTACT_STANDING
     );
-    let rows: Vec<(AccountId, bool, Vec<i64>, i64, i64, Vec<WorkspaceId>)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(query))
-            .bind(accounts)
-            .fetch_all(connection)
-            .await?;
+    let rows: Vec<StandingRow> = sqlx::query_as(sqlx::AssertSqlSafe(query))
+        .bind(accounts)
+        .fetch_all(connection)
+        .await?;
     rows.into_iter()
         .map(|(id, owner, roles, allow, deny, workspaces)| {
             Ok((
@@ -220,7 +221,17 @@ pub(crate) async fn for_accounts(
             account_ids,
         };
         for account in &missing {
-            if standing.contains_key(account) && group.account_ids.contains(account) {
+            if let Some(reader) = standing.get(account)
+                && authorize(
+                    &reader.actor,
+                    &Request::DirectMessage(if group.account_ids.contains(account) {
+                        Participation::Participant
+                    } else {
+                        Participation::Outsider
+                    }),
+                )
+                .is_allowed()
+            {
                 result
                     .entry(*account)
                     .or_insert_with(Vec::new)

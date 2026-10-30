@@ -250,7 +250,7 @@ async fn overlapping_visibility_and_new_messages_converge_across_sessions() {
             } if conversation_id.to_string() == id => Some(*hidden),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     let first = server.snapshot(&reader).await;
     assert_eq!(
