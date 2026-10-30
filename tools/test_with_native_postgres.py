@@ -506,12 +506,27 @@ class Main(unittest.TestCase):
         self.assertFalse(self.root.exists())
 
     def test_a_server_that_cannot_be_ended_fails_the_program(self):
-        sleeper = [PYTHON, "-c", "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)"]
+        ready = socket.socket()
+        self.addCleanup(ready.close)
+        ready.bind(("127.0.0.1", 0))
+        ready.listen(1)
+        ready.settimeout(30)
+        sleeper = [PYTHON, "-c", "import signal, socket, sys, time\n"
+                   "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+                   "with socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=30) as ready:\n"
+                   "    ready.sendall(b'1')\n"
+                   "time.sleep(60)\n", str(ready.getsockname()[1])]
         servers = []
         real = postgres.Server
 
         def recorded(command, log, data, port):
             servers.append(real(command, log, data, port))
+            self.addCleanup(servers[-1].process.wait, timeout=30)
+            self.addCleanup(servers[-1].process.kill)
+            connection, _ = ready.accept()
+            with connection:
+                connection.settimeout(30)
+                self.assertEqual(connection.recv(1), b"1")
             return servers[-1]
 
         kill = os.kill
