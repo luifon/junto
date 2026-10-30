@@ -60,3 +60,5 @@ they never simulate server filters by filtering a returned page. Older servers
 continue to accept ordinary text, channel, author and date searches.
 
 Filter-only results use the same bounded, spoiler-concealing message preview as text searches. Matching a link inside a spoiler does not reveal its label or address in the result. The API search regression `a_filter_only_link_search_conceals_spoiler_labels_and_urls` covers this combination.
+
+Explicit Files lists use that same spoiler-concealing message preview and its 512-character bound for channel, pair and group scopes. The selected page reads the source documents after attachment ordering and authorization; concealed text and links remain hidden without changing attachment metadata, chronological pagination or the sparse-history index. API regressions cover all three scopes, nested spoilers and Unicode truncation.

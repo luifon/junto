@@ -1,7 +1,7 @@
 use super::{ApiError, ApiResult, Query};
 use crate::{
     access::Access,
-    messages::{Place, Purpose, uploads},
+    messages::{Place, Purpose, document, uploads},
 };
 use junto_authz::WorkspacePermission;
 use junto_protocol::{
@@ -62,7 +62,7 @@ pub(super) async fn page(
         and exists(select 1 from messages m where m.id=a.message_id and not m.deleted
             and m.author_id is not null and (m.readers is null or $2=any(m.readers)))
         order by a.message_created_at desc,a.message_id desc limit $5)
-        select m.id,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.position,m.thread_root
+        select m.id,m.place_id,m.author_id,m.created_at,m.document,m.position,m.thread_root
         from file_page p join messages m on m.id=p.message_id order by p.message_created_at desc,p.message_id desc")
         .bind(place.id).bind(access.account_id).bind(before).bind(id).bind(i64::from(limit)+1)
         .fetch_all(&mut *connection).await?;
@@ -81,7 +81,15 @@ pub(super) async fn page(
             workspace_id: workspace,
             author_id: row.try_get("author_id")?,
             created_at,
-            text: row.try_get("text")?,
+            text: document::preview_text(
+                &row.try_get::<sqlx::types::Json<junto_protocol::message::Document>, _>(
+                    "document",
+                )?
+                .0,
+            )
+            .chars()
+            .take(512)
+            .collect(),
             rank: 0.0,
             attachments: Vec::new(),
             position: Some(row.try_get::<i64, _>("position")? as u64),

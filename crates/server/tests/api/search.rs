@@ -1062,3 +1062,91 @@ async fn a_filter_only_link_search_conceals_spoiler_labels_and_urls() {
     assert!(preview.contains("Spoiler"));
     assert!(!preview.contains("concealed label") && !preview.contains("concealed-url"));
 }
+
+async fn files_conceal_spoilers(scope: &str) {
+    let files = Files::open().await;
+    let (server, owner) = (&files.server, &files.owner);
+    let reader = server.join(owner, "Reader").await;
+    let (place, route) = match scope {
+        "channel" => (
+            json!({"channel_id": files.channel.id}),
+            format!("/api/v1/channels/{}/messages", files.channel.id),
+        ),
+        "pair" => {
+            let pair: Conversation = server
+                .post(
+                    owner,
+                    "/api/v1/conversations",
+                    &json!({"account_id": reader.account_id}),
+                )
+                .await
+                .ok(StatusCode::OK);
+            (
+                json!({"conversation_id": pair.id}),
+                format!("/api/v1/conversations/{}/messages", pair.id),
+            )
+        }
+        "group" => {
+            let third = server.join(owner, "Third").await;
+            let group: GroupConversation = server.post(owner, "/api/v1/group-conversations",
+                &json!({"name": "Planning", "account_ids": [reader.account_id, third.account_id]}))
+                .await.ok(StatusCode::CREATED);
+            (
+                json!({"conversation_id": group.id}),
+                format!("/api/v1/conversations/{}/messages", group.id),
+            )
+        }
+        _ => panic!("unknown file scope"),
+    };
+    let attached = upload(server, owner, place.clone(), b"a scoped file").await;
+    let sent: Message = server.post(owner, &route, &json!({
+        "document": {"blocks": [{"kind": "paragraph", "content": [
+            {"kind": "text", "text": "Visible before"},
+            {"kind": "spoiler", "content": [
+                {"kind": "text", "text": "concealed words"},
+                {"kind": "spoiler", "content": [
+                    {"kind": "link", "text": "concealed label", "url": "https://example.test/concealed-url"}
+                ]}
+            ]},
+            {"kind": "text", "text": "visible after"},
+            {"kind": "text", "text": "界".repeat(600)}
+        ]}]}, "attachments": [attached.id]
+    })).await.ok(StatusCode::CREATED);
+    let (key, id) = place.as_object().unwrap().iter().next().unwrap();
+    let query = format!("&files=true&{key}={}", id.as_str().unwrap());
+    let page = search(server, &reader, &query).await;
+    assert_eq!(page.results.len(), 1, "{scope}");
+    let hit = &page.results[0];
+    assert_eq!(hit.message_id, Some(sent.id));
+    assert_eq!(hit.attachments.len(), 1);
+    assert_eq!(hit.attachments[0].id, attached.id);
+    assert!(
+        hit.text.starts_with("Visible before Spoiler visible after"),
+        "{scope}: {}",
+        hit.text
+    );
+    for hidden in ["concealed words", "concealed label", "concealed-url"] {
+        assert!(!hit.text.contains(hidden), "{scope}: exposed {hidden}");
+    }
+    assert_eq!(
+        hit.text.chars().count(),
+        512,
+        "{scope}: bounded Unicode preview"
+    );
+    assert!(page.next.is_none());
+}
+
+#[tokio::test]
+async fn files_conceal_spoilers_in_channel_excerpts() {
+    files_conceal_spoilers("channel").await;
+}
+
+#[tokio::test]
+async fn files_conceal_spoilers_in_pair_excerpts() {
+    files_conceal_spoilers("pair").await;
+}
+
+#[tokio::test]
+async fn files_conceal_spoilers_in_group_excerpts() {
+    files_conceal_spoilers("group").await;
+}
