@@ -53,6 +53,7 @@ mod forwarding;
 mod glossary;
 mod gpui_panics;
 mod keybinds;
+mod message_copy_actions;
 mod message_links;
 mod rule_changes;
 mod target_links;

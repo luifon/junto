@@ -377,7 +377,7 @@ pub(crate) enum MessageShape {
     Wide,
     /// In a list of a side panel.
     Compact,
-    /// In a side panel, without its actions, its menu, its pin mark and the mark of its
+    /// In a side panel, with read actions and without its action bar, its pin mark or the mark of its
     /// thread: the root of the thread of the side panel, and a message of the pin list.
     Bare,
 }
@@ -388,6 +388,7 @@ pub(crate) struct MessageMenuOpen {
     pub message_id: MessageId,
     /// The list that the message was drawn in.
     pub pane: Pane,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3534,10 +3535,20 @@ impl Shell {
                     )
                 })
         });
-        let open_menu = !bare
-            && matches!(&self.layer, Layer::MessageMenu(open)
-                if open.message_id == message_id && open.pane == pane);
-        let menu = open_menu.then(|| self.render_message_menu(row, feed, window, cx));
+        let open_menu = matches!(&self.layer, Layer::MessageMenu(open)
+                if open.message_id == message_id && open.pane == pane && open.read_only == bare);
+        let menu = open_menu.then(|| {
+            let mut shown = row.clone();
+            if bare {
+                shown.can_react = false;
+                shown.can_reply = false;
+                shown.can_thread = false;
+                shown.can_pin = false;
+                shown.can_edit = false;
+                shown.can_delete = false;
+            }
+            self.render_message_menu(&shown, feed, window, cx)
+        });
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         // A message without an action has no bar and no menu: a permanent one still has the
         // bar, which states that it cannot be changed.
@@ -3583,18 +3594,28 @@ impl Shell {
                 frame.hover(move |style| style.bg(Hsla::from(colors.row_hover)))
             })
             .when(open_menu, |frame| frame.bg(Hsla::from(colors.row_hover)))
-            .when(!message.deleted && !bare, |frame| {
+            .when(!message.deleted, |frame| {
                 let has_actions = row.has_actions();
                 frame
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.shadow(ring))
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        this.message_hovered(pane, message_id, *hovered, cx);
-                    }))
+                    .when(!bare, |frame| {
+                        frame.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            this.message_hovered(pane, message_id, *hovered, cx);
+                        }))
+                    })
                     .on_context_menu(Self::handler(cx, move |this, window, cx| {
                         if has_actions {
-                            this.open_message_menu(pane, message_id, window, cx);
+                            this.open_layer(
+                                Layer::MessageMenu(MessageMenuOpen {
+                                    pane,
+                                    message_id,
+                                    read_only: bare,
+                                }),
+                                window,
+                                cx,
+                            );
                         }
                     }))
                     .on_key_down(cx.listener(
@@ -3602,7 +3623,15 @@ impl Shell {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space")
                                 && has_actions
                             {
-                                this.open_message_menu(pane, message_id, window, cx);
+                                this.open_layer(
+                                    Layer::MessageMenu(MessageMenuOpen {
+                                        pane,
+                                        message_id,
+                                        read_only: bare,
+                                    }),
+                                    window,
+                                    cx,
+                                );
                                 cx.stop_propagation();
                             }
                         },
@@ -3819,7 +3848,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_layer(
-            Layer::MessageMenu(MessageMenuOpen { message_id, pane }),
+            Layer::MessageMenu(MessageMenuOpen {
+                message_id,
+                pane,
+                read_only: false,
+            }),
             window,
             cx,
         );

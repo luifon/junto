@@ -16,6 +16,12 @@ edit generation and saved contents still own that composer. A late acceptance
 cannot clear text written afterwards or a draft saved by another window. The
 refused-edit window test restarts the application before retrying the edit.
 
+Thread roots and pinned message copies use the same context-menu trigger and
+menu component as timeline messages. They offer copy text, copy message link,
+forward and mark unread, plus applicable read controls. Their menu state names
+the presentation so an original row and its copy cannot draw duplicate menus.
+Message mutation controls and the hover action bar remain on timeline rows.
+
 Derivation:
 
 - A function without side effects (ADR 0730) derives the rows of a list from a timeline: day separators, the line of the first unread message, messages, system lines, the waiting messages, and a row at each end that states whether the history goes on.
