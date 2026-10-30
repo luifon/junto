@@ -125,6 +125,19 @@ fn field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 }
 
 impl Autostart {
+    pub(super) fn remove(&self) -> io::Result<()> {
+        if let Some(entry) = Self::read_at(&self.path)? {
+            if !self.owns(&entry)? {
+                return Ok(());
+            }
+            fs::remove_file(&self.path)?;
+        }
+        if self.status()?.requested() {
+            self.set(false)?;
+        }
+        Ok(())
+    }
+
     fn read_at(path: &Path) -> io::Result<Option<String>> {
         match fs::symlink_metadata(path) {
             Ok(file) if !file.is_file() || file.file_type().is_symlink() => {

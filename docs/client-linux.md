@@ -16,7 +16,7 @@ Install it with the package manager, which also installs the libraries that it n
 sudo apt install ./junto_<version>_amd64.deb
 ```
 
-Junto is then in the application menu, and `junto` starts it from a terminal. The program is in `/usr/lib/junto`. The package manager updates it: Junto shows the newer version below "Add server" and in Settings, Version, with the name of its `.deb` and the address of the download page; download that file and install it with the same command, then restart Junto. Junto does not update a `.deb` installation itself. Remove it with `sudo apt remove junto`; your data stays in `~/.local/share/junto`.
+Junto is then in the application menu, and `junto` starts it from a terminal. The program is in `/usr/lib/junto`. The package manager updates it: Junto shows the newer version below "Add server" and in Settings, Version, with the name of its `.deb` and the address of the download page; download that file and install it with the same command, then restart Junto. Junto does not update a `.deb` installation itself. Before removing it, quit Junto and run `junto --remove-startup-entry` as your usual desktop user. Then run `sudo apt remove junto`; your data stays in `~/.local/share/junto`.
 
 ## The tarball
 
@@ -41,7 +41,7 @@ chmod +x Junto-<version>-x86_64.AppImage
 
 Closing the main window keeps Junto running with notifications and calls. Open it again from the tray. Use Quit to end it. Settings, Interface can turn off this behavior.
 
-Settings, Interface also offers "Start Junto at login" for the normal profile, off until enabled. It uses your personal XDG autostart entry, normally `~/.config/autostart/chat.junto.Junto.desktop`. Updates and recovery keep it because the executable or AppImage path stays the same. If you move the installation, enable the setting again from its new location. Turn it off before removal, or remove that desktop entry yourself afterward; removing the package does not change other accounts' preferences.
+Settings, Interface also offers "Start Junto at login" for the normal profile, off until enabled. It uses your personal XDG autostart entry, normally `~/.config/autostart/chat.junto.Junto.desktop`. Updates and recovery keep it because the executable or AppImage path stays the same. If you move the installation, enable the setting again from its new location. Before removing any package, quit Junto and run its executable with `--remove-startup-entry` as your desktop user (for example `~/.local/opt/junto/junto --remove-startup-entry` or `./Junto.AppImage --remove-startup-entry`). The command opens no window and removes only your personal entry when it names that installation. If a matching system autostart entry is inherited, it writes a personal disabled override so reinstalling does not reactivate it. It preserves another installation's entry, other users' preferences and the system entry. Package-manager removal itself never edits users' home directories.
 
 ## Data and updates
 

@@ -142,3 +142,35 @@ fn a_person_can_disable_an_inherited_entry_and_change_a_desktop_restriction() {
     fs::remove_file(&user.program).unwrap();
     assert_eq!(system.status().unwrap(), Status::Off);
 }
+
+#[test]
+fn removing_this_installation_clears_only_its_own_enabled_registration() {
+    let root = tempfile::tempdir().unwrap();
+    let current = entry(root.path(), "Current/junto");
+    let another = entry(root.path(), "Another/junto");
+    current.set(true).unwrap();
+    current.remove().unwrap();
+    assert!(!current.path.exists());
+    assert_eq!(current.status().unwrap(), Status::Off);
+    current.remove().unwrap();
+    another.set(true).unwrap();
+    let before = fs::read(&another.path).unwrap();
+    current.remove().unwrap();
+    assert_eq!(fs::read(&another.path).unwrap(), before);
+    assert_eq!(another.status().unwrap(), Status::On);
+}
+
+#[test]
+fn removing_an_inherited_registration_disables_it_without_editing_the_system_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let mut current = entry(root.path(), "junto");
+    let mut system = entry(root.path(), "junto");
+    system.path = root.path().join("system/entry.desktop");
+    system.set(true).unwrap();
+    let before = fs::read(&system.path).unwrap();
+    current.inherited.push(system.path.clone());
+    current.remove().unwrap();
+    assert_eq!(current.status().unwrap(), Status::Off);
+    assert_eq!(fs::read(&system.path).unwrap(), before);
+    assert_eq!(system.status().unwrap(), Status::On);
+}

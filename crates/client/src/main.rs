@@ -31,6 +31,7 @@ options:
   --scale <percent>        the interface scale of this start, from 90 to 150
   --no-activate            open the window without bringing it to the front
   --check-startup          exit after rendering the first window frame
+  --remove-startup-entry   remove this user's matching Linux login entry, then exit
   --rollback-update        restore the verified previous archive, then exit
   --version                print the version
   --help                   print this text
@@ -56,6 +57,8 @@ enum Parsed {
     Run(Arguments),
     Print(String),
     Rollback,
+    #[cfg(target_os = "linux")]
+    RemoveStartup,
 }
 
 /// `test_configuration`: whether this build is a test configuration, the only one that
@@ -91,6 +94,8 @@ fn parse(
                 arguments.start.activate = false;
             }
             "--rollback-update" => return Ok(Parsed::Rollback),
+            #[cfg(target_os = "linux")]
+            "--remove-startup-entry" => return Ok(Parsed::RemoveStartup),
             // The package checks show the update notice of the window and install from it.
             "--update-source" if test_configuration => {
                 let source = values.next().ok_or("--update-source needs an address")?;
@@ -359,6 +364,19 @@ fn main() -> ExitCode {
                 }
                 Err(error) => {
                     eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        #[cfg(target_os = "linux")]
+        Ok(Parsed::RemoveStartup) => {
+            return match junto_client_core::startup::remove_linux_entry() {
+                Ok(()) => {
+                    println!("the matching startup entry is removed or disabled");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("the startup entry could not be removed: {error}");
                     ExitCode::FAILURE
                 }
             };

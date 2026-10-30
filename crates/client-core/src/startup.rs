@@ -71,6 +71,11 @@ pub(crate) fn remove_windows_entry(program: &std::path::Path) -> io::Result<()> 
     windows::remove_for(program)
 }
 
+#[cfg(target_os = "linux")]
+pub fn remove_linux_entry() -> io::Result<()> {
+    linux::running()?.remove()
+}
+
 impl SystemStartup {
     pub fn new(directory: DataDir) -> Self {
         Self {
