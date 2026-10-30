@@ -8,11 +8,11 @@ use junto_client_core::Owner;
 use junto_client_core::address::ServerAddress;
 use junto_client_core::links::{self, AppLink};
 use junto_client_core::model::PlaceId;
-use junto_client_core::protocol::ids::{MessageId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Block, Document};
 use junto_client_core::protocol::origin::Origin;
 
-use super::{Layer, Shell};
+use super::{Layer, Shell, feed::DocumentSource};
 use crate::{
     assets::Icon,
     state::{
@@ -37,6 +37,70 @@ pub(crate) struct ForwardDialog {
     error: Option<String>,
     scroll: ScrollHandle,
     _find: Subscription,
+}
+
+#[derive(Clone)]
+struct ForwardAuthor {
+    owner: Owner,
+    parent: DocumentSource,
+    origin: Origin,
+    message: MessageId,
+    account: AccountId,
+}
+
+impl ForwardAuthor {
+    fn contains(&self, document: &Document) -> bool {
+        document.blocks.iter().any(|block| matches!(block,
+            Block::Forward { server, message_id, verified: true } if server == &self.origin && *message_id == self.message))
+    }
+
+    fn is_present(&self, shell: &Shell, cx: &Context<Shell>) -> bool {
+        use crate::state::{feed::FeedRow, view::PinsState};
+        let state = shell.state.read(cx);
+        if state.owner(self.owner.entry.server_id) != Some(self.owner)
+            || !matches!(state.forward_preview(&self.origin, self.message), Preview::Read(source) if source.message.author_id == Some(self.account))
+        {
+            return false;
+        }
+        let Some(view) = shell.view.as_ref().filter(|view| {
+            view.selected
+                .as_ref()
+                .is_some_and(|server| server.id == self.owner.entry.server_id)
+        }) else {
+            return false;
+        };
+        if let DocumentSource::Composer(pane) = self.parent {
+            return shell
+                .composer_preview_document(pane, cx)
+                .is_some_and(|document| self.contains(&document));
+        }
+        let message = |row: &crate::state::feed::MessageRow| {
+            self.parent == DocumentSource::Message(row.message.id)
+                && !row.message.deleted
+                && row
+                    .message
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| self.contains(document))
+        };
+        let held = |feed: &crate::state::feed::Feed| {
+            feed.server_id == self.owner.entry.server_id
+                && feed.rows.iter().any(|row| match row {
+                    FeedRow::Message(row) => message(row),
+                    FeedRow::Waiting(row) => {
+                        self.parent == DocumentSource::Pending(row.pending.id)
+                            && self.contains(&row.pending.document)
+                    }
+                    _ => false,
+                })
+        };
+        let workspace = view.workspace();
+        let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+        view.lists().and_then(|lists| lists.feed.as_ref()).is_some_and(held)
+            || thread.and_then(|thread| thread.feed.as_ref()).is_some_and(held)
+            || thread.and_then(|thread| thread.root.as_ref()).is_some_and(message)
+            || workspace.and_then(|workspace| workspace.pins.as_ref()).is_some_and(|pins| matches!(&pins.state, PinsState::Loaded(rows) if rows.iter().any(message)))
+    }
 }
 
 fn uri(origin: &Origin, message_id: MessageId) -> Option<String> {
@@ -340,9 +404,10 @@ impl Shell {
         origin: &Origin,
         id: MessageId,
         verified: bool,
-        delivery: Option<ServerId>,
+        delivery: (Option<ServerId>, Option<DocumentSource>),
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (delivery, parent) = delivery;
         let local = delivery
             .and_then(|id| self.state.read(cx).server(id))
             .is_some_and(|server| server.entry().address.origin() == origin);
@@ -354,6 +419,27 @@ impl Shell {
         };
         let preview = self.state.read(cx).forward_preview(origin, id);
         let available = matches!(&preview, Preview::Read(_));
+        let identity = match &preview {
+            Preview::Read(source) if attributed => source
+                .message
+                .author_id
+                .zip(source.message.author_name.clone())
+                .map(|(account, name)| {
+                    (
+                        account,
+                        name,
+                        source.place.clone(),
+                        match source.message.place {
+                            junto_client_core::protocol::message::MessagePlace::Channel {
+                                workspace_id,
+                                ..
+                            } => Some(workspace_id),
+                            _ => None,
+                        },
+                    )
+                }),
+            _ => None,
+        };
         let (selector, heading, body) = match preview {
             Preview::Read(source) => {
                 let author = source
@@ -395,13 +481,63 @@ impl Shell {
         };
         let address = ServerAddress::parse(origin.as_str()).ok();
         let link = uri(origin, id);
+        let mut shown = div().flex_1().min_w_0().truncate().text_size(u(12.5));
+        let owned = delivery
+            .and_then(|server| self.state.read(cx).owner(server))
+            .zip(parent);
+        if let Some(((account, name, place, workspace), (owner, parent))) = identity.zip(owned) {
+            let faces = self.faces(owner.entry.server_id).in_workspace(workspace);
+            let source = ForwardAuthor {
+                owner,
+                parent,
+                origin: origin.clone(),
+                message: id,
+                account,
+            };
+            let target = crate::ui::OpenProfile {
+                server: owner.entry.server_id,
+                account,
+            };
+            let author_selector = match parent {
+                DocumentSource::Composer(_) => format!("forward-preview-author-profile:{id}"),
+                DocumentSource::Pending(_) => format!("forward-pending-author-profile:{id}"),
+                DocumentSource::Message(_) => format!("forward-author-profile:{id}"),
+            };
+            shown = shown
+                .flex()
+                .items_center()
+                .gap(u(3.0))
+                .child(text::FORWARDED_MESSAGE)
+                .child(" · ")
+                .child(crate::ui::PresenceMark::new(faces.presence(account), 9.0))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .debug_selector(move || author_selector)
+                        .child(
+                            crate::ui::ProfileName::new(
+                                ("forward-author", id.as_uuid().as_u128() as u64),
+                                name,
+                                target,
+                            )
+                            .role_color(faces.color(account))
+                            .on_open(Self::handler(
+                                cx,
+                                move |this, window, cx| {
+                                    if source.is_present(this, cx) {
+                                        this.show_profile(target, window, cx);
+                                    }
+                                },
+                            )),
+                        ),
+                )
+                .child(div().min_w_0().truncate().child(format!(" · {place}")));
+        } else {
+            shown = shown.child(heading.clone());
+        }
         let caption = crate::selectable::SelectableText::value(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(u(12.5))
-                .child(heading.clone()),
+            shown,
             if available {
                 link.clone().unwrap_or(heading)
             } else {

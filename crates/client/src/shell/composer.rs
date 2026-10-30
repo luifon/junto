@@ -1364,6 +1364,16 @@ impl Shell {
         }
     }
 
+    pub(super) fn composer_preview_document(
+        &self,
+        pane: Pane,
+        cx: &Context<Self>,
+    ) -> Option<Document> {
+        self.pen(pane)
+            .preview
+            .then(|| self.composer_document(pane, cx))
+    }
+
     pub fn show_composer_preview(
         &mut self,
         pane: Pane,
@@ -2482,7 +2492,17 @@ impl Shell {
                         .into_any_element(),
                 ]
             } else {
-                self.document((names.server_id, None), &document, None, &names, &theme, cx)
+                self.document(
+                    (
+                        names.server_id,
+                        Some(super::feed::DocumentSource::Composer(pane)),
+                    ),
+                    &document,
+                    None,
+                    &names,
+                    &theme,
+                    cx,
+                )
             };
             div()
                 .relative()

@@ -229,6 +229,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
     let shown = drawn(&mut window);
     assert!(shown.contains("Not verified"), "{shown}");
     assert!(!shown.contains("Forwarded message · Ada"), "{shown}");
+    assert!(!window.shows_named(format!("forward-author-profile:{}", source.id)));
     let history = world
         .run(
             target_admin
@@ -485,4 +486,84 @@ fn a_forward_keeps_code_whitespace_and_downloads_the_sources_file(cx: &mut TestA
             .unwrap()
             .contains(code)
     );
+}
+
+#[gpui::test]
+fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_its_source(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::state::profile::ProfileRead;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let source = admin.send(&world, window.selected_channel(), document("a shared plan"));
+    let target = admin.text_channel(&world, &mut window, "delivery");
+    let server_id = window.view().selected.unwrap().id;
+    let author = admin.handle.account().unwrap();
+    window.until_message("a shared plan");
+    window.right_click_named(format!("message:{}", source.id));
+    window.click("message-forward");
+    window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
+    window.click("forward-send");
+    window.until("the verified local caption is stored and shown", |window| window.shows_named(format!("forward-message:{}", source.id)) && window.messages().iter().any(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, verified: true, .. } if *message_id == source.id)))));
+    assert!(
+        window.shows_named(format!("forward-author-profile:{}", source.id)),
+        "a verified local forward author has a profile control"
+    );
+    window.hover_named(format!("forward-author-profile:{}", source.id));
+    window.click("copy-text-value");
+    let address = window.cx.read_from_clipboard().unwrap().text().unwrap();
+    assert!(matches!(
+        junto_client_core::links::parse(&address),
+        Some(junto_client_core::links::AppLink::Message { id, .. }) if id == source.id
+    ));
+    window.click_named(format!("forward-author-profile:{}", source.id));
+    window.until("the source author's profile is read", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.profile_view(window.shell.entity_id())
+            })
+            .is_some_and(|view| {
+                view.account == author && matches!(view.read, ProfileRead::Shown(_))
+            })
+    });
+    window.press("escape");
+    let copied = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap().message.id;
+    window.right_click_named(format!("message:{copied}"));
+    window.click("message-edit");
+    window.click("composer-view-1");
+    window.until(
+        "an unchanged edit preview retains verified attribution",
+        |window| window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
+    );
+    window.click_named(format!("forward-preview-author-profile:{}", source.id));
+    window.until("the preview author opens the same profile", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.profile_view(window.shell.entity_id())
+            })
+            .is_some_and(|view| {
+                view.account == author && matches!(view.read, ProfileRead::Shown(_))
+            })
+    });
+    window.press("escape");
+    window.click("composer-view-0");
+    window.type_into("composer-input", " revised");
+    window.click("composer-view-1");
+    window.until(
+        "an edited unverified preview loses its author target",
+        |window| !window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
+    );
+    window.click("cancel-compose-state");
+    world
+        .run(admin.handle.api().delete_message(source.id))
+        .unwrap();
+    window.until("the deleted source removes its author target", |window| {
+        window.shows_named(format!("forward-unavailable:{}", source.id))
+            && !window.shows_named(format!("forward-author-profile:{}", source.id))
+    });
+    assert!(drawn(&mut window).contains("a shared plan"));
 }

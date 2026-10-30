@@ -382,6 +382,13 @@ pub(crate) enum MessageShape {
     Bare,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DocumentSource {
+    Message(MessageId),
+    Pending(u64),
+    Composer(Pane),
+}
+
 /// The message whose menu is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MessageMenuOpen {
@@ -2503,7 +2510,7 @@ impl Shell {
     /// message: the third part of `message`.
     pub(super) fn document(
         &mut self,
-        origin: (Option<ServerId>, Option<u64>),
+        origin: (Option<ServerId>, Option<DocumentSource>),
         document: &Document,
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
@@ -2511,10 +2518,19 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
-        let (server_id, pending) = origin;
-        let source = message
-            .map(|(_, message, _)| super::account_menus::AccountSource::Message(message.id))
-            .or_else(|| pending.map(super::account_menus::AccountSource::Pending));
+        let (server_id, parent) = origin;
+        let parent = message
+            .map(|(_, message, _)| DocumentSource::Message(message.id))
+            .or(parent);
+        let source = match parent {
+            Some(DocumentSource::Message(id)) => {
+                Some(super::account_menus::AccountSource::Message(id))
+            }
+            Some(DocumentSource::Pending(id)) => {
+                Some(super::account_menus::AccountSource::Pending(id))
+            }
+            _ => None,
+        };
         let owner = server_id.and_then(|server_id| {
             self.state
                 .read(cx)
@@ -2561,7 +2577,7 @@ impl Shell {
                     server,
                     *message_id,
                     *verified,
-                    names.server_id,
+                    (names.server_id, parent),
                     cx,
                 )),
                 Block::Heading { level, content } => {
@@ -4500,7 +4516,10 @@ impl Shell {
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });
         let body = self.document(
-            (Some(feed.server_id), Some(pending.id)),
+            (
+                Some(feed.server_id),
+                Some(DocumentSource::Pending(pending.id)),
+            ),
             &pending.document,
             None,
             &feed.names,
