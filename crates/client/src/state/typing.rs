@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 type Source = (EntityId, bool);
-struct Local {
+struct ComposerActivity {
     sources: HashMap<Source, Instant>,
     sent: Option<Instant>,
 }
@@ -23,7 +23,7 @@ struct Person {
 }
 #[derive(Default)]
 pub(super) struct Activity {
-    local: HashMap<(Owner, PlaceId), Local>,
+    local: HashMap<(Owner, PlaceId), ComposerActivity>,
     people: HashMap<(ServerId, PlaceId, AccountId), Person>,
     timer: Option<Task<()>>,
 }
@@ -78,10 +78,14 @@ impl AppState {
             .local
             .retain(|(held, _), _| *held == owner || held.entry.server_id != owner.entry.server_id);
         let previous = self.typing.local.contains_key(&key);
-        let local = self.typing.local.entry(key).or_insert_with(|| Local {
-            sources: HashMap::new(),
-            sent: None,
-        });
+        let local = self
+            .typing
+            .local
+            .entry(key)
+            .or_insert_with(|| ComposerActivity {
+                sources: HashMap::new(),
+                sent: None,
+            });
         local.sources.retain(|_, until| *until > now);
         if active {
             local.sources.insert(

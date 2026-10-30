@@ -654,28 +654,37 @@ impl Shell {
     }
 
     pub(super) fn typing_activity(&mut self, pane: Pane, active: bool, cx: &mut gpui::App) {
-        let wanted = self.pen(pane).place.and_then(|(server, account, place)| {
-            self.state
-                .read(cx)
-                .owner(server)
-                .filter(|owner| owner.account_id == account)
-                .map(|owner| (owner, place))
-        });
         let active = active
             && !self.pen(pane).preview
             && !self.pen(pane).input.read(cx).value().trim().is_empty();
+        let wanted = active
+            .then(|| {
+                self.pen(pane).place.and_then(|(server, account, place)| {
+                    self.state
+                        .read(cx)
+                        .owner(server)
+                        .filter(|owner| owner.account_id == account)
+                        .map(|owner| (owner, place))
+                })
+            })
+            .flatten();
         let previous = self.pen_mut(pane).typing.take();
         let source = (self.pen(pane).typing_source, pane == Pane::Thread);
-        if let Some((owner, place)) = previous.filter(|held| !active || Some(*held) != wanted) {
-            self.state.update(cx, |state, _| {
-                state.typing_activity(source, owner, place, false)
+        let stopped = previous.filter(|held| Some(*held) != wanted);
+        self.pen_mut(pane).typing = wanted;
+        if stopped.is_some() || wanted.is_some() {
+            let state = self.state.clone();
+            // A call-window handover can run inside an update of the application state.
+            cx.defer(move |cx| {
+                state.update(cx, |state, _| {
+                    if let Some((owner, place)) = stopped {
+                        state.typing_activity(source, owner, place, false);
+                    }
+                    if let Some((owner, place)) = wanted {
+                        state.typing_activity(source, owner, place, true);
+                    }
+                })
             });
-        }
-        if active && let Some((owner, place)) = wanted {
-            self.state.update(cx, |state, _| {
-                state.typing_activity(source, owner, place, true)
-            });
-            self.pen_mut(pane).typing = Some((owner, place));
         }
     }
 

@@ -186,4 +186,6 @@ A fixed-height line above each composer shows one name, two names, or several pe
 
 Actual input edits, including pasted text and formatting or emoji insertions, update local activity. Draft restoration does not. Source keys distinguish windows and panes; a two-second coalescing interval is shared for the same owner/place. Preview, blur, navigation, clear, send and shell release stop the corresponding source. A restored draft remains silent until edited. Activity uses the existing live connection without an outbox; losing a connection relies on connection cleanup and finite expiry (ADR 0401).
 
+Typing start and stop commands are queued in order for the next application update. A call-window close can hand its drafts over while AppState is already borrowed; stopping activity must not read or update that entity recursively. The close test checks an explicit inactive event as well as the transferred text.
+
 Archived messages keep Copy text, Copy link, Forward, Mark unread and Who reacted because none changes their source content. Forward still needs a writable destination. Their menu omits content mutations; reactions and checklists cannot change archived messages. The window regression checks both the retained actions and absence of source changes.

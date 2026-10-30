@@ -683,7 +683,45 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
         "Not sent yet"
     );
     call.click("composer-view-0");
-    call.click("return-call");
+    let mut closing_notices = admin.handle.live().notices();
+    call.type_into("composer-input", " ");
+    assert_eq!(
+        call.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "Not sent yet "
+    );
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    closing_notices.next().await
+                    && activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(call.simulate(|cx| cx.simulate_close()));
+    call.simulate(|cx| cx.update(|window, _| window.remove_window()));
+    drop(call);
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    closing_notices.next().await
+                    && !activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    });
     window.until("the call is back in the main window", |window| {
         !window
             .state
@@ -703,7 +741,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     );
     window.click_channel(ROOM);
     window.until("the text is in the main window", |window| {
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet"
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet "
     });
     window.click("leave-call");
     world.run(caller.calls.leave());
