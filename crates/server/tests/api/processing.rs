@@ -617,13 +617,31 @@ async fn the_tasks_process_and_transcribe_a_recording_after_its_stop() {
     let scene = &studio.scene;
     let (server, ann) = (&scene.server, &scene.ann);
 
-    let started = studio.record().await;
+    let started = server.record(ann, scene.voice.id).await;
+    until("the three recording jobs have started", async || {
+        let detail = server.recording(ann, started.id).await;
+        detail.recording.state == RecordingState::Recording
+            && detail.segments.len() == 3
+            && detail
+                .segments
+                .iter()
+                .all(|segment| segment.state == SegmentState::Recording)
+    })
+    .await;
     server
         .stop_recording(ann, scene.voice.id)
         .await
         .empty(StatusCode::NO_CONTENT);
     until("the files of the recording are processed", async || {
-        server.recording(ann, started.id).await.recording.state == RecordingState::Ready
+        let detail = server.recording(ann, started.id).await;
+        assert!(
+            !matches!(
+                detail.recording.state,
+                RecordingState::Failed | RecordingState::PartlyFailed
+            ),
+            "the recording did not pass processing: {detail:?}"
+        );
+        detail.recording.state == RecordingState::Ready
     })
     .await;
     until("the worker runs", async || {
