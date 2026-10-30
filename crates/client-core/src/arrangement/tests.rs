@@ -699,3 +699,63 @@ fn category_collapse_at_its_bound_keeps_existing_choices_and_can_expand() {
     .unwrap();
     assert!(book.arrangement.category_collapsed(server, account, extra));
 }
+
+#[test]
+fn personal_channel_layouts_are_isolated_by_account_workspace_and_server() {
+    let mut book = Book::new(2);
+    let (server, other_server) = (book.id(0), book.id(1));
+    let (account, other_account) = (AccountId::generate(), AccountId::generate());
+    let (workspace, other_workspace) = (WorkspaceId::generate(), WorkspaceId::generate());
+    let channel = junto_protocol::ids::ChannelId::generate();
+    book.change(Change::PersonalChannels {
+        server,
+        account,
+        workspace,
+        change: channels::Change::Place {
+            channel,
+            to: channels::Location::Favourites,
+            before: None,
+        },
+    })
+    .unwrap();
+    assert_eq!(
+        book.arrangement
+            .channels(server, account, workspace)
+            .unwrap()
+            .favourites,
+        [channel]
+    );
+    for (server, account, workspace) in [
+        (other_server, account, workspace),
+        (server, other_account, workspace),
+        (server, account, other_workspace),
+    ] {
+        assert!(
+            book.arrangement
+                .channels(server, account, workspace)
+                .is_none()
+        );
+    }
+    assert!(
+        book.arrangement
+            .normalised(&[other_server])
+            .channels(server, account, workspace)
+            .is_none()
+    );
+    book.change(Change::PersonalChannels {
+        server,
+        account,
+        workspace,
+        change: channels::Change::Place {
+            channel,
+            to: channels::Location::Default,
+            before: None,
+        },
+    })
+    .unwrap();
+    assert!(
+        book.arrangement
+            .channels(server, account, workspace)
+            .is_none()
+    );
+}

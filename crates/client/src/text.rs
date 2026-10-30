@@ -3306,6 +3306,23 @@ pub const TOPIC_SAVED: &str = "Topic saved";
 pub const TOPIC_TOO_LONG: &str = "A topic has at most 1024 characters.";
 pub const CATEGORY_SETTINGS: &str = "Category settings";
 
+pub const FAVOURITES: &str = "Favourites";
+pub const ADD_FAVOURITE: &str = "Add to favourites";
+pub const REMOVE_FAVOURITE: &str = "Remove from favourites";
+pub const NEW_SECTION: &str = "New section";
+pub const SECTION_NAME: &str = "Section name";
+pub const SECTION_NAME_INVALID: &str = "Use 1 to 64 characters without control characters.";
+pub const RENAME_SECTION: &str = "Rename section";
+pub const REMOVE_SECTION: &str = "Remove section";
+pub const COLLAPSE_SECTION: &str = "Collapse section";
+pub const EXPAND_SECTION: &str = "Expand section";
+pub const MOVE_TO_SECTION: &str = "Move to";
+pub const RETURN_TO_CHANNEL_LIST: &str = "Return to channel list";
+pub const MOVE_CHANNEL_UP: &str = "Move channel up";
+pub const MOVE_CHANNEL_DOWN: &str = "Move channel down";
+pub const MOVE_SECTION_UP: &str = "Move section up";
+pub const MOVE_SECTION_DOWN: &str = "Move section down";
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

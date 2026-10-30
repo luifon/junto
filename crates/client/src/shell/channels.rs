@@ -423,23 +423,33 @@ impl Shell {
             let title: SharedString = match &section.title {
                 SectionTitle::TextChannels => text::TEXT_CHANNELS.into(),
                 SectionTitle::VoiceChannels => text::VOICE_CHANNELS.into(),
-                SectionTitle::Category(name) => name.clone().into(),
+                SectionTitle::Category(name) | SectionTitle::Personal(name) => name.clone().into(),
+                SectionTitle::Favourites => text::FAVOURITES.into(),
             };
             let key: SharedString = format!(
                 "section-menu:{account_owner:?}:{workspace_id}:{:?}",
                 section
-                    .category_id
-                    .map(|id| id.to_string())
+                    .personal
+                    .map(|location| format!("personal:{location:?}"))
+                    .or_else(|| section.category_id.map(|id| id.to_string()))
                     .unwrap_or_else(|| format!("{:?}", section.title))
             )
             .into();
-            let selector = section
-                .category_id
-                .map(|id| format!("category-header:{id}"))
-                .unwrap_or_else(|| format!("section-header:{workspace_id}:{position}"));
+            let selector = match section.personal {
+                Some(junto_client_core::arrangement::channels::Location::Favourites) => {
+                    "personal-favourites-header".to_owned()
+                }
+                Some(junto_client_core::arrangement::channels::Location::Section(id)) => {
+                    format!("personal-section-header:{id}")
+                }
+                _ => section
+                    .category_id
+                    .map(|id| format!("category-header:{id}"))
+                    .unwrap_or_else(|| format!("section-header:{workspace_id}:{position}")),
+            };
             let header = CategoryHeader::new(title)
                 .first(position == 0)
-                .menu_id(key)
+                .menu_id(key.clone())
                 .when_some(
                     section.category_id.zip(account_owner),
                     |header, (category_id, owner)| {
@@ -514,26 +524,7 @@ impl Shell {
                 section.category_id.zip(account_owner),
                 |header, (category, owner)| {
                     let collapsed = section.collapsed;
-                    let (messages, mentions, unread) = section
-                        .rows
-                        .iter()
-                        .filter(|row| !row.selected && !row.unread.muted && !row.mute.is_on())
-                        .fold((0u64, 0u64, false), |(messages, mentions, unread), row| {
-                            row.threads.iter().fold(
-                                (
-                                    messages.saturating_add(row.unread.messages),
-                                    mentions.saturating_add(row.unread.mentions),
-                                    unread || row.unread.any(),
-                                ),
-                                |(messages, mentions, unread), thread| {
-                                    (
-                                        messages.saturating_add(thread.unread),
-                                        mentions.saturating_add(thread.mentions),
-                                        unread || thread.unread > 0 || thread.mentions > 0,
-                                    )
-                                },
-                            )
-                        });
+                    let unread = super::personal::collapsed_unread(section);
                     header
                         .toggle(
                             collapsed,
@@ -552,11 +543,7 @@ impl Shell {
                         )
                         .unread(
                             format!("category-unread:{category}"),
-                            (collapsed && unread).then(|| crate::ui::UnreadSign {
-                                mentions: (mentions > 0)
-                                    .then(|| text::mention_badge(mentions).into()),
-                                label: text::unread_tooltip(messages, mentions).into(),
-                            }),
+                            collapsed.then_some(unread).flatten(),
                         )
                 },
             );
@@ -599,13 +586,38 @@ impl Shell {
                     )
                 },
             );
-            rows.push(
-                div()
-                    .debug_selector(move || selector)
-                    .flex_none()
-                    .child(header)
-                    .into_any_element(),
-            );
+            let header = match account_owner {
+                Some(owner) => self
+                    .personal_header(header, owner, workspace_id, section, cx)
+                    .action(crate::ui::RowAction::new(
+                        text::NEW_SECTION,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_personal_section(
+                                super::personal::SectionDialog {
+                                    owner,
+                                    workspace: workspace_id,
+                                    id: None,
+                                    channel: None,
+                                },
+                                window,
+                                cx,
+                            )
+                        }),
+                    )),
+                None => header,
+            };
+            let frame = div()
+                .id(SharedString::from(format!("section-drop:{key}")))
+                .debug_selector(move || selector)
+                .flex_none()
+                .child(header);
+            let frame = match section.personal.zip(account_owner) {
+                Some((location, owner)) => {
+                    self.personal_drop(frame, owner, workspace_id, location, None, cx)
+                }
+                None => frame,
+            };
+            rows.push(frame.into_any_element());
             let mut after_occupants = false;
             for channel in section
                 .rows
@@ -621,7 +633,7 @@ impl Shell {
                     !matches!(voice.relation, Relation::Inside | Relation::Joining)
                 });
                 let row = ChannelRow::new(
-                    ("channel", index),
+                    SharedString::from(format!("channel:{channel_id}")),
                     match channel.kind {
                         ChannelKind::Text => Icon::Hash,
                         ChannelKind::Voice => Icon::Speaker,
@@ -661,42 +673,81 @@ impl Shell {
                         });
                 let held = self.state.clone();
                 let hover = self.state.clone();
-                rows.push(
-                    div()
-                        .id(("channel-drop", index))
-                        .relative()
-                        .flex_none()
-                        .can_drop(move |value, _, cx| {
+                let drag_name: SharedString = channel.name.clone().into();
+                let frame = div()
+                    .id(SharedString::from(format!("channel-drop:{channel_id}")))
+                    .relative()
+                    .flex_none()
+                    .can_drop(move |value, _, cx| {
+                        value.downcast_ref::<PersonDrag>().is_some_and(|person| {
+                            held.read(cx)
+                                .view()
+                                .person_drop(*person, channel_id)
+                                .is_some()
+                        })
+                    })
+                    .drag_over::<PersonDrag>(move |style, person, _, cx| {
+                        if hover
+                            .read(cx)
+                            .view()
+                            .person_drop(*person, channel_id)
+                            .is_some()
+                        {
+                            style.bg(Hsla::from(colors.limestone_hover))
+                        } else {
+                            style
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, person: &PersonDrag, _, cx| {
+                        this.drop_person(*person, channel_id, cx)
+                    }))
+                    .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
+                    // The identifier and not the name: a name comes from the server
+                    // and need not be the only one.
+                    .debug_selector(move || format!("channel-row:{channel_id}"))
+                    .child(row)
+                    .children(menu)
+                    .when_some(account_owner, |frame, owner| {
+                        frame.on_drag(
+                            super::personal::ChannelDrag {
+                                owner,
+                                workspace: workspace_id,
+                                channel: channel_id,
+                            },
+                            move |_, _, _, cx| {
+                                cx.new(|_| super::person_drag::DragLabel(drag_name.clone()))
+                            },
+                        )
+                    });
+                let frame = match section.personal.zip(account_owner) {
+                    Some((location, owner)) => {
+                        // Keep both accepted drag types: moving a person into a call and arranging a channel.
+                        let arranged = self.personal_drop(
+                            frame,
+                            owner,
+                            workspace_id,
+                            location,
+                            Some(channel_id),
+                            cx,
+                        );
+                        let state = self.state.clone();
+                        arranged.can_drop(move |value, _, cx| {
+                            if let Some(drag) = value.downcast_ref::<super::personal::ChannelDrag>()
+                            {
+                                return drag.owner == owner && drag.workspace == workspace_id;
+                            }
                             value.downcast_ref::<PersonDrag>().is_some_and(|person| {
-                                held.read(cx)
+                                state
+                                    .read(cx)
                                     .view()
                                     .person_drop(*person, channel_id)
                                     .is_some()
                             })
                         })
-                        .drag_over::<PersonDrag>(move |style, person, _, cx| {
-                            if hover
-                                .read(cx)
-                                .view()
-                                .person_drop(*person, channel_id)
-                                .is_some()
-                            {
-                                style.bg(Hsla::from(colors.limestone_hover))
-                            } else {
-                                style
-                            }
-                        })
-                        .on_drop(cx.listener(move |this, person: &PersonDrag, _, cx| {
-                            this.drop_person(*person, channel_id, cx)
-                        }))
-                        .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
-                        // The identifier and not the name: a name comes from the server
-                        // and need not be the only one.
-                        .debug_selector(move || format!("channel-row:{channel_id}"))
-                        .child(row)
-                        .children(menu)
-                        .into_any_element(),
-                );
+                    }
+                    None => frame,
+                };
+                rows.push(frame.into_any_element());
                 // The threads of the channel that hold something unread, and the thread
                 // of the side panel.
                 for (place, entry) in channel.threads.iter().enumerate() {
@@ -859,6 +910,53 @@ impl Shell {
                     .child(text::NO_CHANNELS)
                     .into_any_element(),
             );
+        }
+        if let Some(owner) = account_owner {
+            rows.push(
+                div()
+                    .px(u(14.0))
+                    .py(u(8.0))
+                    .child(
+                        Button::new("new-personal-section")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Plus)
+                            .label(text::NEW_SECTION)
+                            .selector("new-personal-section")
+                            .w_full()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_personal_section(
+                                    super::personal::SectionDialog {
+                                        owner,
+                                        workspace: workspace_id,
+                                        id: None,
+                                        channel: None,
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .into_any_element(),
+            );
+            if cx.has_active_drag() {
+                let target = div()
+                    .id("personal-return-target")
+                    .debug_selector(|| "personal-return-target".to_owned())
+                    .mx(u(14.0))
+                    .py(u(10.0))
+                    .child(text::RETURN_TO_CHANNEL_LIST);
+                rows.push(
+                    self.personal_drop(
+                        target,
+                        owner,
+                        workspace_id,
+                        junto_client_core::arrangement::channels::Location::Default,
+                        None,
+                        cx,
+                    )
+                    .into_any_element(),
+                );
+            }
         }
         (rows, entries)
     }
