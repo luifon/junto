@@ -39,7 +39,7 @@ Whether the place still exists:
 - The numbers count within one history of the server, which its epoch names (ADR 0010). A state with another epoch starts anew: what the earlier history told about the place is not used, and events of the earlier history that are read later are not used.
 - An event that shows the place, followed by an event that the account is in no call, ends the place at once, also in the first seconds after the join.
 - Otherwise, after the state or an event has shown the place once, or 10 seconds after the join, a live state without the place means that the place has ended.
-- The engine is closed at once, and the person is told why. The reason is the one of the event `own_call_changed`; the client waits for that event for at most 500 ms in all. When the account is in a call with another identity, the reason is that.
+- The engine is closed at once, and the person is told why. The reason is the one of the event `own_call_changed`; the client waits for that event for at most 500 ms in all. Without its cause within that bound, it reports a server end with an unspecified cause. When the account is in a call with another identity, the reason is that.
 - While this client asks the same server for a place, by a join of the person or for a new token, another identity on this device in the state is its own and ends nothing. A seat of the account on another device ends the call, and so does an end of the place by a rule of the server (ADR 0785).
 - While the event stream is not live, the state decides nothing.
 - A person who left by an action of their own is told nothing.

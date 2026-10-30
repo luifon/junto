@@ -306,12 +306,12 @@ async fn a_person_whom_a_moderator_removes_is_told_and_does_not_return() {
         let view = ben
             .until("the call has ended", |view| view.call.is_none())
             .await;
-        assert_eq!(
-            view.outcome,
-            Some(Outcome::Ended {
-                target: room.target,
-                reason: EndReason::Server(Some(LeaveReason::Disconnected)),
-            })
+        // ADR 0734 bounds the wait for the event's cause; a state can end the call first.
+        assert!(
+            matches!(view.outcome,Some(Outcome::Ended {
+            target,reason:EndReason::Server(None | Some(LeaveReason::Disconnected)),
+        }) if target==room.target),
+            "the moderator's removal must end this call on the server: {view:?}"
         );
         ann.until_silent(&ben).await;
         // The client asks for no new place: the time of two reconnects passes, and the server
