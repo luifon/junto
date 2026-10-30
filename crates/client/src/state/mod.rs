@@ -500,6 +500,7 @@ pub struct AppState {
     device_checks: Option<device_checks::CheckSession>,
     device_check_sequence: u64,
     device_check_call: Option<Seat>,
+    pinned_call: Option<call_pin::PinnedPerson>,
     /// What is told about the recording of the call of this device.
     recording: recording::RecordingTold,
     /// The media snapshot that the view is derived from in place of the calls.
@@ -996,6 +997,7 @@ impl AppState {
             device_checks: None,
             device_check_sequence: 0,
             device_check_call: None,
+            pinned_call: None,
             recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
             media_fixture: None,
@@ -2580,6 +2582,7 @@ impl AppState {
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.reconcile_device_checks(cx);
+        self.reconcile_call_pin();
         self.reconcile_direct(cx);
         self.play_call_sounds();
         let servers = self.client.servers();
@@ -3322,4 +3325,5 @@ pub mod event_alerts;
 
 mod camera;
 
+mod call_pin;
 mod call_window;

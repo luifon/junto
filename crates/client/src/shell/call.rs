@@ -577,17 +577,23 @@ impl Shell {
                     .filter(|p| self.camera_image(p).is_some())
                     .map(|p| p.account_id)
                     .collect();
-                let hidden = super::camera::hidden_people(
+                let pinned = self.state.read(cx).pinned_call_person();
+                let hidden: Vec<_> = super::camera::hidden_people(
                     &ids,
                     &self.people_with_video(people, cx),
                     panel.hide_without_video,
-                );
+                )
+                .into_iter()
+                .filter(|person| Some(*person) != pinned)
+                .collect();
                 let speakers: Vec<_> = people
                     .iter()
                     .filter(|p| matches!(p.microphone, Microphone::Open { speaking: true }))
                     .map(|p| p.account_id)
                     .collect();
-                let focus = if self.camera_focus {
+                let focus = if pinned.is_some() {
+                    pinned
+                } else if self.camera_focus {
                     super::camera::focused_camera(self.focused_camera.get(), &cameras, &speakers)
                 } else {
                     None
@@ -728,11 +734,16 @@ impl Shell {
                                                 .w(u(width))
                                                 .max_w_full()
                                                 .flex_none()
-                                                .children(
-                                                    large
-                                                        .into_iter()
-                                                        .map(|(index, p)| tile(index, p)),
-                                                )
+                                                .children(large.into_iter().map(|(index, p)| {
+                                                    let id = p.account_id;
+                                                    div()
+                                                        .when(focus == Some(id), |row| {
+                                                            row.debug_selector(move || {
+                                                                format!("person-stage:{id}")
+                                                            })
+                                                        })
+                                                        .child(tile(index, p))
+                                                }))
                                                 .child(self.stage_controls.mark()),
                                         )
                                         .when(!strip.is_empty(), |area| {
@@ -1968,6 +1979,7 @@ impl Shell {
                 )
                 .child(
                     Button::new("camera-focus")
+                        .disabled(self.state.read(cx).pinned_call_person().is_some())
                         .kind(if self.camera_focus {
                             ButtonKind::CallOn
                         } else {
@@ -1975,7 +1987,9 @@ impl Shell {
                         })
                         .icon(Icon::LayoutGrid)
                         .selector("camera-focus")
-                        .tooltip(if self.camera_focus {
+                        .tooltip(if self.state.read(cx).pinned_call_person().is_some() {
+                            text::call_pin::LAYOUT_HELP
+                        } else if self.camera_focus {
                             text::SHOW_GRID
                         } else {
                             text::FOCUS_SPEAKER
@@ -2308,12 +2322,25 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match &panel.stage {
-            Some(shares) if share_visible(panel.phase) => {
+        let pin = self.state.read(cx).pinned_call();
+        let body = match &panel.stage {
+            Some(shares)
+                if share_visible(panel.phase)
+                    && !pin.as_ref().is_some_and(|pin| pin.show_person) =>
+            {
                 self.render_share_stage(panel, shares, theme, cx)
             }
             _ => self.render_stage(panel, theme, cx.weak_entity(), cx),
-        }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .children(self.render_pin_bar(panel, theme, cx))
+            .child(body)
+            .into_any_element()
     }
 
     /// The cover behind a panel that lies over the content in a narrow window.

@@ -10,6 +10,7 @@ mod arrange;
 mod book;
 pub mod call;
 mod call_menus;
+mod call_pin;
 mod camera;
 mod channels;
 mod composer;

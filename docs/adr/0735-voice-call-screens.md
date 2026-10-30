@@ -70,3 +70,23 @@ joins nothing. Losing that owner, leaving the target group, or resolving the inv
 the check and its previews; a stale Join action is refused. A real join cancels all local tests
 before the call takes the devices, and a camera preview never enables the call camera. While
 already in a call, the check states that the running call's settings control its devices.
+
+Each person can pin one participant, including themselves, to their own person stage from the
+tile or member menu. A pin overrides speaker focus and the grid, including for an avatar without
+video and when other audio-only tiles are hidden. It follows the account rather than a tile's
+position. Camera and speaking changes keep the pin. A banner names the pinned person and offers
+Unpin; the account menu offers the same action. The automatic-layout control is disabled while
+a person is pinned.
+
+The pin and the choice between its person stage and the screen-share stage live in the shared
+application state of the local call, so the main and detached windows keep the same choice.
+Pinning shows the person; Show screen shares and Show pinned person switch the stage without
+changing the selected watched share. Unpin returns to the ordinary stage and layout. The pin
+belongs to the exact server owner and local call seat. Ending or replacing that seat, changing
+its owner, or the participant leaving clears it; a connection retry at the same seat keeps it.
+It is local presentation state, with no server spotlight or change to recording layout. Channel,
+pair and group calls use the same state and renderer.
+
+Tests: `live::pinning::` exercises avatar and video pins, speaking changes, share selection,
+main/detached transfer, both unpin controls, hidden audio-only people, person/group departure,
+pair-call end, and rejection of old owners and seats.

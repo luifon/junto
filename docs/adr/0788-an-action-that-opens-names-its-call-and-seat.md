@@ -41,3 +41,15 @@ In the window a control holds its action from its drawing:
 - A control of the microphone or of the camera that two windows show does in each window what that window showed. A second click on a control that another window has already used does not undo it.
 - A request for a new token that gives another identity gives another seat. The camera of the device is published at that seat when the session admits it (ADR 0794).
 - Tests: `an_action_for_another_seat_opens_nothing` and `an_unmute_without_a_call_is_for_no_call` in `calls::ordering_tests` of `crates/media`; `a_share_asked_for_in_one_call_does_not_start_in_the_next` in `crates/media/tests/calls`; `a_share_dialog_belongs_to_the_call_and_the_seat_of_its_opening` and `the_controls_hold_the_action_and_the_seat_that_they_show` in `crates/client`; in the window tests with a media server `a_share_choice_cannot_cross_a_call_move`, `a_rendered_camera_stop_never_starts_a_replacement_call` and `a_drawn_unmute_does_not_open_the_microphone_in_a_replacement_call`.
+
+Pin and Unpin retain the call account-menu source: owner, exact local seat, participant account
+and visible tile, member or share surface. The mutation also checks current ownership and
+membership. Unpin names the pinned account, so an old action cannot clear a newer pin of another
+person. The pin banner retains that same owner, seat and account and acts only while its call
+stage is drawn. Stage changes and detachment retain the pin; a replaced source cannot transfer
+it to another call.
+
+A pin action that replaces a tile, share or banner returns focus to the shell before changing
+the stage. Returning focus to the removed surface left the window without a focused element;
+subsequent context-menu actions, dispatched through the focus path, could not reach the shell.
+The live pin regression unpins a tile, checks usable focus and then pins from the watched share.

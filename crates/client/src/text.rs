@@ -25,6 +25,7 @@ use crate::state::view::{
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod call_pin;
 pub mod conversations;
 pub mod device_checks;
 pub mod followed;

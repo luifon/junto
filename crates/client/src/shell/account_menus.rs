@@ -462,6 +462,7 @@ impl Shell {
             CallSurface::Tile => {
                 (self.detached || !self.state.read(cx).is_call_detached())
                     && (!panel.hide_without_video
+                        || self.state.read(cx).pinned_call_person() == Some(*account_id)
                         || self
                             .people_with_video(&panel.people, cx)
                             .contains(account_id))
@@ -540,6 +541,7 @@ impl Shell {
             .call_volume_row(&open, window, cx)
             .into_iter()
             .collect();
+        items.extend(self.pin_call_controls(&open, cx));
         items.extend(self.share_call_controls(&open, cx));
         items.extend(self.own_call_controls(&open, cx));
         items.extend(self.participant_controls(&open, cx));
