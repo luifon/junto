@@ -176,11 +176,11 @@ async fn synced_state(server: &TestServer, owner: &Member, channel: ChannelId) -
 }
 
 #[tokio::test]
-async fn format_4_category_overrides_and_sync_states_go_from_one_server_to_another() {
+async fn format_5_category_overrides_and_sync_states_go_from_one_server_to_another() {
     let source = source().await;
     let (server, owner) = (&source.server, &source.owner);
     let structure = export(server, owner).await["structure"].clone();
-    assert_eq!(structure["format"], 4);
+    assert_eq!(structure["format"], 5);
     let main = default_workspace(&structure);
     let category = entry(&main["categories"], "Projects");
     assert_eq!(

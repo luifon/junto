@@ -236,7 +236,9 @@ pub(crate) fn sounds(before: &Heard, after: &Heard) -> Vec<Sound> {
     }
     // A person who starts or stops watching the share of this device; a person who leaves
     // the call is heard leaving.
-    if let (Some(viewers_before), Some(viewers_after)) = (&before.viewers, &after.viewers) {
+    if let Some(viewers_after) = &after.viewers {
+        let empty = BTreeSet::new();
+        let viewers_before = before.viewers.as_ref().unwrap_or(&empty);
         if viewers_after.iter().any(|id| !viewers_before.contains(id)) {
             sounds.push(Sound::ViewerJoined);
         }
@@ -815,6 +817,40 @@ mod tests {
         assert_eq!(
             sounds(&after, &listed(&alone, &after)),
             vec![Sound::PersonLeft]
+        );
+    }
+
+    #[test]
+    fn a_share_and_its_first_viewer_in_one_observation_play_both_sounds() {
+        let scene = Scene::new();
+        let other = AccountId::generate();
+        let calls = scene.calls("seat");
+        let without = [participant(scene.own, &[]), participant(other, &[])];
+        let mut viewer = participant(other, &[]);
+        viewer.watching = Some(junto_client_core::protocol::call::WatchedShare {
+            account_id: scene.own,
+            slot: 0,
+        });
+        let with = [participant(scene.own, &[0]), viewer];
+        let state = |participants: &[CallParticipant], before: &Heard| {
+            heard(
+                &calls,
+                Some(Listed {
+                    own: scene.own,
+                    participants,
+                    lowers_hands: false,
+                    entry_requests: &[],
+                    recording: None,
+                    moved_here: false,
+                }),
+                before,
+            )
+        };
+        let before = state(&without, &Heard::default());
+        let after = state(&with, &before);
+        assert_eq!(
+            sounds(&before, &after),
+            vec![Sound::ShareStarted, Sound::ViewerJoined]
         );
     }
 
