@@ -56,6 +56,7 @@ mod keybinds;
 mod message_links;
 mod rule_changes;
 mod target_links;
+mod typing;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
 #[path = "../rehearsal/growth.rs"]

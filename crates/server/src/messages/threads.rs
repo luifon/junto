@@ -14,6 +14,28 @@ use sqlx::PgConnection;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub async fn root(
+    connection: &mut PgConnection,
+    access: &Access,
+    id: MessageId,
+    purpose: super::Purpose,
+) -> ApiResult<(super::Place, junto_protocol::message::Message)> {
+    let (place, message) = super::get(connection, access, id, purpose).await?;
+    let authored_root: bool =
+        sqlx::query_scalar("select call_id is null and readers is null from messages where id=$1")
+            .bind(id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !authored_root
+        || !matches!(place.value, MessagePlace::Channel { .. })
+        || message.thread_root.is_some()
+        || message.system.is_some()
+    {
+        return Err(ApiError::invalid("a thread needs an authored channel root"));
+    }
+    Ok((place, message))
+}
+
 pub const STATES_QUERY: &str = "select m.id,coalesce(r.position,0),coalesce(last.position,0),
          case when coalesce(r.following,false) then (select count(*) from (
              select 1 from messages reply where reply.thread_root=m.id and reply.position>r.position

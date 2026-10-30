@@ -86,6 +86,8 @@ pub struct LiveView {
 /// is the truth; a reader that only draws the state does not need the notices.
 #[derive(Debug, Clone)]
 pub enum Notice {
+    /// Transient activity, or a reset after losing its connection. It changes no model cursor.
+    Typing(Option<junto_protocol::typing::Typing>),
     /// An event was applied to the state.
     Event {
         id: u64,
@@ -119,6 +121,11 @@ pub enum LoadError {
 }
 
 pub(crate) enum Command {
+    Typing {
+        account_id: AccountId,
+        place: PlaceId,
+        lifetime_ms: u32,
+    },
     Refresh {
         reply: oneshot::Sender<Result<Cursor, LoadError>>,
     },
@@ -321,6 +328,14 @@ impl LiveServer {
     /// them and does not read them again.
     pub fn release_members(&self, workspace_id: WorkspaceId) {
         self.shared.send(Command::ReleaseMembers(workspace_id));
+    }
+
+    pub fn typing(&self, account_id: AccountId, place: PlaceId, lifetime_ms: u32) {
+        self.shared.send(Command::Typing {
+            account_id,
+            place,
+            lifetime_ms,
+        });
     }
 
     /// Asks for the messages of a place (ADR 0721). The first page is read, appears in

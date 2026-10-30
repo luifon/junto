@@ -127,6 +127,7 @@ enum Subscription {
 }
 
 struct Link {
+    typing_watches: Vec<junto_protocol::typing::TypingPlace>,
     incoming: mpsc::Receiver<Incoming>,
     outgoing: mpsc::Sender<String>,
     /// The number of the connection among the connections of this client.
@@ -287,6 +288,7 @@ struct Client {
     server_version: Option<ServerVersion>,
     /// The revision of the messages and events that the server stated in its `hello`.
     server_events: Option<u32>,
+    typing_seen: bool,
     /// The types of messages and events of the server that this build does not read and that
     /// were logged.
     unread_types: std::collections::HashSet<String>,
@@ -355,6 +357,7 @@ pub(crate) async fn run(
         model_changed: false,
         server_version: None,
         server_events: None,
+        typing_seen: false,
         unread_types: std::collections::HashSet::new(),
         version_changed: false,
         in_call: false,
@@ -499,6 +502,9 @@ impl Client {
     /// The waits stay: they belong to the server, and a server that gives another account
     /// at every login must not get its requests sooner for that.
     fn forget(&mut self) {
+        if std::mem::take(&mut self.typing_seen) {
+            self.untold.push(Notice::Typing(None));
+        }
         self.disconnect();
         self.model = None;
         self.model_changed = true;
@@ -661,6 +667,65 @@ impl Client {
         }
         if !needs_snapshot {
             self.advance_messages();
+            self.sync_typing_watches();
+        }
+    }
+
+    fn sync_typing_watches(&mut self) {
+        if self.server_events.is_none_or(|revision| revision < 8) {
+            return;
+        }
+        let Some(link) = &mut self.link else {
+            return;
+        };
+        let Subscription::Live { level, .. } = link.subscription else {
+            return;
+        };
+        let places = if level == Level::Full {
+            self.messages.typing_places()
+        } else {
+            Vec::new()
+        };
+        if places != link.typing_watches {
+            let message = ClientMessage::TypingWatch {
+                places: places.clone(),
+            };
+            if serde_json::to_string(&message)
+                .ok()
+                .is_some_and(|text| link.outgoing.try_send(text).is_ok())
+            {
+                link.typing_watches = places;
+            }
+        }
+    }
+    fn send_typing(
+        &mut self,
+        account_id: junto_protocol::ids::AccountId,
+        place: crate::model::PlaceId,
+        lifetime_ms: u32,
+    ) {
+        if self.server_events.is_none_or(|revision| revision < 8)
+            || self.stale
+            || self
+                .model
+                .as_ref()
+                .is_none_or(|model| model.account.id != account_id)
+        {
+            return;
+        }
+        let Some(link) = &self.link else {
+            return;
+        };
+        if !matches!(link.subscription, Subscription::Live { .. })
+            && (lifetime_ms != 0 || !link.greeted)
+        {
+            return;
+        }
+        if let Ok(text) = serde_json::to_string(&ClientMessage::Typing {
+            place: place.typing_place(),
+            lifetime_ms,
+        }) {
+            let _ = link.outgoing.try_send(text);
         }
     }
 
@@ -683,6 +748,7 @@ impl Client {
             return;
         }
         link.send_at = None;
+        link.typing_watches.clear();
         let message = ClientMessage::Subscribe {
             level,
             cursor: Some(cursor),
@@ -737,6 +803,7 @@ impl Client {
                 let silence = self.policy().hello_timeout;
                 self.links += 1;
                 self.link = Some(Link {
+                    typing_watches: Vec::new(),
                     incoming: socket.incoming,
                     outgoing: socket.outgoing,
                     number: self.links,
@@ -770,6 +837,9 @@ impl Client {
 
     /// The connection is gone. The state stays, and a new attempt follows.
     fn lost(&mut self, fault: StreamFault) {
+        if std::mem::take(&mut self.typing_seen) {
+            self.untold.push(Notice::Typing(None));
+        }
         let settled = self.link.as_ref().is_some_and(|link| {
             matches!(link.subscription, Subscription::Live { since, .. }
                 if since.elapsed() >= self.environment.policy.settled_after)
@@ -798,6 +868,9 @@ impl Client {
     /// The state must be replaced: the client no longer knows which changes it missed, or
     /// it was told that what it may see has changed (ADR 0207, ADR 0208).
     fn reload(&mut self) {
+        if std::mem::take(&mut self.typing_seen) {
+            self.untold.push(Notice::Typing(None));
+        }
         self.pending
             .retain(|pending| pending.load != Load::Part(Part::OwnCall));
         self.stale = true;
@@ -912,6 +985,19 @@ impl Client {
             return;
         }
         match message {
+            ServerMessage::TypingWatching { .. } => {}
+            ServerMessage::Typing { activity } => {
+                if matches!(link.subscription, Subscription::Live { .. })
+                    && link.typing_watches.contains(&activity.place)
+                    && activity.name.len() <= 256
+                    && !activity.name.chars().any(char::is_control)
+                    && activity.expires_in_ms <= junto_protocol::typing::TYPING_LIFETIME_MS
+                    && (!activity.active || activity.expires_in_ms > 0)
+                {
+                    self.typing_seen = true;
+                    self.untold.push(Notice::Typing(Some(activity)));
+                }
+            }
             ServerMessage::Hello { .. } => {}
             ServerMessage::Subscribed { level, cursor } => {
                 let Subscription::Asked {
@@ -1491,6 +1577,11 @@ impl Client {
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::Typing {
+                account_id,
+                place,
+                lifetime_ms,
+            } => self.send_typing(account_id, place, lifetime_ms),
             Command::Refresh { reply } => {
                 if self.target.is_none() || self.halted {
                     let _ = reply.send(Err(LoadError::Off));

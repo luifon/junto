@@ -2840,6 +2840,51 @@
         "description": "What a client sends.",
         "oneOf": [
           {
+            "properties": {
+              "lifetime_ms": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "place": {
+                "$ref": "#/components/schemas/TypingPlace"
+              },
+              "type": {
+                "enum": [
+                  "typing"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "place",
+              "lifetime_ms",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "places": {
+                "items": {
+                  "$ref": "#/components/schemas/TypingPlace"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "typing_watch"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "places",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Starts or restarts the delivery after `cursor` at `level`. Without a cursor the\ndelivery starts after the newest event.",
             "properties": {
               "cursor": {
@@ -6086,6 +6131,45 @@
         "description": "What the server sends.",
         "oneOf": [
           {
+            "properties": {
+              "places": {
+                "items": {
+                  "$ref": "#/components/schemas/TypingPlace"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "typing_watching"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "places",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "activity": {
+                "$ref": "#/components/schemas/Typing"
+              },
+              "type": {
+                "enum": [
+                  "typing"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "activity",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The first message of every connection.",
             "properties": {
               "api_versions": {
@@ -6445,6 +6529,97 @@
           "failed"
         ],
         "type": "string"
+      },
+      "Typing": {
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "expires_in_ms": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "place": {
+            "$ref": "#/components/schemas/TypingPlace"
+          }
+        },
+        "required": [
+          "place",
+          "account_id",
+          "name",
+          "active",
+          "expires_in_ms"
+        ],
+        "type": "object"
+      },
+      "TypingPlace": {
+        "oneOf": [
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "enum": [
+                  "channel"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "kind": {
+                "enum": [
+                  "direct"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "enum": [
+                  "thread"
+                ],
+                "type": "string"
+              },
+              "root_id": {
+                "$ref": "#/components/schemas/MessageId"
+              }
+            },
+            "required": [
+              "channel_id",
+              "root_id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "WatchedShare": {
         "description": "The share that a person watches: the person who shares it, and the slot of the share\namong the shares of that person (ADR 0502). A client that runs one share per person\nstates slot 0.",

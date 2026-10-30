@@ -12,6 +12,7 @@ mod call_keys;
 mod drafts;
 mod emoji;
 mod history;
+mod typing;
 pub use call_keys::KeybindChange;
 mod call_sounds;
 pub mod contacts;
@@ -505,6 +506,7 @@ pub struct AppState {
     timing: Timing,
     settings: InterfaceSettings,
     drafts: drafts::Drafts,
+    typing: typing::Activity,
     recent_emoji: Vec<String>,
     recent_emoji_error: Option<String>,
     recent_emoji_writes: u64,
@@ -1000,6 +1002,7 @@ impl AppState {
             timing,
             settings,
             drafts,
+            typing: typing::Activity::default(),
             recent_emoji,
             recent_emoji_error,
             recent_emoji_writes: 0,
@@ -2015,6 +2018,10 @@ impl AppState {
     }
 
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        if let Notice::Typing(activity) = notice {
+            self.heard_typing(server_id, activity.as_ref(), cx);
+            return;
+        }
         self.people_noticed(server_id, notice, cx);
         self.followed_noticed(server_id, notice, cx);
         self.logos_noticed(server_id, notice, cx);
@@ -2025,10 +2032,15 @@ impl AppState {
             // The state was replaced: every message can have changed meanwhile, and the
             // state holds every change of the settings that the server took.
             Notice::Reloaded { .. } => {
+                self.heard_typing(server_id, None, cx);
                 self.reloaded(server_id, cx);
                 return;
             }
-            Notice::Ended { .. } => return,
+            Notice::Ended { .. } => {
+                self.heard_typing(server_id, None, cx);
+                return;
+            }
+            Notice::Typing(_) => return,
         };
         self.reaction_people_changed(server_id, Some(event.as_ref()), cx);
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
@@ -2661,6 +2673,7 @@ impl AppState {
                         let told = this.update(cx, |this, cx| match &notice {
                             Ok(notice) => this.noticed(id, notice, cx),
                             Err(_) => {
+                                this.heard_typing(id, None, cx);
                                 this.account_noticed(id, None, cx);
                                 this.recordings_noticed(id, None, cx);
                                 this.people_missed(id, cx);
@@ -2705,6 +2718,7 @@ impl AppState {
         self.known.clock = Some(now);
         self.known.today = Some(self.known.zone.local(now).date());
         self.follow_owners();
+        self.keep_typing_owners();
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);

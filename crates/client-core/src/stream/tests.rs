@@ -37,6 +37,7 @@ mod discovery;
 mod messages;
 mod recordings;
 mod refresh;
+mod typing;
 
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -107,12 +108,20 @@ impl Peer {
     }
 
     async fn subscribe(&mut self) -> (Level, Cursor) {
-        let text = soon("a subscribe", self.from_client.recv())
-            .await
-            .expect("the client closed the connection");
-        match serde_json::from_str(&text).unwrap() {
-            ClientMessage::Subscribe { level, cursor } => (level, cursor.unwrap()),
-        }
+        soon("a subscribe", async {
+            loop {
+                let text = self
+                    .from_client
+                    .recv()
+                    .await
+                    .expect("the client closed the connection");
+                match serde_json::from_str(&text).unwrap() {
+                    ClientMessage::Subscribe { level, cursor } => return (level, cursor.unwrap()),
+                    ClientMessage::TypingWatch { .. } | ClientMessage::Typing { .. } => {}
+                }
+            }
+        })
+        .await
     }
 
     /// Answers the `subscribe` of the client as a server that serves it.

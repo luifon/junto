@@ -26,5 +26,9 @@
   {
     "revision": 7,
     "sha256": "e1f7fa1957fef4a9591a7f6adca2e84fb8523fe5a04af2dd4405e7373f570e30"
+  },
+  {
+    "revision": 8,
+    "sha256": "fb2b6e70dadda6413e0b3bea0887d2aea955556b3ed92459fb58073f69352291"
   }
 ]

@@ -796,7 +796,7 @@ impl AppState {
                     | Event::DeviceRemoved { .. }
                     | Event::DeviceLoggedIn { .. }
             ),
-            Some(Notice::Ended { .. }) => false,
+            Some(Notice::Ended { .. } | Notice::Typing(_)) => false,
         };
         if changed && self.account.devices_changed(server_id) {
             self.follow_account(cx);
@@ -807,7 +807,7 @@ impl AppState {
             Some(Notice::Event { event, .. }) => {
                 matches!(event.as_ref(), Event::AccountRecovered { .. })
             }
-            Some(Notice::Ended { .. }) => false,
+            Some(Notice::Ended { .. } | Notice::Typing(_)) => false,
         };
         if recovered
             && self

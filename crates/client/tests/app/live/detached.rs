@@ -622,8 +622,43 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     // Text that the composer of the call window holds is in the composer of the main
     // window after the call window closed.
     call.click("open-call-chat");
+    let typing_place = junto_client_core::model::PlaceId::Channel(voice.id);
+    world
+        .run(admin.handle.live().open_messages(typing_place))
+        .unwrap();
+    admin
+        .handle
+        .live()
+        .typing(admin.handle.account().unwrap(), typing_place, 8000);
+    call.until("the detached chat reports another typer", |call| {
+        call.shows("typing-indicator")
+    });
+    assert!(!window.shows("typing-indicator"));
+    admin
+        .handle
+        .live()
+        .typing(admin.handle.account().unwrap(), typing_place, 0);
+    call.until("the detached activity stops", |call| {
+        !call.shows("typing-indicator")
+    });
+    let mut typing_notices = admin.handle.live().notices();
     call.in_shell(|shell, window, cx| {
         shell.type_message(Pane::Main, "Not sent yet", window, cx);
+    });
+    world.run(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(junto_client_core::live::Notice::Typing(Some(activity)))) =
+                    typing_notices.next().await
+                    && activity.active
+                    && activity.place == typing_place.typing_place()
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
     });
     call.click("composer-input");
     call.in_shell(|shell, window, cx| {

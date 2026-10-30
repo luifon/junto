@@ -27,27 +27,7 @@ use crate::{
     transact, validate,
 };
 
-pub(super) async fn root(
-    connection: &mut PgConnection,
-    access: &Access,
-    id: MessageId,
-    purpose: Purpose,
-) -> ApiResult<(Place, Message)> {
-    let (place, message) = messages::get(connection, access, id, purpose).await?;
-    let authored_root: bool =
-        sqlx::query_scalar("select call_id is null and readers is null from messages where id=$1")
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await?;
-    if !authored_root
-        || !matches!(place.value, MessagePlace::Channel { .. })
-        || message.thread_root.is_some()
-        || message.system.is_some()
-    {
-        return Err(ApiError::invalid("a thread needs an authored channel root"));
-    }
-    Ok((place, message))
-}
+pub(super) use crate::messages::threads::root;
 
 #[utoipa::path(get,path="/api/v1/messages/{message_id}/thread",tag="messages",params(("message_id"=MessageId,Path),Page),security(("session"=[])),responses((status=200,body=ThreadPage),ApiError))]
 pub async fn history(

@@ -31,6 +31,34 @@ pub enum PlaceId {
 }
 
 impl PlaceId {
+    pub const fn typing_place(self) -> junto_protocol::typing::TypingPlace {
+        use junto_protocol::typing::TypingPlace;
+        match self {
+            Self::Channel(channel_id) => TypingPlace::Channel { channel_id },
+            Self::Direct(conversation_id) => TypingPlace::Direct { conversation_id },
+            Self::Thread {
+                channel_id,
+                root_id,
+            } => TypingPlace::Thread {
+                channel_id,
+                root_id,
+            },
+        }
+    }
+    pub const fn from_typing(place: junto_protocol::typing::TypingPlace) -> Self {
+        use junto_protocol::typing::TypingPlace;
+        match place {
+            TypingPlace::Channel { channel_id } => Self::Channel(channel_id),
+            TypingPlace::Direct { conversation_id } => Self::Direct(conversation_id),
+            TypingPlace::Thread {
+                channel_id,
+                root_id,
+            } => Self::Thread {
+                channel_id,
+                root_id,
+            },
+        }
+    }
     /// The channel or the direct conversation that the server names.
     pub const fn of(place: &MessagePlace) -> Self {
         match place {

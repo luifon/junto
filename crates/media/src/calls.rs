@@ -2623,6 +2623,7 @@ impl Session {
 
     fn note(&mut self, notice: &Notice) {
         match notice {
+            Notice::Typing(_) => return,
             Notice::Event { id, event, .. } => {
                 if let Some(hand_raised) = self.grants.note(*id, event, self.place.identity()) {
                     self.close_for_grant(*id, hand_raised);

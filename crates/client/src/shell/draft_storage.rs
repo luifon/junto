@@ -17,7 +17,9 @@ pub(crate) fn flush(cx: &mut App) {
     }
 }
 impl Shell {
-    pub(super) fn save_composers(&self, cx: &mut App) {
+    pub(super) fn save_composers(&mut self, cx: &mut App) {
+        self.typing_activity(Pane::Main, false, cx);
+        self.typing_activity(Pane::Thread, false, cx);
         for pane in [Pane::Main, Pane::Thread] {
             self.save_composer(pane, cx);
         }

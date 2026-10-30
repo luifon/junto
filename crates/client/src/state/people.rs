@@ -1478,7 +1478,7 @@ impl AppState {
                 }
             }
             Notice::Reloaded { .. } => self.people_missed(server_id, cx),
-            Notice::Ended { .. } => {}
+            Notice::Ended { .. } | Notice::Typing(_) => {}
         }
     }
 

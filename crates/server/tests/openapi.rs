@@ -358,6 +358,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation, SpeakersReason,
         TranscriptFailure, TranscriptState,
     };
+    use junto_protocol::typing::TypingPlace;
     use junto_protocol::{ServerPermission, WorkspacePermission};
 
     /// The names of an enum in a schema of the generated documents: the values of a plain
@@ -446,6 +447,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         StructureChange by "change",
         StructureKind,
         TokenAction,
+        TypingPlace by "kind",
         TranscriptFailure,
         TranscriptState,
         WorkspacePermission,

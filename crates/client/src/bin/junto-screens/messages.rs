@@ -525,6 +525,35 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
             shell.type_message(Pane::Main, "A draft kept for this channel", window, cx)
         },
     )?;
+    for (name, scale, width, height, names) in [
+        ("messages-typing", 100, 1180.0, 800.0, vec!["Ana"]),
+        (
+            "messages-typing-several-150",
+            150,
+            720.0,
+            600.0,
+            vec!["Ana", "Bruno", "Carla"],
+        ),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+            move |shell, _, cx| {
+                let people = names
+                    .iter()
+                    .map(|name| (person(name), (*name).to_owned()))
+                    .collect();
+                shell.state().clone().update(cx, |state, cx| {
+                    let server = state.view().selected.map(|selected| selected.id);
+                    if let Some(server) = server {
+                        state.use_typing_fixture(server, PlaceId::Channel(id(GENERAL)), people, cx);
+                    }
+                });
+            },
+        )?;
+    }
     let mut forwarded = Made::new(GENERAL);
     let copy = forwarded.message("Ana", 2, "## Delivery plan\nA copied **work item** remains readable when its origin is unavailable.\n```rust\nfn ship() {\n    ready();\n}\n```");
     if let Some(document) = &mut copy.document {

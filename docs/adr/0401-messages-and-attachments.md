@@ -39,7 +39,11 @@ Pins:
 
 Indicators:
 
-- There are no presence indicators and no typing indicators in the first version.
+- Presence indicators are absent. Typing indicators are transient signals for a text or voice channel chat, a direct conversation, or one thread. The signal carries an account identifier and display name, never draft content.
+- Clients watch at most eight open message places over their current full event subscription. Actual composer edits announce activity at most once every two seconds. Clearing, sending, previewing, leaving the input or closing its window stops that composer. Restoring a saved draft announces nothing. Several local composers and devices of one account aggregate; stopping one source leaves other active sources visible.
+- A signal lasts at most eight seconds. The server bounds active entries and revision keys to 8192, broadcasts to a queue of 256 signals, accepts at most eight places per connection, and rates changes to eight per account per second. Pending watch acknowledgements coalesce to the latest set. Disconnected connections remove only their own sources. Closing a connection and publishing its authorized activity use the same registry guard, so an interrupted read cannot revive a closed source.
+- Sender and recipient sessions and place permissions are read for each delivery. Typing requires an open writable place; a new thread also needs Create threads. A recipient needs current place access and the thread root must satisfy the same live-history boundary as messages. Other accounts receive the signal only for watched places; the viewing account is excluded. Queued obsolete signals and signals whose lifetime elapsed are dropped.
+- Typing activity has no database row, persistent event, cursor, snapshot field, audit record or replay. Reconnection clears the client display and watches again. Expiry bounds a lost stop signal. Limits bound memory and database work independently of message persistence.
 
 ## Consequences
 

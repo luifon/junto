@@ -66,7 +66,7 @@ Client:
 
 - No guest accounts and no browser client (ADR 0105).
 - No bot accounts, incoming webhooks or slash commands (ADR 0201).
-- No presence indicators and no typing indicators (ADR 0401).
+- No presence indicators; typing indicators are short-lived and are not stored (ADR 0401).
 - No calls in text channels (ADR 0501).
 - No recording and no meeting mode in direct-message calls (ADR 0501).
 - Push-to-talk only while the application or the detached call window is focused (ADR 0507).

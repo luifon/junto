@@ -77,6 +77,7 @@ mod telemetry;
 mod time_limits;
 mod transcriber_real;
 mod transcripts;
+mod typing;
 mod upgrades;
 
 mod call_lines;

@@ -113,6 +113,8 @@ pub(crate) struct Composer {
     /// The place whose text the input holds, and the account that writes there.
     pub(super) place: Option<Desk>,
     pub(super) saved: std::cell::RefCell<Option<crate::drafts::SavedDraft>>,
+    typing_source: gpui::EntityId,
+    typing: Option<(junto_client_core::Owner, PlaceId)>,
     /// The composer has held the text of a place before.
     placed: bool,
     pub(crate) reply_to: Option<MessageId>,
@@ -340,6 +342,8 @@ impl Composer {
             input,
             place: None,
             saved: Default::default(),
+            typing_source: cx.entity_id(),
+            typing: None,
             placed: false,
             reply_to: None,
             editing: None,
@@ -475,6 +479,8 @@ impl Composer {
 impl Shell {
     /// The call window gives the texts of its composer to another window (ADR 0772).
     pub(crate) fn hand_over_drafts(&mut self, to: HandTo, cx: &mut gpui::App) {
+        self.typing_activity(Pane::Main, false, cx);
+        self.typing_activity(Pane::Thread, false, cx);
         let taken = self.composer.take_all(cx);
         if taken.is_empty() {
             return;
@@ -569,6 +575,11 @@ impl Shell {
             window,
             cx,
         );
+        for pane in [Pane::Main, Pane::Thread] {
+            if self.pane_writing(pane).refused.is_some() || self.shown_archived().is_some() {
+                self.typing_activity(pane, false, cx);
+            }
+        }
     }
 
     fn pen_follows(
@@ -579,6 +590,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if shown != self.pen(pane).place {
+            self.typing_activity(pane, false, cx);
+        }
         self.save_composer(pane, cx);
         let restored = shown.and_then(|desk| self.state.read(cx).saved_draft(desk).cloned());
         let generation = shown.and_then(|desk| self.state.read(cx).draft_entry_generation(desk.0));
@@ -639,9 +653,36 @@ impl Shell {
         self.save_composer(pane, cx);
     }
 
+    pub(super) fn typing_activity(&mut self, pane: Pane, active: bool, cx: &mut gpui::App) {
+        let wanted = self.pen(pane).place.and_then(|(server, account, place)| {
+            self.state
+                .read(cx)
+                .owner(server)
+                .filter(|owner| owner.account_id == account)
+                .map(|owner| (owner, place))
+        });
+        let active = active
+            && !self.pen(pane).preview
+            && !self.pen(pane).input.read(cx).value().trim().is_empty();
+        let previous = self.pen_mut(pane).typing.take();
+        let source = (self.pen(pane).typing_source, pane == Pane::Thread);
+        if let Some((owner, place)) = previous.filter(|held| !active || Some(*held) != wanted) {
+            self.state.update(cx, |state, _| {
+                state.typing_activity(source, owner, place, false)
+            });
+        }
+        if active && let Some((owner, place)) = wanted {
+            self.state.update(cx, |state, _| {
+                state.typing_activity(source, owner, place, true)
+            });
+            self.pen_mut(pane).typing = Some((owner, place));
+        }
+    }
+
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
     pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        self.typing_activity(pane, true, cx);
         self.save_composer(pane, cx);
         let drawings = Drawings::current(cx);
         let pen = self.pen_mut(pane);
@@ -1308,6 +1349,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if preview {
+            self.typing_activity(pane, false, cx);
+        }
         let pen = self.pen_mut(pane);
         pen.preview = preview;
         pen.mention = None;
@@ -1405,6 +1449,7 @@ impl Shell {
         self.state.update(cx, |state, cx| {
             state.remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
         });
+        self.typing_activity(pane, false, cx);
         let was_preview = self.pen(pane).preview;
         self.pen_mut(pane).preview = false;
         self.pen_mut(pane).editing = None;
@@ -2515,6 +2560,28 @@ impl Shell {
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 style.bg(Hsla::from(colors.terracotta_wash))
             })
+            .child(
+                div().h(u(20.0)).min_w_0().children(
+                    self.composer_feed(pane)
+                        .filter(|feed| feed.loaded && feed.failed.is_none())
+                        .map(|feed| self.state.read(cx).typing_names(feed.server_id, feed.place))
+                        .filter(|names| !names.is_empty())
+                        .map(|names| {
+                            div()
+                                .debug_selector(move || {
+                                    if pane == Pane::Main {
+                                        "typing-indicator".to_owned()
+                                    } else {
+                                        "thread-typing-indicator".to_owned()
+                                    }
+                                })
+                                .text_size(u(12.0))
+                                .ink(colors.ink_3)
+                                .truncate()
+                                .child(text::typing_people(&names))
+                        }),
+                ),
+            )
             .children(permanence)
             .children(banner)
             .children(files)
@@ -2541,7 +2608,11 @@ impl Shell {
                 InputEvent::PressEnter { shift: false, .. } => {
                     this.submit_message(pane, window, cx)
                 }
-                InputEvent::PressEnter { .. } | InputEvent::Focus | InputEvent::Blur => {
+                InputEvent::Blur => {
+                    this.typing_activity(pane, false, cx);
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } | InputEvent::Focus => {
                     cx.notify();
                 }
             },

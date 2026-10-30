@@ -1095,6 +1095,24 @@ fn pair(place: &CallPlace) -> String {
 
 fn notice_line(notice: &Notice) -> String {
     match notice {
+        Notice::Typing(Some(activity)) => {
+            use junto_protocol::typing::TypingPlace;
+            let target = match activity.place {
+                TypingPlace::Channel { channel_id } => format!("channel={channel_id}"),
+                TypingPlace::Direct { conversation_id } => {
+                    format!("conversation={conversation_id}")
+                }
+                TypingPlace::Thread {
+                    channel_id,
+                    root_id,
+                } => format!("channel={channel_id} thread={root_id}"),
+            };
+            format!(
+                "typing {target} account={} active={} expires_ms={}",
+                activity.account_id, activity.active, activity.expires_in_ms
+            )
+        }
+        Notice::Typing(None) => "typing cleared".to_owned(),
         Notice::Event { id, event, .. } => {
             let line = format!("event {id} {} {}", event.name(), event_details(event));
             line.trim_end().to_owned()

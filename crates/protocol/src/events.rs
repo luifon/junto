@@ -76,6 +76,13 @@ pub enum Level {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
+    Typing {
+        place: crate::typing::TypingPlace,
+        lifetime_ms: u32,
+    },
+    TypingWatch {
+        places: Vec<crate::typing::TypingPlace>,
+    },
     /// Starts or restarts the delivery after `cursor` at `level`. Without a cursor the
     /// delivery starts after the newest event.
     Subscribe {
@@ -125,6 +132,12 @@ pub enum EndReason {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    TypingWatching {
+        places: Vec<crate::typing::TypingPlace>,
+    },
+    Typing {
+        activity: crate::typing::Typing,
+    },
     /// The first message of every connection.
     Hello {
         server_version: String,
@@ -140,7 +153,10 @@ pub enum ServerMessage {
         event_revision: u32,
     },
     /// The answer to a `subscribe`. Events after `cursor` follow.
-    Subscribed { level: Level, cursor: Cursor },
+    Subscribed {
+        level: Level,
+        cursor: Cursor,
+    },
     /// The events of one change that the connection may receive, in the order in which the
     /// change recorded them (ADR 0011). A change is never split between messages: the client
     /// applies all of them and then moves its cursor to `position`, the position after the
@@ -150,7 +166,9 @@ pub enum ServerMessage {
         events: Vec<StreamEvent>,
     },
     /// The connection has received every event up to `cursor` that it may receive.
-    Checkpoint { cursor: Cursor },
+    Checkpoint {
+        cursor: Cursor,
+    },
     /// The server does not continue from the cursor of the client: as the answer to a
     /// `subscribe`, or as the end of a subscription. The connection stays open and delivers
     /// nothing. Whatever the reason, the client discards every collection of this server
@@ -158,7 +176,9 @@ pub enum ServerMessage {
     /// includes the collections that the snapshot does not carry, such as members, accounts,
     /// devices, invites, join requests, server roles and channel overrides: the client loads
     /// them again from their routes when it needs them.
-    Resync { reason: ResyncReason },
+    Resync {
+        reason: ResyncReason,
+    },
     /// The last message before the server closes a connection whose session no longer counts.
     Ended {
         reason: EndReason,
@@ -182,6 +202,8 @@ pub struct StreamEvent {
 
 impl ServerMessage {
     pub const NAMES: &'static [&'static str] = &[
+        "typing_watching",
+        "typing",
         "hello",
         "subscribed",
         "change",
@@ -257,7 +279,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 7;
+pub const EVENT_REVISION: u32 = 8;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -1637,7 +1659,22 @@ mod tests {
             epoch: StreamEpoch::generate(),
             position: 41,
         };
+        let place = crate::typing::TypingPlace::Channel {
+            channel_id: ChannelId::generate(),
+        };
         let messages = [
+            ServerMessage::TypingWatching {
+                places: vec![place],
+            },
+            ServerMessage::Typing {
+                activity: crate::typing::Typing {
+                    place,
+                    account_id: AccountId::generate(),
+                    name: "Ada".to_owned(),
+                    active: true,
+                    expires_in_ms: 8000,
+                },
+            },
             ServerMessage::Hello {
                 server_version: "0.1.0".to_owned(),
                 api_versions: vec![1],
@@ -1688,6 +1725,34 @@ mod tests {
             assert_eq!(decode(&text).unwrap(), read);
         }
         assert_eq!(names, ServerMessage::NAMES);
+    }
+
+    #[test]
+    fn typing_client_messages_round_trip_without_an_event_cursor() {
+        let place = crate::typing::TypingPlace::Thread {
+            channel_id: ChannelId::generate(),
+            root_id: crate::ids::MessageId::generate(),
+        };
+        for message in [
+            ClientMessage::TypingWatch {
+                places: vec![place],
+            },
+            ClientMessage::Typing {
+                place,
+                lifetime_ms: 8000,
+            },
+            ClientMessage::Typing {
+                place,
+                lifetime_ms: 0,
+            },
+        ] {
+            let value = serde_json::to_value(&message).unwrap();
+            assert!(value.get("cursor").is_none());
+            assert_eq!(
+                serde_json::from_value::<ClientMessage>(value).unwrap(),
+                message
+            );
+        }
     }
 
     #[test]

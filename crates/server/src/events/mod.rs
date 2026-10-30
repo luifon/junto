@@ -8,6 +8,7 @@ pub mod hub;
 pub mod log;
 pub mod schema;
 pub mod transport;
+pub mod typing;
 pub mod watcher;
 
 pub use log::{

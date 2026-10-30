@@ -26,7 +26,9 @@ Messages of the server:
 
 Messages of the client:
 
-- `subscribe`: the level and the cursor (ADR 0207). It is the only client message.
+- `subscribe`: the level and the cursor (ADR 0207).
+- `typing_watch`: up to eight places whose transient activity the client currently displays. `typing_watching` acknowledges the accepted set; it does not replay earlier activity.
+- `typing`: a place and requested lifetime in milliseconds, with zero stopping activity. The server sends `typing` with account, display name, active state and remaining lifetime. These frames have no event cursor and never change subscription checkpoints (ADR 0401).
 
 Version rule:
 
@@ -68,3 +70,5 @@ Revision 5 identifies typed channel-reference inline nodes. They carry an ID and
 Revision 6 identifies heading and small-text blocks and spoiler inline containers. All descendants remain subject to the document and client trust bounds (ADR 0408, ADR 0747).
 
 Revision 7 changes forwarded messages to destination-owned copies with permission-checked origin metadata (ADR 0408). Earlier reference-only clients must update before reading this revision.
+
+Revision 8 adds transient typing and watch frames. Clients send them only after a server has advertised revision 8 or later; dropping a connection discards pending activity rather than replaying it.

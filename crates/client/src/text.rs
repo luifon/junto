@@ -3826,3 +3826,13 @@ pub const EMOJI_COMPLETION: &str = "Emoji completion";
 pub const RECENT_EMOJI: &str = "Recent emoji";
 
 pub const DRAFT: &str = "Draft";
+
+pub fn typing_people(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [name] => format!("{name} is typing…"),
+        [first, second] => format!("{first} and {second} are typing…"),
+        [first, second, third] => format!("{first}, {second} and {third} are typing…"),
+        _ => "Several people are typing…".to_owned(),
+    }
+}

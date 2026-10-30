@@ -338,6 +338,17 @@ pub(super) struct Work {
     mute_ends: Vec<(Instant, ChannelId)>,
 }
 
+impl Work {
+    pub(super) fn typing_places(&self) -> Vec<junto_protocol::typing::TypingPlace> {
+        self.wanted
+            .iter()
+            .filter(|(_, wanted)| wanted.readers > 0)
+            .take(junto_protocol::typing::MOST_TYPING_PLACES)
+            .map(|(place, _)| place.typing_place())
+            .collect()
+    }
+}
+
 impl Drop for Work {
     fn drop(&mut self) {
         self.end_requests();
@@ -1269,7 +1280,8 @@ impl Client {
                     self.read(Part::MoreNotices(last));
                 }
             }
-            Command::Refresh { .. }
+            Command::Typing { .. }
+            | Command::Refresh { .. }
             | Command::LoginUnanswered
             | Command::LoadMembers { .. }
             | Command::ReleaseMembers(_)
