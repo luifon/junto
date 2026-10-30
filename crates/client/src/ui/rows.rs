@@ -196,6 +196,7 @@ pub struct CategoryHeader {
     menu_id: Option<ElementId>,
     actions: Vec<super::RowAction>,
     toggle: Option<(bool, super::RowAction)>,
+    create: Option<(SharedString, super::RowAction)>,
     unread: Option<(SharedString, UnreadSign)>,
     name: SharedString,
     first: bool,
@@ -208,6 +209,7 @@ impl CategoryHeader {
             menu_id: None,
             actions: Vec::new(),
             toggle: None,
+            create: None,
             unread: None,
             name: name.into(),
             first: false,
@@ -222,6 +224,12 @@ impl CategoryHeader {
 
     pub fn action(mut self, action: super::RowAction) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    pub fn create(mut self, selector: impl Into<SharedString>, action: super::RowAction) -> Self {
+        self.actions.push(action.clone());
+        self.create = Some((selector.into(), action));
         self
     }
 
@@ -348,6 +356,23 @@ impl RenderOnce for CategoryHeader {
                     .h(gpui::px(1.0))
                     .bg(Hsla::from(theme.colors.rule)),
             );
+        let frame = frame.when_some(self.create, |header, (selector, action)| {
+            header.child(
+                div().debug_selector(move || selector.to_string()).child(
+                    super::Button::new("section-create")
+                        .kind(super::ButtonKind::Ghost)
+                        .icon(Icon::Plus)
+                        .tooltip(action.label.clone())
+                        .disabled(action.disabled)
+                        .on_click(move |event, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(handler) = &action.handler {
+                                handler(event, window, cx);
+                            }
+                        }),
+                ),
+            )
+        });
         super::bind_action_menu(frame, id, actions, window, cx)
     }
 }

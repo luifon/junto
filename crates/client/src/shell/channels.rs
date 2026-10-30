@@ -340,6 +340,55 @@ impl Shell {
             )
     }
 
+    fn open_channel_creation(
+        &mut self,
+        owner: junto_client_core::Owner,
+        workspace: junto_client_core::protocol::ids::WorkspaceId,
+        category: Option<junto_client_core::protocol::ids::CategoryId>,
+        kind: ChannelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.read(cx);
+        let view = state.view();
+        if !state
+            .server(owner.entry.server_id)
+            .is_some_and(|server| server.owner() == Some(owner))
+            || view
+                .selected
+                .as_ref()
+                .is_none_or(|server| server.id != owner.entry.server_id)
+            || !view.workspace().is_some_and(|shown| {
+                shown.id == workspace
+                    && shown
+                        .sections
+                        .iter()
+                        .any(|section| section.category_id == category && section.may_create)
+            })
+        {
+            return;
+        }
+        let open = match category {
+            Some(category_id) => crate::state::admin::AdminOpen::Category {
+                server_id: owner.entry.server_id,
+                workspace_id: workspace,
+                category_id,
+            },
+            None => crate::state::admin::AdminOpen::Server {
+                server_id: owner.entry.server_id,
+                page: crate::state::admin::AdminPage::Channels,
+            },
+        };
+        self.open_admin(open, window, cx);
+        self.admin.new_kind = kind;
+        self.set_admin_mode(
+            Some(super::admin::Mode::CreateChannel(category)),
+            "",
+            window,
+            cx,
+        );
+    }
+
     /// The sections of the channels of a workspace with their threads and the people in
     /// their voice channels, and the entry boxes of its voice channels.
     fn channel_rows(
@@ -509,6 +558,45 @@ impl Shell {
                                 label: text::unread_tooltip(messages, mentions).into(),
                             }),
                         )
+                },
+            );
+            let header = header.when_some(
+                account_owner.filter(|_| section.may_create),
+                |header, owner| {
+                    let category = section.category_id;
+                    let kind = if section.title == SectionTitle::VoiceChannels {
+                        ChannelKind::Voice
+                    } else {
+                        ChannelKind::Text
+                    };
+                    let create_selector = category
+                        .map(|id| format!("category-create:{id}"))
+                        .unwrap_or_else(|| {
+                            format!(
+                                "section-create:{workspace_id}:{}",
+                                if kind == ChannelKind::Voice {
+                                    "voice"
+                                } else {
+                                    "text"
+                                }
+                            )
+                        });
+                    header.create(
+                        create_selector,
+                        crate::ui::RowAction::new(
+                            text::admin::NEW_CHANNEL,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_channel_creation(
+                                    owner,
+                                    workspace_id,
+                                    category,
+                                    kind,
+                                    window,
+                                    cx,
+                                )
+                            }),
+                        ),
+                    )
                 },
             );
             rows.push(

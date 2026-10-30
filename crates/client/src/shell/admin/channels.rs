@@ -404,6 +404,30 @@ impl Shell {
             return;
         }
         match (self.admin.mode, &view.scope) {
+            (Some(Mode::CreateChannel(Some(category))), Scope::Category(settings))
+                if category == settings.category_id =>
+            {
+                if !self
+                    .state
+                    .read(cx)
+                    .view()
+                    .workspace()
+                    .is_some_and(|workspace| {
+                        workspace.id == settings.workspace_id
+                            && workspace.sections.iter().any(|section| {
+                                section.category_id == Some(category) && section.may_create
+                            })
+                    })
+                {
+                    return;
+                }
+                let workspace = settings.workspace_id;
+                let kind = self.admin.new_kind;
+                self.admin_sent(AskKind::CreateChannel);
+                self.state.update(cx, |state, cx| {
+                    state.create_channel(server_id, workspace, name, kind, Some(category), cx)
+                });
+            }
             (Some(Mode::RenameChannel), Scope::Channel(settings)) => {
                 let channel_id = settings.channel_id;
                 let change = UpdateChannel {
@@ -921,6 +945,35 @@ impl Shell {
             ));
             return self.mode_row(&[mode], button).into_any_element();
         }
+        self.render_channel_creation_form(view, category_id, theme, cx)
+    }
+
+    pub(super) fn render_channel_creation_form(
+        &mut self,
+        view: &AdminView,
+        category_id: Option<CategoryId>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mode = Mode::CreateChannel(category_id);
+        let held = match &view.scope {
+            Scope::Category(settings)
+                if !self
+                    .state
+                    .read(cx)
+                    .view()
+                    .workspace()
+                    .is_some_and(|workspace| {
+                        workspace.id == settings.workspace_id
+                            && workspace.sections.iter().any(|section| {
+                                section.category_id == category_id && section.may_create
+                            })
+                    }) =>
+            {
+                Some(text::admin::CHANNEL_MANAGE_NEEDS)
+            }
+            _ => None,
+        };
         let kind = Segmented::new(
             "channel-kind",
             text::admin::KIND,
@@ -950,7 +1003,7 @@ impl Shell {
                     send: text::admin::CREATE,
                     sending: view.sending(AskKind::CreateChannel),
                     help: None,
-                    held: None,
+                    held,
                     extra: vec![kind.into_any_element()],
                 },
                 theme,

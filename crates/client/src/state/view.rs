@@ -831,6 +831,7 @@ pub struct ChannelSection {
     /// Absent for the sections grouped by channel kind.
     pub category_id: Option<CategoryId>,
     pub collapsed: bool,
+    pub may_create: bool,
     pub title: SectionTitle,
     pub rows: Vec<ChannelRow>,
 }
@@ -2363,6 +2364,20 @@ fn thread_entries(
     (entries, more)
 }
 
+pub(crate) fn category_may_create(
+    model: &ServerModel,
+    workspace: WorkspaceId,
+    category: CategoryId,
+) -> bool {
+    model.is_administrator()
+        || model
+            .admin
+            .category_rules(workspace, category)
+            .loaded()
+            .and_then(|rules| model.permissions_with_rules(workspace, &rules.rules))
+            .is_some_and(|permissions| permissions.contains(&WorkspacePermission::ManageChannel))
+}
+
 /// The channels of a workspace in the groups of the channel column: first the channels
 /// without a category, by kind, then each category that holds a visible channel.
 fn sections(
@@ -2393,10 +2408,11 @@ fn sections(
             .filter(|channel| channel.channel.kind == kind && in_category(channel).is_none())
             .map(row)
             .collect();
-        if !rows.is_empty() {
+        if !rows.is_empty() || workspace.holds(WorkspacePermission::ManageChannel) {
             made.push(ChannelSection {
                 category_id: None,
                 collapsed: false,
+                may_create: workspace.holds(WorkspacePermission::ManageChannel),
                 title,
                 rows,
             });
@@ -2419,6 +2435,7 @@ fn sections(
                 model.account.id,
                 category.id,
             ),
+            may_create: category_may_create(model, workspace.workspace.id, category.id),
             title: SectionTitle::Category(category.name.clone()),
             rows,
         });

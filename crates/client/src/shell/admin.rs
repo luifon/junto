@@ -885,7 +885,17 @@ impl Shell {
                 text::admin::overrides::CATEGORY_SETTINGS,
                 settings.name.clone(),
                 self.render_category_nav(settings, &theme, cx),
-                self.render_category_permissions_page(&view, settings, &settings.page, window, cx),
+                if self.admin.mode == Some(Mode::CreateChannel(Some(settings.category_id))) {
+                    self.render_channel_creation_form(&view, Some(settings.category_id), &theme, cx)
+                } else {
+                    self.render_category_permissions_page(
+                        &view,
+                        settings,
+                        &settings.page,
+                        window,
+                        cx,
+                    )
+                },
             ),
             Scope::Person(settings) => (
                 text::admin::overrides::PERSON_SETTINGS,
