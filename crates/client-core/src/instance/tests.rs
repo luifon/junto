@@ -161,6 +161,47 @@ fn a_partial_frame_has_one_deadline_even_while_bytes_keep_arriving() {
 }
 
 #[test]
+fn accepted_requests_wait_for_a_body_after_nonblocking_accept() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut accepted, _) = listener.accept().unwrap();
+    accepted.set_nonblocking(true).unwrap();
+    let token = [7; 32];
+    let bytes = serde_json::to_vec(&Request {
+        token,
+        activation: Activation::default(),
+    })
+    .unwrap();
+    client
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    let (send, mut activation) = mpsc::channel(1);
+    let (ready, started) = stopping::sync_channel(0);
+    let (done, result) = stopping::channel();
+    let worker = thread::spawn(move || {
+        ready.send(()).unwrap();
+        let _ = done.send(receive_request(&mut accepted, &token, &send));
+    });
+    started.recv_timeout(WAIT).unwrap();
+    let early = result.recv_timeout(WAIT / 4);
+    let waited = matches!(early, Err(stopping::RecvTimeoutError::Timeout));
+    let written = client.write_all(&bytes);
+    let outcome = match early {
+        Ok(outcome) => Ok(outcome),
+        Err(_) => result.recv_timeout(WAIT),
+    };
+    drop(client);
+    worker.join().unwrap();
+    assert!(
+        waited,
+        "the accepted socket did not wait for its request body"
+    );
+    written.unwrap();
+    outcome.unwrap().unwrap();
+    assert_eq!(activation.try_recv().unwrap(), Activation::default());
+}
+
+#[test]
 fn shutdown_interrupts_an_accepted_partial_frame() {
     let (_root, directory) = directory();
     let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap()

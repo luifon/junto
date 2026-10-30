@@ -186,6 +186,7 @@ fn receive_request(
     token: &[u8; 32],
     send: &mpsc::Sender<Activation>,
 ) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
     let deadline = Instant::now() + WAIT;
     let mut length = [0; 4];
     read_until(stream, &mut length, deadline)?;
