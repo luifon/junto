@@ -34,6 +34,7 @@ mod moving;
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
 mod panic_notice;
+mod pending_menus;
 mod people;
 mod permissions;
 mod person_drag;

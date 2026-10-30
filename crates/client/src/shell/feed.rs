@@ -3527,6 +3527,17 @@ impl Shell {
         let colors = theme.colors;
         let pending = &row.pending;
         let (server_id, id) = (feed.server_id, pending.id);
+        let context = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner())
+            .map(|owner| super::pending_menus::PendingTarget {
+                owner,
+                place: feed.place,
+                id,
+                upload: None,
+            });
         let side = if compact { 14.0 } else { 16.0 };
         let faces = self.faces(server_id);
         let person = self.view.as_ref().and_then(|view| view.person.account_id);
@@ -3544,38 +3555,55 @@ impl Shell {
             SendState::Unconfirmed => (text::NOT_CONFIRMED.into(), true),
             SendState::Failed(failure) => (text::send_failure(failure).into(), true),
         };
-        let files = pending.files.iter().map(|file| {
-            let state: SharedString = match uploads.get(&file.upload) {
-                Some(progress) => match progress.stage {
-                    UploadStage::Reading => text::UPLOAD_READING.into(),
-                    UploadStage::Sending if progress.interrupted => text::UPLOAD_INTERRUPTED.into(),
-                    UploadStage::Sending => {
-                        text::transfer_progress(progress.sent, progress.bytes).into()
-                    }
-                    UploadStage::Checking => text::UPLOAD_CHECKING.into(),
-                    UploadStage::Complete(_) => text::UPLOAD_COMPLETE.into(),
-                    UploadStage::Failed(failure) => text::transfer_failure(failure).into(),
-                    UploadStage::Cancelled => text::DISCARD.into(),
-                },
-                None => text::file_size(file.bytes).into(),
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(u(7.0))
-                .mt(u(4.0))
-                .text_size(u(13.0))
-                .ink(colors.ink_2)
-                .child(icon(Icon::Clip, 14.0, colors.ink_2))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::BOLD)
-                        .child(SharedString::from(text::label(&file.name))),
-                )
-                .child(div().flex_none().ink(colors.ink_3).child(state))
-        });
+        let files: Vec<_> = pending
+            .files
+            .iter()
+            .enumerate()
+            .map(|(file_index, file)| {
+                let state: SharedString = match uploads.get(&file.upload) {
+                    Some(progress) => match progress.stage {
+                        UploadStage::Reading => text::UPLOAD_READING.into(),
+                        UploadStage::Sending if progress.interrupted => {
+                            text::UPLOAD_INTERRUPTED.into()
+                        }
+                        UploadStage::Sending => {
+                            text::transfer_progress(progress.sent, progress.bytes).into()
+                        }
+                        UploadStage::Checking => text::UPLOAD_CHECKING.into(),
+                        UploadStage::Complete(_) => text::UPLOAD_COMPLETE.into(),
+                        UploadStage::Failed(failure) => text::transfer_failure(failure).into(),
+                        UploadStage::Cancelled => text::DISCARD.into(),
+                    },
+                    None => text::file_size(file.bytes).into(),
+                };
+                let frame = div()
+                    .id(("waiting-file", file_index))
+                    .debug_selector(move || format!("waiting-file:{id}:{file_index}"))
+                    .focusable()
+                    .tab_stop(true)
+                    .flex()
+                    .items_center()
+                    .gap(u(7.0))
+                    .mt(u(4.0))
+                    .text_size(u(13.0))
+                    .ink(colors.ink_2)
+                    .child(icon(Icon::Clip, 14.0, colors.ink_2))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::BOLD)
+                            .child(SharedString::from(text::label(&file.name))),
+                    )
+                    .child(div().flex_none().ink(colors.ink_3).child(state));
+                if let Some(mut target) = context {
+                    target.upload = Some(file.upload);
+                    self.bind_pending_menu(frame, target, window, cx)
+                } else {
+                    frame
+                }
+            })
+            .collect();
         let body = self.document(
             (feed.server_id, Some(pending.id)),
             &pending.document,
@@ -3584,8 +3612,10 @@ impl Shell {
             &theme,
             cx,
         );
-        div()
+        let frame = div()
             .id(("waiting", index))
+            .focusable()
+            .tab_stop(true)
             .debug_selector(move || format!("waiting:{id}"))
             .pt(u(if row.grouped { 1.0 } else { 4.0 }))
             .pb(u(4.0))
@@ -3687,8 +3717,13 @@ impl Shell {
                                     }),
                             ),
                     ),
-            )
-            .into_any_element()
+            );
+        if let Some(target) = context {
+            self.bind_pending_menu(frame, target, window, cx)
+                .into_any_element()
+        } else {
+            frame.into_any_element()
+        }
     }
 
     pub fn open_message_menu(

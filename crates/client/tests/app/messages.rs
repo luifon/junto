@@ -2332,3 +2332,134 @@ fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppCon
     );
     window.press("escape");
 }
+
+fn pending_id(window: &mut Window) -> u64 {
+    window
+        .feed()
+        .unwrap()
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            FeedRow::Waiting(row) => Some(row.pending.id),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[gpui::test]
+fn pending_message_and_file_menus_copy_retry_and_expire_with_the_outbox(cx: &mut TestAppContext) {
+    use crate::support::Fault;
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    window.until("the channel is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let files = tempfile::tempdir().unwrap();
+    let file = files.path().join("notes.txt");
+    std::fs::write(&file, b"Meeting notes").unwrap();
+    window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![file.clone()], cx));
+    window.until("the file is uploaded", |window| {
+        window.view().lists().is_some_and(|lists| {
+            lists.draft.len() == 1
+                && matches!(lists.draft[0].progress.stage, UploadStage::Complete(_))
+        })
+    });
+    let path = format!("/api/v1/channels/{}/messages", window.selected_channel());
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail(&path, vec![Fault::Busy; attempts]);
+    window.write("Keep these notes");
+    window.until("the failed send can be retried", |window| {
+        window.shows("send-again")
+    });
+    let id = pending_id(&mut window);
+    let bounds = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("waiting:{id}")))
+        .unwrap();
+    window.press_at_count(
+        gpui::point(
+            bounds.left() + gpui::px(65.0),
+            bounds.top() + gpui::px(33.0),
+        ),
+        gpui::MouseButton::Right,
+        1,
+    );
+    assert!(window.shows("row-context-menu"));
+    window.click("context-action:Copy text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Keep these notes"
+    );
+    window.right_click_named(format!("waiting-file:{id}:0"));
+    window.click("context-action:Copy name");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "notes.txt"
+    );
+    proxy.hold(&path);
+    window.right_click_named(format!("waiting-file:{id}:0"));
+    window.click("context-action:Send again");
+    window.until("the retry is sending", |window| !window.shows("send-again"));
+    assert!(!window.shows("row-context-menu"));
+    window.right_click_named(format!("waiting-file:{id}:0"));
+    assert!(!window.shows("context-action:Send again"));
+    assert!(!window.shows("context-action:Discard"));
+    proxy.release();
+    window.until_message("Keep these notes");
+    assert!(!window.shows("row-context-menu"));
+    proxy.fail(&path, vec![Fault::Busy; attempts]);
+    window.write("Discard these notes");
+    window.until("the second send failed", |window| {
+        window.shows("discard-message")
+    });
+    let id = pending_id(&mut window);
+    window.right_click_named(format!("waiting:{id}"));
+    window.click("context-action:Discard");
+    window.until("discard removes the source and menu", |window| {
+        window.waiting_texts().is_empty() && !window.shows("row-context-menu")
+    });
+}
+
+#[gpui::test]
+fn a_file_waiting_for_upload_has_a_copy_and_discard_menu(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Rin");
+    window.until("the channel is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let files = tempfile::tempdir().unwrap();
+    let file = files.path().join("waiting.txt");
+    std::fs::write(&file, b"Still uploading").unwrap();
+    proxy.hold_ending("/attachments");
+    window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![file.clone()], cx));
+    window.until("the file is in the draft", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.draft.len() == 1)
+    });
+    window.write("Wait for this file");
+    window.until("the message waits for its file", |window| {
+        window.shows("discard-message")
+    });
+    let id = pending_id(&mut window);
+    window.right_click_named(format!("waiting-file:{id}:0"));
+    assert!(!window.shows("context-action:Send again"));
+    window.click("context-action:Copy name");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "waiting.txt"
+    );
+    window.right_click_named(format!("waiting-file:{id}:0"));
+    window.click("context-action:Discard");
+    proxy.release();
+    window.until("the upload and message are discarded", |window| {
+        window.waiting_texts().is_empty() && !window.shows("row-context-menu")
+    });
+}
