@@ -294,8 +294,6 @@ impl Shell {
         let default = follow.setting.map(|_| {
             Button::new("thread-follow-default")
                 .kind(ButtonKind::Ghost)
-                .w_auto()
-                .px(u(8.0))
                 .label(text::followed::USE_DEFAULT)
                 .tooltip(if follow.read_only {
                     text::followed::ARCHIVED
