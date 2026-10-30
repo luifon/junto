@@ -162,9 +162,7 @@ pub async fn note_joined(
     account_id: AccountId,
 ) -> ApiResult<()> {
     let query = if matches!(call.place, CallPlace::Group { .. }) {
-        "select system->>'action' from messages where call_id=$1 and system->>'actor_id'=$2::uuid::text
-         and system->>'action' in ('call_started','joined_by_invitation','person_joined','person_left','person_out')
-         order by created_at desc,id desc limit 1"
+        crate::messages::groups::CALL_ARRIVAL_QUERY
     } else {
         "select kind from call_notes where call_id = $1 and account_id = $2
              and kind in ('call_started', 'joined_by_invitation', 'person_joined', 'person_left',

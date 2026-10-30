@@ -41,3 +41,5 @@ A call invitation is the invitation of an existing member to a call (ADR 0506). 
 - The text chat of a voice channel holds the recording and transcript of a call as a system message (ADR 0602).
 - Recording of direct-message calls is not planned (`docs/scope.md`).
 - A fork of a thread can create a voice channel (ADR 0403).
+
+Group-call arrival notes read the participant's latest transition through a partial message index on call identifier, actor identifier, creation time and message identifier, restricted to arrival and departure actions. The lookup reads that participant's transition without scanning unrelated message history.

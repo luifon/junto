@@ -175,3 +175,8 @@ pub async fn call_line(
         .bind(id).bind(place.id).bind(position).bind(now).bind(sqlx::types::Json(system)).bind(call_id).execute(&mut *connection).await?;
     super::created(connection, now, place.value, id, position as u64).await
 }
+
+pub const CALL_ARRIVAL_QUERY: &str =
+    "select system->>'action' from messages where call_id=$1 and system->>'actor_id'=$2::uuid::text
+     and system->>'action' in ('call_started','joined_by_invitation','person_joined','person_left','person_out')
+     order by created_at desc,id desc limit 1";

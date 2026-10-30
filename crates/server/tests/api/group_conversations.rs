@@ -793,3 +793,55 @@ async fn group_and_visibility_migrations_preserve_populated_pairs_history_and_ca
         vec![group]
     );
 }
+
+#[tokio::test]
+async fn group_call_arrival_reads_an_indexed_transition_beside_large_unrelated_history() {
+    use junto_protocol::call::CallJoin;
+    let server = TestServer::start_for_calls().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let channel = crate::messages_support::channel(&server, &owner, "text").await;
+    let root = crate::messages_support::send(&server, &owner, &channel, "Unrelated history").await;
+    sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,19999)n where id=$1")
+        .bind(root.id).execute(&mut server.test_data().await).await.unwrap();
+    let (id, _) = create(&server, &writer, &[&reader, &third], "Project").await;
+    let route = format!("{GROUPS}/{id}/call/join");
+    let joined: CallJoin = server
+        .post(&writer, &route, &json!({}))
+        .await
+        .ok(StatusCode::OK);
+    let call_id = joined.call.id;
+    server.connect(joined);
+    server.check().await;
+    sqlx::query("analyze messages")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let query = junto_server::messages::groups::CALL_ARRIVAL_QUERY;
+    let transition: Option<String> = sqlx::query_scalar(query)
+        .bind(call_id)
+        .bind(writer.account_id)
+        .fetch_optional(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        transition.is_some(),
+        "the fixture must contain the participant's transition"
+    );
+    let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "explain (analyze,format json) {query}"
+    )))
+    .bind(call_id)
+    .bind(writer.account_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    let visited = crate::messages_queries::visited_rows(&plan[0]["Plan"]);
+    eprintln!("group arrival plan visited rows: {visited}; {plan}");
+    assert!(
+        visited < 64,
+        "one participant transition must not scan unrelated history: {plan}"
+    );
+}
