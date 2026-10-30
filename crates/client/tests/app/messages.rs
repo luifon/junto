@@ -1391,7 +1391,7 @@ fn a_check_box_takes_a_click_only_where_its_message_can_be_edited(cx: &mut TestA
 }
 
 #[gpui::test]
-fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
+fn an_archived_message_keeps_actions_that_leave_its_content_unchanged(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let proxy = world.run(FaultProxy::start(&server));
@@ -1436,7 +1436,7 @@ fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
     assert!(!window.shows("message-menu"));
 
     // The channel is archived while the person reads it: the server refuses every change
-    // of its content (ADR 0410), so its messages offer none.
+    // of its content (ADR 0410). Read-only actions remain available.
     world
         .run(admin.handle.api().archive_channel(channel_id))
         .unwrap();
@@ -1448,11 +1448,42 @@ fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
     });
     for message_id in [own, other] {
         let held = row(&mut window, message_id);
-        assert!(!held.can_react && !held.can_reply && !held.has_actions());
+        assert!(
+            !held.can_react
+                && !held.can_reply
+                && !held.can_thread
+                && !held.can_pin
+                && !held.can_edit
+                && !held.can_delete
+        );
+        assert!(held.has_actions());
     }
-    // No menu opens, and a reaction and a check box take no click.
     window.right_click_named(format!("message:{other}"));
-    assert!(!window.shows("message-menu"));
+    for action in [
+        "message-copy-text",
+        "message-copy-link",
+        "message-forward",
+        "message-mark-unread",
+        "message-reaction-people",
+    ] {
+        assert!(window.shows(action), "{action}");
+    }
+    for action in [
+        "message-react",
+        "message-reply",
+        "message-thread",
+        "message-pin",
+        "message-edit",
+        "message-delete",
+    ] {
+        assert!(!window.shows(action), "{action}");
+    }
+    window.click("message-copy-text");
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "A message of Ada"
+    );
+    // A reaction and a check box cannot change archived content.
     window.click_named(format!("reaction:{other}:0"));
     window.click_named(format!("check:{own}:0:0"));
     window.until("no change of a message is on its way", |window| {
