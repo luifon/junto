@@ -14,6 +14,7 @@ fn excessive_list() -> Document {
         Block::Forward {
             server: "https://chat.example.test".parse().unwrap(),
             message_id: MessageId::generate(),
+            verified: false,
         },
     );
     body.blocks.push(Block::List {

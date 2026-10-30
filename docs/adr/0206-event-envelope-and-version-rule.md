@@ -92,3 +92,9 @@ formatting when hello already identifies an older server, retaining its draft.
 The server requires the decoder revision for extension writes and refuses an
 older editor changing a document whose format it cannot read, preventing a
 plaintext fallback from overwriting concealed content or typed references.
+
+Revision 10 distinguishes server-verified local forward snapshots from unverified
+source links. A forward now requires revision 10; revision 9 and older readers
+receive the quoted legacy form, including the unverified qualification where
+applicable. This prevents an older decoder from presenting an edited or remote
+body with source-author attribution it cannot validate.

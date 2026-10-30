@@ -1069,7 +1069,11 @@ pub fn written(document: &Document, name: &dyn Fn(MentionTarget) -> String) -> W
         let start = writer.text.len();
         let mut items = Vec::new();
         match block {
-            Block::Forward { .. } => writer.text.push_str("> Forwarded message"),
+            Block::Forward { verified, .. } => writer.text.push_str(if *verified {
+                "> Forwarded message"
+            } else {
+                "> Source link · Not verified"
+            }),
             Block::Heading { level, content } => writer.lines(
                 content,
                 &format!("{} ", "#".repeat(usize::from(*level).clamp(1, 3))),
@@ -1305,6 +1309,13 @@ pub fn parse_edit(
     let mut blocks = original.blocks[..before].to_vec();
     blocks.append(&mut middle.blocks);
     blocks.extend_from_slice(&original.blocks[kept_after..]);
+    if blocks != original.blocks {
+        for block in &mut blocks {
+            if let Block::Forward { verified, .. } = block {
+                *verified = false;
+            }
+        }
+    }
     Document { blocks }
 }
 

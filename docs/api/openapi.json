@@ -15049,6 +15049,9 @@
               },
               "server": {
                 "$ref": "#/components/schemas/Origin"
+              },
+              "verified": {
+                "type": "boolean"
               }
             }
           },

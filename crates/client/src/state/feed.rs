@@ -562,7 +562,12 @@ pub fn copy_text(document: &Document, names: &Names) -> String {
         .blocks
         .iter()
         .map(|block| match block {
-            Block::Forward { .. } => crate::text::FORWARDED_MESSAGE.to_owned(),
+            Block::Forward { verified, .. } => if *verified {
+                crate::text::FORWARDED_MESSAGE
+            } else {
+                crate::text::FORWARD_UNVERIFIED
+            }
+            .to_owned(),
             Block::Heading { content, .. }
             | Block::Small { content }
             | Block::Paragraph { content }
@@ -642,7 +647,11 @@ pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
             text.push(' ');
         }
         match block {
-            Block::Forward { .. } => text.push_str(crate::text::FORWARDED_MESSAGE),
+            Block::Forward { verified, .. } => text.push_str(if *verified {
+                crate::text::FORWARDED_MESSAGE
+            } else {
+                crate::text::FORWARD_UNVERIFIED
+            }),
             Block::Heading { content, .. }
             | Block::Small { content }
             | Block::Paragraph { content }

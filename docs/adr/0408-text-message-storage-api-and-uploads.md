@@ -374,3 +374,20 @@ plaintext fallback it saw.
 Search still indexes spoiler contents, so an authorized reader can find the message. Its returned snippet substitutes Spoiler for each concealed subtree while retaining ordinary surrounding text. Quotes and notification excerpts likewise conceal those subtrees. Explicit whole-message copying preserves their plain text. HTML exports use native, initially closed details controls; no script is needed.
 
 Search matching and ranking use stored vectors. Message excerpts are constructed from the returned documents after the result limit, with the same spoiler masking as other excerpts; transcript hits use their stored text. Excerpt construction is bounded by the page size rather than the number of matching messages.
+
+A local forward is a server-created snapshot. In the send transaction the server
+loads the source through the sender's current message-read permission, ignores
+the submitted copied body, freezes its typed references into readable labels,
+and marks the origin verified. The destination uploads must match the source
+files in order, name, size and SHA-256; a mismatched file rolls the transaction
+back. The copy remains independent of later source edits, deletion or retention.
+The destination body remains readable without source access; origin navigation
+still requires that access.
+
+Across servers there is no federation verification. The body is a copy supplied
+by the destination sender, its source link is explicitly not verified, and it
+cannot carry the original author's attribution. The server always clears an
+incoming verification claim for a remote origin. Editing a copied document also
+clears verification; the unchanged source link is historical context only.
+Existing stored origins without the flag default to unverified. This avoids
+claiming that earlier client-supplied bodies were authenticated snapshots.

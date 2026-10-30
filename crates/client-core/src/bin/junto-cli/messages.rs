@@ -185,7 +185,14 @@ fn document_lines(document: &Document) -> Vec<String> {
     let mut lines = Vec::new();
     for block in &document.blocks {
         match block {
-            Block::Forward { .. } => lines.push("> Forwarded message".to_owned()),
+            Block::Forward { verified, .. } => lines.push(
+                if *verified {
+                    "> Forwarded message"
+                } else {
+                    "> Source link · Not verified"
+                }
+                .to_owned(),
+            ),
             Block::Heading { content, .. }
             | Block::Small { content }
             | Block::Paragraph { content } => lines.push(inline_text(content)),

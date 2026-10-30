@@ -208,3 +208,10 @@ Actual input edits, including pasted text and formatting or emoji insertions, up
 Typing start and stop commands are queued in order for the next application update. A call-window close can hand its drafts over while AppState is already borrowed; stopping activity must not read or update that entity recursively. The close test checks an explicit inactive event as well as the transferred text.
 
 Archived messages keep Copy text, Copy link, Forward, Mark unread and Who reacted because none changes their source content. Forward still needs a writable destination. Their menu omits content mutations; reactions and checklists cannot change archived messages. The window regression checks both the retained actions and absence of source changes.
+
+The forward header shows a source author's name only for a verified snapshot
+whose origin matches the delivering saved server. An edited local copy says
+Source link · Not verified; a remote copy says Forwarded from another server ·
+Not verified. Both retain only the source-access-checked navigation. The
+composer clears verification when its copied document changes, and the server
+independently enforces the same rule (ADR 0408).

@@ -279,7 +279,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 9;
+pub const EVENT_REVISION: u32 = 10;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).

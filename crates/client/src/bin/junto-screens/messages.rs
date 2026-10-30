@@ -565,6 +565,7 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
                 )
                 .map_err(|error| error.to_string())?,
                 message_id: id(9901),
+                verified: false,
             },
         );
     }

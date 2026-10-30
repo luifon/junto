@@ -1992,7 +1992,7 @@ impl Shell {
         message: Option<(&Feed, &Arc<Message>, bool)>,
         names: &Names,
         theme: &Theme,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
@@ -2024,9 +2024,17 @@ impl Shell {
         };
         for (block_index, block) in document.blocks.iter().enumerate() {
             match block {
-                Block::Forward { server, message_id } => {
-                    blocks.push(self.render_forward(server, *message_id, theme, window, cx))
-                }
+                Block::Forward {
+                    server,
+                    message_id,
+                    verified,
+                } => blocks.push(self.render_forward(
+                    server,
+                    *message_id,
+                    *verified,
+                    names.server_id,
+                    cx,
+                )),
                 Block::Heading { level, content } => {
                     let (size, height) = match level {
                         1 => (26.0, 32.0),

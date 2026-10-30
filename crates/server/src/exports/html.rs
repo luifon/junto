@@ -178,7 +178,7 @@ fn inlines(nodes: &[Inline], names: &Names, out: &mut String) {
 fn document(document: &Document, names: &Names, out: &mut String) {
     for block in &document.blocks {
         match block {
-            Block::Forward { .. } => out.push_str("<blockquote>Forwarded message · Original unavailable in this export</blockquote>\n"),
+            Block::Forward { verified, .. } => out.push_str(if *verified { "<blockquote>Forwarded message · Original unavailable in this export</blockquote>\n" } else { "<blockquote>Source link · Not verified · Original unavailable in this export</blockquote>\n" }),
             Block::Heading { level, content } => {
                 let level = (*level).clamp(1, 3);
                 let _ = write!(

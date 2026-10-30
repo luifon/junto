@@ -309,6 +309,7 @@ mod tests {
                 Block::Forward {
                     server: "https://chat.example.test".parse().unwrap(),
                     message_id: junto_protocol::ids::MessageId::generate(),
+                    verified: false,
                 },
                 Block::List {
                     ordered: false,

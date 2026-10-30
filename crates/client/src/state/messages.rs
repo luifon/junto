@@ -224,7 +224,9 @@ impl AppState {
             named: &mut std::collections::HashSet<(ServerId, MessageId)>,
         ) {
             for block in &document.blocks {
-                if let Block::Forward { server, message_id } = block
+                if let Block::Forward {
+                    server, message_id, ..
+                } = block
                     && let Some(server_id) = origins.get(server)
                 {
                     named.insert((*server_id, *message_id));

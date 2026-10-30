@@ -43,6 +43,8 @@ pub enum Block {
     Forward {
         server: Origin,
         message_id: MessageId,
+        #[serde(default)]
+        verified: bool,
     },
     Paragraph {
         content: Vec<Inline>,
@@ -105,6 +107,7 @@ pub const MAX_INLINE_DEPTH: usize = 8;
 pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
 pub const MAX_LIST_ITEMS: usize = 5_500;
 pub const DOCUMENT_REVISION: u32 = 9;
+pub const FORWARD_SNAPSHOT_REVISION: u32 = 10;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -141,6 +144,9 @@ impl<'a> Iterator for InlineNodes<'a> {
 
 impl Document {
     pub fn required_revision(&self) -> u32 {
+        if self.forward_origins() > 0 {
+            return FORWARD_SNAPSHOT_REVISION;
+        }
         if self.blocks.iter().any(|block| {
             matches!(
                 block,

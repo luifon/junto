@@ -226,6 +226,9 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
             && window.shows_named(format!("forward-message:{}", source.id))
     });
     assert!(drawn(&mut window).contains("a protected source"));
+    let shown = drawn(&mut window);
+    assert!(shown.contains("Not verified"), "{shown}");
+    assert!(!shown.contains("Forwarded message · Ada"), "{shown}");
     let history = world
         .run(
             target_admin

@@ -147,8 +147,15 @@ pub fn legacy(document: &Document, labels: &Labels) -> Document {
     let mut lines = Vec::new();
     for block in &document.blocks {
         match block {
-            Block::Forward { server, message_id } => {
-                lines.push(format!("Forwarded from {server} · message {message_id}"))
+            Block::Forward {
+                server,
+                message_id,
+                verified,
+            } => {
+                let qualification = if *verified { "" } else { " · Not verified" };
+                lines.push(format!(
+                    "Forwarded from {server} · message {message_id}{qualification}"
+                ))
             }
             Block::Heading { content, .. }
             | Block::Small { content }

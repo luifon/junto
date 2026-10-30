@@ -20,7 +20,7 @@ use crate::{
         forwarding::{Destination, Preview},
     },
     text,
-    theme::{Theme, theme, u},
+    theme::{theme, u},
     ui::{
         Button, ButtonKind, ChannelRow, Dialog, Field, Notice, ScrollArea, StyleExt, dialog_footer,
     },
@@ -300,20 +300,30 @@ impl Shell {
             .blocks
             .iter()
             .map(|block| match block {
-                Block::Forward { server, message_id } => {
-                    match self.state.read(cx).forward_preview(server, *message_id) {
-                        Preview::Read(_) => format!(
-                            "{}\n{}",
-                            text::FORWARDED_MESSAGE,
-                            uri(server, *message_id).unwrap_or_default()
-                        ),
-                        _ => format!(
-                            "{} · {}",
-                            text::FORWARDED_MESSAGE,
-                            text::FORWARD_ORIGIN_UNAVAILABLE
-                        ),
-                    }
-                }
+                Block::Forward {
+                    server,
+                    message_id,
+                    verified,
+                } => match self.state.read(cx).forward_preview(server, *message_id) {
+                    Preview::Read(_) => format!(
+                        "{}\n{}",
+                        if *verified {
+                            text::FORWARDED_MESSAGE
+                        } else {
+                            text::FORWARD_UNVERIFIED
+                        },
+                        uri(server, *message_id).unwrap_or_default()
+                    ),
+                    _ => format!(
+                        "{} · {}",
+                        if *verified {
+                            text::FORWARDED_MESSAGE
+                        } else {
+                            text::FORWARD_UNVERIFIED
+                        },
+                        text::FORWARD_ORIGIN_UNAVAILABLE
+                    ),
+                },
                 block => crate::state::feed::copy_text(
                     &Document {
                         blocks: vec![block.clone()],
@@ -329,10 +339,19 @@ impl Shell {
         &mut self,
         origin: &Origin,
         id: MessageId,
-        _theme: &Theme,
-        _window: &Window,
+        verified: bool,
+        delivery: Option<ServerId>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let local = delivery
+            .and_then(|id| self.state.read(cx).server(id))
+            .is_some_and(|server| server.entry().address.origin() == origin);
+        let attributed = local && verified;
+        let heading = if local {
+            text::FORWARD_UNVERIFIED
+        } else {
+            text::FORWARD_REMOTE_UNVERIFIED
+        };
         let preview = self.state.read(cx).forward_preview(origin, id);
         let available = matches!(&preview, Preview::Read(_));
         let (selector, heading, body) = match preview {
@@ -342,17 +361,31 @@ impl Shell {
                     .author_name
                     .as_deref()
                     .unwrap_or(text::UNKNOWN_PERSON);
-                let heading = format!("{} · {author} · {}", text::FORWARDED_MESSAGE, source.place);
+                let heading = if attributed {
+                    format!("{} · {author} · {}", text::FORWARDED_MESSAGE, source.place)
+                } else {
+                    heading.to_owned()
+                };
                 (format!("forward-message:{id}"), heading, Vec::new())
             }
             Preview::Reading => (
                 format!("forward-reading:{id}"),
-                text::FORWARDED_MESSAGE.to_owned(),
+                if attributed {
+                    text::FORWARDED_MESSAGE
+                } else {
+                    heading
+                }
+                .to_owned(),
                 vec![div().child(text::FORWARD_LOADING).into_any_element()],
             ),
             Preview::Unavailable => (
                 format!("forward-unavailable:{id}"),
-                text::FORWARDED_MESSAGE.to_owned(),
+                if attributed {
+                    text::FORWARDED_MESSAGE
+                } else {
+                    heading
+                }
+                .to_owned(),
                 vec![
                     div()
                         .child(text::FORWARD_ORIGIN_UNAVAILABLE)

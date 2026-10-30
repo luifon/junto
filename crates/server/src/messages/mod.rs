@@ -2,6 +2,7 @@
 pub mod compat;
 pub mod direct_calls;
 pub mod document;
+pub mod forwarding;
 mod mentions;
 pub mod notifications;
 pub mod page;

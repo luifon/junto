@@ -3276,6 +3276,8 @@ pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";
 pub const SELECT_ALL: &str = "Select all";
 
+pub const FORWARD_UNVERIFIED: &str = "Source link · Not verified";
+pub const FORWARD_REMOTE_UNVERIFIED: &str = "Forwarded from another server · Not verified";
 pub const FORWARDED_MESSAGE: &str = "Forwarded message";
 pub const FORWARD_MESSAGE: &str = "Forward message";
 pub const FORWARD_SEND: &str = "Forward";

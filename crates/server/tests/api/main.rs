@@ -33,6 +33,7 @@ mod devices;
 mod downloads;
 mod exports;
 mod first_start;
+mod forwarding_review;
 mod glossary;
 mod history_permissions;
 mod host_commands;

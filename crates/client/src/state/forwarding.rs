@@ -580,6 +580,7 @@ fn snapshot(origin: &Origin, id: MessageId, message: &Message, names: &Names) ->
     let mut blocks = vec![Block::Forward {
         server: origin.clone(),
         message_id: id,
+        verified: false,
     }];
     for block in message.document.iter().flat_map(Document::content_blocks) {
         blocks.push(match block {

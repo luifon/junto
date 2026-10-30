@@ -172,10 +172,7 @@ pub(super) async fn send(
     client_revision: u32,
 ) -> ApiResult<Message> {
     super::message_format::require(&body.document, client_revision)?;
-    let named = messages::threads::named(&document::validate(&body.document)?);
-    if !document::has_content(&body.document) && body.attachments.is_empty() {
-        return Err(ApiError::invalid("a message needs text or an attachment"));
-    }
+    document::validate(&body.document)?;
     let id = MessageId::generate();
     let now = app.now();
     let mut counted = false;
@@ -184,6 +181,14 @@ pub(super) async fn send(
         let place = target.open(connection, &access, Purpose::Change).await?;
         place.require_open()?;
         place.require_send(&access, matches!(target, Target::Thread(_)))?;
+        let (copied, source) =
+            messages::forwarding::prepare(connection, app, &access, &body.document).await?;
+        let mut body: SendMessage = body.clone();
+        body.document = copied;
+        let named = messages::threads::named(&document::validate(&body.document)?);
+        if !document::has_content(&body.document) && body.attachments.is_empty() {
+            return Err(ApiError::invalid("a message needs text or an attachment"));
+        }
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
             let (parent, _) = messages::get(connection, &access, reply, Purpose::Change).await?;
@@ -278,6 +283,9 @@ pub(super) async fn send(
             .await?;
         }
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
+        if let Some(source) = &source {
+            messages::forwarding::verify_files(connection, source, id).await?;
+        }
         messages::created(connection, now, place.value, id, position as u64).await?;
         messages::notifications::create(connection, now, id, None).await?;
         if let Some(root) = thread_root {
@@ -345,7 +353,7 @@ pub async fn edit_message(
 ) -> ApiResult<Json<Message>> {
     let client_revision = super::message_format::revision(&headers);
     super::message_format::require(&body.document, client_revision)?;
-    let named = messages::threads::named(&document::validate(&body.document)?);
+    document::validate(&body.document)?;
     let now = app.now();
     let mut counted = false;
     transact!(app, |connection| {
@@ -367,6 +375,10 @@ pub async fn edit_message(
         if message.document.as_ref() == Some(&body.document) {
             return Ok(message);
         }
+        let body = EditMessage {
+            document: messages::forwarding::edited(connection, &access, &body.document).await?,
+        };
+        let named = messages::threads::named(&document::validate(&body.document)?);
         // An account that the edit names follows the thread of a reply by the rule.
         let before = match message.thread_root {
             Some(root) => messages::threads::following_among(connection, root, &named).await?,
