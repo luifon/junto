@@ -311,6 +311,26 @@ pub fn role_label(role: &str, account: &str) -> String {
     format!("The role {role} for {account}")
 }
 
+pub const APPEARANCE: &str = "Appearance";
+pub const APPEARANCE_SAVED: &str = "Appearance saved.";
+pub const COLOR: &str = "Role colour (#RRGGBB; empty for default)";
+pub const COLOR_INVALID: &str =
+    "Enter a colour as #RRGGBB, or leave it empty for the default colour.";
+pub const DEFAULT_COLOR: &str = "Default colour";
+pub const HOIST: &str = "Show members in a separate role group";
+pub const GROUPED: &str = "Grouped";
+pub const UNGROUPED: &str = "Ungrouped";
+pub const EVERYONE_NOT_GROUPED: &str = "The everyone role stays in the Members group.";
+pub const APPEARANCE_HELP: &str =
+    "Names use the highest coloured role. Members appear once under their highest grouped role.";
+
+pub const COLOR_PRESETS: &[(&str, &str)] = &[
+    ("Blue", "#3366AA"),
+    ("Green", "#227744"),
+    ("Purple", "#8855AA"),
+    ("Orange", "#BB6622"),
+];
+
 #[cfg(test)]
 mod tests {
     use junto_client_core::protocol::WorkspacePermission;
@@ -339,23 +359,3 @@ mod tests {
         }
     }
 }
-
-pub const APPEARANCE: &str = "Appearance";
-pub const APPEARANCE_SAVED: &str = "Appearance saved.";
-pub const COLOR: &str = "Role colour (#RRGGBB; empty for default)";
-pub const COLOR_INVALID: &str =
-    "Enter a colour as #RRGGBB, or leave it empty for the default colour.";
-pub const DEFAULT_COLOR: &str = "Default colour";
-pub const HOIST: &str = "Show members in a separate role group";
-pub const GROUPED: &str = "Grouped";
-pub const UNGROUPED: &str = "Ungrouped";
-pub const EVERYONE_NOT_GROUPED: &str = "The everyone role stays in the Members group.";
-pub const APPEARANCE_HELP: &str =
-    "Names use the highest coloured role. Members appear once under their highest grouped role.";
-
-pub const COLOR_PRESETS: &[(&str, &str)] = &[
-    ("Blue", "#3366AA"),
-    ("Green", "#227744"),
-    ("Purple", "#8855AA"),
-    ("Orange", "#BB6622"),
-];

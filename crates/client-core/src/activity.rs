@@ -84,10 +84,9 @@ fn run(shared: Arc<Shared>) {
     #[cfg(target_os = "linux")]
     let mut reader = linux::Reader::new();
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        if wayland::run(&shared) || shared.stopped() {
-            return;
-        }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && (wayland::run(&shared) || shared.stopped())
+    {
+        return;
     }
     while !shared.stopped() {
         #[cfg(target_os = "linux")]

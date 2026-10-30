@@ -112,12 +112,14 @@ pub async fn list_workspace_roles(
     .map(Json)
 }
 
+type WorkspaceRoleRow = (WorkspaceRoleId, String, i64, bool, i32, Option<i32>, bool);
+
 /// The roles of a workspace, the "everyone" role first.
 pub async fn roles_of(
     connection: &mut PgConnection,
     workspace_id: WorkspaceId,
 ) -> ApiResult<Vec<WorkspaceRole>> {
-    let rows: Vec<(WorkspaceRoleId, String, i64, bool, i32, Option<i32>, bool)> = sqlx::query_as(
+    let rows: Vec<WorkspaceRoleRow> = sqlx::query_as(
         "select id, name, permissions, is_everyone, position, color, hoist from workspace_roles
          where workspace_id = $1
          order by position",

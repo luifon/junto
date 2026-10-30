@@ -158,6 +158,16 @@ pub fn read_failure(error: &ApiError) -> String {
     }
 }
 
+pub fn starter_range(line: &RecordingLine) -> std::ops::Range<usize> {
+    let start = "Started by ".len();
+    let length = line
+        .started_by
+        .as_deref()
+        .map(shown_name)
+        .map_or(0, |name| name.len());
+    start..start + length
+}
+
 #[cfg(test)]
 mod tests {
     use junto_client_core::api::{Rejection, TransportError, TransportErrorKind};
@@ -368,14 +378,4 @@ mod tests {
             assert!(!sentence.contains("a sentence of the server"), "{sentence}");
         }
     }
-}
-
-pub fn starter_range(line: &RecordingLine) -> std::ops::Range<usize> {
-    let start = "Started by ".len();
-    let length = line
-        .started_by
-        .as_deref()
-        .map(shown_name)
-        .map_or(0, |name| name.len());
-    start..start + length
 }

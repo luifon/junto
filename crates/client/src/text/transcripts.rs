@@ -364,6 +364,15 @@ pub fn language_name(code: &str) -> Option<&'static str> {
 
 pub const CHANGE_SAVED: &str = "The change is saved.";
 
+pub fn changed_name_range(name: &str) -> std::ops::Range<usize> {
+    let start = "Corrected by ".len();
+    start..start + name.len()
+}
+pub fn named_name_range(name: &str) -> std::ops::Range<usize> {
+    let start = "Named by ".len();
+    start..start + name.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,13 +395,4 @@ mod tests {
         assert_eq!(language_name("pt"), Some("Portuguese"));
         assert_eq!(language_name("xx"), None);
     }
-}
-
-pub fn changed_name_range(name: &str) -> std::ops::Range<usize> {
-    let start = "Corrected by ".len();
-    start..start + name.len()
-}
-pub fn named_name_range(name: &str) -> std::ops::Range<usize> {
-    let start = "Named by ".len();
-    start..start + name.len()
 }

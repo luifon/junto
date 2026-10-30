@@ -252,6 +252,8 @@ fn override_entries(
     Ok(entries)
 }
 
+type ExportedRoleRow = (WorkspaceId, Uuid, String, i64, bool, i32, Option<i32>, bool);
+
 /// The whole structure of the server as the transaction sees it.
 async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let default_workspace = store::default_workspace(&mut *connection).await?;
@@ -263,10 +265,9 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let workspaces: Vec<(WorkspaceId, Uuid, String)> = sqlx::query_as(EXPORT_WORKSPACES)
         .fetch_all(&mut *connection)
         .await?;
-    let roles: Vec<(WorkspaceId, Uuid, String, i64, bool, i32, Option<i32>, bool)> =
-        sqlx::query_as(EXPORT_ROLES)
-            .fetch_all(&mut *connection)
-            .await?;
+    let roles: Vec<ExportedRoleRow> = sqlx::query_as(EXPORT_ROLES)
+        .fetch_all(&mut *connection)
+        .await?;
     let categories: Vec<(Uuid, WorkspaceId, Uuid, String, i32)> = sqlx::query_as(EXPORT_CATEGORIES)
         .fetch_all(&mut *connection)
         .await?;
