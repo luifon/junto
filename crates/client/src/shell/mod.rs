@@ -35,6 +35,7 @@ mod moving;
 /// The least time between two drawings that the animations of a window ask for.
 pub use moving::LEAST_INTERVAL as ANIMATION_INTERVAL;
 mod notices;
+mod own_identity_targets;
 mod panic_notice;
 mod pending_menus;
 mod people;

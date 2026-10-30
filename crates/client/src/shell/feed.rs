@@ -3654,7 +3654,13 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Avatar::new(own, 34.0).image(picture))
+                            .child(self.pending_author_identity(
+                                (context.map(|target| target.owner), id),
+                                &row.author,
+                                "avatar",
+                                Avatar::new(own, 34.0).image(picture),
+                                cx,
+                            ))
                             .into_any_element()
                     })
                     .child(
@@ -3672,10 +3678,16 @@ impl Shell {
                                         .gap(u(8.0))
                                         .line_height(u(19.0))
                                         .child(
-                                            div()
-                                                .font_weight(FontWeight::BOLD)
-                                                .ink(colors.ink)
-                                                .child(SharedString::from(row.author.clone())),
+                                            self.pending_author_identity(
+                                                (context.map(|target| target.owner), id),
+                                                &row.author,
+                                                "name",
+                                                div()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .ink(colors.ink)
+                                                    .child(SharedString::from(row.author.clone())),
+                                                cx,
+                                            ),
                                         )
                                         .child(
                                             div()

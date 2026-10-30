@@ -1167,7 +1167,7 @@ impl Shell {
                 cx,
             )
         } else {
-            identity
+            self.bind_preset_profile_context(identity, view.person.name.clone(), window, cx)
         };
         div()
             .id("profile-strip")

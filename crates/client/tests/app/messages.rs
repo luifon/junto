@@ -2375,6 +2375,20 @@ fn pending_message_and_file_menus_copy_retry_and_expire_with_the_outbox(cx: &mut
         window.shows("send-again")
     });
     let id = pending_id(&mut window);
+    let own = window.own_account();
+    window.right_click_named(format!("pending-author-name:{id}"));
+    window.click_named(format!("account-copy-id:{own}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        own.to_string()
+    );
+    window.right_click_named(format!("pending-author-avatar:{id}"));
+    window.click_named(format!("account-copy-name:{own}"));
+    assert_eq!(
+        window.cx.read_from_clipboard().unwrap().text().unwrap(),
+        "Rin"
+    );
+
     let bounds = window
         .cx
         .debug_bounds(crate::harness::selector(format!("waiting:{id}")))
