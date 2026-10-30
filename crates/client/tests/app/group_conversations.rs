@@ -224,8 +224,7 @@ fn a_group_member_menu_ends_when_that_person_leaves(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui::test]
-fn a_late_group_creation_does_not_replace_a_newer_selection(cx: &mut TestAppContext) {
+fn late_group_creation_keeps_selection(cx: &mut TestAppContext, event_first: bool) {
     let world = World::new();
     let server = world.server("Harbor");
     let proxy = world.run(crate::support::FaultProxy::start(&server));
@@ -246,16 +245,53 @@ fn a_late_group_creation_does_not_replace_a_newer_selection(cx: &mut TestAppCont
         window.click_named(format!("contact-{account}"));
     }
     window.type_into("group-name", "Project");
+    proxy.hold_events();
     proxy.hold_answer_ending("POST", "/group-conversations");
     window.click("group-save");
     window.until("creation answer is held", |_| proxy.answers_waiting() == 1);
     window.state.update(&mut window.cx, |state, cx| {
         state.select_channel(workspace, channel, cx)
     });
-    proxy.release();
-    window.until("the completed chooser closes", |window| {
-        !window.shows("new-direct-dialog")
-    });
+    let has_group = |window: &mut crate::harness::Window| {
+        window
+            .view()
+            .lists()
+            .unwrap()
+            .directs
+            .iter()
+            .any(|row| row.name.as_deref() == Some("Project"))
+    };
+    if event_first {
+        proxy.release_events();
+        window.until(
+            "the creation event is applied before its HTTP answer",
+            has_group,
+        );
+        assert_eq!(proxy.answers_waiting(), 1);
+        assert_eq!(window.selected_channel(), channel);
+        assert!(window.view().lists().unwrap().conversation.is_none());
+        proxy.release_answers();
+        window.until("the completed chooser closes", |window| {
+            !window.shows("new-direct-dialog")
+        });
+    } else {
+        proxy.release_answers();
+        window.until(
+            "the HTTP answer closes the chooser before its event",
+            |window| !window.shows("new-direct-dialog"),
+        );
+        assert_eq!(window.selected_channel(), channel);
+        assert!(window.view().lists().unwrap().conversation.is_none());
+        eprintln!(
+            "created group row before its held event: {}",
+            has_group(&mut window)
+        );
+        proxy.release_events();
+        window.until(
+            "the creation event is applied after its HTTP answer",
+            has_group,
+        );
+    }
     assert_eq!(window.selected_channel(), channel);
     assert!(window.view().lists().unwrap().conversation.is_none());
     assert!(
@@ -267,6 +303,18 @@ fn a_late_group_creation_does_not_replace_a_newer_selection(cx: &mut TestAppCont
             .iter()
             .any(|row| row.name.as_deref() == Some("Project"))
     );
+}
+
+#[gpui::test]
+fn a_late_group_creation_does_not_replace_a_newer_selection(cx: &mut TestAppContext) {
+    late_group_creation_keeps_selection(cx, false);
+}
+
+#[gpui::test]
+fn a_late_group_creation_does_not_replace_a_newer_selection_when_its_event_arrives_first(
+    cx: &mut TestAppContext,
+) {
+    late_group_creation_keeps_selection(cx, true);
 }
 
 #[gpui::test]
