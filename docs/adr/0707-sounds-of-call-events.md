@@ -72,7 +72,7 @@ Settings:
 Player:
 
 - `SoundPlayer` opens the output device on a thread of its own, plays one sound, writes 150 ms of silence after it so that the device has played the last samples, and closes the device. A request only sends the sound to that thread and returns at once, as the requests of the ring tone do (ADR 0733). The device is the output device of the call, or the chosen output device when no call has one. Requests that arrive while a sound plays are played in order after it, each sound at most once, and at most four.
-- The decision of a call is a function of the state before and after a change, `state::call_sounds::sounds`, called at each change of the calls and of the state of a server. The sounds of notices and requests are decided with the rules of the system notifications (`state::notices::alerts`).
+- The decision of a call is a function of the state before and after a change, `state::call_sounds::sounds`, called at each change of the calls and of the state of a server. Within a continuing call, the absence of an earlier own share is an empty viewer set: a first share and its first viewer arriving together play ShareStarted and ViewerJoined. The initial observation of a call keeps its entry behavior. The sounds of notices and requests are decided with the rules of the system notifications (`state::notices::alerts`).
 
 Tests:
 
