@@ -2650,26 +2650,10 @@ impl Shell {
                 style.bg(Hsla::from(colors.terracotta_wash))
             })
             .child(
-                div().h(u(20.0)).min_w_0().children(
-                    self.composer_feed(pane)
-                        .filter(|feed| feed.loaded && feed.failed.is_none())
-                        .map(|feed| self.state.read(cx).typing_names(feed.server_id, feed.place))
-                        .filter(|names| !names.is_empty())
-                        .map(|names| {
-                            div()
-                                .debug_selector(move || {
-                                    if pane == Pane::Main {
-                                        "typing-indicator".to_owned()
-                                    } else {
-                                        "thread-typing-indicator".to_owned()
-                                    }
-                                })
-                                .text_size(u(12.0))
-                                .ink(colors.ink_3)
-                                .truncate()
-                                .child(text::typing_people(&names))
-                        }),
-                ),
+                div()
+                    .h(u(20.0))
+                    .min_w_0()
+                    .children(self.render_typing_people(pane, cx)),
             )
             .children(permanence)
             .children(banner)
@@ -2677,6 +2661,91 @@ impl Shell {
             .child(frame)
             .child(status)
             .into_any_element()
+    }
+
+    fn render_typing_people(&self, pane: Pane, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let feed = self
+            .composer_feed(pane)
+            .filter(|feed| feed.loaded && feed.failed.is_none())?;
+        let (server, place) = (feed.server_id, feed.place);
+        let owner = self.state.read(cx).owner(server)?;
+        let people = self.state.read(cx).typing_people(server, place);
+        if people.is_empty() {
+            return None;
+        }
+        let names: Vec<_> = people.iter().map(|(_, name)| name.clone()).collect();
+        let caption = text::typing_people(&names);
+        let theme = theme(cx);
+        let faces = self.faces(server).for_place(place);
+        let mut line = div()
+            .id(if pane == Pane::Main {
+                "typing-indicator"
+            } else {
+                "thread-typing-indicator"
+            })
+            .debug_selector(move || {
+                if pane == Pane::Main {
+                    "typing-indicator".to_owned()
+                } else {
+                    "thread-typing-indicator".to_owned()
+                }
+            })
+            .role(Role::Note)
+            .aria_label(caption.clone())
+            .flex()
+            .items_center()
+            .min_w_0()
+            .truncate()
+            .text_size(u(12.0))
+            .ink(theme.colors.ink_3);
+        if people.len() > 3 {
+            return Some(line.child(caption).into_any_element());
+        }
+        let count = people.len();
+        for (index, (account, name)) in people.into_iter().enumerate() {
+            if index > 0 {
+                line = line.child(text::typing_separator(index, count));
+            }
+            let presence = faces.presence(account);
+            let target = crate::ui::OpenProfile { server, account };
+            line = line
+                .child(
+                    div()
+                        .debug_selector(move || format!("typing-presence:{account}:{presence:?}"))
+                        .child(crate::ui::PresenceMark::new(presence, 9.0)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .debug_selector(move || format!("typing-person:{account}"))
+                        .child(
+                            crate::ui::ProfileName::new(
+                                ("typing", account.as_uuid().as_u128() as u64),
+                                name,
+                                target,
+                            )
+                            .role_color(faces.color(account))
+                            .on_open(Self::handler(
+                                cx,
+                                move |this, window, cx| {
+                                    let current = this.composer_feed(pane).is_some_and(|feed| {
+                                        feed.server_id == server && feed.place == place
+                                    });
+                                    if current
+                                        && this
+                                            .state
+                                            .read(cx)
+                                            .typing_profile_allowed(owner, place, account)
+                                    {
+                                        this.show_profile(target, window, cx);
+                                    }
+                                },
+                            )),
+                        ),
+                );
+        }
+        Some(line.child(text::typing_suffix(count)).into_any_element())
     }
 
     /// Follows the text area of the composer: a change of the text, and Enter.

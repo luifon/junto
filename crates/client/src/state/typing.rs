@@ -116,7 +116,11 @@ impl AppState {
             self.typing.local.remove(&key);
         }
     }
-    pub(crate) fn typing_names(&self, server: ServerId, place: PlaceId) -> Vec<String> {
+    pub(crate) fn typing_people(
+        &self,
+        server: ServerId,
+        place: PlaceId,
+    ) -> Vec<(AccountId, String)> {
         let Some(owner) = self.typing_owner(server) else {
             return Vec::new();
         };
@@ -128,11 +132,58 @@ impl AppState {
             .filter(|((saved, target, _), person)| {
                 *saved == server && *target == place && person.owner == owner && person.until > now
             })
-            .map(|(_, person)| person.name.clone())
+            .map(|((_, _, account), person)| (*account, person.name.clone()))
             .collect();
-        names.sort_by_key(|name| name.to_lowercase());
+        names.sort_by(|a, b| {
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then(a.0.as_uuid().cmp(&b.0.as_uuid()))
+        });
         names
     }
+    pub(crate) fn typing_profile_allowed(
+        &self,
+        owner: Owner,
+        place: PlaceId,
+        account: AccountId,
+    ) -> bool {
+        self.typing_owner(owner.entry.server_id) == Some(owner)
+            && self.typing_people(owner.entry.server_id, place).len() <= 3
+            && self
+                .typing
+                .people
+                .get(&(owner.entry.server_id, place, account))
+                .is_some_and(|person| person.owner == owner && person.until > Instant::now())
+    }
+
+    pub(super) fn typing_profile_people(&self) -> Vec<(ServerId, AccountId)> {
+        let places = self
+            .shown
+            .server
+            .into_iter()
+            .flat_map(|server| {
+                self.shown
+                    .place()
+                    .into_iter()
+                    .chain(self.shown.thread_place())
+                    .map(move |place| (server, place))
+            })
+            .chain(self.call_window_place(&self.snapshots()));
+        places
+            .flat_map(|(server, place)| {
+                let people = self.typing_people(server, place);
+                if people.len() > 3 {
+                    Vec::new()
+                } else {
+                    people
+                        .into_iter()
+                        .map(|(account, _)| (server, account))
+                        .collect()
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn heard_typing(
         &mut self,
         server: ServerId,
@@ -187,6 +238,7 @@ impl AppState {
                                 .people
                                 .retain(|_, person| person.until > Instant::now());
                             if before != this.typing.people.len() {
+                                this.want_people(cx);
                                 cx.notify();
                             }
                             if this.typing.people.is_empty() {
@@ -203,6 +255,7 @@ impl AppState {
                 }
             }));
         }
+        self.want_people(cx);
         cx.notify();
     }
     #[cfg(feature = "test-support")]

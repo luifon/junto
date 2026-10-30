@@ -3388,6 +3388,17 @@ pub const RECENT_EMOJI: &str = "Recent emoji";
 
 pub const DRAFT: &str = "Draft";
 
+pub fn typing_separator(index: usize, count: usize) -> &'static str {
+    if index + 1 == count { " and " } else { ", " }
+}
+pub fn typing_suffix(count: usize) -> &'static str {
+    if count == 1 {
+        " is typing…"
+    } else {
+        " are typing…"
+    }
+}
+
 pub fn typing_people(names: &[String]) -> String {
     match names {
         [] => String::new(),

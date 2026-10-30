@@ -12,12 +12,11 @@ fn user_edits_show_typing_to_another_reader_and_stop_on_preview_and_send(cx: &mu
     reader.until("another reader sees who is typing", |reader| {
         reader.shows("typing-indicator")
     });
-    assert!(
-        reader
-            .in_shell(|shell, _, _| shell.painted_readonly_text())
-            .iter()
-            .any(|text| text.contains("Luca") && text.contains("typing"))
-    );
+    let sentence = reader
+        .in_shell(|shell, _, _| shell.painted_readonly_text())
+        .join("");
+    assert!(sentence.contains("Luca") && sentence.contains("typing"));
+    assert!(reader.shows_named(format!("typing-person:{}", writer.own_account())));
     assert!(!writer.shows("typing-indicator"));
     writer.click("composer-view-1");
     reader.until("preview stops typing activity", |reader| {
@@ -48,9 +47,12 @@ fn several_typers_expire_without_another_edit(cx: &mut TestAppContext) {
     reader.until("both people are listed", |reader| {
         reader
             .in_shell(|shell, _, _| shell.painted_readonly_text())
-            .iter()
-            .any(|text| text.contains("Ada and Luca are typing"))
+            .join("")
+            .contains("Ada and Luca are typing")
     });
+    for account in [first.own_account(), second.own_account()] {
+        assert!(reader.shows_named(format!("typing-person:{account}")));
+    }
     reader.until("idle activity expires", |reader| {
         !reader.shows("typing-indicator")
     });
@@ -218,4 +220,118 @@ fn deactivating_the_window_sends_an_explicit_stop(cx: &mut TestAppContext) {
     reader.until("deactivation clears activity", |reader| {
         !reader.shows("typing-indicator")
     });
+}
+
+#[gpui::test]
+fn a_typing_person_opens_its_profile_without_changing_the_draft(cx: &mut TestAppContext) {
+    use junto_client::state::profile::ProfileRead;
+    use junto_client_core::protocol::presence::{PresenceChoice, SetPresence};
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_first, mut writer) = member(cx, &world, &server.address(), &admin, "Writer");
+    let (_second, mut reader) = member(cx, &world, &server.address(), &admin, "Reader");
+    let account = writer.own_account();
+    world
+        .run(writer.handle().api().set_presence(&SetPresence {
+            choice: PresenceChoice::DoNotDisturb,
+        }))
+        .unwrap();
+    writer.type_into("composer-input", "an unsent plan");
+    reader.until("the other reader sees activity", |window| {
+        window.shows("typing-indicator")
+    });
+    assert!(
+        reader.shows_named(format!("typing-person:{account}")),
+        "a typing identity has a profile control"
+    );
+    reader.until("the typing name shows live presence", |window| {
+        window.shows_named(format!("typing-presence:{account}:DoNotDisturb"))
+    });
+    reader.click_named(format!("typing-person:{account}"));
+    reader.until("the typing person's profile is read", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| {
+                state.profile_view(window.shell.entity_id())
+            })
+            .is_some_and(|view| {
+                view.account == account && matches!(view.read, ProfileRead::Shown(_))
+            })
+    });
+    assert_eq!(
+        writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "an unsent plan"
+    );
+    writer.press("secondary-a");
+    writer.press("backspace");
+    reader.press("escape");
+    reader.until(
+        "clearing the draft removes the old identity target",
+        |window| {
+            !window.shows("typing-indicator")
+                && !window.shows_named(format!("typing-person:{account}"))
+        },
+    );
+}
+
+#[gpui::test]
+fn an_overflow_typing_summary_has_no_individual_profile_targets(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ids::AccountId;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let server_id = window.view().selected.unwrap().id;
+    let place = window.feed().unwrap().place;
+    let people: Vec<_> = ["Arden", "Beryl", "Cedar", "Dara"]
+        .into_iter()
+        .map(|name| (AccountId::generate(), name.to_owned()))
+        .collect();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_typing_fixture(server_id, place, people.clone(), cx)
+    });
+    window.until("the overflow summary is shown", |window| {
+        window
+            .in_shell(|shell, _, _| shell.painted_readonly_text())
+            .iter()
+            .any(|text| text == "Several people are typing…")
+    });
+    for (account, _) in people {
+        assert!(!window.shows_named(format!("typing-person:{account}")));
+    }
+}
+
+#[gpui::test]
+fn three_long_typing_names_stay_inside_the_indicator(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ids::AccountId;
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    let server_id = window.view().selected.unwrap().id;
+    let place = window.feed().unwrap().place;
+    let people: Vec<_> = ["Arden", "Beryl", "Cedar"]
+        .into_iter()
+        .map(|name| (AccountId::generate(), name.repeat(12)))
+        .collect();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_typing_fixture(server_id, place, people.clone(), cx)
+    });
+    window.until("three names are shown", |window| {
+        people
+            .iter()
+            .all(|(account, _)| window.shows_named(format!("typing-person:{account}")))
+    });
+    let line = window.cx.debug_bounds("typing-indicator").unwrap();
+    for (account, _) in people {
+        let name = window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("typing-person:{account}")))
+            .unwrap();
+        assert!(
+            name.left() >= line.left() && name.right() <= line.right(),
+            "a typing name extends past its indicator: {name:?} in {line:?}"
+        );
+    }
 }

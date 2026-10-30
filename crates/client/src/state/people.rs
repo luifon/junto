@@ -1627,6 +1627,7 @@ impl AppState {
             .profile_people()
             .into_iter()
             .chain(self.reaction_profile_people())
+            .chain(self.typing_profile_people())
         {
             wanted
                 .entry(server)
