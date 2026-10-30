@@ -67,6 +67,8 @@ run cargo test --no-fail-fast --locked -p junto-authz -p junto-protocol
 # The reading of the free space of a directory, which differs between Unix and Windows
 # (ADR 0605).
 run cargo test --no-fail-fast --locked -p junto-server --lib storage::
+# Descriptor-relative files on Unix and pinned directories on Windows (ADR 0606).
+run cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::
 run cargo test --no-fail-fast --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"
 run python3 -m unittest discover -s packaging -p "test_*.py"
@@ -143,30 +145,14 @@ step "Window tests without a database"
 run cargo test --no-fail-fast --locked --workspace --test app -- updates::
 step "PostgreSQL for Windows"
 run python3 tools/windows/with_test_postgres.py --fetch
-# The other window tests, against the PostgreSQL build for Windows of the version of the CI
-# image. Not here: the tests of live:: need LiveKit; the tests of recordings:: and
-# transcripts::, the files of a message and the export of a channel need the server to store
-# files, which it does on Unix systems only (crates/server/src/recordings/files.rs).
+# The remaining window tests use native PostgreSQL and the Windows file store (ADR 0912).
+# The live tier needs LiveKit; finished-recording fixtures need FFmpeg and /bin/sh.
 step "Window tests with PostgreSQL"
 run python3 -m unittest discover -s tools/windows -p "test_*.py"
 run python3 tools/windows/with_test_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- \
-    --skip updates:: --skip live:: --skip recordings:: --skip transcripts:: \
-    --skip messages::a_file_is_sent_with_a_message_and_saved_from_one \
-    --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops \
-    --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
-    --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
-    --skip messages::a_message_whose_files_the_retention_removed_says_so \
-    --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export \
-    --skip composing::a_file_taken_away_before_the_send_is_not_in_the_message \
-    --skip composing::a_pasted_picture_is_a_file_of_the_message_and_pasted_text_is_text \
-    --skip composing::an_upload_goes_on_after_its_connection_was_cut_and_the_draft_says_so \
-    --skip files::the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file \
-    --skip threads::in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file \
-    --skip thread_actions::a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread \
-    --skip admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved \
+    --skip updates:: --skip live:: \
+    --skip recordings:: \
+    --skip transcripts:: \
     --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts \
-    --skip pictures:: \
-    --skip admin_pages::exports_actions::a_saved_export_is_not_counted_again_after_a_restart \
-    --skip badges::the_administration_counts_the_ready_exports_and_the_channels_deleted_soon \
     --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed
 finish

@@ -27,6 +27,10 @@ Paths:
 - The directory of the recordings itself, and the directories above it, are trusted: the administrator names them, and the recorder cannot replace them.
 - Every change that the server makes below the directory of the recordings works from a descriptor of the directory that holds the file, reached in the same way: a new directory, a new file, a new name, a move and a deletion. A link above the place is an error, and a link at the place is deleted and not followed.
 
+On Unix these operations use directory-relative descriptors. The Windows build, including the native desktop test server, pins the trusted root and every traversed directory with handles that exclude delete sharing. It opens each child with `FILE_FLAG_OPEN_REPARSE_POINT` and checks the opened handle before using it, so junctions and other reparse points below the root are refused and no held directory can be replaced. Only server-generated path components are accepted; Windows device names, alternate streams and path separators are refused. Recursive deletion removes a reparse point itself and retains the depth bound of sixteen. File completion uses `MoveFileExW` with write-through and without replacement: an existing destination stays, and the partial source is removed. File contents are flushed by the writer.
+
+The file-storage unit tests run without a database on macOS and Windows in their native CI jobs. Windows tests cover writing and completion while the file is open, preservation of an existing destination, listing and deletion, held-directory replacement, unsafe components, and a junction that must not be followed for reading, writing, moving or deletion. The junction fixture uses a bounded child process and is removed with its temporary tree. The existing desktop attachment and file tests exercise the same native server layer without changing their assertions.
+
 Recovery after a lost recorder:
 
 - The start script of the recorder saves the files of a lost recorder to `rescued/<job>/` below the directory of the recordings (ADR 0602). For an audio track without a file at its path, the server takes `rescued/<job>/<segment>.ogg` and moves it to the path of the segment. A job identifier that is not one safe path part names no directory.
@@ -39,7 +43,7 @@ Recovery after a lost recorder:
 Join of the composite:
 
 - The server does not read the playlist of the recorder. It lists the pieces `part_<number>.ts` in the directory, orders them by their numbers, and gives their bytes one after the other to `ffmpeg -f mpegts -i pipe:0 -c copy -movflags +faststart`. This is what the playlist reader of ffmpeg does with a closed playlist, so a playlist without an end marker needs no repair, and no text that the recorder wrote decides which file is read.
-- ffmpeg writes the video to a path, under a new name with a random part, because it reads its own output again to move the index to the start. The server then gives the video its name with a hard link, which never replaces a file. A video that exists is not joined again.
+- ffmpeg writes the video to a path, under a new name with a random part, because it reads its own output again to move the index to the start. On Unix the server then gives the video its name with a hard link, which never replaces a file; Windows uses the non-replacing move above. A video that exists is not joined again.
 - The process that holds an attempt (below) deletes the unfinished videos that it finds in the directory of the recording: an attempt that is over left them.
 - Each composite segment becomes its own video. A recording whose recorder was lost has two.
 - The pieces are deleted when the video passed the check. They stay otherwise.

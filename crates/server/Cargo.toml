@@ -71,9 +71,9 @@ tower = { version = "=0.5.3", features = ["util"] }
 junto-setup = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in two modules that
-# exist on Windows only: one reads the free space of a directory (ADR 0605), one waits for the
-# end of the process that started the server (ADR 0915).
+# The workspace forbids unsafe code. This crate denies it and allows it in Windows-only
+# modules for free space (ADR 0605), non-replacing file renames (ADR 0606), and the end of the
+# process that started the server (ADR 0915).
 [lints.rust]
 unsafe_code = "deny"
 

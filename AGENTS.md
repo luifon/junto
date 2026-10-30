@@ -112,7 +112,7 @@ cargo build --workspace
 
 - On Windows every crate uses the static C runtime (`.cargo/config.toml`, ADR 0753).
 - On Linux the system packages are those of `tools/linux/Dockerfile`; `tools/linux-container.sh cargo build --workspace` builds in that image.
-- The workspace lints are in `Cargo.toml`: unsafe code is forbidden (`junto-media` and `junto-client-core` allow it in named modules), `unwrap` and `expect` are denied, and the stack of one function has the bound of `clippy.toml` (ADR 0906).
+- The workspace lints are in `Cargo.toml`: unsafe code is forbidden (`junto-server`, `junto-media` and `junto-client-core` allow it in named modules), `unwrap` and `expect` are denied, and the stack of one function has the bound of `clippy.toml` (ADR 0906).
 - A local server and client: `crates/client/README.md`, section "Run it locally".
 
 ## Test tiers
