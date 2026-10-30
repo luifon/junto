@@ -5,10 +5,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import skipUnless
 
 
-@unittest.skipUnless(sys.platform == "linux" and os.environ.get("JUNTO_TEST_STARTUP_PROGRAM"),
-                     "needs the built Linux client")
+@skipUnless(
+    sys.platform == "linux" and os.environ.get("JUNTO_TEST_STARTUP_PROGRAM"),
+    "needs the built Linux client",
+)
 class StartupRemoval(unittest.TestCase):
     def test_removal_clears_only_this_users_matching_enabled_entry(self):
         program = Path(os.environ["JUNTO_TEST_STARTUP_PROGRAM"]).resolve()

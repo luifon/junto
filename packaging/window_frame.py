@@ -5,6 +5,7 @@ import contextlib
 import ctypes
 import time
 import winreg
+from contextlib import contextmanager
 from ctypes import wintypes
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -247,7 +248,7 @@ def identity():
         return None
 
 
-@contextlib.contextmanager
+@contextmanager
 def kept_identity():
     """Restores the key of the identity of the notifications as it was, also after a failure: the
     client writes it at each start, and a check leaves no key of its own behind (ADR 0915)."""
@@ -292,7 +293,7 @@ def uninstall_entry():
         return None
 
 
-@contextlib.contextmanager
+@contextmanager
 def kept_uninstall_entry():
     """Restores the entry of Junto in the list of installed programs as it was, also after a
     failure: the setup program writes it, and a check leaves no key of its own behind (ADR 0915)."""
@@ -345,7 +346,7 @@ def restore_registry_tree(path, saved):
         restore_registry_tree(path + "\\" + name, child)
 
 
-@contextlib.contextmanager
+@contextmanager
 def kept_scheme():
     """Restore the existing URL handler and all of its subkeys after the setup check."""
     saved = registry_tree(SCHEME_KEY)
