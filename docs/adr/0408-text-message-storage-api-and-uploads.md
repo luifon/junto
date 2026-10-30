@@ -338,6 +338,8 @@ Reaction rosters:
   boundary, and reads one standard emoji. A page has at most 200 accounts, sorted by
   account ID, with exclusive forward and backward cursors. An index begins with the
   message and emoji, then account ID, so a rare reaction needs no scan of other emoji.
+  Its leading message ID also supports purge reads; the purge plan check accepts
+  either this index or the reaction primary key and still forbids sequential scans.
 - A deleted account has no displayed name; an unavailable account remains identified as
   unavailable. Reading a roster requires access to the message, independently of the
   permission to add a reaction.
