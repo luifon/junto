@@ -10,6 +10,97 @@ fn quit(mut window: crate::harness::Window) {
 }
 
 #[gpui::test]
+fn a_refused_edit_keeps_its_text_and_edit_target_after_restart(cx: &mut TestAppContext) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.write("original message");
+    let id = window.until_message("original message").message.id;
+    window.right_click_named(format!("message:{id}"));
+    window.click("message-edit");
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "precious refused edit 日本語", window, cx)
+    });
+    proxy.fail(&format!("/api/v1/messages/{id}"), [Fault::Refused]);
+    window.press("enter");
+    window.until("the edit is refused", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.message_refusal().is_some())
+    });
+    quit(window);
+    let mut window = open(cx, directory.path());
+    window.until_ready();
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "precious refused edit 日本語"
+    );
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1),
+        Some(id)
+    );
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    window.press("enter");
+    window.until_message("precious refused edit 日本語");
+    window.until("the accepted edit clears its composer", |window| {
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx).is_empty())
+    });
+    quit(window);
+    let mut window = open(cx, directory.path());
+    window.until_ready();
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        ""
+    );
+}
+
+#[gpui::test]
+fn an_edit_acceptance_does_not_clear_a_newer_edit_draft(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.write("original message");
+    let id = window.until_message("original message").message.id;
+    window.right_click_named(format!("message:{id}"));
+    window.click("message-edit");
+    window
+        .in_shell(|shell, window, cx| shell.type_message(Pane::Main, "submitted edit", window, cx));
+    proxy.hold_answer_ending("PUT", &format!("/messages/{id}"));
+    window.press("enter");
+    window.until_message("submitted edit");
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "newer edit 日本語", window, cx)
+    });
+    proxy.release_answers();
+    window.until("the edit answer arrives", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.message_asks_flying() == 0)
+    });
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1),
+        Some(id)
+    );
+    quit(window);
+    let mut window = open(cx, directory.path());
+    window.until_ready();
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "newer edit 日本語"
+    );
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1),
+        Some(id)
+    );
+}
+
+#[gpui::test]
 fn channel_and_thread_drafts_survive_a_process_restart_and_clear_after_send(
     cx: &mut TestAppContext,
 ) {

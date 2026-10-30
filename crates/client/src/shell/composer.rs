@@ -119,6 +119,7 @@ pub(crate) struct Composer {
     placed: bool,
     pub(crate) reply_to: Option<MessageId>,
     pub(crate) editing: Option<Editing>,
+    edit_generation: u64,
     drafts: HashMap<Desk, Draft>,
     /// Why the message was not sent as it is.
     pub(crate) problem: Option<String>,
@@ -347,6 +348,7 @@ impl Composer {
             placed: false,
             reply_to: None,
             editing: None,
+            edit_generation: 0,
             drafts: HashMap::new(),
             problem: None,
             preview: false,
@@ -606,6 +608,7 @@ impl Shell {
         {
             return;
         }
+        pen.edit_generation = pen.edit_generation.wrapping_add(1);
         if let Some(before) = pen.place.take() {
             pen.drafts.remove(&before);
             pen.reply_to = None;
@@ -691,6 +694,7 @@ impl Shell {
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
     pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         self.typing_activity(pane, true, cx);
         self.save_composer(pane, cx);
         let drawings = Drawings::current(cx);
@@ -1220,6 +1224,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         self.pen_mut(pane).preview = false;
         self.pen_mut(pane).reply_to = Some(message_id);
         self.pen_mut(pane).editing = None;
@@ -1300,6 +1305,7 @@ impl Shell {
             MentionTarget::Everyone => text::EVERYONE.to_owned(),
         };
         let shown = compose::written(document, &name);
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         let mut content = InputContent::new(shown.text.clone());
         for mention in &shown.mentions {
             let token = InlineToken::new(
@@ -1329,6 +1335,7 @@ impl Shell {
 
     /// Ends a reply or an edit without sending.
     fn cancel_compose_state(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         if self.pen_mut(pane).editing.take().is_some() {
             self.pen_mut(pane)
                 .input
@@ -1443,12 +1450,47 @@ impl Shell {
         }
         let used_emoji = crate::emoji::completion::used(&document);
         let reply_to = self.pen_mut(pane).reply_to;
-        let sent = self.state.update(cx, |state, cx| match editing {
-            Some(message_id) => {
-                state.edit_message(server_id, message_id, document, cx);
-                true
-            }
-            None => state.send_message(server_id, place, document, reply_to, cx),
+        if let Some(message_id) = editing {
+            self.typing_activity(pane, false, cx);
+            self.save_composer(pane, cx);
+            self.state.update(cx, |state, cx| state.flush_drafts(cx));
+            let pen = self.pen_mut(pane);
+            pen.edit_generation = pen.edit_generation.wrapping_add(1);
+            let generation = pen.edit_generation;
+            let desk = pen.place;
+            let saved = pen.saved.borrow().clone();
+            let owner = self.state.read(cx).owner(server_id);
+            let receive = self.state.update(cx, |state, cx| {
+                state.confirm_edit(server_id, message_id, document, cx)
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let accepted = receive.await.unwrap_or(false);
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let pen = this.pen(pane);
+                    if !accepted
+                        || this.state.read(cx).owner(server_id) != owner
+                        || pen.place != desk
+                        || pen.edit_generation != generation
+                        || pen.saved.borrow().as_ref() != saved.as_ref()
+                        || desk.is_none_or(|desk| {
+                            this.state.read(cx).saved_draft(desk) != saved.as_ref()
+                        })
+                    {
+                        return;
+                    }
+                    this.clear_submitted_composer(pane, window, cx);
+                    this.state.update(cx, |state, cx| {
+                        state
+                            .remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
+                    });
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+        let sent = self.state.update(cx, |state, cx| {
+            state.send_message(server_id, place, document, reply_to, cx)
         });
         if !sent {
             self.pen_mut(pane).problem = Some(text::NOT_SENT.to_owned());
@@ -1458,6 +1500,17 @@ impl Shell {
         self.state.update(cx, |state, cx| {
             state.remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
         });
+        self.clear_submitted_composer(pane, window, cx);
+        self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
+        cx.notify();
+    }
+
+    fn clear_submitted_composer(
+        &mut self,
+        pane: Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.typing_activity(pane, false, cx);
         let was_preview = self.pen(pane).preview;
         self.pen_mut(pane).preview = false;
@@ -1472,11 +1525,6 @@ impl Shell {
         });
         self.save_composer(pane, cx);
         self.state.update(cx, |state, cx| state.flush_drafts(cx));
-        // The person sent a message: the list shows its end.
-        if editing.is_none() {
-            self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
-        }
-        cx.notify();
     }
 
     /// Opens the emoji picker: for a reaction to a message, or for the text of a composer.

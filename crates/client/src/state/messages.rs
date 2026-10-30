@@ -628,6 +628,22 @@ impl AppState {
         });
     }
 
+    pub(crate) fn confirm_edit(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        document: Document,
+        cx: &mut Context<Self>,
+    ) -> futures_channel::oneshot::Receiver<bool> {
+        let (answer, receive) = futures_channel::oneshot::channel();
+        self.ask_messages(server_id, cx, move |api| async move {
+            let result = api.edit_message(message_id, document).await;
+            let _ = answer.send(result.is_ok());
+            result
+        });
+        receive
+    }
+
     pub fn delete_message(
         &mut self,
         server_id: ServerId,

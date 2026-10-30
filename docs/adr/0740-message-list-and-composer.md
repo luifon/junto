@@ -10,6 +10,12 @@ ADR 0401 and ADR 0408 define what a message holds: a typed document, replies, re
 
 ## Decision
 
+An edit keeps its composer and persistent draft while the request is pending or
+refused. Acceptance clears the submitted draft only while the same owner, place,
+edit generation and saved contents still own that composer. A late acceptance
+cannot clear text written afterwards or a draft saved by another window. The
+refused-edit window test restarts the application before retrying the edit.
+
 Derivation:
 
 - A function without side effects (ADR 0730) derives the rows of a list from a timeline: day separators, the line of the first unread message, messages, system lines, the waiting messages, and a row at each end that states whether the history goes on.
