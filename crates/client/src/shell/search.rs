@@ -18,7 +18,7 @@ use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
-    SideHeader, StatePanel, StyleExt,
+    SideHeader, StatePanel, StyleExt, Toggle,
 };
 
 /// One of the three filters of a search.
@@ -83,6 +83,7 @@ impl Shell {
 
     /// Changes the filters of the search and runs it again.
     pub fn set_search_filters(&mut self, filters: Filters, cx: &mut Context<Self>) {
+        self.search_date_invalid = false;
         self.state
             .update(cx, |state, cx| state.set_search_filters(filters, cx));
         cx.notify();
@@ -145,11 +146,7 @@ impl Shell {
         panel: &SearchPanel,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let filters = Filters {
-            channel: panel.channel.as_ref().map(|(channel_id, _)| *channel_id),
-            author: panel.author.as_ref().map(|(account_id, _)| *account_id),
-            date: panel.date,
-        };
+        let filters = panel.filters;
         let item = |selector: String,
                     index: usize,
                     title: SharedString,
@@ -288,7 +285,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The three filters of a search, under the header of its panel.
+    /// The filters of a search, under the header of its panel.
     fn render_filters(
         &mut self,
         panel: &SearchPanel,
@@ -367,7 +364,127 @@ impl Shell {
                     ),
             );
         }
-        row.into_any_element()
+        let filters = panel.filters;
+        let mut content = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pb(u(8.0));
+        let options: [(&'static str, &'static str, bool, Filters); 5] = [
+            (
+                "search-has-file",
+                "Has a file",
+                filters.has_file,
+                Filters {
+                    has_file: !filters.has_file,
+                    ..filters
+                },
+            ),
+            (
+                "search-has-link",
+                "Has a link",
+                filters.has_link,
+                Filters {
+                    has_link: !filters.has_link,
+                    ..filters
+                },
+            ),
+            (
+                "search-has-picture",
+                "Has a picture",
+                filters.has_picture,
+                Filters {
+                    has_picture: !filters.has_picture,
+                    ..filters
+                },
+            ),
+            (
+                "search-mentions-me",
+                "Mentions me",
+                filters.mentions_me,
+                Filters {
+                    mentions_me: !filters.mentions_me,
+                    ..filters
+                },
+            ),
+            (
+                "search-direct",
+                "Direct messages",
+                filters.direct,
+                Filters {
+                    direct: !filters.direct,
+                    ..filters
+                },
+            ),
+        ];
+        for (selector, title, on, next) in options {
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(title)
+                    .child(
+                        Toggle::new(selector, title, on, (text::ON, text::OFF))
+                            .selector(selector)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_search_filters(next, cx);
+                            })),
+                    ),
+            );
+        }
+        content = content
+            .child(
+                div()
+                    .flex()
+                    .gap(u(6.0))
+                    .child(
+                        div().flex_1().min_w_0().child("From").child(
+                            Field::new(&self.search_from, "From date").selector("search-from"),
+                        ),
+                    )
+                    .child(div().flex_1().min_w_0().child("Through").child(
+                        Field::new(&self.search_through, "Through date").selector("search-through"),
+                    )),
+            )
+            .child(
+                Button::new("search-apply-dates")
+                    .label("Apply date range")
+                    .selector("search-apply-dates")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let format = time::macros::format_description!("[year]-[month]-[day]");
+                        let from =
+                            time::Date::parse(this.search_from.read(cx).value().trim(), format);
+                        let through =
+                            time::Date::parse(this.search_through.read(cx).value().trim(), format);
+                        if let (Ok(from), Ok(through)) = (from, through)
+                            && from <= through
+                            && through.next_day().is_some()
+                        {
+                            this.search_date_invalid = false;
+                            this.set_search_filters(
+                                Filters {
+                                    date: DateFilter::Range { from, through },
+                                    ..filters
+                                },
+                                cx,
+                            );
+                        } else {
+                            this.search_date_invalid = true;
+                            cx.notify();
+                        }
+                    })),
+            );
+        if self.search_date_invalid {
+            content = content.child(
+                div()
+                    .debug_selector(|| "search-date-invalid".to_owned())
+                    .child("Enter dates as YYYY-MM-DD, with From on or before Through."),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(row)
+            .child(content)
+            .into_any_element()
     }
 
     /// One result. `index` is its place in the list, and `number` its place among the
@@ -496,7 +613,7 @@ impl Shell {
             panel.text,
             panel.channel.as_ref().map(|(id, _)| id),
             panel.author.as_ref().map(|(id, _)| id),
-            panel.date
+            panel.filters
         )
         .into();
         crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()

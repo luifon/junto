@@ -44,6 +44,11 @@ impl SettingsScope {
 pub struct SearchQuery {
     /// From 1 to 1,024 bytes.
     pub text: String,
+    pub has_file: bool,
+    pub has_link: bool,
+    pub has_picture: bool,
+    pub mentions_me: bool,
+    pub direct: bool,
     pub channel_id: Option<ChannelId>,
     /// The author of a message, or the speaker of a transcript line.
     pub author_id: Option<AccountId>,
@@ -64,6 +69,17 @@ impl SearchQuery {
                 .map_err(|error| ApiError::Request(error.to_string()))
         };
         let mut pairs = vec![("q", self.text.clone())];
+        for (key, enabled) in [
+            ("has_file", self.has_file),
+            ("has_link", self.has_link),
+            ("has_picture", self.has_picture),
+            ("mentions_me", self.mentions_me),
+            ("direct", self.direct),
+        ] {
+            if enabled {
+                pairs.push((key, "true".to_owned()));
+            }
+        }
         if let Some(channel_id) = self.channel_id {
             pairs.push(("channel_id", channel_id.to_string()));
         }
@@ -219,6 +235,7 @@ mod tests {
             until: Some(from + time::Duration::days(1)),
             limit: Some(20),
             cursor: Some("0.1:id:-1".to_owned()),
+            ..SearchQuery::default()
         };
         assert_eq!(
             query.pairs().unwrap(),
@@ -232,6 +249,29 @@ mod tests {
                 ("cursor", "0.1:id:-1".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn content_filters_are_sent_together() {
+        let query = SearchQuery {
+            text: "quartz".to_owned(),
+            has_file: true,
+            has_link: true,
+            has_picture: true,
+            mentions_me: true,
+            direct: true,
+            ..SearchQuery::default()
+        };
+        let pairs = query.pairs().unwrap();
+        for key in [
+            "has_file",
+            "has_link",
+            "has_picture",
+            "mentions_me",
+            "direct",
+        ] {
+            assert!(pairs.contains(&(key, "true".to_owned())));
+        }
     }
 
     #[test]

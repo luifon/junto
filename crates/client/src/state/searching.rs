@@ -92,11 +92,9 @@ impl AppState {
         self.known.fork = None;
         // The results of the same text stay on screen while its next answer is on its
         // way; another text starts with an empty panel.
-        let held = self
-            .known
-            .search
-            .take()
-            .filter(|search| search.server_id == server_id && search.text == text);
+        let held = self.known.search.take().filter(|search| {
+            search.server_id == server_id && search.text == text && search.filters == filters
+        });
         self.known.search = Some(Search {
             server_id,
             text,
@@ -172,7 +170,12 @@ impl AppState {
                 .filters
                 .date
                 .from(OffsetDateTime::now_utc(), self.known.zone),
-            until: None,
+            until: search.filters.date.until(self.known.zone),
+            has_file: search.filters.has_file,
+            has_link: search.filters.has_link,
+            has_picture: search.filters.has_picture,
+            mentions_me: search.filters.mentions_me,
+            direct: search.filters.direct,
             limit: None,
             cursor: if more { self.search_next.clone() } else { None },
         };

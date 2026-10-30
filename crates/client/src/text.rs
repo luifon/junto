@@ -2861,6 +2861,7 @@ pub fn date_filter(filter: crate::state::search::DateFilter) -> &'static str {
     use crate::state::search::DateFilter;
     match filter {
         DateFilter::AnyTime => "Any time",
+        DateFilter::Range { .. } => "Date range",
         DateFilter::Today => "Today",
         DateFilter::Last7Days => "Last 7 days",
         DateFilter::Last30Days => "Last 30 days",

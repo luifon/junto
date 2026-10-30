@@ -429,6 +429,9 @@ pub struct Shell {
     pub(crate) record_language_closed_by_press: bool,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
+    search_from: Entity<InputState>,
+    search_through: Entity<InputState>,
+    search_date_invalid: bool,
     /// The press of the pointer that closed the list of a filter was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) filter_closed_by_press: bool,
@@ -516,6 +519,8 @@ impl Shell {
         let fork_name = Field::state(text::FORK_NAME, window, cx);
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
+        let search_from = Field::state("YYYY-MM-DD", window, cx);
+        let search_through = Field::state("YYYY-MM-DD", window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
         let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
         let quiet_zone_search = Field::state(text::QUIET_ZONE_SEARCH, window, cx);
@@ -586,6 +591,14 @@ impl Shell {
                     FieldEvent::Submitted => this.submit_search(window, cx),
                 },
             ),
+            Field::observe(&search_from, window, cx, |this: &mut Self, _, _, cx| {
+                this.search_date_invalid = false;
+                cx.notify();
+            }),
+            Field::observe(&search_through, window, cx, |this: &mut Self, _, _, cx| {
+                this.search_date_invalid = false;
+                cx.notify();
+            }),
             Field::observe(&quiet_from, window, cx, |this: &mut Self, _, _, cx| {
                 this.quiet_refused = false;
                 cx.notify();
@@ -868,6 +881,9 @@ impl Shell {
             recording_parts_closed_by_press: false,
             record_language_closed_by_press: false,
             search_field,
+            search_from,
+            search_through,
+            search_date_invalid: false,
             filter_closed_by_press: false,
             quiet_from,
             quiet_until,

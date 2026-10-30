@@ -39,6 +39,16 @@ pub struct Query {
     pub author_id: Option<AccountId>,
     pub from: Option<String>,
     pub until: Option<String>,
+    #[serde(default)]
+    pub has_file: bool,
+    #[serde(default)]
+    pub has_link: bool,
+    #[serde(default)]
+    pub has_picture: bool,
+    #[serde(default)]
+    pub mentions_me: bool,
+    #[serde(default)]
+    pub direct: bool,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
 }
@@ -111,12 +121,17 @@ pub async fn search(
              line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
              vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms
              from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
-             not null and (m.readers is null or $3=any(m.readers)) union all select
+             not null and (m.readers is null or $3=any(m.readers))
+             and (not $12 or exists(select 1 from attachments a where a.message_id=m.id and a.complete and a.removed_at is null))
+             and (not $13 or jsonb_path_exists(m.document,'lax $.** ? (@.kind == \"link\" || (@.kind == \"text\" && @.text like_regex \"(https?|junto)://[^[:space:]]+\"))'))
+             and (not $14 or exists(select 1 from attachments a where a.message_id=m.id and a.complete and a.removed_at is null and a.media_type like 'image/%'))
+             and (not $15 or notification_mentioned($3,m.id,true,true))
+             and (not $16 or exists(select 1 from conversations c where c.id=m.place_id)) union all select
              l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true,
              null::bigint,null::uuid,l.start_ms from
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
-             reads_call(r.call_id,$3) ), hits as (select
+             reads_call(r.call_id,$3) and not ($12 or $13 or $14 or $15 or $16) ), hits as (select
              content.*,ts_rank_cd(vector,q) as rank from content,query where vector @@ q and ($4::uuid is null or
              place_id=$4) and ($5::uuid is null or author_id=$5) and ($6::timestamptz is null or created_at >= $6) and
              ($7::timestamptz is null or created_at < $7)) select hits.*,ch.workspace_id from hits left join channels ch on
@@ -133,6 +148,11 @@ pub async fn search(
             .bind(id)
             .bind(line)
             .bind(i64::from(limit) + 1)
+            .bind(query.has_file)
+            .bind(query.has_link)
+            .bind(query.has_picture)
+            .bind(query.mentions_me)
+            .bind(query.direct)
             .fetch_all(connection)
             .await?;
         let more = rows.len() > limit as usize;

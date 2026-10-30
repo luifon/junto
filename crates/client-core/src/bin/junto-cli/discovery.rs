@@ -589,6 +589,11 @@ async fn search(
         until: time_of(arguments, "until")?,
         limit: arguments.number("limit")?,
         cursor: arguments.value("cursor").map(str::to_owned),
+        has_file: arguments.flag("has-file"),
+        has_link: arguments.flag("has-link"),
+        has_picture: arguments.flag("has-picture"),
+        mentions_me: arguments.flag("mentions-me"),
+        direct: arguments.flag("direct"),
     };
     let page = server.api().search(&query).await.map_err(failed)?;
     let mut lines: Vec<String> = page.results.iter().flat_map(hit_lines).collect();

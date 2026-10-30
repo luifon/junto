@@ -32,6 +32,10 @@ pub enum DateFilter {
     Today,
     Last7Days,
     Last30Days,
+    Range {
+        from: time::Date,
+        through: time::Date,
+    },
 }
 
 impl DateFilter {
@@ -46,11 +50,16 @@ impl DateFilter {
     pub fn from(self, now: OffsetDateTime, zone: Zone) -> Option<OffsetDateTime> {
         match self {
             Self::AnyTime => None,
-            Self::Today => Some(crate::moment::in_utc(
-                zone.local(now).replace_time(time::Time::MIDNIGHT),
-            )),
+            Self::Range { from, .. } => Some(zone.start_of(from)),
+            Self::Today => Some(zone.start_of(zone.local(now).date())),
             Self::Last7Days => Some(now - time::Duration::days(7)),
             Self::Last30Days => Some(now - time::Duration::days(30)),
+        }
+    }
+    pub fn until(self, zone: Zone) -> Option<OffsetDateTime> {
+        match self {
+            Self::Range { through, .. } => through.next_day().map(|day| zone.start_of(day)),
+            _ => None,
         }
     }
 }
@@ -62,6 +71,11 @@ pub struct Filters {
     /// The author of a message, or the speaker of a transcript line.
     pub author: Option<AccountId>,
     pub date: DateFilter,
+    pub has_file: bool,
+    pub has_link: bool,
+    pub has_picture: bool,
+    pub mentions_me: bool,
+    pub direct: bool,
 }
 
 /// Where the last request of a search stands.
@@ -275,6 +289,7 @@ pub struct SearchPanel {
     pub channel: Option<(ChannelId, String)>,
     pub author: Option<(AccountId, String)>,
     pub date: DateFilter,
+    pub filters: Filters,
     /// The message of a result that is being read for the jump to it.
     pub going: Option<MessageId>,
     pub go_failed: Option<String>,
@@ -579,6 +594,7 @@ pub fn search_panel(
             .author
             .map(|account_id| (account_id, name_of(account_id))),
         date: search.filters.date,
+        filters: search.filters,
         unreadable: channels
             .iter()
             .map(|(channel_id, _, _)| *channel_id)

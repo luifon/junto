@@ -127,6 +127,8 @@ commands:
                                marks, `or`, and a minus before a word
                                [--channel <id>] [--author <account>] [--from <time>]
                                [--until <time>] [--limit <n>] [--cursor <continuation>]
+                               [--has-file] [--has-link] [--has-picture]
+                               [--mentions-me] [--direct]
 
 actions of call:
   show [<channel>]             the call of a voice channel, or the call of this account
@@ -458,6 +460,11 @@ const VALUE_OPTIONS: &[&str] = &[
     "permissions",
 ];
 const FLAGS: &[&str] = &[
+    "has-file",
+    "has-link",
+    "has-picture",
+    "mentions-me",
+    "direct",
     "when-selected",
     "wait",
     "yes",

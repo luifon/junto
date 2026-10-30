@@ -543,6 +543,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 channel: Some(id(GENERAL)),
                 author: Some(person("Luca")),
                 date: DateFilter::Last7Days,
+                ..Filters::default()
             };
             search.hits.truncate(1);
             searching(shell, search, window, cx);

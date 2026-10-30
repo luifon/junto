@@ -192,6 +192,7 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
                 channel: None,
                 author: Some(own),
                 date: DateFilter::Today,
+                ..Filters::default()
             },
             cx,
         );
@@ -896,4 +897,103 @@ fn a_transcript_search_result_menu_copies_its_line_and_recording_link_and_opens_
             .and_then(|workspace| workspace.transcript.as_ref())
             .is_some_and(|panel| panel.recording_id.as_uuid() == recording)
     });
+}
+
+#[gpui::test]
+fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    window.until("history is loaded", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel = window.selected_channel();
+    admin.send(&world, channel, document("quartz ordinary"));
+    let mentioned = admin.mention(&world, channel, "quartz mention ", window.own_account());
+    let linked = admin.send(
+        &world,
+        channel,
+        document("quartz https://example.test/plan"),
+    );
+    window.until_message("quartz ordinary");
+    window.search_for("quartz");
+    assert_eq!(window.until_searched().messages().len(), 3);
+    window.click("search-has-link");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages().len(), 1);
+    assert_eq!(panel.messages()[0].target, ResultTarget::Message(linked.id));
+    window.click("search-has-link");
+    assert_eq!(window.until_searched().messages().len(), 3);
+    window.click("search-mentions-me");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages().len(), 1);
+    assert_eq!(
+        panel.messages()[0].target,
+        ResultTarget::Message(mentioned.id)
+    );
+    window.click("search-mentions-me");
+    window.until_searched();
+    let picture = crate::pictures::send_files(
+        &world,
+        &admin,
+        junto_client_core::model::PlaceId::Channel(channel),
+        "quartz picture",
+        vec![("plan.png", crate::pictures::png(4, 4))],
+    );
+    window.search_for("quartz");
+    assert_eq!(window.until_searched().messages().len(), 4);
+    for selector in ["search-has-file", "search-has-picture"] {
+        window.click(selector);
+        let panel = window.until_searched();
+        assert_eq!(panel.messages().len(), 1);
+        assert_eq!(
+            panel.messages()[0].target,
+            ResultTarget::Message(picture.id)
+        );
+        window.click(selector);
+        assert_eq!(window.until_searched().messages().len(), 4);
+    }
+    let conversation = world
+        .run(admin.handle.api().open_conversation(window.own_account()))
+        .unwrap();
+    let direct = world
+        .run(admin.handle.api().send_message(
+            junto_client_core::model::PlaceId::Direct(conversation.id),
+            &junto_client_core::protocol::message::SendMessage {
+                document: document("quartz direct"),
+                reply_to: None,
+                attachments: vec![],
+            },
+        ))
+        .unwrap();
+    window.until("the direct conversation is known", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.directs.iter().any(|row| row.id == conversation.id))
+    });
+    window.click("search-direct");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages().len(), 1);
+    assert_eq!(panel.messages()[0].target, ResultTarget::Message(direct.id));
+    window.click("search-direct");
+    assert_eq!(window.until_searched().messages().len(), 5);
+    window.type_into("search-from", "2026-04-31");
+    window.type_into("search-through", "2026-04-30");
+    window.click("search-apply-dates");
+    assert!(window.shows("search-date-invalid"));
+    assert_eq!(window.search_panel().unwrap().messages().len(), 5);
+    window.click("search-from");
+    window.press("secondary-a backspace");
+    window.type_into("search-from", "2000-01-01");
+    window.click("search-through");
+    window.press("secondary-a backspace");
+    window.type_into("search-through", "2000-01-02");
+    window.click("search-apply-dates");
+    assert_eq!(window.until_searched().state, SearchShown::Nothing);
+    assert!(!window.shows("search-date-invalid"));
+    window.click("search-date");
+    window.click("search-date-0");
+    assert_eq!(window.until_searched().messages().len(), 5);
 }

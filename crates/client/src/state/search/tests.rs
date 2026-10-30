@@ -375,6 +375,7 @@ fn the_filters_offer_the_channels_and_the_members_of_the_shown_workspace() {
         channel: Some(scene.general),
         author: Some(scene.ana),
         date: DateFilter::Last7Days,
+        ..Filters::default()
     };
     search.going = Some(MessageId::generate());
     search.go_failed = Some("Gone.".to_owned());
@@ -613,4 +614,23 @@ fn the_results_of_a_later_page_follow_the_listed_ones_in_the_order_of_the_server
         panel.results[0].target,
         ResultTarget::Transcript { .. }
     ));
+}
+
+#[test]
+fn chosen_dates_include_the_whole_local_day_across_daylight_saving() {
+    let zone = Zone::Named(chrono_tz::America::New_York);
+    let day = time::macros::date!(2026 - 03 - 08);
+    let filter = DateFilter::Range {
+        from: day,
+        through: day,
+    };
+    let from = filter.from(time::OffsetDateTime::UNIX_EPOCH, zone).unwrap();
+    let until = filter.until(zone).unwrap();
+    assert_eq!((until - from).whole_hours(), 23);
+    assert_eq!(
+        DateFilter::Today.from(from + Duration::hours(12), zone),
+        Some(from)
+    );
+    assert_eq!(zone.local(from).date(), day);
+    assert_eq!(zone.local(until).date(), day.next_day().unwrap());
 }

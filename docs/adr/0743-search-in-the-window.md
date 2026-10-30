@@ -49,3 +49,15 @@ Jump:
 - The window tests against the real server cover a query that finds messages and a transcript line, the filters, the jump to a message, a search without a result, a refused text, a further page, and the loss of the results of a channel with the access to it.
 
 Search-result rows expose their current Go to message or Open transcript action through the shared context menu, with Copy text for the displayed excerpt and Copy link. A message result copies the message application address; a transcript result copies its recording address. Navigation uses the same target and permission-checked state flow as the existing row click. The popup key includes the owner, target, query and filters, so a replacement search does not retain the previous menu. Existing row focus and keyboard behavior are preserved. Window tests: `context_menus::a_search_result_menu_copies_its_text_and_link_and_opens_its_target` and `search::a_transcript_search_result_menu_copies_its_line_and_recording_link_and_opens_it` cover both kinds, copying without navigation and the original target-opening actions.
+
+The panel offers independent file, link, picture, current-account mention and
+direct-conversation switches alongside the channel, author and date choices.
+Changing any filter starts a new first page and withdraws results of the previous
+filter combination. Retry and further-page requests keep the complete filter set.
+
+The From and Through fields accept calendar dates written as YYYY-MM-DD.
+Apply date range validates both dates and their order before sending a request.
+Both chosen days are included: the request starts at the beginning of From in
+the person's time zone and ends exclusively at the beginning of the day after
+Through. Each boundary uses that date's time-zone rules, including daylight
+saving changes. Today uses the same calendar-boundary rule. Choosing a date preset replaces the range.

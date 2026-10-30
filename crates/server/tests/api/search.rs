@@ -437,6 +437,11 @@ async fn fix_transcript_search_uses_a_stored_indexed_vector() {
     .bind(uuid::Uuid::max())
     .bind(i32::MAX)
     .bind(201_i64)
+    .bind(false)
+    .bind(false)
+    .bind(false)
+    .bind(false)
+    .bind(false)
     .fetch_one(&mut *connection)
     .await
     .unwrap();
@@ -491,4 +496,123 @@ async fn fix_equal_rank_transcript_lines_page_in_order_and_unready_text_is_hidde
             "state {state}"
         );
     }
+}
+
+#[tokio::test]
+async fn content_mentions_and_direct_filters_combine_before_pagination() {
+    let files = Files::open().await;
+    let server = &files.server;
+    let owner = &files.owner;
+    let channel = &files.channel;
+    let reader = server.join(owner, "Reader").await;
+    send(server, owner, channel, "quartz ordinary").await;
+    let mentioned = mention(server, owner, channel, &reader).await;
+    let linked: Message = server
+        .post(
+            owner,
+            &format!("/api/v1/channels/{}/messages", channel.id),
+            &json!({"document":{"blocks":[{"kind":"paragraph","content":[
+                {"kind":"link","text":"quartz link","url":"https://example.test/plan"}
+            ]}]}}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let uploaded = upload(
+        server,
+        owner,
+        json!({"channel_id":channel.id}),
+        b"quartz file",
+    )
+    .await;
+    let file: Message = server
+        .post(
+            owner,
+            &format!("/api/v1/channels/{}/messages", channel.id),
+            &json!({"document":text("quartz file")["document"],"attachments":[uploaded.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let conversation: Conversation = server
+        .post(
+            &reader,
+            "/api/v1/conversations",
+            &json!({"account_id":owner.account_id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let direct: Message = server
+        .post(
+            &reader,
+            &format!("/api/v1/conversations/{}/messages", conversation.id),
+            &text("quartz direct"),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    for (filter, expected) in [
+        ("mentions_me", mentioned.id),
+        ("has_link", linked.id),
+        ("has_file", file.id),
+        ("direct", direct.id),
+    ] {
+        let page = search(server, &reader, &format!("quartz&{filter}=true&limit=1")).await;
+        assert_eq!(page.results.len(), 1, "{filter}");
+        assert_eq!(page.results[0].message_id, Some(expected), "{filter}");
+        assert!(
+            page.next.is_none(),
+            "filtering must precede pagination: {filter}"
+        );
+    }
+    assert!(
+        search(server, &reader, "quartz&has_picture=true")
+            .await
+            .results
+            .is_empty()
+    );
+    assert!(
+        search(server, &reader, "quartz&has_file=true&has_link=true")
+            .await
+            .results
+            .is_empty()
+    );
+    assert!(
+        search(server, owner, "quartz&mentions_me=true")
+            .await
+            .results
+            .is_empty()
+    );
+    let picture_upload = upload(
+        server,
+        owner,
+        json!({"channel_id":channel.id}),
+        &junto_server::image::samples::png(4, 4),
+    )
+    .await;
+    let picture: Message = server.post(owner,
+        &format!("/api/v1/channels/{}/messages", channel.id),
+        &json!({"document":text("quartz picture")["document"],"attachments":[picture_upload.id]}))
+        .await.ok(StatusCode::CREATED);
+    let page = search(server, &reader, "quartz&has_picture=true").await;
+    assert_eq!(page.results.len(), 1);
+    assert_eq!(page.results[0].message_id, Some(picture.id));
+    sqlx::query("update attachments set removed_at=now() where id=$1")
+        .bind(picture_upload.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        search(server, &reader, "quartz&has_picture=true")
+            .await
+            .results
+            .is_empty()
+    );
+    server
+        .delete(owner, &message(file.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        search(server, &reader, "quartz&has_file=true")
+            .await
+            .results
+            .is_empty()
+    );
 }
