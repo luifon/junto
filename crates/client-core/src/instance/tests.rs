@@ -128,9 +128,7 @@ fn a_partial_frame_has_one_deadline_even_while_bytes_keep_arriving() {
         panic!()
     };
     let mut stream = TcpStream::connect(first.address).unwrap();
-    stream
-        .write_all(&(MAX_REQUEST as u32).to_be_bytes())
-        .unwrap();
+    stream.write_all(&(MAX_REQUEST as u32).to_be_bytes()).unwrap();
     let mut writing = stream.try_clone().unwrap();
     let writer = thread::spawn(move || {
         let end = Instant::now() + 2 * WAIT;
@@ -180,7 +178,7 @@ fn accepted_requests_wait_for_a_body_after_nonblocking_accept() {
     let (done, result) = stopping::channel();
     let worker = thread::spawn(move || {
         ready.send(()).unwrap();
-        let _ = done.send(receive_request(&mut accepted, &token, &send));
+        let _ = done.send(receive_request(&mut accepted, &token, &send, &|| false));
     });
     started.recv_timeout(WAIT).unwrap();
     let early = result.recv_timeout(WAIT / 4);
@@ -203,15 +201,22 @@ fn accepted_requests_wait_for_a_body_after_nonblocking_accept() {
 
 #[test]
 fn shutdown_interrupts_an_accepted_partial_frame() {
+    shutdown_interrupts_partial_request(&(MAX_REQUEST as u32).to_be_bytes());
+}
+
+#[test]
+fn shutdown_interrupts_an_accepted_partial_header() {
+    shutdown_interrupts_partial_request(&[0]);
+}
+
+fn shutdown_interrupts_partial_request(bytes: &[u8]) {
     let (_root, directory) = directory();
     let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap()
     else {
         panic!()
     };
     let mut stream = TcpStream::connect(first.address).unwrap();
-    stream
-        .write_all(&(MAX_REQUEST as u32).to_be_bytes())
-        .unwrap();
+    stream.write_all(bytes).unwrap();
     let deadline = Instant::now() + WAIT;
     while first.accepted.lock().unwrap().socket.is_none() {
         assert!(
@@ -228,6 +233,29 @@ fn shutdown_interrupts_an_accepted_partial_frame() {
     let result = finished.recv_timeout(WAIT / 2);
     drop(stream);
     assert!(result.is_ok(), "shutdown must interrupt the socket read");
+}
+
+#[test]
+fn cancellation_without_socket_shutdown_interrupts_an_accepted_partial_frame() {
+    let (_root, directory) = directory();
+    let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap() else { panic!() };
+    let mut peer = TcpStream::connect(first.address).unwrap();
+    peer.write_all(&(MAX_REQUEST as u32).to_be_bytes()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while first.accepted.lock().unwrap().socket.is_none() {
+        assert!(Instant::now() < deadline, "the listener never accepted the request");
+        thread::park_timeout(Duration::from_millis(1));
+    }
+    first.accepted.lock().unwrap().stopping = true;
+    let deadline = Instant::now() + WAIT / 2;
+    let interrupted = loop {
+        if first.accepted.lock().unwrap().socket.is_none() { break true; }
+        if Instant::now() >= deadline { break false; }
+        thread::park_timeout(Duration::from_millis(1));
+    };
+    drop(peer);
+    drop(first);
+    assert!(interrupted, "the read required socket shutdown to observe cancellation");
 }
 
 #[test]
