@@ -123,20 +123,13 @@ async fn fixture(
         }
         let (mut stream, _) = listener.accept().await.unwrap();
         let _ = stream.read(&mut request).await;
-        assert!(String::from_utf8_lossy(&request).starts_with("GET /archive "));
+        assert!(String::from_utf8_lossy(&request).starts_with("GET /download/v2.0.0/archive "));
         if mode == "redirect" {
             let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             stream.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{}/archive\r\nContent-Length: 0\r\n\r\n", target.local_addr().unwrap()).as_bytes()).await.unwrap();
-            if let Ok(Ok((mut destination, _))) =
-                tokio::time::timeout(Duration::from_secs(1), target.accept()).await
-            {
-                let _ = destination.read(&mut request).await;
-                let _ = destination
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\narchive",
-                    )
-                    .await;
-            }
+            // A redirect to plain HTTP at another origin is not followed.
+            let asked = tokio::time::timeout(Duration::from_secs(1), target.accept()).await;
+            assert!(asked.is_err(), "the other origin received a request");
             return;
         }
         let header = if mode == "truncated" {
@@ -210,7 +203,7 @@ async fn streaming_refusals_remove_partial_downloads_and_stop_oversize_bodies() 
         let result = source.download(&path).await;
         match mode {
             "oversize" => assert!(matches!(result, Err(Error::Invalid("download size")))),
-            "redirect" => assert!(matches!(result, Err(Error::Invalid("HTTP status")))),
+            "redirect" => assert!(matches!(result, Err(Error::Network(_)))),
             _ => assert!(result.is_err(), "{mode}"),
         }
         assert!(!path.exists(), "{mode}");

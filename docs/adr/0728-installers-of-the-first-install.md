@@ -42,14 +42,14 @@ Linux:
 - A `.deb` installation is updated by the package manager: the client finds the package name `deb` in the description of its folder and installs nothing itself; its version line names the `.deb` of the newer version, and the section "Version" of the settings gives the command `sudo apt install ./junto_<version>_amd64.deb` and the address of the download page (ADR 0780). The update check reads the release information of the directory package, which has the same version. No apt repository is published in this version: it would need a signing key of its own and a host for its index.
 - `check_linux.py` requires the fields of the package, that the first name of each dependency is a package of the Debian release of the build image, the program of the tarball in `/usr/lib/junto`, the bundled libraries, the link, the menu entry, the icon theme and the copyright file, and the first frame of the extracted program through `/usr/bin/junto` under X11 and Wayland.
 
-The release site (ADR 0727) and the GitHub release offer the three installers beside the packages of ADR 0754 and ADR 0755.
+The GitHub release (ADR 0727) offers the three installers beside the packages of ADR 0754 and ADR 0755.
 
 The Windows setup program registers the current user's `Software\Classes\junto` URL protocol with `"<program>" "%1"` as its open command. The setup writes it after installing the program. Uninstall removes it only when its command names this installation; another installation's handler remains. Recorded setup tests and pure quoting/ownership tests run on Linux. The native package check verifies the actual command and removal, saving and restoring the complete previous scheme tree also after a failure; it does not leave this test's handler behind. The bundle and Linux desktop registration use the same scheme (ADR 0732).
 
 ## Consequences
 
 - A person on each system installs Junto in the way that Discord and Slack use. On Windows Junto is in the Start menu and in Settings, Apps; it is removed there.
-- The setup program is unsigned, as every program of the project: SmartScreen shows its warning at its first start (ADR 0704, ADR 0755). The SHA-256 of its archive detects a damaged download, not a changed one; the checksums of the release site and the SHA256SUMS of the release cover the whole file.
+- The setup program is unsigned, as every program of the project: SmartScreen shows its warning at its first start (ADR 0704, ADR 0755). The SHA-256 of its archive detects a damaged download, not a changed one; the SHA256SUMS of the release covers the whole file.
 - The archive of the setup program is not signed with the release keys and the setup writes no record of the installed release: the first update downloads the release of the installed version for its rollback (ADR 0726).
 - A newer version of the `.deb` is installed by the person; the client cannot update a file that the package manager owns.
 - Not tested: the setup program started from Explorer with its dialogs and the start of Junto at its end, the uninstall from Settings, Apps, the drag from the disk image in the Finder, and an installation of the `.deb` with `apt` on a desktop. The coordinator and a person check them on the real systems.

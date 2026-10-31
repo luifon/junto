@@ -295,12 +295,8 @@ class Check:
             tree(self.root / f"tree-{version}", version, status)
             release_tools.package(self.tool, self.files, self.root / f"tree-{version}", self.root / f"out-{version}",
                                   version, "linux", "directory", self.architecture)
-        source.mkdir()
-        for path in (self.root / "out-1.0.0").iterdir():
-            if not path.name.startswith("latest-"):
-                shutil.copyfile(path, source / path.name)
-        for path in (self.root / "out-2.0.0").iterdir():
-            shutil.copyfile(path, source / path.name)
+        for version in ["1.0.0", "2.0.0"]:
+            release_tools.publish_into(source, self.root / f"out-{version}", version)
         place = self.root / "place"
         tree(place, "1.0.0", 0)
         application = place / "junto"
@@ -320,10 +316,8 @@ class Check:
                 expect(result.returncode == 0 and "version 1.0.0 is kept for a rollback" in result.stdout,
                        "the update failed", result)
                 arch = self.architecture
-                expect(server.paths == [f"/latest-linux-directory-{arch}.json",
-                                        f"/junto-2.0.0-linux-directory-{arch}.junto",
-                                        f"/release-1.0.0-linux-directory-{arch}.json",
-                                        f"/junto-1.0.0-linux-directory-{arch}.junto"], f"requests: {server.paths}")
+                expect(server.paths == release_tools.update_requests(f"linux-directory-{arch}", "1.0.0", "2.0.0"),
+                       f"requests: {server.paths}")
             expect(running.poll() is None, "the running program stopped during the update")
             result = ran([application / "junto"])
             expect(result.returncode == 1, "the new program is not in place", result)

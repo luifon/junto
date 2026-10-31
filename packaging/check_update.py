@@ -68,12 +68,11 @@ def check():
                 sign(bundle)
             expected = requirement(installed)
             release = root / "release"
-            package(candidate, release, "2.0.0")
+            package(candidate, root / "release-2", "2.0.0")
             # The source keeps the release of every version; the installation holds no record.
             package(first, root / "release-1", "1.0.0")
-            for file in (root / "release-1").iterdir():
-                if not file.name.startswith("latest-"):
-                    shutil.copyfile(file, release / file.name)
+            release_tools.publish_into(release, root / "release-1", "1.0.0")
+            release_tools.publish_into(release, root / "release-2", "2.0.0")
             with release_tools.source(release) as (server, address):
                 update = [tool, "update", address, installed]
                 installed.parent.chmod(0o555)
@@ -86,9 +85,8 @@ def check():
                 result = ran(update)
                 assert result.returncode == 0, outcome(result)
                 assert "version 1.0.0 is kept for a rollback" in result.stdout, outcome(result)
-                assert server.paths == [f"/latest-macos-bundle-{arch}.json", f"/junto-2.0.0-macos-bundle-{arch}.junto",
-                                        f"/release-1.0.0-macos-bundle-{arch}.json",
-                                        f"/junto-1.0.0-macos-bundle-{arch}.junto"], server.paths
+                assert server.paths == release_tools.update_requests(f"macos-bundle-{arch}", "1.0.0", "2.0.0"), \
+                    server.paths
                 record = installed.parent / ".Junto.app.junto-update/record"
                 assert version(installed) == "2.0.0"
                 assert requirement(installed) == expected
@@ -132,8 +130,8 @@ def check():
                         sign(bad, other_environment)
                     bad_release = root / (identity_kind + "-release")
                     package(bad, bad_release, "3.0.0")
-                    for file in bad_release.iterdir():
-                        shutil.copyfile(file, release / file.name)
+                    shutil.rmtree(release / "download/v3.0.0", ignore_errors=True)
+                    release_tools.publish_into(release, bad_release, "3.0.0")
                     result = ran(update)
                     assert result.returncode != 0, outcome(result)
                     assert version(installed) == "1.0.0"

@@ -3,8 +3,7 @@
 
 The caller must hold tools/serial.sh for this entire command.
 """
-import functools
-import http.server
+import contextlib
 import os
 import pathlib
 from configuration import architecture as release_architecture
@@ -12,9 +11,9 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import threading
 
 import check_dmg
+import release_tools
 from check_signing import requirement
 from create_identity import create, run
 from keychains import cleanup, signals
@@ -35,23 +34,15 @@ def check():
         fresh_secret, fresh_public = root / "freshness.seed", root / "freshness.json"
         run(str(repository / "target/debug/junto-release"), "keygen", str(fresh_secret), str(fresh_public))
         keychain = root / "identity/signing.keychain-db"
-        server = None
-        thread = None
+        served = contextlib.ExitStack()
         try:
             identity = create(root / "identity")
             pin = root / "certificate.sha1"
             pin.write_text(identity)
-            class CountedHandler(http.server.SimpleHTTPRequestHandler):
-                def do_GET(self):
-                    self.server.requests += 1
-                    super().do_GET()
-            handler = functools.partial(CountedHandler, directory=str(root / "broken-release"))
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-            server.requests = 0
-            thread = threading.Thread(target=server.serve_forever)
-            thread.start()
+            source = root / "source"
+            server, address = served.enter_context(release_tools.source(source))
             environment = os.environ.copy()
-            environment.update(JUNTO_UPDATE_SOURCE=f"http://127.0.0.1:{server.server_port}/",
+            environment.update(JUNTO_UPDATE_SOURCE=address,
                                JUNTO_UPDATE_KEY=str(secret), JUNTO_FRESHNESS_KEY=str(fresh_secret), JUNTO_CODESIGN_IDENTITY=identity,
                                JUNTO_CODESIGN_KEYCHAIN=str(keychain), JUNTO_TEST_UPDATE_KEYS_FILE=str(public),
                                JUNTO_TEST_CERTIFICATE_FILE=str(pin), JUNTO_TEST_FRESHNESS_KEYS_FILE=str(fresh_public))
@@ -87,10 +78,12 @@ def check():
             program(broken / "Contents/MacOS/junto", 1)
             subprocess.run(["python3", str(repository / "packaging/sign.py"), str(broken)], env=environment, check=True)
             run(str(root / "updater-v1"), "package", str(broken.parent), str(root / "broken-release"), str(secret), str(fresh_secret), "2.0.0", "macos", "bundle", architecture)
+            release_tools.publish_into(source, root / "broken-release", "2.0.0")
             # The source keeps the release of every version: the first update downloads the
             # installed version for its record (ADR 0726).
+            (source / "download/v1.0.0").mkdir(parents=True)
             for name in [f"release-1.0.0-macos-bundle-{architecture}.json", f"junto-1.0.0-macos-bundle-{architecture}.junto"]:
-                shutil.copyfile(root / "v1" / name, root / "broken-release" / name)
+                shutil.copyfile(root / "v1" / name, source / "download/v1.0.0" / name)
             run("/usr/bin/ditto", "-x", "-k", str(root / f"v1/Junto-1.0.0-macos-{architecture}.zip"), str(root / "installed"))
             installed = root / "installed/Junto.app"
             expected = requirement(installed)
@@ -101,8 +94,10 @@ def check():
             finally:
                 installed.parent.chmod(0o755)
             assert result.returncode != 0 and "move Junto" in result.stderr, outcome(result)
-            assert server.requests == 0, "a read-only location contacted the source"
+            assert server.paths == [], "a read-only location contacted the source"
             run(str(root / "updater-v1"), "update-compiled", str(installed))
+            assert server.paths == release_tools.update_requests(f"macos-bundle-{architecture}", "1.0.0", "2.0.0"), \
+                server.paths
             result = subprocess.run([str(installed / "Contents/MacOS/junto"), "--version"], capture_output=True, text=True, timeout=30)
             assert result.returncode == 1, outcome(result)
             assert requirement(installed) == expected
@@ -112,7 +107,7 @@ def check():
             run(str(previous / "recover"), "rollback", str(installed))
             assert run(str(installed / "Contents/MacOS/junto"), "--version").strip() == "1.0.0 (test configuration)"
             assert requirement(installed) == expected
-            print("Real release: 13 assertions passed, including archive recovery while the new executable fails", flush=True)
+            print("Real release: 14 assertions passed, including archive recovery while the new executable fails", flush=True)
             bad_keys = root / "invalid-public.json"
             bad_keys.write_text("invalid JSON")
             for overrides, diagnostic in [({"JUNTO_UPDATE_SOURCE": "http://example.invalid/"}, "invalid update source"),
@@ -127,10 +122,7 @@ def check():
             print("Build configuration: 2 intended refusals and 1 valid build passed", flush=True)
 
         finally:
-            if server:
-                server.shutdown()
-                server.server_close()
-                thread.join()
+            served.close()
             cleanup([keychain, root / "other-identity/signing.keychain-db"], before)
             assert all(path.read_bytes() == content for path, content in originals.items()), "tracked configuration changed"
             after = run("security", "list-keychains", "-d", "user")

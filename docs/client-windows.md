@@ -1,6 +1,6 @@
 # Install Junto on Windows
 
-Junto runs on Windows 11 on x86-64 (ADR 0705). Obtain `Junto-<version>-windows-x86_64-setup.exe`, or the ZIP file `Junto-<version>-windows-x86_64.zip`, from the download page of the release site or from a source you have verified with whoever runs your server, and compare its SHA-256 with `SHA256SUMS` (`Get-FileHash -Algorithm SHA256 <file>` in PowerShell). Both hold one folder `Junto` (ADR 0755, ADR 0728); Junto needs no administrator rights and no other runtime.
+Junto runs on Windows 11 on x86-64 (ADR 0705). Obtain `Junto-<version>-windows-x86_64-setup.exe`, or the ZIP file `Junto-<version>-windows-x86_64.zip`, from the GitHub releases of the project, `https://github.com/luifon/junto/releases`, or from a source you have verified with whoever runs your server, and compare its SHA-256 with `SHA256SUMS` (`Get-FileHash -Algorithm SHA256 <file>` in PowerShell). Both hold one folder `Junto` (ADR 0755, ADR 0728); Junto needs no administrator rights and no other runtime.
 
 ## Install with the setup program
 

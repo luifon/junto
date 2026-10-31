@@ -188,14 +188,11 @@ class Check:
             shutil.copyfile(self.recover, folder / "junto-recover.exe")
             (folder / "junto-package.json").write_text(windows.description(version, "x86_64"), newline="\n")
         source = self.root / "release"
-        source.mkdir()
         for version, program in [("1.0.0", "exit-0.exe"), ("2.0.0", "exit-1.exe")]:
             tree(self.root / f"tree-{version}", version, self.root / program)
             release_tools.package(self.tool, self.files, self.root / f"tree-{version}", self.root / f"out-{version}",
                                   version, "windows", "directory", "x86_64")
-            for path in (self.root / f"out-{version}").iterdir():
-                if version == "2.0.0" or not path.name.startswith("latest-"):
-                    shutil.copyfile(path, source / path.name)
+            release_tools.publish_into(source, self.root / f"out-{version}", version)
         self.place = self.root / "Place"
         tree(self.place, "1.0.0", self.root / "exit-0.exe")
         self.application = self.place / "Junto"
@@ -204,10 +201,8 @@ class Check:
             result = ran([self.tool, "update", address, self.application])
             expect(result.returncode == 0 and "version 1.0.0 is kept for a rollback" in result.stdout,
                    "the update failed", result)
-            expect(server.paths == ["/latest-windows-directory-x86_64.json",
-                                    "/junto-2.0.0-windows-directory-x86_64.junto",
-                                    "/release-1.0.0-windows-directory-x86_64.json",
-                                    "/junto-1.0.0-windows-directory-x86_64.junto"], f"requests: {server.paths}")
+            expect(server.paths == release_tools.update_requests("windows-directory-x86_64", "1.0.0", "2.0.0"),
+                   f"requests: {server.paths}")
         expect(self.running.poll() is None, "the running program stopped during the update")
         result = ran([self.application / "junto.exe"])
         expect(result.returncode == 1, "the new program is not in place", result)
