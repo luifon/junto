@@ -728,10 +728,42 @@ impl Window {
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {
         self.settle();
-        let bounds = self
-            .cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("{selector} is not drawn"));
+        let bounds = self.cx.debug_bounds(selector).unwrap_or_else(|| {
+            let mut names = vec![
+                "reaction-people-dialog".to_owned(),
+                "reaction-people-error".to_owned(),
+                "reaction-people-list".to_owned(),
+                "reaction-emoji:👍".to_owned(),
+                "reaction-emoji:🎉".to_owned(),
+            ];
+            if let Some(id) = selector.strip_prefix("forward-origin:") {
+                names.extend([
+                    format!("forward-message:{id}"),
+                    format!("forward-reading:{id}"),
+                    format!("forward-unavailable:{id}"),
+                ]);
+            }
+            let bounds: Vec<_> = names.into_iter().map(|name| {
+                let bounds = self.cx.debug_bounds(crate::harness::selector(name.clone()));
+                (name, bounds)
+            }).collect();
+            let (messages, painted) = self.shell.read_with(&self.cx, |shell, _| {
+                let messages: Vec<_> = shell.drawn()
+                    .and_then(|view| view.lists())
+                    .and_then(|lists| lists.feed.as_ref())
+                    .into_iter()
+                    .flat_map(|feed| feed.rows.iter())
+                    .filter_map(|row| match row {
+                        junto_client::state::feed::FeedRow::Message(row) => Some((row.message.id, row.message.reactions.clone(), row.message.document.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                (messages, shell.painted_readonly_text())
+            });
+            let viewport = self.cx.update(|window, _| window.viewport_size());
+            eprintln!("CI_MISSING_CONTROL wanted={selector:?} viewport={viewport:?} related={bounds:?} messages={messages:?} painted={painted:?}");
+            panic!("{selector} is not drawn")
+        });
         self.press_at(bounds.center(), gpui::MouseButton::Left);
         self.settle();
     }
