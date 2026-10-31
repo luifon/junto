@@ -2,7 +2,8 @@
 //!
 //! The recorder writes into this directory. The server builds every path from identifiers
 //! that it generated, never from a name that the recorder reports, and it opens a file one
-//! path part at a time without following a link.
+//! path part at a time without following a link. The descriptor-relative guarantees are
+//! those of the Unix store; the Windows window-test backend has the scope of ADR 0912.
 
 use std::fs::File;
 use std::io;
@@ -139,6 +140,21 @@ impl Place {
     }
 }
 
+#[cfg(any(unix, windows))]
+fn piece_number(name: &str) -> Option<u64> {
+    let digits = name
+        .strip_suffix(".ts")?
+        .strip_prefix(crate::recorder::COMPOSITE_PIECE_PREFIX)?
+        .strip_prefix('_')?;
+    (!digits.is_empty() && digits.len() <= 12 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
+#[cfg(windows)]
+#[path = "files/windows.rs"]
+mod system;
+
 #[cfg(unix)]
 mod system {
     use rustix::fs::{
@@ -151,25 +167,10 @@ mod system {
     use std::os::fd::OwnedFd;
     use std::path::Path;
 
-    use super::Place;
-    use crate::recorder::COMPOSITE_PIECE_PREFIX;
+    use super::{Place, piece_number};
 
     /// The deepest tree that a removal deletes. The server creates at most three levels.
     const DEEPEST: usize = 16;
-    const PIECE_EXTENSION: &str = "ts";
-
-    /// The number of a piece of a composite, from its file name `part_<number>.ts`.
-    fn piece_number(name: &str) -> Option<u64> {
-        let stem = name.strip_suffix(PIECE_EXTENSION)?.strip_suffix('.')?;
-        let digits = stem
-            .strip_prefix(COMPOSITE_PIECE_PREFIX)?
-            .strip_prefix('_')?;
-        (!digits.is_empty()
-            && digits.len() <= 12
-            && digits.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| digits.parse().ok())
-        .flatten()
-    }
 
     fn directory_flags() -> OFlags {
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC
@@ -419,7 +420,7 @@ mod system {
     }
 }
 
-#[cfg(any(not(unix), test))]
+#[cfg(any(not(any(unix, windows)), test))]
 mod unsupported_system {
     use std::fs::File;
     use std::io;
@@ -430,7 +431,7 @@ mod unsupported_system {
     fn unsupported<T>() -> io::Result<T> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "the files of recordings are read and written on Unix systems only",
+            "the files of recordings are unavailable on this system",
         ))
     }
 
@@ -485,7 +486,7 @@ mod unsupported_system {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use unsupported_system as system;
 
 /// True for the error of a file or directory that is not there.

@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use livekit::webrtc::video_frame::I420Buffer;
@@ -87,6 +86,7 @@ struct State {
     previewed: Vec<PictureSource>,
     started: Vec<CaptureRequest>,
     live: Vec<Live>,
+    stall_next_stop: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
 }
 
 /// A capture that runs: its stop, its sink and the source that it shows.
@@ -158,6 +158,7 @@ impl SyntheticCapture {
                 previewed: Vec::new(),
                 started: Vec::new(),
                 live: Vec::new(),
+                stall_next_stop: None,
             })),
         }
     }
@@ -234,6 +235,14 @@ impl SyntheticCapture {
     }
 
     /// The requests of the captures that were started.
+    /// The next capture also owns a worker that ignores stop until the test releases it.
+    pub fn stall_next_stop(&self) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+        let (release, stalled) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        self.lock().stall_next_stop = Some((stalled, done));
+        (release, finished)
+    }
+
     pub fn started(&self) -> Vec<CaptureRequest> {
         self.lock().started.clone()
     }
@@ -241,7 +250,11 @@ impl SyntheticCapture {
     /// The number of captures that run now.
     pub fn running(&self) -> usize {
         let mut state = self.lock();
-        state.live.retain(|live| live.stop.strong_count() > 0);
+        state.live.retain(|live| {
+            live.stop
+                .upgrade()
+                .is_some_and(|stop| !stop.load(Ordering::Acquire))
+        });
         state.live.len()
     }
 
@@ -279,15 +292,12 @@ fn end(live: Live, error: &CaptureError) {
 
 struct Running {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    _workers: super::workers::Workers,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 
@@ -422,6 +432,7 @@ impl ScreenCapture for SyntheticCapture {
             let frame_rate = request.quality.frame_rate.max(1);
             let picture = request.picture;
             state.started.push(request);
+            let stall = state.stall_next_stop.take();
             let stop = Arc::new(AtomicBool::new(false));
             state.live.push(Live {
                 stop: Arc::downgrade(&stop),
@@ -430,7 +441,15 @@ impl ScreenCapture for SyntheticCapture {
             });
             drop(state);
             let stopped = stop.clone();
-            let thread = std::thread::spawn(move || {
+            let failures = sink.clone();
+            let life = Arc::new(super::life::Life::default());
+            let (mut workers, result) = super::workers::Workers::new(life.clone());
+            workers.report_failures_to(failures);
+            life.on_stop({
+                let stop = stop.clone();
+                move || stop.store(true, Ordering::Release)
+            });
+            workers.spawn("generated-share", move || {
                 produce(
                     &capture,
                     &stopped,
@@ -439,15 +458,24 @@ impl ScreenCapture for SyntheticCapture {
                     frame_rate,
                     tones,
                 );
-            });
-            Ok(CaptureStream::new(
+            })?;
+            if let Some((stall, done)) = stall {
+                let stop = stop.clone();
+                workers.spawn("stalled-capture", move || {
+                    let _ = stall.recv_timeout(Duration::from_secs(120));
+                    drop(stop);
+                    let _ = done.send(());
+                })?;
+            }
+            let stream = CaptureStream::new(
                 width,
                 height,
                 Running {
                     stop,
-                    thread: Some(thread),
+                    _workers: workers,
                 },
-            ))
+            );
+            Ok(stream.with_stop_result(result))
         })
     }
 }
@@ -499,5 +527,46 @@ fn produce(
             }
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::share::ShareQuality;
+    struct Sink;
+    impl CaptureSink for Sink {
+        fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {}
+        fn sound(&self, _: &[f32], _: Format) {}
+        fn ended(&self, _: CaptureError) {}
+    }
+    #[tokio::test]
+    async fn a_cancelled_capture_is_not_counted_while_its_worker_is_still_held() {
+        let capture = SyntheticCapture::new();
+        let (release, finished) = capture.stall_next_stop();
+        let stream = capture
+            .start(
+                CaptureRequest {
+                    picture: PictureSource::Display(1),
+                    sound: SoundChoice::None,
+                    quality: ShareQuality::default(),
+                    dialog_parent: None,
+                },
+                Arc::new(Sink),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capture.running(), 1);
+        drop(stream);
+        let count = capture.running();
+        let premature = finished.try_recv();
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(premature.is_err());
+        assert_eq!(
+            count, 0,
+            "a cancelled capture was counted because its worker was alive"
+        );
     }
 }

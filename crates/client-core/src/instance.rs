@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, PoisonError, mpsc as stopping};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -137,7 +137,12 @@ impl Instance {
                                 };
                                 active.socket = Some(socket);
                             }
-                            let _ = receive_request(&mut stream, &token, &send);
+                            let _ = receive_request(&mut stream, &token, &send, &|| {
+                                active
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .stopping
+                            });
                             active.lock().unwrap_or_else(PoisonError::into_inner).socket = None;
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -170,9 +175,6 @@ impl Drop for Instance {
         {
             let mut accepted = self.accepted.lock().unwrap_or_else(PoisonError::into_inner);
             accepted.stopping = true;
-            if let Some(socket) = &accepted.socket {
-                let _ = socket.shutdown(Shutdown::Both);
-            }
         }
         let _ = self.stopping.send(());
         if let Some(worker) = self.worker.take() {
@@ -185,23 +187,25 @@ fn receive_request(
     stream: &mut TcpStream,
     token: &[u8; 32],
     send: &mpsc::Sender<Activation>,
+    cancelled: &dyn Fn() -> bool,
 ) -> io::Result<()> {
+    stream.set_nonblocking(true)?;
     let deadline = Instant::now() + WAIT;
     let mut length = [0; 4];
-    read_until(stream, &mut length, deadline)?;
+    read_until(stream, &mut length, deadline, cancelled)?;
     let length = u32::from_be_bytes(length) as usize;
     if length > MAX_REQUEST {
         return Err(io::Error::other("the activation is too large"));
     }
     let mut bytes = vec![0; length];
-    read_until(stream, &mut bytes, deadline)?;
+    read_until(stream, &mut bytes, deadline, cancelled)?;
     let request: Request = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
     if &request.token != token {
         return Err(io::Error::other("the activation is not authenticated"));
     }
     send.try_send(request.activation)
         .map_err(io::Error::other)?;
-    write_until(stream, b"ok", deadline)
+    write_until(stream, b"ok", deadline, cancelled)
 }
 
 fn remaining(deadline: Instant) -> io::Result<Duration> {
@@ -211,12 +215,27 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "the activation deadline expired"))
 }
 
-fn read_until(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn check(deadline: Instant, cancelled: &dyn Fn() -> bool) -> io::Result<Duration> {
+    if cancelled() {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    remaining(deadline)
+}
+
+fn read_until(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<()> {
     while !bytes.is_empty() {
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
+        let wait = check(deadline, cancelled)?;
         match stream.read(bytes) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(count) => bytes = &mut bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::park_timeout(wait.min(Duration::from_millis(10)))
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
@@ -224,12 +243,20 @@ fn read_until(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) -
     Ok(())
 }
 
-fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+fn write_until(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<()> {
     while !bytes.is_empty() {
-        stream.set_write_timeout(Some(remaining(deadline)?))?;
+        let wait = check(deadline, cancelled)?;
         match stream.write(bytes) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(count) => bytes = &bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::park_timeout(wait.min(Duration::from_millis(10)))
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
@@ -249,15 +276,21 @@ fn forward(directory: &DataDir, activation: &Activation, deadline: Instant) -> R
         &SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port)),
         remaining(deadline)?,
     )?;
+    stream.set_nonblocking(true)?;
     let bytes = serde_json::to_vec(&Request {
         token: endpoint.token,
         activation: activation.clone(),
     })
     .map_err(io::Error::other)?;
-    write_until(&mut stream, &(bytes.len() as u32).to_be_bytes(), deadline)?;
-    write_until(&mut stream, &bytes, deadline)?;
+    write_until(
+        &mut stream,
+        &(bytes.len() as u32).to_be_bytes(),
+        deadline,
+        &|| false,
+    )?;
+    write_until(&mut stream, &bytes, deadline, &|| false)?;
     let mut answer = [0; 2];
-    read_until(&mut stream, &mut answer, deadline)?;
+    read_until(&mut stream, &mut answer, deadline, &|| false)?;
     if &answer != b"ok" {
         return Err(io::Error::other("the activation was refused").into());
     }

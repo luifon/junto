@@ -7,9 +7,7 @@ mod portal;
 mod registry;
 mod video;
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -22,28 +20,7 @@ use super::{
 };
 use portal::error;
 
-struct Workers {
-    life: Arc<Life>,
-    threads: Vec<JoinHandle<()>>,
-    portal: Option<oneshot::Sender<()>>,
-    pictures: Arc<Latest<pixels::Frame>>,
-}
-impl Drop for Workers {
-    fn drop(&mut self) {
-        self.life.cancelled.store(true, Ordering::Release);
-        self.life.stop();
-        self.pictures.wake();
-        if let Some(portal) = self.portal.take() {
-            let _ = portal.send(());
-        }
-        for thread in self.threads.drain(..) {
-            thread.thread().unpark();
-            if thread.thread().id() != std::thread::current().id() {
-                let _ = thread.join();
-            }
-        }
-    }
-}
+use super::workers::Workers;
 
 /// The authorisation chooser is owned by the desktop and appears only at start.
 pub struct SystemCapture;
@@ -111,17 +88,25 @@ async fn start(
         return Err(error("unsupported share frame rate"));
     }
     let mut portal = portal::Portal::connect().await?;
+    portal.report_failures_to(sink.clone());
     let parent = request.dialog_parent.as_deref().unwrap_or_default();
     let (source, mut closed) = portal.start(kind, parent).await?;
     let life = Arc::new(Life::default());
     let (stop_portal, stopped) = oneshot::channel();
     let pictures = Arc::new(Latest::default());
-    let mut workers = Workers {
-        life: life.clone(),
-        threads: Vec::new(),
-        portal: Some(stop_portal),
-        pictures: pictures.clone(),
-    };
+    let (mut workers, result) = Workers::new(life.clone());
+    workers.report_failures_to(sink.clone());
+    life.on_stop({
+        let pictures = pictures.clone();
+        let stop = Mutex::new(Some(stop_portal));
+        move || {
+            pictures.wake();
+            if let Some(stop) = stop.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                let _ = stop.send(());
+            }
+        }
+    });
+    let (closed_portal, portal_closed) = oneshot::channel();
     tokio::spawn({
         let life = life.clone();
         async move {
@@ -129,57 +114,56 @@ async fn start(
                 _ = stopped => {},
                 _ = closed.next() => life.fail(CaptureError::SourceGone),
             }
-            drop(portal);
+            let result = portal.close().await;
+            if let Err(error) = &result {
+                life.cleanup_failed(error.clone());
+            }
+            let _ = closed_portal.send(result);
         }
     });
+    workers.spawn("linux-share-portal", {
+        let life = life.clone();
+        move || {
+            if let Err(error) = portal_closed.blocking_recv() {
+                life.cleanup_failed(CaptureError::StopFailed(format!(
+                    "desktop portal cleanup ended without a result: {error}"
+                )));
+            }
+        }
+    })?;
     let (ready, first_frame) = oneshot::channel();
-    workers.threads.push(
-        std::thread::Builder::new()
-            .name("share-picture".into())
-            .spawn({
-                let (life, pictures) = (life.clone(), pictures.clone());
-                move || video::run(life, source, request.quality, pictures, ready)
-            })
-            .map_err(error)?,
-    );
+    workers.spawn("linux-share-picture", {
+        let (life, pictures) = (life.clone(), pictures.clone());
+        move || video::run(life, source, request.quality, pictures, ready)
+    })?;
     let (width, height) = prepared(first_frame, &life).await?;
     let samples = if request.sound != SoundChoice::None {
         let (send_samples, samples) = rtrb::RingBuffer::new(CAPACITY);
         let (ready, sound_ready) = oneshot::channel();
-        workers.threads.push(
-            std::thread::Builder::new()
-                .name("share-sound".into())
-                .spawn({
-                    let life = life.clone();
-                    move || audio::run(life, request.sound, send_samples, ready)
-                })
-                .map_err(error)?,
-        );
+        workers.spawn("linux-share-sound", {
+            let life = life.clone();
+            move || audio::run(life, request.sound, send_samples, ready)
+        })?;
         prepared(sound_ready, &life).await?;
         Some(samples)
     } else {
         None
     };
     life.result()?;
-    workers.threads.push(
-        std::thread::Builder::new()
-            .name("share-delivery".into())
-            .spawn({
-                let life = life.clone();
-                move || {
-                    deliver(
-                        life,
-                        sink,
-                        pictures,
-                        |frame| Ok(Some(frame)),
-                        samples,
-                        request.quality,
-                    )
-                }
-            })
-            .map_err(error)?,
-    );
-    Ok(CaptureStream::new(width, height, workers))
+    workers.spawn("linux-share-delivery", {
+        let life = life.clone();
+        move || {
+            deliver(
+                life,
+                sink,
+                pictures,
+                |frame| Ok(Some(frame)),
+                samples,
+                request.quality,
+            )
+        }
+    })?;
+    Ok(CaptureStream::new(width, height, workers).with_stop_result(result))
 }
 
 // The real portal test requires the dedicated virtual-display command, not the call tier.

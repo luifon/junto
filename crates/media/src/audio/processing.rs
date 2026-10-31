@@ -125,6 +125,11 @@ impl Processor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn hold_for_test(&self) -> impl Sized + '_ {
+        self.lock()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Module> {
         self.module.lock().unwrap_or_else(PoisonError::into_inner)
     }

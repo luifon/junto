@@ -28,10 +28,11 @@ struct fake_device {
     uint32_t buffers;
     const struct fake_frame *frames;
     size_t frame_count;
+    int cleanup_error;
 };
 /* What the code under test asked of one device. */
 struct fake_record {
-    uint32_t fourcc, width, height, numerator, denominator, buffers, mapped, opened, closed;
+    uint32_t fourcc, width, height, numerator, denominator, buffers, mapped, opened, closed, stopped, unmapped;
 };
 
 #define HANDLES 64
@@ -86,10 +87,11 @@ static void release(struct handle *h) {
     h->count = 0;
 }
 
-static void fake_close(void *context, int fd) {
+static int fake_close(void *context, int fd) {
     struct fake_system *system = of(context);
     pthread_mutex_lock(&system->lock);
     struct handle *h = handle(system, fd);
+    int result = h ? -system->devices[h->device].cleanup_error : 0;
     if (h) {
         if (system->owners[h->device] == fd) system->owners[h->device] = -1;
         system->records[h->device].closed++;
@@ -97,6 +99,7 @@ static void fake_close(void *context, int fd) {
         h->used = 0;
     }
     pthread_mutex_unlock(&system->lock);
+    return result;
 }
 
 static uint32_t line(uint32_t fourcc, uint32_t width) {
@@ -245,7 +248,7 @@ static int control(struct fake_system *system, int fd, struct handle *h, unsigne
         return 0;
     }
     case VIDIOC_STREAMON: h->streaming = 1; h->sequence = 0; return 0;
-    case VIDIOC_STREAMOFF: h->streaming = 0; return 0;
+    case VIDIOC_STREAMOFF: h->streaming = 0; record->stopped++; return -device->cleanup_error;
     case VIDIOC_DQBUF: {
         struct v4l2_buffer *buffer = argument;
         if (!h->streaming || h->next >= device->frame_count) return -EAGAIN;
@@ -296,7 +299,20 @@ static void *fake_map(void *context, int fd, size_t length, off_t offset, int *e
     return data;
 }
 
-static void fake_unmap(void *context, void *data, size_t length) { (void)context; (void)data; (void)length; }
+static int fake_unmap(void *context, void *data, size_t length) {
+    (void)length;
+    struct fake_system *system = of(context);
+    int result = 0;
+    pthread_mutex_lock(&system->lock);
+    for (int i = 0; i < HANDLES; ++i) {
+        struct handle *h = &system->handles[i];
+        if (!h->used) continue;
+        for (uint32_t b = 0; b < h->count; ++b)
+            if (h->memory[b] == data) { system->records[h->device].unmapped++; result = -system->devices[h->device].cleanup_error; }
+    }
+    pthread_mutex_unlock(&system->lock);
+    return result;
+}
 
 static int fake_poll(void *context, int fd, int timeout) {
     struct fake_system *system = of(context);

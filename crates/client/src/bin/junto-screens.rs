@@ -973,6 +973,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
     voice.set_volume(id(1), person("Marta"), 60);
     MediaSnapshot {
         calls: CallsView {
+            share_stop_failed: None,
             muted: false,
             deafened: false,
             joining: None,
@@ -1472,7 +1473,9 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     });
     studio.draw(Screen::call("share-own-starting", starting), show_daily)?;
     let ended = with_call(in_call(Phase::Connected), |call| {
-        call.share_ended = Some(CaptureError::SourceGone);
+        call.share_ended = Some(junto_media::share::CaptureNotice::new(
+            CaptureError::SourceGone,
+        ));
     });
     studio.draw(Screen::call("share-own-ended-by-itself", ended), show_daily)?;
 

@@ -3,6 +3,10 @@
 //! its own PipeWire connection, so that a capture of system sound can leave it out
 //! (ADR 0502).
 
+use crate::share::CaptureError;
+use crate::share::life::Life;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -12,6 +16,49 @@ use super::host::{
     AudioError, AudioHost, Deliver, DeviceId, DeviceInfo, Devices, Failed, Fill, Format, OpenStream,
 };
 use super::rate;
+
+struct ClosingStream {
+    stream: cpal::Stream,
+    life: Arc<Life>,
+}
+impl Drop for ClosingStream {
+    fn drop(&mut self) {
+        if let Err(error) = self.stream.pause() {
+            self.life.cleanup_failed(CaptureError::StopFailed(format!(
+                "sound device pause: {error}"
+            )));
+        }
+    }
+}
+
+fn playing(
+    info: DeviceInfo,
+    stream: cpal::Stream,
+    life: Arc<Life>,
+) -> Result<OpenStream, AudioError> {
+    let started = stream.play().map_err(error_of);
+    let stream = OpenStream::with_life(
+        info,
+        ClosingStream {
+            stream,
+            life: life.clone(),
+        },
+        life,
+    );
+    started.map(|()| stream)
+}
+
+fn during_capture(mut failed: Failed, life: Arc<Life>) -> Failed {
+    Box::new(move |error| {
+        if life.cancelled.load(Ordering::Acquire) {
+            life.cleanup_failed(CaptureError::StopFailed(format!(
+                "sound device close: {error}"
+            )));
+        } else {
+            failed(error);
+        }
+    })
+}
 
 /// How long the system has to start a stream.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -276,6 +323,15 @@ impl AudioHost for CpalHost {
         deliver: Deliver,
         failed: Failed,
     ) -> Result<OpenStream, AudioError> {
+        let life = Arc::new(Life::default());
+        let gate = life.clone();
+        let mut deliver = deliver;
+        let deliver: Deliver = Box::new(move |samples, format| {
+            if !gate.cancelled.load(Ordering::Acquire) {
+                deliver(samples, format);
+            }
+        });
+        let failed = during_capture(failed, life.clone());
         let device = self.device(device, true)?;
         let info = self.info(&device, true)?;
         let default = device.default_input_config().map_err(error_of)?;
@@ -299,8 +355,7 @@ impl AudioHost for CpalHost {
             other => return Err(AudioError::Unsupported(other.to_string())),
         }
         .map_err(error_of)?;
-        stream.play().map_err(error_of)?;
-        Ok(OpenStream::new(info, stream))
+        playing(info, stream, life)
     }
 
     fn open_output(
@@ -309,6 +364,17 @@ impl AudioHost for CpalHost {
         fill: Fill,
         failed: Failed,
     ) -> Result<OpenStream, AudioError> {
+        let life = Arc::new(Life::default());
+        let gate = life.clone();
+        let mut fill = fill;
+        let fill: Fill = Box::new(move |samples, format| {
+            if gate.cancelled.load(Ordering::Acquire) {
+                samples.fill(0.0);
+            } else {
+                fill(samples, format);
+            }
+        });
+        let failed = during_capture(failed, life.clone());
         let device = self.device(device, false)?;
         let info = self.info(&device, false)?;
         let default = device.default_output_config().map_err(error_of)?;
@@ -332,8 +398,7 @@ impl AudioHost for CpalHost {
             other => return Err(AudioError::Unsupported(other.to_string())),
         }
         .map_err(error_of)?;
-        stream.play().map_err(error_of)?;
-        Ok(OpenStream::new(info, stream))
+        playing(info, stream, life)
     }
 }
 

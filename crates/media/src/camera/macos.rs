@@ -1,8 +1,7 @@
 //! AVFoundation capture. Session objects stay on one capture thread.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, mpsc};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -108,77 +107,56 @@ impl CameraCapture for SystemCamera {
                 return Err(CameraError::NoPermission(permission));
             }
             let device = choose(&SystemCamera.devices()?, chosen.as_deref())?;
-            let (ready, result) = oneshot::channel();
-            let (stop, stopped) = mpsc::channel();
-            let thread = std::thread::Builder::new()
-                .name("camera-capture".into())
-                .spawn(move || {
-                    // SAFETY: all session operations are on this thread. The delegate is
-                    // retained until the session and its serial delivery queue have stopped.
-                    unsafe {
-                        match autoreleasepool(|_| Session::open(&device.id, sink.clone())) {
-                            Err(error) => {
-                                let _ = ready.send(Err(error));
-                            }
-                            Ok(session) => {
-                                if ready.send(Ok(session.size)).is_err() {
-                                    return;
-                                }
-                                loop {
-                                    match stopped.recv_timeout(Duration::from_millis(100)) {
-                                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+            super::worker::start(sink, move |delivery, ready| {
+                let Some(_claim) = delivery.claim(&device.id) else {
+                    return;
+                };
+                // SAFETY: session operations and destruction stay on this owning worker.
+                let session =
+                    unsafe { autoreleasepool(|_| Session::open(&device.id, delivery.clone())) };
+                match session {
+                    Err(error) => {
+                        let _ = ready.send(Err(error));
+                    }
+                    Ok(session) => {
+                        let _ = ready.send(Ok(super::worker::Started {
+                            width: session.size.0,
+                            height: session.size.1,
+                            rate: None,
+                        }));
+                        while !delivery.stopped() {
+                            // SAFETY: these objects are owned by this worker.
+                            let failure = unsafe {
+                                autoreleasepool(|_| {
+                                    if !session.device.isConnected() {
+                                        Some(CameraError::DeviceGone)
+                                    } else if access_now_denied() {
+                                        Some(CameraError::NoPermission(access()))
+                                    } else if !session.session.isRunning()
+                                        || session.session.isInterrupted()
+                                    {
+                                        Some(CameraError::Interrupted)
+                                    } else {
+                                        None
                                     }
-                                    let failure = autoreleasepool(|_| {
-                                        if !session.device.isConnected() {
-                                            Some(CameraError::DeviceGone)
-                                        } else if access_now_denied() {
-                                            Some(CameraError::NoPermission(access()))
-                                        } else if !session.session.isRunning()
-                                            || session.session.isInterrupted()
-                                        {
-                                            Some(CameraError::Interrupted)
-                                        } else {
-                                            None
-                                        }
-                                    });
-                                    if let Some(error) = failure {
-                                        drop(session);
-                                        sink.ended(error);
-                                        return;
-                                    }
-                                }
+                                })
+                            };
+                            if let Some(error) = failure {
+                                delivery.ended(error);
+                                break;
                             }
+                            std::thread::park_timeout(Duration::from_millis(100));
                         }
                     }
-                })
-                .map_err(|error| CameraError::Failed(error.to_string()))?;
-            let stream = Running {
-                stop,
-                thread: Some(thread),
-            };
-            let (width, height) = result
-                .await
-                .map_err(|_| CameraError::Failed("capture stopped before starting".into()))??;
-            Ok(CaptureStream::new(width, height, stream))
+                }
+            })
+            .await
         })
     }
 }
 
 fn access_now_denied() -> bool {
     access() != CameraAccess::Allowed
-}
-
-struct Running {
-    stop: mpsc::Sender<()>,
-    thread: Option<JoinHandle<()>>,
-}
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.stop.send(());
-        // The capture thread owns shutdown; dropping a stream must not block the call.
-        self.thread.take();
-    }
 }
 
 struct Ivars {
@@ -237,6 +215,7 @@ define_class!(
 );
 
 struct Session {
+    delivery: Arc<super::worker::Delivery>,
     size: (u32, u32),
     session: Retained<AVCaptureSession>,
     device: Retained<AVCaptureDevice>,
@@ -245,7 +224,7 @@ struct Session {
     queue: dispatch2::DispatchRetained<DispatchQueue>,
 }
 impl Session {
-    unsafe fn open(id: &str, sink: Arc<dyn CameraSink>) -> Result<Self, CameraError> {
+    unsafe fn open(id: &str, sink: Arc<super::worker::Delivery>) -> Result<Self, CameraError> {
         // SAFETY: objects are configured before starting and kept alive by Session.
         unsafe {
             let device = AVCaptureDevice::deviceWithUniqueID(&NSString::from_str(id))
@@ -277,7 +256,7 @@ impl Session {
             session.addOutput(&output);
             let delegate: Retained<Output> = msg_send![
                 super(Output::alloc().set_ivars(Ivars {
-                    sink,
+                    sink: sink.clone(),
                     broken: AtomicBool::new(false),
                 })),
                 init
@@ -295,6 +274,7 @@ impl Session {
                 connection.setVideoMirrored(false);
             }
             let held = Self {
+                delivery: sink,
                 size,
                 session,
                 device,
@@ -315,6 +295,10 @@ impl Drop for Session {
         // SAFETY: shutdown runs on the owning thread, outside the delivery queue.
         autoreleasepool(|_| unsafe {
             self.session.stopRunning();
+            if self.session.isRunning() {
+                self.delivery
+                    .cleanup_failed("AVFoundation session is still running after stop");
+            }
             self.output.setSampleBufferDelegate_queue(None, None);
         });
         self.queue.exec_sync(|| {});

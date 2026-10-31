@@ -4,7 +4,6 @@ use super::*;
 use crate::share::synthetic::{Colour, two_colours};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError, Weak};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 struct State {
@@ -15,6 +14,7 @@ struct State {
     starts: usize,
     device_reads: usize,
     active: Vec<Weak<AtomicBool>>,
+    stall_next_stop: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
 }
 
 #[derive(Clone)]
@@ -40,6 +40,7 @@ impl SyntheticCamera {
                 starts: 0,
                 device_reads: 0,
                 active: Vec::new(),
+                stall_next_stop: None,
             })),
         }
     }
@@ -57,6 +58,12 @@ impl SyntheticCamera {
     }
     pub fn set_start_delay(&self, delay: Duration) {
         self.lock().delay = delay;
+    }
+    pub fn stall_next_stop(&self) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+        let (release, stalled) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        self.lock().stall_next_stop = Some((stalled, done));
+        (release, finished)
     }
     pub fn device_reads(&self) -> usize {
         self.lock().device_reads
@@ -118,9 +125,22 @@ impl CameraCapture for SyntheticCamera {
             let active = Arc::new(AtomicBool::new(true));
             this.lock().active.push(Arc::downgrade(&active));
             let running = active.clone();
-            let thread = std::thread::Builder::new()
-                .name("generated-camera".into())
-                .spawn(move || {
+            let stall = this.lock().stall_next_stop.take();
+            let life = Arc::new(crate::share::life::Life::default());
+            let (mut workers, stopped) = crate::share::workers::Workers::new(life.clone());
+            workers.report_failures_with({
+                let sink = sink.clone();
+                move |mut notice| {
+                    notice.kind = crate::share::CaptureKind::Camera;
+                    sink.stop_failed(notice);
+                }
+            });
+            life.on_stop({
+                let active = active.clone();
+                move || active.store(false, Ordering::Release)
+            });
+            workers
+                .spawn("generated-camera", move || {
                     while running.load(Ordering::Acquire) {
                         let (error, colours) = {
                             let state = this.lock();
@@ -141,6 +161,10 @@ impl CameraCapture for SyntheticCamera {
                         sink.picture(Arc::new(two_colours(640, 360, colours.0, colours.1)));
                         std::thread::sleep(Duration::from_millis(33));
                     }
+                    if let Some((stall, done)) = stall {
+                        let _ = stall.recv_timeout(Duration::from_secs(120));
+                        let _ = done.send(());
+                    }
                 })
                 .map_err(|error| CameraError::Failed(error.to_string()))?;
             Ok(CaptureStream::new(
@@ -148,22 +172,20 @@ impl CameraCapture for SyntheticCamera {
                 360,
                 Running {
                     active,
-                    thread: Some(thread),
+                    _workers: workers,
                 },
-            ))
+            )
+            .with_stop_result(stopped))
         })
     }
 }
 
 struct Running {
     active: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    _workers: crate::share::workers::Workers,
 }
 impl Drop for Running {
     fn drop(&mut self) {
         self.active.store(false, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }

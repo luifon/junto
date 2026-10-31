@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
+use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
 use junto_client::state::admin::view::overrides::{
     Choice, PermissionLine, Refused, SubjectKind, SubjectLine,
 };
@@ -335,10 +335,10 @@ pub(crate) fn awaited<T>(
 /// visible part of the page. An element outside that part is brought nearer with the
 /// wheel, as a person does, and is not clicked. True when the element was clicked.
 pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
-    let Some(element) = try_reveal(window, selector) else {
+    if try_reveal(window, selector).is_none() {
         return false;
-    };
-    window.simulate(|cx| cx.simulate_click(element.center(), Modifiers::none()));
+    }
+    window.press_as_drawn(selector);
     window.park();
     true
 }

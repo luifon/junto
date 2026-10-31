@@ -9,7 +9,8 @@ use serde::Serialize;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type, Value};
 use zbus::{Connection, Proxy};
 
-use crate::share::{CaptureError, ShareKind};
+use crate::share::{CaptureError, CaptureNotice, CaptureSink, ShareKind};
+use std::sync::Arc;
 
 const SERVICE: &str = "org.freedesktop.portal.Desktop";
 const OBJECT: &str = "/org/freedesktop/portal/desktop";
@@ -34,6 +35,7 @@ pub(super) struct Portal {
     pending: std::sync::Mutex<Option<OwnedObjectPath>>,
     /// The longest wait for the answer to a request that shows no dialog.
     limit: Duration,
+    reporter: Option<Arc<dyn CaptureSink>>,
 }
 
 pub(super) struct Capabilities {
@@ -61,7 +63,12 @@ impl Portal {
             session: None,
             pending: std::sync::Mutex::new(None),
             limit: WAIT,
+            reporter: None,
         })
+    }
+
+    pub fn report_failures_to(&mut self, sink: Arc<dyn CaptureSink>) {
+        self.reporter = Some(sink);
     }
 
     async fn proxy(&self) -> Result<Proxy<'static>, CaptureError> {
@@ -298,27 +305,91 @@ impl Portal {
     }
 }
 
-impl Drop for Portal {
-    fn drop(&mut self) {
-        let connection = self.connection.clone();
+impl Portal {
+    pub async fn close(mut self) -> Result<(), CaptureError> {
+        self.reporter = None;
         let session = self.session.take();
         let pending = self
             .pending
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                for (path, interface) in [(pending, REQUEST), (session, SESSION)] {
-                    if let Some(path) = path
-                        && let Ok(proxy) = Proxy::new(&connection, SERVICE, path, interface).await
+        close(self.connection.clone(), pending, session).await
+    }
+}
+
+async fn close(
+    connection: Connection,
+    pending: Option<OwnedObjectPath>,
+    session: Option<OwnedObjectPath>,
+) -> Result<(), CaptureError> {
+    let closing = async {
+        let mut failures = Vec::new();
+        for (path, interface) in [(pending, REQUEST), (session, SESSION)] {
+            if let Some(path) = path {
+                let result = async {
+                    let proxy = Proxy::new(&connection, SERVICE, path, interface).await?;
+                    proxy.call::<_, _, ()>("Close", &()).await
+                }
+                .await;
+                if let Err(error) = result {
+                    if matches!(&error, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.DBus.Error.UnknownObject")
                     {
-                        let _ =
-                            tokio::time::timeout(WAIT, proxy.call::<_, _, ()>("Close", &())).await;
+                        tracing::debug!(%error, interface, "desktop portal object already closed");
+                    } else {
+                        tracing::error!(%error, interface, "desktop portal object did not close");
+                        failures.push(error.to_string());
                     }
                 }
-                let _ = connection.close().await;
+            }
+        }
+        if let Err(error) = connection.close().await {
+            tracing::error!(%error, "desktop portal connection did not close");
+            failures.push(error.to_string());
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CaptureError::StopFailed(failures.join("; ")))
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), closing)
+        .await
+        .map_err(|_| {
+            CaptureError::StopFailed("the desktop portal did not close within 2 seconds".into())
+        })?
+}
+
+impl Drop for Portal {
+    fn drop(&mut self) {
+        let session = self.session.take();
+        let pending = self
+            .pending
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if session.is_none() && pending.is_none() {
+            return;
+        }
+        let connection = self.connection.clone();
+        let reporter = self.reporter.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = close(connection, pending, session).await {
+                    tracing::error!(%error, "desktop portal cleanup failed");
+                    if let Some(reporter) = reporter {
+                        reporter.stop_failed(CaptureNotice::new(error));
+                    }
+                }
             });
+        } else {
+            let error = CaptureError::StopFailed(
+                "desktop portal cleanup could not start without the media runtime".into(),
+            );
+            tracing::error!(%error);
+            if let Some(reporter) = reporter {
+                reporter.stop_failed(CaptureNotice::new(error));
+            }
         }
     }
 }

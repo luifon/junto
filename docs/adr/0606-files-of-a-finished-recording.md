@@ -21,11 +21,19 @@ Programs:
 
 Paths:
 
+These storage guarantees describe the Unix server. The Windows backend is limited to the window-test server, with the scope in ADR 0912.
+
 - The recorder writes the file of an audio track to `<recording>/<segment>.ogg` and the pieces of a composite to `<recording>/<segment>/part_<number>.ts` (ADR 0604). The server writes the video of a composite to `<recording>/<segment>.mp4`.
 - The server builds every path from the identifiers that it generated. It does not use the file name that the recorder reports.
 - The server opens a file one path part at a time from the directory of the recordings, follows no link, and accepts a regular file only. This holds for the check, for the join and for a download (ADR 0608).
 - The directory of the recordings itself, and the directories above it, are trusted: the administrator names them, and the recorder cannot replace them.
 - Every change that the server makes below the directory of the recordings works from a descriptor of the directory that holds the file, reached in the same way: a new directory, a new file, a new name, a move and a deletion. A link above the place is an error, and a link at the place is deleted and not followed.
+
+On Unix these operations use directory-relative descriptors. The Windows window-test backend uses only safe Rust and the standard library, and its module forbids unsafe code. It checks generated path components, rejects Windows device names, alternate streams and path separators, and rejects reparse points encountered while opening a path. Directory handles share reads and writes but exclude delete sharing; denying write sharing would prevent the filesystem's own operations. Regular-file opens use the standard library's no-follow option and verify the resulting file metadata.
+
+Windows cursor listings retain only the requested number of names. Recursive deletion removes an existing reparse point itself and retains the depth bound of sixteen. Completion flushes the source data, creates a hard link without replacement and removes the partial source; an existing destination stays. These standard-library path operations do not provide the Unix guarantee against concurrent mutation of a checked directory into a junction. The Windows test tree must be controlled by the test runner, and it is not a supported deployment store (ADR 0912).
+
+The file-storage unit tests run without a database on macOS and Windows in their native CI jobs. Windows tests cover writing and completion while the file is open, preservation of an existing destination, cursor listing and deletion, held-directory replacement, path-component refusal through every operation, and a pre-existing junction that must not be followed for reading, writing or moving. Its removal must preserve the junction target. The junction fixture uses a bounded child process and is removed with its temporary tree. The desktop attachment and file tests exercise the Windows test server without changing their assertions.
 
 Recovery after a lost recorder:
 
@@ -89,7 +97,7 @@ What a recording states about a file:
 - A request to start a job that failed, followed by one that succeeded for the same track, leaves a failed segment. The recording is `partly_failed`.
 - A recording in which one person was muted for the whole time is `ready`. A track that recorded nothing because of a defect of the recorder is not told apart from a muted microphone.
 - The video of a composite whose pieces do not pass the check stays with its pieces until the recording is removed.
-- Two server processes do not process one recording at the same moment. A process that could not state for 90 seconds that it holds its attempt, and that still runs, can meet a second one: both then join the video, one hard link wins, and only the process that holds the attempt stores results.
+- Two server processes do not process one recording at the same moment. A process that could not state for 90 seconds that it holds its attempt, and that still runs, can meet a second one: both then join the video, only one completion wins, and only the process that holds the attempt stores results.
 - A link that a faulty recorder puts in the place of a file, or above it, is not followed. The segment then has no file.
 - The output of the join is the one path that a program gets. A recorder that replaces the directory of a recording by a link at the moment of the join makes ffmpeg write the video into the directory of the link, under a name that the recorder cannot predict. The server then finds no video, and the attempt is incomplete.
 - The check of a video of one hour takes about 80 seconds of one CPU core (ADR 0602). The recordings of a server are processed one after the other.

@@ -8,11 +8,11 @@
 struct camera_system {
     void *context;
     int (*open)(void *context, const char *path);
-    void (*close)(void *context, int fd);
+    int (*close)(void *context, int fd);
     int (*ioctl)(void *context, int fd, unsigned long request, void *argument);
     /* The address of the mapping, or NULL with the error in *error. */
     void *(*map)(void *context, int fd, size_t length, off_t offset, int *error);
-    void (*unmap)(void *context, void *data, size_t length);
+    int (*unmap)(void *context, void *data, size_t length);
     /* The returned events, 0 after the timeout in milliseconds. */
     int (*poll)(void *context, int fd, int timeout);
 };

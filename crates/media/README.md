@@ -130,7 +130,7 @@ with synthetic sound and without physical sound devices.
 
 ## Screen capture
 
-The common interface is `share::ScreenCapture`. A `CaptureStream` owns the running capture; dropping it ends the capture. The sink receives pictures, interleaved sound and an end notification. An end notification is terminal. Sound is separate from the microphone pipeline and has no microphone echo cancellation or noise suppression.
+The common interface is `share::ScreenCapture`. A `CaptureStream` owns the running capture. On Windows dropping it cancels delivery without waiting for native workers; a supervisor has two seconds to finish cleanup or report a visible failure, and Leave remains available. `CaptureStream::stop` also awaits a bounded cleanup acknowledgement, which the native capture tests use before checking that delivery ended. Other platforms retain their existing drop behavior. The sink receives pictures, interleaved sound and an end notification. An end notification is terminal. Sound is separate from the microphone pipeline and has no microphone echo cancellation or noise suppression.
 
 macOS uses ScreenCaptureKit. Linux asks the desktop portal to choose and authorise a screen or window, then reads video from its restricted PipeWire connection. The Linux picker lists only the source kinds that the installed portal supports. The desktop owns its chooser; Junto cannot exclude its own window from that chooser. Application sound is an independent, explicit choice from the programs currently playing through the local PipeWire graph. No unavailable or failed application choice becomes system sound. The synthetic implementation remains available through `test-support` on both systems.
 

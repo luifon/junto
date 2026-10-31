@@ -6,6 +6,8 @@
 //! blocks that the server reports, connects again after a loss, and ends the engine when
 //! the server ends the place.
 
+mod capture_stop;
+
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -43,8 +45,8 @@ use crate::engine::{
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::VideoPicture;
 use crate::share::{
-    CaptureError, CaptureRequest, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareKind,
-    ShareSources,
+    CaptureError, CaptureNotice, CaptureRequest, Pending, PictureSource, ScreenAccess,
+    ScreenCapture, ShareKind, ShareSources,
 };
 
 /// The times of the work that the calls do by themselves.
@@ -194,7 +196,7 @@ pub struct ActiveCall {
     pub own_shares: BTreeMap<u8, ShareState>,
     /// Why the last own share that ended by itself ended, until the person starts or stops
     /// a share or puts the statement away.
-    pub share_ended: Option<CaptureError>,
+    pub share_ended: Option<CaptureNotice>,
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets.
@@ -314,6 +316,8 @@ pub(crate) enum Entry {
 /// What an interface shows of the calls of this client.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallsView {
+    /// Capture cleanup failed. Retained across call changes until the person dismisses it.
+    pub share_stop_failed: Option<CaptureNotice>,
     /// The person closed the microphone. The setting holds in a call and outside one.
     pub muted: bool,
     /// The person turned the sound off.
@@ -363,7 +367,7 @@ enum SessionCommand {
     RetryMicrophone(Seat),
     StartShare(Seat, CaptureRequest),
     StopShare(Option<u8>),
-    ForgetShareEnd,
+    ForgetShareEnd(u64),
     Watch(Option<ShareId>),
     StopWatching,
     ShareVolume(f32),
@@ -529,8 +533,10 @@ pub struct Calls {
 }
 
 impl Calls {
-    pub fn new(client: Client, options: MediaOptions) -> Self {
+    pub fn new(client: Client, mut options: MediaOptions) -> Self {
         let runtime = client.runtime().handle().clone();
+        let view = watch::Sender::new(CallsView::default());
+        options.host = capture_stop::reporting_audio(options.host, view.clone());
         let (turns_given, turns_taken) = mpsc::unbounded_channel();
         runtime.spawn(turns(runtime.clone(), turns_taken));
         let levels = watch::Sender::new(Levels::default());
@@ -547,7 +553,7 @@ impl Calls {
                 runtime,
                 options,
                 shared: Mutex::new(Shared::default()),
-                view: watch::Sender::new(CallsView::default()),
+                view,
                 levels,
                 main_picture: watch::Sender::new(None),
                 small_pictures: watch::Sender::new(HashMap::new()),
@@ -954,8 +960,20 @@ impl Calls {
     }
 
     /// Puts away the statement that a share ended by itself. The shares that run go on.
-    pub fn forget_share_end(&self) {
-        self.inner.tell(SessionCommand::ForgetShareEnd);
+    pub fn forget_share_end(&self, generation: u64) {
+        self.inner.view.send_if_modified(|view| {
+            if view
+                .share_stop_failed
+                .as_ref()
+                .is_some_and(|notice| notice.generation == generation)
+            {
+                view.share_stop_failed = None;
+                true
+            } else {
+                false
+            }
+        });
+        self.inner.tell(SessionCommand::ForgetShareEnd(generation));
     }
 
     /// The share that the person chose to watch in the call of this device (ADR 0502).
@@ -1552,10 +1570,13 @@ fn start(
     let engine = Engine::start(
         &inner.runtime,
         EngineOptions {
-            camera: inner.options.camera.clone(),
+            camera: capture_stop::reporting_camera(
+                inner.options.camera.clone(),
+                inner.view.clone(),
+            ),
             host: inner.options.host.clone(),
             permission: inner.options.permission.clone(),
-            capture: inner.options.capture.clone(),
+            capture: capture_stop::reporting(inner.options.capture.clone(), inner.view.clone()),
         },
         media_join(&answer),
         shared.voice.clone(),
@@ -3036,7 +3057,7 @@ impl Session {
                 }
             }
             SessionCommand::StopShare(slot) => self.engine.stop_share(slot),
-            SessionCommand::ForgetShareEnd => self.engine.forget_share_end(),
+            SessionCommand::ForgetShareEnd(generation) => self.engine.forget_share_end(generation),
             SessionCommand::Watch(choice) => self.engine.watch(choice),
             SessionCommand::StopWatching => self.engine.stop_watching(),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),

@@ -80,6 +80,7 @@ struct Device {
     buffers: u32,
     frames: *const Frame,
     frame_count: usize,
+    cleanup_error: c_int,
 }
 
 #[repr(C)]
@@ -94,6 +95,8 @@ pub struct Record {
     pub mapped: u32,
     pub opened: u32,
     pub closed: u32,
+    pub stopped: u32,
+    pub unmapped: u32,
 }
 
 unsafe extern "C" {
@@ -113,12 +116,14 @@ pub struct Spec {
     /// The count of buffers that the driver gives; 0 for the count asked for.
     pub buffers: u32,
     pub frames: Vec<Frame>,
+    pub cleanup_error: i32,
 }
 
 impl Default for Spec {
     fn default() -> Self {
         Self {
             open_error: 0,
+            cleanup_error: 0,
             capabilities: CAPTURE,
             modes: vec![mode(NV12, 640, 480, 30)],
             // sRGB, the default encoding and limited range, as cameras of uvcvideo report.
@@ -168,6 +173,7 @@ impl Fake {
                 buffers: spec.buffers,
                 frames: spec.frames.as_ptr(),
                 frame_count: spec.frames.len(),
+                cleanup_error: spec.cleanup_error,
             })
             .collect();
         // SAFETY: the devices, their paths and settings live as long as the fake.

@@ -4,7 +4,8 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
+
+use crate::share::workers::Workers;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -25,7 +26,7 @@ use crate::share::{
 };
 
 /// How long the system has to start the capture of the picture and of the sound. Without
-/// an answer the share does not start, and nothing keeps running.
+/// an answer the share does not start; the worker supervisor reports unfinished cleanup.
 const ANSWER_LIMIT: Duration = Duration::from_secs(10);
 
 /// The threads of a capture use the multithreaded apartment of the process without entering
@@ -38,15 +39,31 @@ fn apartment() -> Result<(), CaptureError> {
 /// Whether this system has Windows Graphics Capture, asked on a thread of its own in the
 /// multithreaded apartment, whatever apartment the calling thread is in.
 fn graphics_capture_supported() -> bool {
-    std::thread::Builder::new()
+    let (ready, answer) = std::sync::mpsc::sync_channel(1);
+    let started = std::thread::Builder::new()
         .name("share-support".into())
-        .spawn(|| {
-            apartment().ok()?;
-            GraphicsCaptureSession::IsSupported().ok()
-        })
-        .ok()
-        .and_then(|thread| thread.join().ok().flatten())
-        .unwrap_or(false)
+        .spawn(move || {
+            let result = apartment().and_then(|()| {
+                GraphicsCaptureSession::IsSupported()
+                    .map_err(|error| CaptureError::Failed(error.to_string()))
+            });
+            let _ = ready.send(result);
+        });
+    if let Err(error) = started {
+        tracing::error!(%error, "could not start the screen capture support check");
+        return false;
+    }
+    match answer.recv_timeout(ANSWER_LIMIT) {
+        Ok(Ok(supported)) => supported,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "screen capture support check failed");
+            false
+        }
+        Err(error) => {
+            tracing::error!(%error, "screen capture support check did not answer");
+            false
+        }
+    }
 }
 
 /// The capture of the system.
@@ -197,25 +214,6 @@ fn resolve(
     Ok((target, loopback))
 }
 
-/// The threads of a share. Each waits for the system or for a picture without a time
-/// limit, and the stop of the life wakes it: a drop ends them at once.
-struct Workers {
-    life: Arc<Life>,
-    threads: Vec<JoinHandle<()>>,
-}
-
-impl Drop for Workers {
-    fn drop(&mut self) {
-        self.life.cancelled.store(true, Ordering::Release);
-        self.life.stop();
-        for thread in self.threads.drain(..) {
-            if thread.thread().id() != std::thread::current().id() {
-                let _ = thread.join();
-            }
-        }
-    }
-}
-
 async fn answer<T>(
     ready: oneshot::Receiver<Result<T, CaptureError>>,
     life: &Life,
@@ -230,13 +228,6 @@ async fn answer<T>(
         }
         Err(_) => Err(CaptureError::Failed("no answer of the system".to_owned())),
     }
-}
-
-fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<JoinHandle<()>, CaptureError> {
-    std::thread::Builder::new()
-        .name(name.into())
-        .spawn(work)
-        .map_err(|error| CaptureError::Failed(error.to_string()))
 }
 
 async fn start(
@@ -261,37 +252,35 @@ async fn start(
         let pictures = pictures.clone();
         move || pictures.wake()
     });
-    let mut workers = Workers {
-        life: life.clone(),
-        threads: Vec::new(),
-    };
+    let (mut workers, stopped) = Workers::new(life.clone());
+    workers.report_failures_to(sink.clone());
     let (ready, picture_ready) = oneshot::channel();
-    workers.threads.push(spawn("share-picture", {
+    workers.spawn("share-picture", {
         let (life, pictures) = (life.clone(), pictures.clone());
         move || picture(life, target, pictures, ready)
-    })?);
+    })?;
     let (gpu, size) = answer(picture_ready, &life).await?;
     let samples = match loopback {
         None => None,
         Some(loopback) => {
             let (send_samples, samples) = rtrb::RingBuffer::new(CAPACITY);
             let (ready, sound_ready) = oneshot::channel();
-            workers.threads.push(spawn("share-sound", {
+            workers.spawn("share-sound", {
                 let life = life.clone();
                 move || sound(life, loopback, send_samples, ready)
-            })?);
+            })?;
             answer(sound_ready, &life).await?;
             Some(samples)
         }
     };
     life.result()?;
-    workers.threads.push(spawn("share-delivery", {
+    workers.spawn("share-delivery", {
         let life = life.clone();
         let quality = request.quality;
         move || deliver(life, sink, pictures, move |()| gpu.read(), samples, quality)
-    })?);
+    })?;
     let (width, height) = request.quality.resolution.fit(size.0, size.1);
-    Ok(CaptureStream::new(width, height, workers))
+    Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
 }
 
 type Ready<T> = oneshot::Sender<Result<T, CaptureError>>;
@@ -303,7 +292,12 @@ fn finish<T>(life: &Life, ready: &mut Option<Ready<T>>, result: Result<(), Captu
         if let Some(ready) = ready.take() {
             let _ = ready.send(Err(failure.clone()));
         }
-        life.fail(failure);
+        if life.cancelled.load(Ordering::Acquire) {
+            life.cleanup_failed(failure);
+        } else {
+            tracing::error!(%failure, "screen capture worker failed");
+            life.fail(failure);
+        }
     }
 }
 
@@ -317,14 +311,18 @@ fn picture(
     let result = (|| {
         apartment()?;
         let owner = Thread::current();
-        let waker = owner.waker()?;
-        life.on_stop(move || waker.wake());
+        let waker = owner.waker(&life)?;
+        life.on_stop(move || {
+            if let Err(error) = waker.wake() {
+                tracing::warn!(%error, "the picture wake failed; the bounded wait will check cancellation");
+            }
+        });
         let session = Session::start(target, life.clone(), pictures)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok((session.gpu.clone(), session.size)));
         }
         while !life.stopped() {
-            owner.pump();
+            owner.pump()?;
         }
         drop(session);
         Ok(())
@@ -341,12 +339,16 @@ fn sound(
     let mut ready = Some(ready);
     let result = (|| {
         apartment()?;
-        let stop = Arc::new(Event::new()?);
+        let stop = Arc::new(Event::new(&life)?);
         life.on_stop({
             let stop = stop.clone();
-            move || stop.set()
+            move || {
+                if let Err(error) = stop.set() {
+                    tracing::warn!(%error, "the sound wake failed; the bounded wait will check cancellation");
+                }
+            }
         });
-        let capture = Capture::start(loopback)?;
+        let capture = Capture::start(loopback, life.clone())?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));
         }
@@ -369,6 +371,7 @@ pub(super) struct Thread(u32);
 pub(super) struct ThreadWaker {
     id: u32,
     handle: windows::Win32::Foundation::HANDLE,
+    life: std::sync::Weak<Life>,
 }
 
 // SAFETY: a thread handle can be used and closed from any thread; the waker only posts to the
@@ -379,19 +382,32 @@ unsafe impl Sync for ThreadWaker {}
 
 impl ThreadWaker {
     /// Makes `pump` of the thread return.
-    pub(super) fn wake(&self) {
+    pub(super) fn wake(&self) -> Result<(), CaptureError> {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
         // SAFETY: the identifier names the thread of the waker (see the type); posting to it
         // after it has ended fails and changes nothing.
-        let _ = unsafe { PostThreadMessageW(self.id, WM_NULL, WPARAM(0), LPARAM(0)) };
+        unsafe { PostThreadMessageW(self.id, WM_NULL, WPARAM(0), LPARAM(0)) }.map_err(|error| {
+            CaptureError::Failed(format!(
+                "could not wake the capture picture worker: {error}"
+            ))
+        })
     }
 }
 
 impl Drop for ThreadWaker {
     fn drop(&mut self) {
         // SAFETY: the handle was opened by `Thread::waker` and is closed only here.
-        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.handle) };
+        if let Err(error) = unsafe { windows::Win32::Foundation::CloseHandle(self.handle) } {
+            let failure = CaptureError::Failed(format!(
+                "could not close the capture picture thread handle: {error}"
+            ));
+            if let Some(life) = self.life.upgrade() {
+                life.cleanup_failed(failure);
+            } else {
+                tracing::error!(%failure, "screen capture cleanup failed");
+            }
+        }
     }
 }
 
@@ -408,30 +424,97 @@ impl Thread {
     }
 
     /// A waker of this thread, which holds the thread open.
-    pub(super) fn waker(&self) -> Result<ThreadWaker, CaptureError> {
+    pub(super) fn waker(&self, life: &Arc<Life>) -> Result<ThreadWaker, CaptureError> {
         use windows::Win32::System::Threading::{OpenThread, THREAD_SYNCHRONIZE};
         // SAFETY: the call opens the thread of this identifier, which is the running caller.
         let handle = unsafe { OpenThread(THREAD_SYNCHRONIZE, false, self.0) }
             .map_err(|error| CaptureError::Failed(error.message()))?;
-        Ok(ThreadWaker { id: self.0, handle })
+        Ok(ThreadWaker {
+            id: self.0,
+            handle,
+            life: Arc::downgrade(life),
+        })
     }
 
     /// Waits for messages of the calling thread and handles them. A message that waits
     /// already ends the wait at once.
-    pub(super) fn pump(&self) {
-        use windows::Win32::System::Threading::INFINITE;
+    pub(super) fn pump(&self) -> Result<(), CaptureError> {
+        use windows::Win32::Foundation::WAIT_FAILED;
         use windows::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
             PeekMessageW, QS_ALLINPUT, TranslateMessage,
         };
         // SAFETY: the calls wait for and handle the messages of this thread's own queue.
         unsafe {
-            let _ = MsgWaitForMultipleObjectsEx(None, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            let result = MsgWaitForMultipleObjectsEx(None, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if result == WAIT_FAILED {
+                return Err(CaptureError::Failed(format!(
+                    "the capture picture wait failed: {}",
+                    windows::core::Error::from_thread()
+                )));
+            }
             let mut message = MSG::default();
-            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            for _ in 0..64 {
+                if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    break;
+                }
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn the_picture_wait_observes_stop_without_a_posted_wake() {
+        let life = Arc::new(Life::default());
+        let (ready, created) = std::sync::mpsc::sync_channel(0);
+        let (done, ended) = std::sync::mpsc::sync_channel(1);
+        let stopped = life.clone();
+        std::thread::spawn(move || {
+            let owner = Thread::current();
+            ready.send(owner.waker(&stopped).unwrap()).unwrap();
+            loop {
+                owner.pump().unwrap();
+                if stopped.stopped() {
+                    break;
+                }
+            }
+            let _ = done.send(());
+        });
+        let waker = created.recv_timeout(Duration::from_secs(2)).unwrap();
+        life.stop();
+        let bounded = ended.recv_timeout(Duration::from_secs(2));
+        if bounded.is_err() {
+            let _ = waker.wake();
+            ended.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert!(
+            bounded.is_ok(),
+            "the picture wait depended on a posted message to stop"
+        );
+    }
+
+    #[test]
+    fn waking_an_ended_picture_thread_returns_the_system_failure() {
+        let life = Arc::new(Life::default());
+        let (send, ready) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let owner = Thread::current();
+            let waker = owner.waker(&life).unwrap();
+            let _ = send.send(waker);
+        });
+        let waker = ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        // SAFETY: the waker holds this thread handle open throughout the bounded wait.
+        let ended =
+            unsafe { windows::Win32::System::Threading::WaitForSingleObject(waker.handle, 2_000) };
+        assert_eq!(ended, windows::Win32::Foundation::WAIT_OBJECT_0);
+        assert!(waker.wake().is_err());
     }
 }

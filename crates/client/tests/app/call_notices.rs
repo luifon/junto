@@ -6,7 +6,7 @@ use junto_client_core::protocol::call::{CallInvitation, CallPlace};
 use junto_client_core::protocol::ids::{CallId, CallInvitationId};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
 use junto_media::engine::{MicrophoneState, OutputState};
-use junto_media::share::CaptureError;
+use junto_media::share::{CaptureError, CaptureNotice};
 
 use crate::calls::voice_channel;
 use crate::harness::{Window, World, member, selector};
@@ -41,7 +41,7 @@ fn call_with_share(window: &mut Window, channel: &str, ended: Option<CaptureErro
         sound_block: None,
         share_limit: junto_client_core::protocol::call::MAX_SHARES,
         own_shares: std::collections::BTreeMap::new(),
-        share_ended: ended,
+        share_ended: ended.map(CaptureNotice::new),
         shares: Vec::new(),
         share_sounds: Default::default(),
         watched: None,
@@ -86,7 +86,105 @@ fn the_notice_of_an_ended_share_goes_at_the_click_of_the_person(cx: &mut TestApp
     // A later share that ends is told again.
     let running = call_with_share(&mut window, "Daily", None);
     give_calls(&mut window, running);
-    give_calls(&mut window, ended);
+    let later = call_with_share(&mut window, "Daily", Some(CaptureError::SourceGone));
+    give_calls(&mut window, later);
+    assert!(window.shows("share-notice"));
+}
+
+#[gpui::test]
+fn a_cleanup_failure_is_told_after_an_earlier_share_notice_was_dismissed(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let ended = call_with_share(&mut window, "Daily", Some(CaptureError::SourceGone));
+    give_calls(&mut window, ended.clone());
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    for call in [Some(ended), None] {
+        calls.show_view_for_test(CallsView {
+            call,
+            share_stop_failed: Some(CaptureNotice::new(CaptureError::StopFailed(
+                "the picture worker did not stop".into(),
+            ))),
+            ..CallsView::default()
+        });
+        window.settle();
+        assert!(
+            window.shows("share-notice"),
+            "the new cleanup failure inherited the dismissal of the old notice"
+        );
+        window.click("dismiss-share-notice");
+        assert!(!window.shows("share-notice"));
+    }
+}
+
+#[gpui::test]
+fn dismissing_a_drawn_cleanup_failure_does_not_hide_a_later_identical_failure(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let failure = || CallsView {
+        share_stop_failed: Some(CaptureNotice::new(CaptureError::StopFailed(
+            "the worker did not stop".into(),
+        ))),
+        ..CallsView::default()
+    };
+    calls.show_view_for_test(failure());
+    window.settle();
+    assert!(window.shows("share-notice"));
+    calls.show_view_for_test(failure());
+    window.press_as_drawn("dismiss-share-notice");
+    window.settle();
+    assert!(
+        window.shows("share-notice"),
+        "dismissing the first failure hid the second"
+    );
+    assert!(calls.view().share_stop_failed.is_some());
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+}
+
+#[gpui::test]
+fn an_older_unseen_cleanup_failure_is_not_acknowledged_by_dismissing_a_newer_one(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let older = CaptureNotice::new(CaptureError::StopFailed(
+        "the first worker did not stop".into(),
+    ));
+    let newer = CaptureNotice::new(CaptureError::StopFailed(
+        "the second worker did not stop".into(),
+    ));
+    calls.show_view_for_test(CallsView {
+        share_stop_failed: Some(newer),
+        ..CallsView::default()
+    });
+    window.settle();
+    window.click("dismiss-share-notice");
+    calls.show_view_for_test(CallsView {
+        share_stop_failed: Some(older),
+        ..CallsView::default()
+    });
+    window.settle();
     assert!(window.shows("share-notice"));
 }
 

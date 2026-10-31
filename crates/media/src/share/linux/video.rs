@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use pipewire as pw;
 use pw::spa;
@@ -105,6 +106,9 @@ fn finish(life: &Life, ready: &Cell<Option<Ready>>, result: Result<(), CaptureEr
     if let Err(failure) = result {
         if let Some(ready) = ready.take() {
             let _ = ready.send(Err(failure.clone()));
+        }
+        if life.cancelled.load(Ordering::Acquire) {
+            life.cleanup_failed(failure.clone());
         }
         life.fail(failure);
     }
@@ -360,8 +364,11 @@ fn capture(
             &mut params,
         )
         .map_err(error)?;
-    connection.drive(life, None, || false)?;
-    stream.disconnect().map_err(error)?;
+    connection.drive(life.clone(), None, || false)?;
+    stream
+        .disconnect()
+        .map_err(error)
+        .inspect_err(|error| life.cleanup_failed(error.clone()))?;
     drop(listener);
     Ok(())
 }

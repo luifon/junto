@@ -44,7 +44,7 @@ use junto_media::calls::{
 };
 use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
-use junto_media::share::{CaptureError, ShareKind};
+use junto_media::share::ShareKind;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -185,11 +185,11 @@ pub struct Known {
     /// The call window draws the call. The main window then shows the direct conversation
     /// of a direct-message call as a conversation, in the whole main area (ADR 0735).
     pub call_in_own_window: bool,
-    /// The person put away the notice of the own share that ended. It stays away until
-    /// the calls state the share in another way (see [`AppState::dismiss_share_notice`]).
+    /// The generation of the share notice the person put away; another generation remains
+    /// visible (see [`AppState::dismiss_share_notice`]).
     ///
     /// [`AppState::dismiss_share_notice`]: super::AppState::dismiss_share_notice
-    pub share_notice_dismissed: bool,
+    pub share_notice_dismissed: HashSet<u64>,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
     /// only while it runs (ADR 0719).
@@ -1755,7 +1755,7 @@ pub struct ShellView {
     pub call: Option<CallStrip>,
     pub call_notice: Option<CallNotice>,
     /// Why the share of this device ended, when the person did not end it.
-    pub share_notice: Option<CaptureError>,
+    pub share_notice: Option<junto_media::share::CaptureNotice>,
     /// The invitations that wait for the answer of the person, on every server.
     pub invitations: Vec<Invited>,
     /// The people outside who ask to enter the call of this device.
@@ -4448,10 +4448,17 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         share_notice: known
             .media
             .calls
-            .call
-            .as_ref()
-            .filter(|_| !known.share_notice_dismissed)
-            .and_then(|call| call.share_ended.clone()),
+            .share_stop_failed
+            .clone()
+            .or_else(|| {
+                known
+                    .media
+                    .calls
+                    .call
+                    .as_ref()
+                    .and_then(|call| call.share_ended.clone())
+            })
+            .filter(|notice| !known.share_notice_dismissed.contains(&notice.generation)),
     };
     view.call = call_strip(servers, known, view.shown());
     view.faces = people::faces(servers, &known.people).with_presence(&known.presence);

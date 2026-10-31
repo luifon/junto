@@ -120,6 +120,15 @@ fn output_is_zero_until_the_returned_route_is_verified() {
     assert_eq!(*host.during_open.lock().unwrap(), vec![0.; 4]);
     drop(_stream);
     assert_eq!(guarded.active(), 0);
+    let mut after_close = [1.; 4];
+    host.fill.lock().unwrap().as_mut().unwrap()(
+        &mut after_close,
+        Format {
+            sample_rate: 48_000,
+            channels: 2,
+        },
+    );
+    assert_eq!(after_close, [0.; 4]);
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use livekit::webrtc::native::audio_resampler::AudioResampler;
 use tokio::sync::mpsc;
 
-use super::host::Format;
+use super::host::{AudioError, AudioHost, DeviceId, Failed, Format, OpenStream};
 use super::level::{LevelCell, Speaking};
 use super::processing::Processor;
 use super::rate::{Span, whole_step};
@@ -98,12 +98,12 @@ impl CaptureLink {
 
     pub fn set_open(&self, open: bool) {
         if self.open.swap(open, Ordering::Relaxed) && !open {
-            self.closures.fetch_add(1, Ordering::Relaxed);
+            self.closures.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     fn closures(&self) -> u64 {
-        self.closures.load(Ordering::Relaxed)
+        self.closures.load(Ordering::Acquire)
     }
 
     /// The frames of the microphone are sent: the engine opened the gate, and no close
@@ -117,7 +117,7 @@ impl CaptureLink {
     /// taken a command that was sent at or after this close. Returns the number of closes.
     pub fn stop_now(&self) -> u64 {
         let stops = self.stops.fetch_add(1, Ordering::Relaxed) + 1;
-        self.closures.fetch_add(1, Ordering::Relaxed);
+        self.closures.fetch_add(1, Ordering::AcqRel);
         stops
     }
 
@@ -221,6 +221,8 @@ pub struct CaptureChain {
     link: Arc<CaptureLink>,
     processor: Arc<Processor>,
     frames: mpsc::Sender<Frame>,
+    active: Arc<AtomicBool>,
+    last_closures: u64,
     resampler: AudioResampler,
     format: Option<Format>,
     /// Mono samples at the rate of the device that do not fill a step yet.
@@ -239,10 +241,13 @@ impl CaptureChain {
         processor: Arc<Processor>,
         frames: mpsc::Sender<Frame>,
     ) -> Self {
+        let last_closures = link.closures();
         Self {
             link,
             processor,
             frames,
+            active: Arc::new(AtomicBool::new(true)),
+            last_closures,
             resampler: AudioResampler::default(),
             format: None,
             pending: Vec::new(),
@@ -252,9 +257,46 @@ impl CaptureChain {
         }
     }
 
+    fn cancellation(&self) -> Box<dyn Fn() + Send + Sync> {
+        let active = self.active.clone();
+        let link = self.link.clone();
+        Box::new(move || {
+            active.store(false, Ordering::Release);
+            link.closures.fetch_add(1, Ordering::AcqRel);
+        })
+    }
+
+    pub(crate) fn open(
+        mut self,
+        host: &dyn AudioHost,
+        device: Option<&DeviceId>,
+        failed: Failed,
+    ) -> Result<OpenStream, AudioError> {
+        let cancel = self.cancellation();
+        match host.open_input(
+            device,
+            Box::new(move |samples, format| self.deliver(samples, format)),
+            failed,
+        ) {
+            Ok(stream) => Ok(stream.on_cancel(cancel)),
+            Err(error) => {
+                cancel();
+                Err(error)
+            }
+        }
+    }
+
     /// Takes interleaved samples of the device. A format that the pipeline does not
     /// convert gives no frame; a host opens no stream with such a format.
     pub fn deliver(&mut self, samples: &[f32], format: Format) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
+        let closures = self.link.closures();
+        if closures != self.last_closures {
+            self.last_closures = closures;
+            self.pending.clear();
+        }
         let channels = usize::from(format.channels);
         let Some(span) = Span::of(format.sample_rate).filter(|_| channels > 0) else {
             return;
@@ -294,18 +336,22 @@ impl CaptureChain {
             for index in 0..span.frames {
                 let from = index * FRAME_SAMPLES;
                 let frame = self.converted[from..from + FRAME_SAMPLES].to_vec();
-                self.send(frame);
+                self.send(frame, closures);
             }
         }
         self.pending.drain(..taken);
     }
 
-    fn send(&mut self, mut frame: Vec<i16>) {
+    fn send(&mut self, mut frame: Vec<i16>, closures: u64) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
         self.link.captured.count();
         self.processor.capture(&mut frame);
+        if closures != self.link.closures() || !self.active.load(Ordering::Acquire) {
+            return;
+        }
         self.link.input.frame(&frame);
-        // Read before the gate: a closure after this line makes the frame an old one.
-        let closures = self.link.closures();
         if self.link.is_open() && self.above_threshold(&frame) {
             let level = self.link.sent.frame(&frame);
             let speaking = self.speaking.frame(level);
@@ -365,6 +411,138 @@ mod tests {
             CaptureChain::new(link, processor, frames),
             taken,
         )
+    }
+
+    #[test]
+    fn a_retired_device_callback_cannot_send_through_a_reopened_microphone() {
+        use super::super::{DeviceId, DeviceInfo, OpenStream};
+        use std::time::{Duration, Instant};
+        let link = Arc::new(CaptureLink::default());
+        link.set_open(true);
+        let processor = Arc::new(Processor::new(Processing::OFF));
+        let (frames, mut taken) = mpsc::channel(4);
+        let mut chain = CaptureChain::new(link.clone(), processor.clone(), frames);
+        let active = chain.cancellation();
+        let stream = OpenStream::new(
+            DeviceInfo {
+                id: DeviceId("capture".into()),
+                name: "Capture".into(),
+                is_default: true,
+            },
+            (),
+        )
+        .on_cancel(active);
+        let held = processor.hold_for_test();
+        let worker = std::thread::spawn(move || {
+            chain.deliver(
+                &[0.5; FRAME_SAMPLES],
+                Format {
+                    sample_rate: SAMPLE_RATE,
+                    channels: 1,
+                },
+            );
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while link.captured.total(Duration::from_secs(1)) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the callback did not reach processing"
+            );
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        drop(stream);
+        link.set_open(false);
+        link.set_open(true);
+        drop(held);
+        worker.join().unwrap();
+        assert!(
+            taken.try_recv().is_err(),
+            "a retired device sent samples through the reopened gate"
+        );
+    }
+
+    #[test]
+    fn reopening_the_microphone_discards_a_partial_frame_from_before_the_close() {
+        let (link, mut chain, mut taken) = chain();
+        link.set_open(true);
+        let format = Format {
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+        };
+        chain.deliver(&[0.5; FRAME_SAMPLES / 2], format);
+        link.set_open(false);
+        link.set_open(true);
+        chain.deliver(&[0.25; FRAME_SAMPLES / 2], format);
+        assert!(
+            taken.try_recv().is_err(),
+            "a partial frame survived the close"
+        );
+        chain.deliver(&[0.25; FRAME_SAMPLES / 2], format);
+        let frame = taken.try_recv().unwrap();
+        assert!(frame.samples.iter().all(|sample| *sample == to_i16(0.25)));
+    }
+
+    #[test]
+    fn a_late_callback_is_fenced_after_a_device_closes_or_fails_to_open() {
+        struct Host {
+            callback: std::sync::Mutex<Option<super::super::host::Deliver>>,
+            fails: bool,
+        }
+        impl AudioHost for Host {
+            fn devices(&self) -> Result<super::super::Devices, AudioError> {
+                Ok(Default::default())
+            }
+            fn open_input(
+                &self,
+                _: Option<&DeviceId>,
+                deliver: super::super::host::Deliver,
+                _: Failed,
+            ) -> Result<OpenStream, AudioError> {
+                *self.callback.lock().unwrap() = Some(deliver);
+                if self.fails {
+                    return Err(AudioError::NoDevice);
+                }
+                Ok(OpenStream::new(
+                    super::super::DeviceInfo {
+                        id: DeviceId("capture".into()),
+                        name: "Capture".into(),
+                        is_default: true,
+                    },
+                    (),
+                ))
+            }
+            fn open_output(
+                &self,
+                _: Option<&DeviceId>,
+                _: super::super::host::Fill,
+                _: Failed,
+            ) -> Result<OpenStream, AudioError> {
+                Err(AudioError::NoDevice)
+            }
+        }
+        for fails in [false, true] {
+            let (link, chain, mut taken) = chain();
+            link.set_open(true);
+            let host = Host {
+                callback: Default::default(),
+                fails,
+            };
+            let stream = chain.open(&host, None, Box::new(|_| {}));
+            assert_eq!(stream.is_err(), fails);
+            drop(stream);
+            link.set_open(true);
+            host.callback.lock().unwrap().as_mut().unwrap()(
+                &[0.5; FRAME_SAMPLES],
+                Format {
+                    sample_rate: SAMPLE_RATE,
+                    channels: 1,
+                },
+            );
+            assert!(
+                taken.try_recv().is_err(),
+                "a cancelled callback sent samples, failed-open={fails}"
+            );
+        }
     }
 
     fn tone(format: Format, hz: f32, frames: usize, from: usize) -> Vec<f32> {

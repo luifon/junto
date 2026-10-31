@@ -70,28 +70,11 @@ impl Guard {
         self.check(Some(&stream.device.id))?;
         self.active.fetch_add(1, Ordering::SeqCst);
         armed.store(true, Ordering::SeqCst);
-        Ok(OpenStream::new(
-            stream.device.clone(),
-            Running {
-                stream: Some(stream),
-                armed,
-                active: self.active.clone(),
-            },
-        ))
-    }
-}
-
-struct Running {
-    stream: Option<OpenStream>,
-    armed: Arc<AtomicBool>,
-    active: Arc<AtomicUsize>,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.armed.store(false, Ordering::SeqCst);
-        self.stream.take();
-        self.active.fetch_sub(1, Ordering::SeqCst);
+        let active = self.active.clone();
+        Ok(stream.on_cancel(move || {
+            armed.store(false, Ordering::SeqCst);
+            active.fetch_sub(1, Ordering::SeqCst);
+        }))
     }
 }
 
@@ -140,7 +123,7 @@ impl AudioHost for Guard {
                     if ready.load(Ordering::SeqCst) && !failed.load(Ordering::SeqCst) {
                         data(samples, format);
                     }
-                    if failed.load(Ordering::SeqCst) {
+                    if !ready.load(Ordering::SeqCst) || failed.load(Ordering::SeqCst) {
                         samples.fill(0.0);
                     }
                 }),

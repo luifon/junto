@@ -129,12 +129,23 @@ impl CameraCapture for SystemCamera {
         Box::pin(async { access() })
     }
     fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
+        let (ready, answer) = mpsc::channel();
         std::thread::Builder::new()
             .name("camera-devices".into())
-            .spawn(|| Ok(enumerate()?.into_iter().map(|(device, _)| device).collect()))
-            .map_err(|e| CameraError::Failed(e.to_string()))?
-            .join()
-            .map_err(|_| CameraError::Failed("camera enumeration stopped".into()))?
+            .spawn(move || {
+                let _ =
+                    ready
+                        .send(enumerate().map(|devices| {
+                            devices.into_iter().map(|(device, _)| device).collect()
+                        }));
+            })
+            .map_err(|error| CameraError::Failed(error.to_string()))?;
+        answer
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| {
+                tracing::error!(%error, "camera enumeration did not finish");
+                CameraError::Failed(format!("camera enumeration did not finish: {error}"))
+            })?
     }
     fn start(
         &self,
@@ -216,17 +227,60 @@ impl IMFSourceReaderCallback_Impl for Callback_Impl {
     }
 }
 
-struct Source {
+struct Source<'a> {
+    delivery: &'a worker::Delivery,
     activation: IMFActivate,
     source: IMFMediaSource,
 }
-impl Drop for Source {
+impl Drop for Source<'_> {
     fn drop(&mut self) {
         // SAFETY: the control thread ends the source; callbacks own only their sender.
         unsafe {
-            let _ = self.source.Shutdown();
-            let _ = self.activation.ShutdownObject();
+            shutdown_result(
+                self.delivery,
+                "camera source shutdown",
+                self.source.Shutdown(),
+            );
+            shutdown_result(
+                self.delivery,
+                "camera activation shutdown",
+                self.activation.ShutdownObject(),
+            );
         }
+    }
+}
+
+fn shutdown_result(
+    delivery: &worker::Delivery,
+    operation: &str,
+    result: ::windows::core::Result<()>,
+) {
+    if let Err(error) = result {
+        if error.code() == MF_E_SHUTDOWN {
+            tracing::debug!(operation, %error, "camera source already shut down");
+        } else {
+            delivery.cleanup_failed(format!("{operation}: {error}"));
+        }
+    }
+}
+
+fn source_reader(
+    source: &IMFMediaSource,
+    attributes: &IMFAttributes,
+) -> Result<IMFSourceReader, CameraError> {
+    // SAFETY: the owning worker keeps the source alive and explicitly shuts it down.
+    unsafe {
+        attributes
+            .SetUINT32(&MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, 1)
+            .map_err(error)?;
+        MFCreateSourceReaderFromMediaSource(source, attributes).map_err(error)
+    }
+}
+
+fn flush_reader(reader: &IMFSourceReader, delivery: &worker::Delivery) {
+    // SAFETY: the owning worker finishes reads before shutting down its source.
+    unsafe {
+        shutdown_result(delivery, "camera reader flush", reader.Flush(VIDEO));
     }
 }
 
@@ -463,6 +517,7 @@ fn capture(
     };
     // SAFETY: activation is used only on this capture thread and shut down by Source.
     let source = Source {
+        delivery,
         source: unsafe { activation.ActivateObject() }.map_err(error)?,
         activation,
     };
@@ -478,8 +533,7 @@ fn capture(
         attributes
             .SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)
             .map_err(error)?;
-        let reader =
-            MFCreateSourceReaderFromMediaSource(&source.source, &attributes).map_err(error)?;
+        let reader = source_reader(&source.source, &attributes)?;
         reader
             .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
             .map_err(error)?;
@@ -539,10 +593,7 @@ fn capture(
         }
         read()?;
     }
-    // SAFETY: shutdown happens on this thread and the callback retains no source or reader.
-    unsafe {
-        let _ = reader.Flush(VIDEO);
-    }
+    flush_reader(&reader, delivery);
     Ok(())
 }
 
@@ -771,5 +822,30 @@ mod tests {
                 },
             ]
         );
+    }
+    struct CleanupSink;
+    impl CameraSink for CleanupSink {
+        fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {}
+        fn ended(&self, _: CameraError) {}
+    }
+    #[tokio::test]
+    async fn an_already_closed_source_is_complete_but_another_shutdown_error_is_reported() {
+        for code in [MF_E_SHUTDOWN, ::windows::Win32::Foundation::E_FAIL] {
+            let stream = worker::start(Arc::new(CleanupSink), move |delivery, ready| {
+                shutdown_result(
+                    &delivery,
+                    "camera source shutdown",
+                    Err(::windows::core::Error::from_hresult(code)),
+                );
+                let _ = ready.send(Ok(worker::Started {
+                    width: 2,
+                    height: 2,
+                    rate: None,
+                }));
+            })
+            .await
+            .unwrap();
+            assert_eq!(stream.stop().await.is_ok(), code == MF_E_SHUTDOWN);
+        }
     }
 }

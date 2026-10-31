@@ -11,15 +11,18 @@
 //! becomes interleaved samples. Ordinary tests capture no screen and cause no permission
 //! question; the explicit native tier exercises the system calls (ADR 0913).
 
+use super::life::Life;
+use super::workers::{Workers, cleanup_completion, wait_for_start};
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use livekit::webrtc::video_frame::VideoBuffer;
 use livekit::webrtc::video_frame::native::NativeBuffer;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescription};
@@ -61,7 +64,7 @@ const USER_DECLINED: isize = -3801;
 /// parts of an interface that a system or an application draws as windows.
 const SMALLEST_WINDOW: f64 = 64.0;
 /// How long the system has to answer a request for its lists and for the start of a
-/// stream. Without an answer the share does not start, and nothing keeps running.
+/// stream. Without an answer startup fails and supervised cleanup is requested.
 const ANSWER_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// The part of the settings of the system that holds the permission.
 const SETTINGS_URL: &str =
@@ -191,6 +194,7 @@ struct OutputIvars {
     sink: Arc<dyn CaptureSink>,
     /// The sink was told the end of the capture.
     ended: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
     /// The stream shows one window. When the system tells that the window is gone, the
     /// share has ended.
     one_window: bool,
@@ -241,6 +245,7 @@ define_class!(
                 "share stop",
                 || self.end_after_a_panic(),
                 || {
+                    self.ivars().closed.store(true, Ordering::Release);
                     let reason = match error.code() {
                         USER_STOPPED => CaptureError::SourceGone,
                         USER_DECLINED => CaptureError::NotAllowed,
@@ -282,10 +287,16 @@ impl Output {
         });
     }
 
-    fn new(sink: Arc<dyn CaptureSink>, ended: Arc<AtomicBool>, one_window: bool) -> Retained<Self> {
+    fn new(
+        sink: Arc<dyn CaptureSink>,
+        ended: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+        one_window: bool,
+    ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             sink,
             ended,
+            closed,
             one_window,
             samples: Mutex::new(Vec::new()),
         });
@@ -435,9 +446,12 @@ unsafe fn read_sound(sample: &CMSampleBuffer, out: &mut Vec<f32>) -> Option<Form
 
 /// One stream of the system with the object that takes its output.
 struct Stream {
+    life: Arc<Life>,
     stream: Retained<SCStream>,
     output: Retained<Output>,
     kind: SCStreamOutputType,
+    pending: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
 }
 
 impl Stream {
@@ -448,8 +462,9 @@ impl Stream {
         sink: Arc<dyn CaptureSink>,
         ended: Arc<AtomicBool>,
         one_window: bool,
+        life: Arc<Life>,
     ) -> Result<Self, CaptureError> {
-        let output = Output::new(sink, ended, one_window);
+        let output = Output::new(sink, ended, Arc::new(AtomicBool::new(false)), one_window);
         // SAFETY: the filter and the configuration are valid objects. The stream keeps no
         // strong reference to its delegate; `Stream` holds the object for as long as the
         // stream lives.
@@ -472,17 +487,24 @@ impl Stream {
         };
         added.map_err(|error| CaptureError::Failed(error.localizedDescription().to_string()))?;
         Ok(Self {
+            life,
             stream,
             output,
             kind,
+            pending: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Starts the stream. The answer of the system arrives on the returned channel.
     fn start(&self) -> oneshot::Receiver<Result<(), CaptureError>> {
+        self.pending.store(true, Ordering::Release);
+        let pending = self.pending.clone();
+        let running = self.started.clone();
         let (started, result) = oneshot::channel();
         let started = Mutex::new(Some(started));
         let stream = Shared(self.stream.clone());
+        let sink = self.output.ivars().sink.clone();
         let handler = RcBlock::new(move |error: *mut NSError| {
             // A panic cannot unwind into the system that calls the block (ADR 0757).
             crate::callback::stop_panic(
@@ -499,17 +521,29 @@ impl Stream {
                             error.localizedDescription().to_string(),
                         )),
                     };
+                    let succeeded = outcome.is_ok();
+                    running.store(succeeded, Ordering::Release);
+                    pending.store(false, Ordering::Release);
                     let waited_for = started
                         .lock()
                         .ok()
                         .and_then(|mut started| started.take())
                         .is_some_and(|started| started.send(outcome).is_ok());
-                    if !waited_for {
+                    if !waited_for && succeeded {
                         // Nobody waits for this start any more: the share was stopped while the
                         // system prepared the stream. A stop that was asked for before the start
                         // had completed may not have ended it, so it is asked for again.
                         // SAFETY: the stream is a valid object that this block keeps alive.
-                        unsafe { stream.0.stopCaptureWithCompletionHandler(None) };
+                        let life = Arc::new(Life::default());
+                        let (mut cleanup, _) = Workers::new(life.clone());
+                        cleanup.report_failures_to(sink.clone());
+                        let stream = Shared(stream.0.clone());
+                        let _ = cleanup.spawn("macos-share-late-stop", move || {
+                            autoreleasepool(|_| {
+                                stream.stop(&life);
+                                drop(stream);
+                            })
+                        });
                     }
                 },
             )
@@ -526,20 +560,63 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.output.ivars().ended.store(true, Ordering::Relaxed);
-        // SAFETY: the output was added to this stream with this type. A stream that the
-        // system has stopped already answers both calls with an error, which changes
-        // nothing.
+        self.output.ivars().ended.store(true, Ordering::Release);
+        // SAFETY: this capture worker owns the stream and its registered output.
         unsafe {
             let output = ProtocolObject::from_ref(&*self.output);
-            let _ = self.stream.removeStreamOutput_type_error(output, self.kind);
-            self.stream.stopCaptureWithCompletionHandler(None);
+            if let Err(error) = self.stream.removeStreamOutput_type_error(output, self.kind) {
+                self.life.cleanup_failed(CaptureError::StopFailed(format!(
+                    "ScreenCaptureKit output removal: {}",
+                    error.localizedDescription()
+                )));
+            }
         }
+        if self.pending.load(Ordering::Acquire)
+            || (self.started.load(Ordering::Acquire)
+                && !self.output.ivars().closed.load(Ordering::Acquire))
+        {
+            stop_stream(&self.stream, &self.life);
+        }
+    }
+}
+
+fn stop_stream(stream: &SCStream, life: &Arc<Life>) {
+    let (completed, answer) = cleanup_completion(life.clone());
+    let handler = RcBlock::new(move |error: *mut NSError| {
+        crate::callback::stop_panic(
+            "share stop completion",
+            || (),
+            || {
+                // SAFETY: ScreenCaptureKit passes a valid error or null during this callback.
+                let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
+                    Err(CaptureError::StopFailed(format!(
+                        "ScreenCaptureKit stop: {}",
+                        error.localizedDescription()
+                    )))
+                });
+                completed(result);
+            },
+        );
+    });
+    // SAFETY: the framework copies the completion block, which owns its sender.
+    unsafe {
+        stream.stopCaptureWithCompletionHandler(Some(&handler));
+    }
+    match answer.recv_timeout(Duration::from_secs(1)) {
+        Ok(()) => {}
+        Err(error) => life.cleanup_failed(CaptureError::StopFailed(format!(
+            "ScreenCaptureKit stop did not complete: {error}"
+        ))),
     }
 }
 
 /// A stream that the block of a completion handler holds.
 struct Shared(Retained<SCStream>);
+impl Shared {
+    fn stop(&self, life: &Arc<Life>) {
+        stop_stream(&self.0, life);
+    }
+}
 
 // SAFETY: a stream of ScreenCaptureKit takes its calls on any thread.
 unsafe impl Send for Shared {}
@@ -549,11 +626,6 @@ struct Streams {
     picture: Stream,
     sound: Option<Stream>,
 }
-
-// SAFETY: a stream of ScreenCaptureKit takes its calls on any thread, and the output object
-// holds only values that are `Send` and `Sync`. The streams are created on a queue of the
-// system and are stopped on the thread that drops them.
-unsafe impl Send for Streams {}
 
 /// What the system lists, read on the queue on which the system gave it.
 struct Content {
@@ -837,8 +909,13 @@ impl Content {
         request: &CaptureRequest,
         sink: &Arc<dyn CaptureSink>,
         own: &Own,
+        life: Arc<Life>,
     ) -> Result<(Streams, (u32, u32)), CaptureError> {
         let ended = Arc::new(AtomicBool::new(false));
+        life.on_stop({
+            let ended = ended.clone();
+            move || ended.store(true, Ordering::Release)
+        });
         let (filter, source) = self.picture_filter(request.picture, own)?;
         // SAFETY: the content and the objects of its lists are valid. Each filter and each
         // configuration is made and used on this thread.
@@ -863,6 +940,7 @@ impl Content {
                 sink.clone(),
                 ended.clone(),
                 matches!(request.picture, PictureSource::Window(_)),
+                life.clone(),
             )?;
 
             let sound_filter = match &request.sound {
@@ -915,6 +993,7 @@ impl Content {
                         sink.clone(),
                         ended,
                         false,
+                        life.clone(),
                     )?)
                 }
             };
@@ -1006,20 +1085,49 @@ impl ScreenCapture for SystemCapture {
                 return Err(CaptureError::NotAllowed);
             }
             let content = answer(content()).await??;
-            let (streams, (width, height)) = content.streams(&request, &sink, &own)?;
-            drop(content);
-            let mut starting = vec![streams.picture.start()];
-            if let Some(sound) = &streams.sound {
-                starting.push(sound.start());
-            }
-            // A share whose sound does not start does not run without it: no choice of
-            // the sharer is replaced by another one (ADR 0502).
-            // The streams are dropped, and with that stopped, when one of them does not
-            // start, when the system does not answer, and when this work is ended.
-            for started in starting {
-                answer(started).await??;
-            }
-            Ok(CaptureStream::new(width, height, streams))
+            let life = Arc::new(Life::default());
+            let (mut workers, stopped) = Workers::new(life.clone());
+            workers.report_failures_to(sink.clone());
+            let (ready, first) = oneshot::channel();
+            workers.spawn("macos-share-capture", move || {
+                autoreleasepool(|_| {
+                    let started = (|| {
+                        let (streams, size) =
+                            content.streams(&request, &sink, &own, life.clone())?;
+                        drop(content);
+                        let mut starting = vec![streams.picture.start()];
+                        if let Some(sound) = &streams.sound {
+                            starting.push(sound.start());
+                        }
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        let mut failure = None;
+                        for started in starting {
+                            if let Err(error) = wait_for_start(started, deadline) {
+                                failure.get_or_insert(error);
+                            }
+                        }
+                        if let Some(error) = failure {
+                            return Err(error);
+                        }
+                        Ok::<_, CaptureError>((streams, size))
+                    })();
+                    match started {
+                        Err(error) => {
+                            let _ = ready.send(Err(error));
+                        }
+                        Ok((streams, size)) => {
+                            if ready.send(Ok(size)).is_ok() {
+                                while !life.stopped() {
+                                    std::thread::park_timeout(Duration::from_millis(100));
+                                }
+                            }
+                            drop(streams);
+                        }
+                    }
+                })
+            })?;
+            let (width, height) = answer(first).await??;
+            Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
         })
     }
 }

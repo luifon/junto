@@ -2043,7 +2043,7 @@ fn a_file_dialog_answered_after_the_account_of_the_server_changed_attaches_nothi
         .count();
     assert_eq!(uploads, 0, "a file was sent for the account of Bruno");
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         window.click("attach-file");
         let chosen = path.clone();

@@ -161,16 +161,64 @@ fn a_partial_frame_has_one_deadline_even_while_bytes_keep_arriving() {
 }
 
 #[test]
+fn accepted_requests_wait_for_a_body_after_nonblocking_accept() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut accepted, _) = listener.accept().unwrap();
+    accepted.set_nonblocking(true).unwrap();
+    let token = [7; 32];
+    let bytes = serde_json::to_vec(&Request {
+        token,
+        activation: Activation::default(),
+    })
+    .unwrap();
+    client
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    let (send, mut activation) = mpsc::channel(1);
+    let (ready, started) = stopping::sync_channel(0);
+    let (done, result) = stopping::channel();
+    let worker = thread::spawn(move || {
+        ready.send(()).unwrap();
+        let _ = done.send(receive_request(&mut accepted, &token, &send, &|| false));
+    });
+    started.recv_timeout(WAIT).unwrap();
+    let early = result.recv_timeout(WAIT / 4);
+    let waited = matches!(early, Err(stopping::RecvTimeoutError::Timeout));
+    let written = client.write_all(&bytes);
+    let outcome = match early {
+        Ok(outcome) => Ok(outcome),
+        Err(_) => result.recv_timeout(WAIT),
+    };
+    drop(client);
+    worker.join().unwrap();
+    assert!(
+        waited,
+        "the accepted socket did not wait for its request body"
+    );
+    written.unwrap();
+    outcome.unwrap().unwrap();
+    assert_eq!(activation.try_recv().unwrap(), Activation::default());
+}
+
+#[test]
 fn shutdown_interrupts_an_accepted_partial_frame() {
+    shutdown_interrupts_partial_request(&(MAX_REQUEST as u32).to_be_bytes());
+}
+
+#[test]
+fn shutdown_interrupts_an_accepted_partial_header() {
+    shutdown_interrupts_partial_request(&[0]);
+}
+
+fn shutdown_interrupts_partial_request(bytes: &[u8]) {
     let (_root, directory) = directory();
     let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap()
     else {
         panic!()
     };
     let mut stream = TcpStream::connect(first.address).unwrap();
-    stream
-        .write_all(&(MAX_REQUEST as u32).to_be_bytes())
-        .unwrap();
+    stream.write_all(bytes).unwrap();
     let deadline = Instant::now() + WAIT;
     while first.accepted.lock().unwrap().socket.is_none() {
         assert!(
@@ -187,6 +235,42 @@ fn shutdown_interrupts_an_accepted_partial_frame() {
     let result = finished.recv_timeout(WAIT / 2);
     drop(stream);
     assert!(result.is_ok(), "shutdown must interrupt the socket read");
+}
+
+#[test]
+fn cancellation_without_socket_shutdown_interrupts_an_accepted_partial_frame() {
+    let (_root, directory) = directory();
+    let Start::Primary(first, _) = Instance::start(&directory, Activation::default()).unwrap()
+    else {
+        panic!()
+    };
+    let mut peer = TcpStream::connect(first.address).unwrap();
+    peer.write_all(&(MAX_REQUEST as u32).to_be_bytes()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while first.accepted.lock().unwrap().socket.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the listener never accepted the request"
+        );
+        thread::park_timeout(Duration::from_millis(1));
+    }
+    first.accepted.lock().unwrap().stopping = true;
+    let deadline = Instant::now() + WAIT / 2;
+    let interrupted = loop {
+        if first.accepted.lock().unwrap().socket.is_none() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::park_timeout(Duration::from_millis(1));
+    };
+    drop(peer);
+    drop(first);
+    assert!(
+        interrupted,
+        "the read required socket shutdown to observe cancellation"
+    );
 }
 
 #[test]

@@ -518,7 +518,26 @@ fn the_bar_of_actions_stays_on_the_row_under_a_resting_pointer_when_the_list_mov
     let list = window
         .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
         .expect("the list was drawn");
-    let pointer = list.center();
+    let target = window
+        .feed()
+        .unwrap()
+        .rows
+        .iter()
+        .find_map(|row| {
+            let FeedRow::Message(row) = row else {
+                return None;
+            };
+            let bounds = window.cx.debug_bounds(crate::harness::selector(format!(
+                "message:{}",
+                row.message.id
+            )))?;
+            (bounds.top() >= list.top()
+                && bounds.bottom() <= list.bottom()
+                && bounds.size.height > px(8.0))
+            .then_some(bounds)
+        })
+        .expect("a complete message row with room for the small scroll");
+    let pointer = target.center();
     window.simulate(|cx| cx.simulate_mouse_move(pointer, None::<MouseButton>, Modifiers::none()));
     window.settle();
     let under = |window: &mut Window| {
@@ -543,10 +562,25 @@ fn the_bar_of_actions_stays_on_the_row_under_a_resting_pointer_when_the_list_mov
     let hovered = under(&mut window).expect("a message under the pointer");
     let bar = crate::harness::selector(format!("react:{hovered}"));
     assert!(window.shows(bar), "the bar of the row under the pointer");
-    window.wheel_over(Pane::Main, 4.0);
+    window.dispatch(ScrollWheelEvent {
+        position: pointer,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(4.0))),
+        ..Default::default()
+    });
+    window.settle();
     assert_eq!(under(&mut window), Some(hovered));
     assert!(
         window.shows(bar),
         "the list moved by 4 pixels under the pointer and the bar of its row is gone"
     );
+    window.dispatch(ScrollWheelEvent {
+        position: pointer,
+        delta: ScrollDelta::Pixels(point(px(0.0), target.size.height + px(8.0))),
+        ..Default::default()
+    });
+    window.settle();
+    let next = under(&mut window).expect("another message under the resting pointer");
+    assert_ne!(next, hovered);
+    assert!(window.shows(crate::harness::selector(format!("react:{next}"))));
+    assert!(!window.shows(bar));
 }

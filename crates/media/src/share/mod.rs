@@ -6,6 +6,7 @@
 
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(crate) mod delivery;
+pub(crate) mod life;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -19,6 +20,7 @@ pub mod sound;
 pub mod synthetic;
 #[cfg(any(target_os = "windows", test))]
 pub mod windows;
+pub(crate) mod workers;
 
 use std::any::Any;
 use std::fmt;
@@ -243,10 +245,43 @@ pub enum CaptureError {
     TooMany,
     #[error("the capture failed: {0}")]
     Failed(String),
+    #[error("capture cleanup failed: {0}")]
+    StopFailed(String),
 }
 
-/// What a capture gives. The calls come from threads of the capture, in the order of the
-/// pictures and of the sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureKind {
+    Share,
+    Camera,
+    Microphone,
+    SoundOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureNotice {
+    pub generation: u64,
+    pub kind: CaptureKind,
+    pub error: CaptureError,
+}
+
+impl CaptureNotice {
+    pub fn new(error: CaptureError) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            kind: CaptureKind::Share,
+            error,
+        }
+    }
+}
+
+impl fmt::Display for CaptureNotice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+/// What a capture gives, on its picture and sound threads.
 pub trait CaptureSink: Send + Sync + 'static {
     /// One picture of the screen or the window.
     fn picture(&self, buffer: Arc<dyn VideoBuffer>);
@@ -256,16 +291,20 @@ pub trait CaptureSink: Send + Sync + 'static {
     fn sound(&self, samples: &[f32], format: Format);
 
     /// The capture ended by itself: the window was closed, or the system stopped it. No
-    /// further call follows.
+    /// further picture or sound follows.
     fn ended(&self, error: CaptureError);
+
+    /// Cleanup failed after cancellation; delivery has stopped, but native resources may remain.
+    fn stop_failed(&self, _notice: CaptureNotice) {}
 }
 
-/// A capture that runs. It ends when this value is dropped.
+/// A running capture. Dropping it requests shutdown; `stop` also awaits its cleanup result.
 pub struct CaptureStream {
     /// The size of the pictures in pixels.
     pub width: u32,
     pub height: u32,
     _stream: Box<dyn Any + Send>,
+    stopped: Option<tokio::sync::oneshot::Receiver<Result<(), CaptureError>>>,
 }
 
 impl CaptureStream {
@@ -274,7 +313,36 @@ impl CaptureStream {
             width,
             height,
             _stream: Box::new(stream),
+            stopped: None,
         }
+    }
+
+    pub(crate) fn with_stop_result(
+        mut self,
+        stopped: tokio::sync::oneshot::Receiver<Result<(), CaptureError>>,
+    ) -> Self {
+        self.stopped = Some(stopped);
+        self
+    }
+
+    /// Cancels the capture and awaits its cleanup acknowledgement when one is provided.
+    pub fn stop(mut self) -> Pending<Result<(), CaptureError>> {
+        let stopped = self.stopped.take();
+        drop(self);
+        Box::pin(async move {
+            let result = match stopped {
+                Some(stopped) => match tokio::time::timeout(std::time::Duration::from_secs(3), stopped).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(CaptureError::StopFailed("capture cleanup ended without a result".into())),
+                    Err(_) => Err(CaptureError::StopFailed("capture cleanup did not answer within 3 seconds; restart Junto to release its remaining capture resources".into())),
+                },
+                None => Ok(()),
+            };
+            if let Err(error) = &result {
+                tracing::error!(%error, "screen capture cleanup failed");
+            }
+            result
+        })
     }
 }
 

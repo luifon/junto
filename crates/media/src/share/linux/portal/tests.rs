@@ -70,8 +70,12 @@ struct Request(Arc<State>);
 
 #[zbus::interface(name = "org.freedesktop.portal.Session")]
 impl Session {
-    fn close(&self) {
+    fn close(&self) -> zbus::fdo::Result<()> {
         self.0.events.send(Event::CloseSession).unwrap();
+        if self.0.mode.load(Ordering::Relaxed) == 7 {
+            return Err(zbus::fdo::Error::Failed("session cleanup refused".into()));
+        }
+        Ok(())
     }
 }
 #[zbus::interface(name = "org.freedesktop.portal.Request")]
@@ -273,6 +277,7 @@ async fn setup(bus: &Bus, mode: u32) -> (Connection, Portal, mpsc::UnboundedRece
         session: None,
         pending: std::sync::Mutex::new(None),
         limit: Duration::from_secs(1),
+        reporter: None,
     };
     (service, portal, receive)
 }
@@ -421,4 +426,45 @@ async fn a_portal_that_ends_during_the_dialog_fails_the_start() {
         Event::Select(1, false, 2, 0)
     ));
     assert!(matches!(event(&mut events).await, Event::Start(_)));
+}
+
+#[tokio::test]
+async fn cancellation_during_the_chooser_reports_session_close_failure() {
+    struct Reporter(mpsc::UnboundedSender<CaptureNotice>);
+    impl CaptureSink for Reporter {
+        fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {}
+        fn sound(&self, _: &[f32], _: crate::audio::Format) {}
+        fn ended(&self, _: CaptureError) {}
+        fn stop_failed(&self, notice: CaptureNotice) {
+            self.0.send(notice).unwrap();
+        }
+    }
+    let bus = Bus::new();
+    let (_service, mut portal, mut events) = setup(&bus, 7).await;
+    let (reporter, mut failures) = mpsc::unbounded_channel();
+    portal.report_failures_to(Arc::new(Reporter(reporter)));
+    let mut starting = Box::pin(portal.start(ShareKind::Screen, ""));
+    tokio::select! {
+        result = &mut starting => panic!("the chooser unexpectedly finished: {}", result.is_ok()),
+        _ = async {
+            assert!(matches!(event(&mut events).await, Event::Select(..)));
+            assert!(matches!(event(&mut events).await, Event::Start(_)));
+        } => {}
+    }
+    drop(starting);
+    drop(portal);
+    assert!(matches!(event(&mut events).await, Event::CloseRequest));
+    assert!(matches!(event(&mut events).await, Event::CloseSession));
+    let failure = tokio::time::timeout(Duration::from_secs(5), failures.recv())
+        .await
+        .unwrap();
+    assert!(
+        failure.is_some(),
+        "cancelled chooser cleanup failure was not told"
+    );
+    let failure = failure.unwrap();
+    assert!(
+        failure.to_string().contains("session cleanup refused"),
+        "{failure}"
+    );
 }

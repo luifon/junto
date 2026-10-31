@@ -224,3 +224,5 @@ the choices, audible test signals, rendered preview, errors and retry, persisten
 source changes. `live::device_checks::` checks that call entry releases local test devices and
 that the preview is not published. Native permission dialogs and physical devices remain in
 the native device tier of ADR 0913.
+
+Sound-device ownership follows the bounded capture cleanup policy of ADR 0706. OpenStream cancellation fences callbacks synchronously; native CPAL pause/destruction and generated-device joins run on a supervised cleanup worker. The callback fence sends no microphone samples and fills output with silence once cancelled. Pause errors and errors delivered during close are logged and retained; panics, missing acknowledgements and a two-second native cleanup deadline become persistent microphone/output notices in Calls, including after Leave. Explicit stop also awaits the common bounded acknowledgement. Test wrappers attach lifetime guards to the same native resource instead of nesting independently supervised streams.

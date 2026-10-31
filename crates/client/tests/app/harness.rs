@@ -10,6 +10,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::shell::Shell;
 use junto_client::state::view::{ChannelRow, Members, ServerStatus, ShellView};
 use junto_client::state::{AppState, Timing};
+use junto_client_core::protocol::ids::MessageId;
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
@@ -639,10 +640,11 @@ impl Window {
             assert!(
                 Instant::now() < deadline,
                 "after {PATIENCE:?} this did not hold: {what}; the clock of the test moved \
-                 {:?} meanwhile; the calls of the window: {:?}",
+                 {:?} meanwhile; the calls of the window: {:?}; administration: {:?}",
                 self.cx.executor().now().duration_since(clock_start),
                 self.state
-                    .read_with(&self.cx, |state, _| state.calls().view())
+                    .read_with(&self.cx, |state, _| state.calls().view()),
+                self.admin()
             );
             self.pass(Duration::from_millis(20));
         }
@@ -821,6 +823,22 @@ impl Window {
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
         self.press_at(bounds.center(), gpui::MouseButton::Right);
+        self.settle();
+    }
+
+    /// Opens a message menu outside its account, link and attachment targets.
+    #[track_caller]
+    pub fn right_click_message(&mut self, message_id: MessageId) {
+        self.settle();
+        let name = selector(format!("message:{message_id}"));
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        self.press_at(
+            gpui::point(bounds.left() + gpui::px(4.0), bounds.center().y),
+            gpui::MouseButton::Right,
+        );
         self.settle();
     }
 
@@ -1482,6 +1500,23 @@ pub fn draw_from_a_task(cx: &mut VisualTestContext) {
         .detach();
     });
     cx.run_until_parked();
+}
+
+/// Gives the window a native frame, optionally while an application update holds it.
+pub fn native_frame(cx: &mut VisualTestContext, nested: bool) {
+    let handle = cx.update(|window, _| window.window_handle());
+    let platform = cx.cx.test_window(handle);
+    let request = || {
+        platform.simulate_frame_request(gpui::RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
+    };
+    if nested {
+        cx.update(|_, _| request());
+    } else {
+        request();
+    }
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test

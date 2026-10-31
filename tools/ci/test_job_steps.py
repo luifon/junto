@@ -24,27 +24,11 @@ exit 0
 """
 SYSTEMS = {"macos": "Darwin", "windows": "MINGW64_NT-10.0-26100"}
 WINDOW_TESTS = "cargo test --no-fail-fast --locked --workspace --test app --"
-WINDOWS_ONLY_SKIPS = [
-    "recordings::",
-    "transcripts::",
-    "messages::a_file_is_sent_with_a_message_and_saved_from_one",
-    "messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops",
-    "messages::a_pending_file_picker_cannot_retarget_an_upload",
-    "messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server",
-    "messages::a_message_whose_files_the_retention_removed_says_so",
-    "admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export",
-    "composing::a_file_taken_away_before_the_send_is_not_in_the_message",
-    "composing::a_pasted_picture_is_a_file_of_the_message_and_pasted_text_is_text",
-    "composing::an_upload_goes_on_after_its_connection_was_cut_and_the_draft_says_so",
-    "files::the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file",
-    "threads::in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file",
-    "thread_actions::a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread",
-    "admin_pages::exports_actions::a_direct_conversation_is_exported_from_its_header_and_saved",
-    "admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts",
-    "pictures::",
-    "admin_pages::exports_actions::a_saved_export_is_not_counted_again_after_a_restart",
-    "badges::the_administration_counts_the_ready_exports_and_the_channels_deleted_soon",
-    "system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed",
+WINDOWS_RECORDING_SKIPS = [
+    'recordings::',
+    'transcripts::',
+    'admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts',
+    'system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed',
 ]
 DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
@@ -96,6 +80,14 @@ class JobSteps(unittest.TestCase):
         self.assertLess(commands.index("python3 tools/test_with_native_postgres.py"),
                         commands.index(f"{DATABASE['macos']} --fetch"))
         self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
+
+    def test_both_systems_run_the_file_storage_checks_and_keep_their_failure(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            self.assertIn("cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::", commands)
+            status, _, _ = self.run_job(system, fail_on="recordings::files::")
+            self.assertNotEqual(status, 0, system)
 
     def test_both_systems_measure_the_emoji_of_their_fonts(self):
         for system in SYSTEMS:
@@ -157,12 +149,12 @@ class JobSteps(unittest.TestCase):
         status, _, _ = self.run_job("macos", fail_on="--skip live::")
         self.assertNotEqual(status, 0)
 
-    def test_windows_leaves_out_the_tests_that_store_files_and_starts_no_bundle(self):
+    def test_windows_runs_file_window_tests_and_starts_no_bundle(self):
         status, commands, output = self.run_job("windows")
         self.assertEqual(status, 0, output)
         without, with_database = self.window_steps(commands, "windows")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
-        skips = " ".join(f"--skip {name}" for name in ["updates::", "live::", *WINDOWS_ONLY_SKIPS])
+        skips = " ".join(f"--skip {name}" for name in ["updates::", "live::", *WINDOWS_RECORDING_SKIPS])
         self.assertEqual(with_database, [f"{DATABASE['windows']} {WINDOW_TESTS} {skips}"])
         self.assertNotIn("python3 tools/with_native_postgres.py --fetch", commands)
         self.assertIn("python3 packaging/check_windows.py", commands)
