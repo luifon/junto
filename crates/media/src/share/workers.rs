@@ -173,6 +173,25 @@ fn finish(
 }
 
 #[cfg(any(target_os = "macos", test))]
+pub(crate) fn cleanup_completion(
+    life: Arc<Life>,
+) -> (
+    impl Fn(Result<(), CaptureError>) + Send + Sync + 'static,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let (completed, result) = std::sync::mpsc::channel();
+    (
+        move |result: Result<(), CaptureError>| {
+            if let Err(error) = &result {
+                life.cleanup_failed(error.clone());
+            }
+            let _ = completed.send(());
+        },
+        result,
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn wait_for_start(
     mut started: oneshot::Receiver<Result<(), CaptureError>>,
     deadline: Instant,
@@ -200,6 +219,44 @@ pub(crate) fn wait_for_start(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn macos_stop_errors_are_retained_after_the_completion_wait_ends() {
+        #[derive(Clone)]
+        struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log(Arc::default());
+        let output = log.0.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || log.clone())
+            .finish();
+        let life = Arc::new(Life::default());
+        let (complete, answer) = cleanup_completion(life.clone());
+        assert!(answer.try_recv().is_err());
+        drop(answer);
+        tracing::subscriber::with_default(subscriber, || {
+            life.cleanup_failed(CaptureError::StopFailed("stop completion timed out".into()));
+            complete(Err(CaptureError::StopFailed(
+                "late ScreenCaptureKit stop failure".into(),
+            )));
+        });
+        let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("stop completion timed out"), "{output}");
+        assert!(
+            output.contains("late ScreenCaptureKit stop failure"),
+            "the native error was lost after the timeout: {output}"
+        );
+    }
 
     #[test]
     fn a_capture_worker_that_ignores_stop_does_not_hold_its_owner() {

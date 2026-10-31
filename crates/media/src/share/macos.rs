@@ -12,7 +12,7 @@
 //! question; the explicit native tier exercises the system calls (ADR 0913).
 
 use super::life::Life;
-use super::workers::{Workers, wait_for_start};
+use super::workers::{Workers, cleanup_completion, wait_for_start};
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,7 +64,7 @@ const USER_DECLINED: isize = -3801;
 /// parts of an interface that a system or an application draws as windows.
 const SMALLEST_WINDOW: f64 = 64.0;
 /// How long the system has to answer a request for its lists and for the start of a
-/// stream. Without an answer the share does not start, and nothing keeps running.
+/// stream. Without an answer startup fails and supervised cleanup is requested.
 const ANSWER_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// The part of the settings of the system that holds the permission.
 const SETTINGS_URL: &str =
@@ -580,8 +580,8 @@ impl Drop for Stream {
     }
 }
 
-fn stop_stream(stream: &SCStream, life: &Life) {
-    let (stopped, answer) = std::sync::mpsc::channel();
+fn stop_stream(stream: &SCStream, life: &Arc<Life>) {
+    let (completed, answer) = cleanup_completion(life.clone());
     let handler = RcBlock::new(move |error: *mut NSError| {
         crate::callback::stop_panic(
             "share stop completion",
@@ -594,7 +594,7 @@ fn stop_stream(stream: &SCStream, life: &Life) {
                         error.localizedDescription()
                     )))
                 });
-                let _ = stopped.send(result);
+                completed(result);
             },
         );
     });
@@ -603,8 +603,7 @@ fn stop_stream(stream: &SCStream, life: &Life) {
         stream.stopCaptureWithCompletionHandler(Some(&handler));
     }
     match answer.recv_timeout(Duration::from_secs(1)) {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => life.cleanup_failed(error),
+        Ok(()) => {}
         Err(error) => life.cleanup_failed(CaptureError::StopFailed(format!(
             "ScreenCaptureKit stop did not complete: {error}"
         ))),
@@ -614,7 +613,7 @@ fn stop_stream(stream: &SCStream, life: &Life) {
 /// A stream that the block of a completion handler holds.
 struct Shared(Retained<SCStream>);
 impl Shared {
-    fn stop(&self, life: &Life) {
+    fn stop(&self, life: &Arc<Life>) {
         stop_stream(&self.0, life);
     }
 }
