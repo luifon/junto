@@ -90,3 +90,33 @@ pair and group calls use the same state and renderer.
 Tests: `live::pinning::` exercises avatar and video pins, speaking changes, share selection,
 main/detached transfer, both unpin controls, hidden audio-only people, person/group departure,
 pair-call end, and rejection of old owners and seats.
+
+## Local input while muted
+
+A connected call shows a short "You are muted" notice with Unmute when the person's
+explicit mute is on and the local microphone meter reaches the segment containing
+-45 dBFS, the speaking threshold used by the media engine. The meter's existing release removes the
+notice after the input becomes quiet. Remote voices, shared sound and the output mix do
+not feed this decision. The warning starts no capture and opens no sending gate.
+
+The main and detached windows show the same notice. Unmute names the seat drawn by the
+control. In push-to-talk mode an explicit mute still warns, but waiting for the talk key
+alone does not; Unmute removes the explicit mute and preserves the talk-key gate. A held
+push-to-mute key also warns, with an explanation and a disabled Unmute until release; the
+callback checks the hold again so a press drawn before the hold cannot bypass it. No sound
+is sent or played because the notice appears.
+
+## Hiding the own camera tile
+
+"Hide your camera tile" in the call controls and the own tile's context menu hides the
+local camera tile while its capture and publication continue. The people stage, camera
+focus and the strip beside a share all omit it in both windows. Other people and the
+Members panel stay complete. A mark states that the camera is on and hidden from the own
+view, with Show; the control also restores it. A camera that is starting or reconnecting
+uses a hidden-view statement without claiming that it is sending.
+
+Hiding removes an own pin, and a hidden own camera cannot be pinned through the Members
+panel. Other pins are kept. Turning the camera off restores the ordinary own avatar unless
+"Hide people without video" also hides it. Starting the camera again uses the saved choice.
+The installation stores `hide_own_camera` in sound settings version 8; earlier files default
+to showing the own tile. Hiding requests no own preview size and changes no media gate.

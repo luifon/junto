@@ -846,6 +846,11 @@ impl AppState {
         }
         calls.set_voice(voice_config(&voice));
         calls.set_share_volume(f32::from(voice.share_volume) / 100.0);
+        for (server_id, accounts) in &voice.share_sounds {
+            for (account_id, sound) in accounts {
+                calls.set_share_sound_default(*server_id, *account_id, *sound);
+            }
+        }
         for (server_id, accounts) in &voice.volumes {
             for (account_id, percent) in accounts {
                 calls.set_volume(*server_id, *account_id, f32::from(*percent) / 100.0);
@@ -1364,18 +1369,104 @@ impl AppState {
         self.calls.watch_share(share);
     }
 
-    /// Uses a volume for the sound of the watched share at once, while the person moves
-    /// the control. [`AppState::store_share_volume`] writes it.
-    pub fn set_share_volume(&mut self, percent: u16, cx: &mut Context<Self>) {
-        let percent = percent.min(junto_client_core::voice::VOLUME_MAX_PERCENT);
-        self.known.media.voice.share_volume = percent;
-        self.calls.set_share_volume(f32::from(percent) / 100.0);
+    pub fn stop_watching(&mut self) {
+        self.calls.stop_watching();
+    }
+
+    pub fn stop_watching_share(&mut self, share: ShareId) {
+        if self
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.watched == Some(share))
+        {
+            self.calls.stop_watching();
+        }
+    }
+
+    pub fn share_sound(&self, share: ShareId) -> junto_client_core::voice::ShareSound {
+        let Some(call) = self.calls.view().call else {
+            return Default::default();
+        };
+        call.share_sounds
+            .get(&share)
+            .copied()
+            .unwrap_or_else(|| match share.person {
+                junto_media::engine::Person::Of(account) => self
+                    .known
+                    .media
+                    .voice
+                    .share_sound(call.target.server_id, account),
+                junto_media::engine::Person::Own => Default::default(),
+            })
+    }
+
+    fn use_share_sound(
+        &mut self,
+        share: ShareId,
+        sound: junto_client_core::voice::ShareSound,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(call) = self.calls.view().call else {
+            return;
+        };
+        let junto_media::engine::Person::Of(account) = share.person else {
+            return;
+        };
+        if !call
+            .shares
+            .iter()
+            .any(|seen| seen.account_id == account && seen.slot == share.slot)
+        {
+            return;
+        }
+        self.known
+            .media
+            .voice
+            .set_share_sound(call.target.server_id, account, sound);
+        self.calls
+            .set_share_sound_default(call.target.server_id, account, sound);
+        self.calls.set_share_sound(share, sound);
         cx.notify();
     }
 
+    pub fn set_share_sound_volume(&mut self, share: ShareId, percent: u16, cx: &mut Context<Self>) {
+        let mut sound = self.share_sound(share);
+        sound.volume = percent.min(junto_client_core::voice::VOLUME_MAX_PERCENT);
+        self.use_share_sound(share, sound, cx);
+    }
+
+    pub fn toggle_share_sound(&mut self, share: ShareId, cx: &mut Context<Self>) {
+        let mut sound = self.share_sound(share);
+        sound.muted = !sound.muted;
+        self.use_share_sound(share, sound, cx);
+        self.store_share_sound(share, cx);
+    }
+
+    pub fn store_share_sound(&mut self, share: ShareId, cx: &mut Context<Self>) {
+        let Some(call) = self.calls.view().call else {
+            return;
+        };
+        let junto_media::engine::Person::Of(account) = share.person else {
+            return;
+        };
+        let server = call.target.server_id;
+        let sound = self.known.media.voice.share_sound(server, account);
+        self.write_voice(cx, move |voice| {
+            voice.set_share_sound(server, account, sound)
+        });
+    }
+
+    pub fn set_share_volume(&mut self, percent: u16, cx: &mut Context<Self>) {
+        if let Some(share) = self.calls.view().call.and_then(|call| call.watched) {
+            self.set_share_sound_volume(share, percent, cx);
+        }
+    }
+
     pub fn store_share_volume(&mut self, cx: &mut Context<Self>) {
-        let percent = self.known.media.voice.share_volume;
-        self.write_voice(cx, move |voice| voice.share_volume = percent);
+        if let Some(share) = self.calls.view().call.and_then(|call| call.watched) {
+            self.store_share_sound(share, cx);
+        }
     }
 
     /// The largest picture of the next share of this device.
@@ -1385,6 +1476,29 @@ impl AppState {
 
     pub fn set_share_frame_rate(&mut self, frame_rate: u32, cx: &mut Context<Self>) {
         self.change_voice(cx, move |voice| voice.share_frame_rate = frame_rate);
+    }
+
+    pub fn own_camera_hidden(&self) -> bool {
+        self.known.media.voice.hide_own_camera
+            && self.calls.view().call.is_some_and(|call| {
+                matches!(
+                    call.camera,
+                    junto_media::camera::CameraState::Starting
+                        | junto_media::camera::CameraState::Running
+                )
+            })
+    }
+
+    pub fn set_hide_own_camera(&mut self, hide: bool, cx: &mut Context<Self>) {
+        if hide
+            && self
+                .pinned_call
+                .as_ref()
+                .is_some_and(|pin| pin.account == pin.owner.account_id)
+        {
+            self.pinned_call = None;
+        }
+        self.change_voice(cx, move |voice| voice.hide_own_camera = hide);
     }
 
     pub fn set_hide_without_video(&mut self, hide: bool, cx: &mut Context<Self>) {

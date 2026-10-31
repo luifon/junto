@@ -38,6 +38,7 @@ pub struct SoundCheck {
     pub gate_open: bool,
     /// Each remote audio track: the identity, the source, subscribed, muted.
     pub remote_tracks: Vec<(String, String, bool, bool)>,
+    pub remote_share_tracks: Vec<(String, String, bool, bool)>,
     /// The frames that the thread of the microphone made.
     pub captured: String,
     /// The frames that the media connection took with sound, and as silence.
@@ -217,6 +218,32 @@ impl Actor {
                     })
             })
             .collect();
+        let remote_share_tracks = self
+            .room
+            .iter()
+            .flat_map(|room| room.remote_participants().into_values())
+            .flat_map(|participant| {
+                let identity = participant.identity().as_str().to_owned();
+                participant
+                    .track_publications()
+                    .into_values()
+                    .filter(|publication| {
+                        matches!(
+                            publication.source(),
+                            livekit::track::TrackSource::Screenshare
+                                | livekit::track::TrackSource::ScreenshareAudio
+                        )
+                    })
+                    .map(move |publication| {
+                        (
+                            identity.clone(),
+                            format!("{:?}", publication.source()),
+                            publication.is_desired(),
+                            publication.is_subscribed(),
+                        )
+                    })
+            })
+            .collect();
         let passed = &self.mixer.passed;
         let order = std::sync::atomic::Ordering::Relaxed;
         SoundCheck {
@@ -231,6 +258,7 @@ impl Actor {
             },
             gate_open: self.link.is_open(),
             remote_tracks,
+            remote_share_tracks,
             captured: self.link.captured.line(SPAN),
             sent: self.link.taken.sound.line(SPAN),
             sent_as_silence: self.link.taken.silence.line(SPAN),

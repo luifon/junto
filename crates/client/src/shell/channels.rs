@@ -273,6 +273,7 @@ impl Shell {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
             .children(self.render_update_notice(view, &theme, cx))
+            .children(self.render_muted_speech(&view.controls, cx))
             .children(self.render_camera_notice(cx))
             .when_some(view.call.as_ref(), |column, strip| {
                 column.child(self.render_call_strip(strip, &theme, cx))

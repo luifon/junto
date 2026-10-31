@@ -34,6 +34,7 @@ use crate::harness::{
     heard, member,
 };
 
+mod camera_view;
 mod cameras;
 mod channels;
 mod detached;
@@ -41,12 +42,14 @@ mod device_checks;
 mod direct;
 mod groups;
 mod lines;
+mod muted_speech;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;
 mod permissions;
 mod pinning;
 mod profile_cards;
 mod rules;
+mod share_controls;
 mod sound_help;
 mod tones;
 mod tray;
@@ -804,6 +807,23 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             == Some(junto_media::audio::sounds::Sound::ViewerJoined)
     });
 
+    window.tones.clear_played();
+    caller.calls.stop_watching();
+    window.until("the stopped viewer is no longer counted", |window| {
+        stage(window).is_some_and(|stage| stage.shares[0].viewers.is_empty())
+    });
+    window.until("the sound of a viewer leaving", |window| {
+        let (played, rate) = window.tones.played_since_clear();
+        junto_media::audio::sounds::heard::recognise(&played, rate)
+            == Some(junto_media::audio::sounds::Sound::ViewerLeft)
+    });
+    caller
+        .calls
+        .watch_share(ShareId::of(window.own_account(), 0));
+    window.until("the viewer watches again", |window| {
+        stage(window).is_some_and(|stage| stage.shares[0].viewers.len() == 1)
+    });
+
     // The administrator shares a window with the sound of its application. The window
     // shows the bar of the two shares, watches the share of the administrator and plays
     // its sound.
@@ -826,6 +846,35 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         "the window plays the share of the administrator",
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
+    window.click("share-mute-header");
+    window.until(
+        "the received share is muted without losing its picture",
+        |window| {
+            window.shows("share-picture")
+                && stage(window).is_some_and(|stage| stage.shares[0].sound_setting.muted)
+                && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+        },
+    );
+    window.tab_to("share-mute-header");
+    window.press("enter");
+    window.until("the share is audible again", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    detached.click("share-mute-header");
+    detached.until("the detached share is muted", |window| {
+        window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+    detached.tab_to("share-mute-header");
+    detached.press("space");
+    detached.until("the detached share is audible again", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    detached.click("return-call");
+    drop(detached);
+    window.until("the call returns", |window| window.shows("share-header"));
+
     // The person picks the own share: the sound of the other share stops.
     window.click("share-thumbnail:own:0");
     window.until("the own share is watched", |window| {

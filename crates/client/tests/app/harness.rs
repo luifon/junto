@@ -889,6 +889,25 @@ impl Window {
         self.settle();
     }
 
+    pub fn tab_to(&mut self, selector: &'static str) {
+        self.settle();
+        for _ in 0..256 {
+            let wanted = self
+                .cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is not drawn"));
+            if self
+                .cx
+                .debug_bounds("focus-report")
+                .is_some_and(|focused| focused.center() == wanted.center())
+            {
+                return;
+            }
+            self.press("tab");
+        }
+        panic!("Tab did not reach {selector}");
+    }
+
     /// Presses and releases keys, as a keyboard does: `press("down enter")`. A focused
     /// control is activated when Enter or Space is released.
     pub fn press(&mut self, keys: &str) {

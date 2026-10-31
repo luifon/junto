@@ -326,6 +326,13 @@ pub const LOWER_HAND_HELP: &str = "Their microphone stays as it is.";
 pub const NO_RAISED_HAND: &str = "No hand is raised.";
 pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not unmuted yet";
 pub const YOU_MAY_SPEAK: &str = "You may speak";
+pub const HIDE_OWN_CAMERA: &str = "Hide your camera tile";
+pub const SHOW_OWN_CAMERA: &str = "Show your camera tile";
+pub const OWN_CAMERA_HIDDEN: &str = "Your camera is on; hidden from your view.";
+pub const OWN_CAMERA_VIEW_HIDDEN: &str = "Your camera tile is hidden from your view.";
+pub const YOU_ARE_MUTED: &str = "You are muted";
+pub const MUTED_SPEECH_PTT: &str = "Your push-to-talk key still controls the microphone.";
+pub const MUTED_SPEECH_HOLD: &str = "Release push-to-mute to unmute.";
 pub const UNMUTE: &str = "Unmute";
 pub const UNMUTE_HELP: &str = "Unmute your microphone. Junto does not unmute it for you.";
 pub const MICROPHONE_OPEN_AGAIN: &str = "Your microphone is no longer blocked. It is on, and \
@@ -815,6 +822,12 @@ pub const YOUR_VIEW: &str = "Your view";
 pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
 pub const HIDE_WITHOUT_VIDEO_HELP: &str = "Hides the tiles of people whose camera is off. Only \
      your window changes. They are still in the call and listed under Members.";
+pub const STOP_WATCHING: &str = "Stop watching";
+pub const MUTE_SHARE: &str = "Mute share";
+pub const UNMUTE_SHARE: &str = "Unmute share";
+pub const SHARE_MUTED: &str = "Muted";
+pub const SHARE_SOUND_TITLE: &str = "Share sound";
+pub const SHARE_VOLUME_ONE: &str = "Share volume";
 pub const SHARE_VOLUME: &str = "Volume of the share you are watching";
 pub const SHARE_VOLUME_HELP: &str = "At 0 % you see the share without its sound.";
 
@@ -1188,6 +1201,7 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         PushToMute => "Push to mute",
         ToggleCamera => "Turn the camera on or off",
         ShareScreen => "Share a screen or a window",
+        StopWatching => "Stop watching a share",
         LeaveCall => "Leave the call",
         AnswerCall => "Answer a call",
         DeclineCall => "Decline a call",
@@ -3813,6 +3827,7 @@ mod tests {
             number: None,
             sound: Some(ShareAudio::System),
             sound_held: false,
+            sound_setting: Default::default(),
             size: Some((1920, 1200)),
             frame_rate: Some(30),
             watched: true,

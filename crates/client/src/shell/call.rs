@@ -1117,6 +1117,29 @@ impl Shell {
                 .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
                 .into_any_element()
         });
+        let share_controls: Vec<_> = panel
+            .stage
+            .as_ref()
+            .into_iter()
+            .flat_map(|stage| &stage.shares)
+            .filter(|share| share.id.person != junto_media::engine::Person::Own)
+            .map(|share| {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(u(14.0))
+                    .py(u(4.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(text::share_title(share, false)),
+                    )
+                    .child(self.share_mute_button(share, "member-share-sound", cx))
+                    .into_any_element()
+            })
+            .collect();
         let state = self.call_members_list.clone();
         let list = div()
             .id("call-members")
@@ -1155,6 +1178,16 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(
+                div()
+                    .id("member-share-sounds")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .max_h(u(140.0))
+                    .overflow_y_scroll()
+                    .children(share_controls),
+            )
             .child(list)
             .children(
                 panel
@@ -1484,7 +1517,7 @@ impl Shell {
             Some(room) => self.render_room_settings(room, theme, cx),
             None => Vec::new(),
         };
-        let share_volume = self.state.read(cx).voice().share_volume;
+        let share_volume = panel.stage.as_ref().map_or(100, |stage| stage.volume);
         let (volume_state, volume_focus) = self.share_volume_control(share_volume, window, cx);
         let volume_row = div()
             .flex_none()
@@ -1685,7 +1718,14 @@ impl Shell {
             .child(help_line(text::SHARE_SETTINGS_HELP))
             .child(SectionLabel::new(text::YOUR_VIEW))
             .child(hide_row)
-            .child(volume_row)
+            .when(
+                panel
+                    .stage
+                    .as_ref()
+                    .and_then(|stage| stage.watched())
+                    .is_some_and(|share| share.id.person != junto_media::engine::Person::Own),
+                |settings| settings.child(volume_row),
+            )
             .children(room_rows)
             .child(div().flex_none().h(u(8.0)))
             .into_any_element()
@@ -2027,6 +2067,7 @@ impl Shell {
                             }
                         })),
                 )
+                .children(self.render_own_camera_view_button(cx))
                 .child(
                     Button::new("camera-focus")
                         .disabled(self.state.read(cx).pinned_call_person().is_some())
@@ -2172,6 +2213,119 @@ impl Shell {
                     )
             })
             .map(IntoElement::into_any_element)
+    }
+
+    pub(crate) fn render_own_camera_view_button(&self, cx: &mut Context<Self>) -> Option<Button> {
+        let state = self.state.read(cx);
+        let call = state.media_calls().call?;
+        if !matches!(
+            call.camera,
+            junto_media::camera::CameraState::Starting | junto_media::camera::CameraState::Running
+        ) {
+            return None;
+        }
+        let hidden = state.voice().hide_own_camera;
+        let label = if hidden {
+            text::SHOW_OWN_CAMERA
+        } else {
+            text::HIDE_OWN_CAMERA
+        };
+        Some(
+            Button::new("toggle-own-camera-view")
+                .kind(if hidden {
+                    ButtonKind::CallOn
+                } else {
+                    ButtonKind::Call
+                })
+                .icon(Icon::EyeOff)
+                .tooltip(label)
+                .accessible_label(label)
+                .selected(hidden)
+                .selector("toggle-own-camera-view")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.set_hide_own_camera(!hidden, cx))
+                })),
+        )
+    }
+
+    fn render_own_camera_hidden_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.state.read(cx);
+        if !state.own_camera_hidden() {
+            return None;
+        }
+        let running = state.media_calls().call.is_some_and(|call| {
+            call.phase == Phase::Connected
+                && !call.withheld.camera
+                && call.camera == junto_media::camera::CameraState::Running
+        });
+        Some(
+            crate::ui::Notice::new(if running {
+                text::OWN_CAMERA_HIDDEN
+            } else {
+                text::OWN_CAMERA_VIEW_HIDDEN
+            })
+            .selector("own-camera-hidden")
+            .action(
+                Button::new("show-own-camera")
+                    .label(text::SHOW_OWN_CAMERA)
+                    .selector("show-own-camera")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_hide_own_camera(false, cx))
+                    })),
+            )
+            .into_any_element(),
+        )
+    }
+
+    pub(crate) fn render_muted_speech(
+        &self,
+        controls: &crate::state::view::Controls,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !controls.muted_speech {
+            return None;
+        }
+        let state = self.state.read(cx);
+        let held = state.holds_mute();
+        let ptt = state.voice().input_mode == junto_client_core::voice::InputMode::PushToTalk
+            || state
+                .media_calls()
+                .call
+                .is_some_and(|call| call.withheld.voice_activity);
+        let hint = if held {
+            text::MUTED_SPEECH_HOLD
+        } else if ptt {
+            text::MUTED_SPEECH_PTT
+        } else {
+            ""
+        };
+        let label = if hint.is_empty() {
+            text::YOU_ARE_MUTED.to_owned()
+        } else {
+            format!("{}. {hint}", text::YOU_ARE_MUTED)
+        };
+        let action = crate::state::view::MicrophoneAction::Open(controls.seat.clone());
+        Some(
+            crate::ui::Notice::new(label)
+                .selector("muted-speech")
+                .stacked()
+                .action(
+                    Button::new("unmute-muted-speech")
+                        .label(text::UNMUTE)
+                        .selector("unmute-muted-speech")
+                        .disabled(held)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, _| {
+                                if !state.holds_mute() {
+                                    state.use_microphone(&action);
+                                }
+                            });
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The line above the profile strip about the sound of this device.
@@ -2372,15 +2526,37 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let hidden = self.state.read(cx).own_camera_hidden();
+        let shown = hidden.then(|| {
+            let mut shown = panel.clone();
+            shown.people.retain(|person| !person.is_self);
+            shown
+        });
+        let panel = shown.as_ref().unwrap_or(panel);
         let pin = self.state.read(cx).pinned_call();
         let body = match &panel.stage {
             Some(shares)
                 if share_visible(panel.phase)
+                    && shares.watched().is_some()
                     && !pin.as_ref().is_some_and(|pin| pin.show_person) =>
             {
                 self.render_share_stage(panel, shares, theme, cx)
             }
-            _ => self.render_stage(panel, theme, cx.weak_entity(), cx),
+            _ => {
+                let bar = panel
+                    .stage
+                    .as_ref()
+                    .filter(|stage| stage.watched().is_none())
+                    .and_then(|stage| self.render_share_bar(stage, theme, cx));
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .children(bar)
+                    .child(self.render_stage(panel, theme, cx.weak_entity(), cx))
+                    .into_any_element()
+            }
         };
         div()
             .flex()
@@ -2390,6 +2566,7 @@ impl Shell {
             .w_full()
             .children(self.render_pin_bar(panel, theme, cx))
             .child(body)
+            .children(self.render_own_camera_hidden_note(cx))
             .into_any_element()
     }
 

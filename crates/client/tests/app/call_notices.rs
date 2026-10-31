@@ -43,6 +43,7 @@ fn call_with_share(window: &mut Window, channel: &str, ended: Option<CaptureErro
         own_shares: std::collections::BTreeMap::new(),
         share_ended: ended,
         shares: Vec::new(),
+        share_sounds: Default::default(),
         watched: None,
         withheld: Default::default(),
     }
@@ -624,4 +625,153 @@ fn a_press_on_a_card_answers_its_own_invitation_when_another_arrives(cx: &mut Te
     // The drawn card stayed in its place; the new one follows it.
     let join = selector(format!("invitation-accept:{}", first.id));
     assert_eq!(bounds_of(&mut window, join).center(), place);
+}
+
+#[gpui::test]
+fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    let account_id = crate::support::logged_in(&admin.handle);
+    call.shares.push(junto_media::engine::SeenShare {
+        account_id,
+        slot: 0,
+        kind: Some(junto_media::share::ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((1280, 720)),
+    });
+    call.watched = Some(junto_media::engine::ShareId::of(account_id, 0));
+    give_calls(&mut window, call);
+    assert!(window.shows("share-mute-header"));
+    let members = if window.shows("open-call-members") {
+        "open-call-members"
+    } else {
+        "call-tab-members"
+    };
+    window.click(members);
+    assert!(window.shows("member-share-sound"));
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("share-mute-header"));
+    detached.click("open-call-members");
+    assert!(detached.shows("member-share-sound"));
+}
+
+#[gpui::test]
+fn available_shares_without_a_watch_leave_the_people_stage_visible(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    call.shares.push(junto_media::engine::SeenShare {
+        account_id: crate::support::logged_in(&admin.handle),
+        slot: 0,
+        kind: Some(junto_media::share::ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((1280, 720)),
+    });
+    give_calls(&mut window, call);
+    assert!(window.shows("call-stage") && window.shows("shares-bar"));
+    assert!(!window.shows("share-viewport"));
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("call-stage") && detached.shows("shares-bar"));
+    assert!(!detached.shows("share-viewport"));
+}
+
+#[gpui::test]
+fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = call_with_share(&mut window, "Daily", None);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    calls.show_view_for_test(CallsView {
+        call: Some(call),
+        muted: true,
+        ..Default::default()
+    });
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        input: 1.0,
+        ..Default::default()
+    });
+    window.until("the local input is measured", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.shown_levels().input > 7)
+    });
+    assert!(window.shows("muted-speech"));
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        people: [(
+            crate::support::logged_in(&admin.handle),
+            junto_media::engine::PersonLevel {
+                level: 1.0,
+                speaking: true,
+            },
+        )]
+        .into(),
+        ..Default::default()
+    });
+    window.until(
+        "remote sound alone shows no muted speech warning",
+        |window| !window.shows("muted-speech"),
+    );
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        input: 1.0,
+        ..Default::default()
+    });
+    window.until("local sound brings the warning back", |window| {
+        window.shows("muted-speech")
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("muted-speech") && detached.shows("unmute-muted-speech"));
+}
+
+#[gpui::test]
+fn a_hidden_own_camera_keeps_its_running_mark_and_controls_in_both_windows(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    call.camera = junto_media::camera::CameraState::Running;
+    give_calls(&mut window, call);
+    window.click("toggle-own-camera-view");
+    window.until("the running camera has a hidden-view mark", |window| {
+        window.shows("own-camera-hidden")
+    });
+    window.click("show-own-camera");
+    window.until("the view can be restored", |window| {
+        !window.shows("own-camera-hidden")
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    detached.click("toggle-own-camera-view");
+    detached.until("the detached camera has its hidden-view mark", |window| {
+        window.shows("own-camera-hidden")
+    });
+    assert!(detached.state.read_with(&detached.cx, |state, _| {
+        state
+            .calls()
+            .view()
+            .call
+            .is_some_and(|call| call.camera == junto_media::camera::CameraState::Running)
+    }));
 }

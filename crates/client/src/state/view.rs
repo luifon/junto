@@ -1093,6 +1093,7 @@ pub struct ShareCard {
     pub sound: Option<ShareAudio>,
     /// The share of this device has a sound that the server holds closed (ADR 0510).
     pub sound_held: bool,
+    pub sound_setting: junto_client_core::voice::ShareSound,
     /// The size of the picture in pixels. Absent until the first picture.
     pub size: Option<(u32, u32)>,
     pub frame_rate: Option<u32>,
@@ -1650,11 +1651,29 @@ pub enum MicrophoneAction {
 pub struct Controls {
     pub microphone: MicrophoneButton,
     pub microphone_action: MicrophoneAction,
+    pub muted_speech: bool,
     /// The person turned the sound off.
     pub sound_off: bool,
     pub warning: Option<SoundWarning>,
     /// The call and the seat of this device that the controls were derived for.
     pub seat: Option<Seat>,
+}
+
+impl Controls {
+    fn show_muted_speech(&mut self, input: usize, connected: bool) {
+        let threshold = junto_media::audio::level::segments(
+            junto_media::audio::level::meter(-45.0),
+            INPUT_SEGMENTS,
+        );
+        self.muted_speech = connected
+            && self.seat.is_some()
+            && self.microphone == MicrophoneButton::Muted
+            && input >= threshold
+            && !matches!(
+                self.warning.as_ref(),
+                Some(SoundWarning::NoMicrophoneAccess | SoundWarning::MicrophoneFailed)
+            );
+    }
 }
 
 /// The call of this device, as the strip above the profile strip shows it. It is shown
@@ -1826,6 +1845,12 @@ impl ShellView {
     /// change of the levels alone, at most every 50 ms, therefore does not derive the view
     /// again (ADR 0730).
     pub fn show_levels(&mut self, levels: &ShownLevels) {
+        self.controls.show_muted_speech(
+            levels.input,
+            self.call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected),
+        );
         let Some(SelectedServer {
             content: Content::Lists(lists),
             ..
@@ -3430,34 +3455,38 @@ fn share_stage(
 ) -> Option<ShareStage> {
     let call = model.call_at(&active.target.place);
     let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
-    let mut shares: Vec<ShareCard> = active
-        .shares
-        .iter()
-        .map(|seen| {
-            let id = ShareId::of(seen.account_id, seen.slot);
-            ShareCard {
-                id,
-                account_id: seen.account_id,
-                name: name_of(seen.account_id),
-                kind: seen.kind,
-                number: None,
-                sound: call
-                    .and_then(|call| call.participant(seen.account_id))
-                    .and_then(|participant| {
-                        participant
-                            .shares()
-                            .iter()
-                            .find(|share| share.slot == seen.slot)
-                    })
-                    .map(|share| share.audio),
-                sound_held: false,
-                size: seen.size,
-                frame_rate: seen.frame_rate,
-                watched: active.watched == Some(id),
-                viewers: Vec::new(),
-            }
-        })
-        .collect();
+    let mut shares: Vec<ShareCard> =
+        active
+            .shares
+            .iter()
+            .map(|seen| {
+                let id = ShareId::of(seen.account_id, seen.slot);
+                ShareCard {
+                    id,
+                    account_id: seen.account_id,
+                    name: name_of(seen.account_id),
+                    kind: seen.kind,
+                    number: None,
+                    sound: call
+                        .and_then(|call| call.participant(seen.account_id))
+                        .and_then(|participant| {
+                            participant
+                                .shares()
+                                .iter()
+                                .find(|share| share.slot == seen.slot)
+                        })
+                        .map(|share| share.audio),
+                    sound_held: false,
+                    sound_setting: active.share_sounds.get(&id).copied().unwrap_or_else(|| {
+                        known.media.voice.share_sound(server_id, seen.account_id)
+                    }),
+                    size: seen.size,
+                    frame_rate: seen.frame_rate,
+                    watched: active.watched == Some(id),
+                    viewers: Vec::new(),
+                }
+            })
+            .collect();
     for (slot, share) in &active.own_shares {
         if let ShareState::Running(info) = share {
             let id = ShareId::own(*slot);
@@ -3469,6 +3498,7 @@ fn share_stage(
                 number: None,
                 sound: Some(info.sound),
                 sound_held: info.sound_held,
+                sound_setting: Default::default(),
                 size: Some(info.size),
                 frame_rate: Some(info.frame_rate),
                 watched: active.watched == Some(id),
@@ -3494,10 +3524,13 @@ fn share_stage(
     for (share, number) in shares.iter_mut().zip(share_numbers(&keys)) {
         share.number = number;
     }
-    (!shares.is_empty()).then_some(ShareStage {
-        shares,
-        volume: known.media.voice.share_volume,
-    })
+    let volume = shares
+        .iter()
+        .find(|share| share.watched)
+        .map_or(known.media.voice.share_volume, |share| {
+            share.sound_setting.volume
+        });
+    (!shares.is_empty()).then_some(ShareStage { shares, volume })
 }
 
 /// The shares of this device for the menu of the share button, in the order of their slots.
@@ -4031,7 +4064,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         }
     };
     let seat = active.map(ActiveCall::seat);
-    Controls {
+    let mut controls = Controls {
         microphone: if held.is_some() {
             MicrophoneButton::Held
         } else if withheld.microphone {
@@ -4046,10 +4079,18 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         } else {
             MicrophoneAction::Close
         },
+        muted_speech: false,
         sound_off: calls.deafened,
         warning,
         seat,
-    }
+    };
+    controls.show_muted_speech(
+        known.media.levels.input,
+        active.is_some_and(|call| {
+            call.phase == Phase::Connected && call.microphone == MicrophoneState::Running
+        }),
+    );
+    controls
 }
 
 fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option<CallStrip> {

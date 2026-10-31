@@ -595,6 +595,7 @@ fn show_own_call(window: &mut Window, seat: &Seat, workspace_id: WorkspaceId, vo
         own_shares: std::collections::BTreeMap::new(),
         share_ended: None,
         shares: Vec::new(),
+        share_sounds: Default::default(),
         watched: None,
         withheld: Default::default(),
     };

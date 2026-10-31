@@ -202,6 +202,7 @@ pub struct EngineState {
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets now.
+    pub share_sounds: HashMap<ShareId, junto_client_core::voice::ShareSound>,
     pub watched: Option<ShareId>,
 }
 
@@ -270,7 +271,10 @@ enum Command {
     /// Puts away the statement that a share ended by itself.
     ForgetShareEnd,
     Watch(Option<ShareId>),
+    StopWatching,
     ShareVolume(f32),
+    ShareSound(ShareId, junto_client_core::voice::ShareSound),
+    ShareSoundDefault(AccountId, junto_client_core::voice::ShareSound),
     ViewSize(u32, u32),
     CameraViews(HashMap<Person, (u32, u32)>),
     /// Makes the call library connect anew and publish its tracks again, as it does by
@@ -450,9 +454,11 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             shares: Vec::new(),
+            share_sounds: HashMap::new(),
             watched: None,
         });
         let pictures = Pictures {
+            receiving: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             main: Arc::new(watch::Sender::new(None)),
             small: Arc::new(watch::Sender::new(HashMap::new())),
         };
@@ -528,7 +534,10 @@ impl Engine {
             remote_sounds: HashMap::new(),
             share_order: 0,
             watch_choice: watching.choice,
+            watch_stopped: false,
             share_volume: watching.volume.clamp(0.0, MAX_GAIN),
+            share_sounds: HashMap::new(),
+            share_sound_defaults: HashMap::new(),
             view_size: DEFAULT_VIEW,
             view: watch::Sender::new(View {
                 watched: None,
@@ -598,9 +607,27 @@ impl Engine {
         let _ = self.commands.send(Command::Watch(choice));
     }
 
+    pub fn stop_watching(&self) {
+        let _ = self.commands.send(Command::StopWatching);
+    }
+
     /// The volume of the sound of the watched share: 1.0 is 100 %.
     pub fn set_share_volume(&self, gain: f32) {
         let _ = self.commands.send(Command::ShareVolume(gain));
+    }
+
+    pub fn set_share_sound(&self, share: ShareId, sound: junto_client_core::voice::ShareSound) {
+        let _ = self.commands.send(Command::ShareSound(share, sound));
+    }
+
+    pub fn set_share_sound_default(
+        &self,
+        account: AccountId,
+        sound: junto_client_core::voice::ShareSound,
+    ) {
+        let _ = self
+            .commands
+            .send(Command::ShareSoundDefault(account, sound));
     }
 
     /// The size in pixels inside which the interface draws the camera of each person.
@@ -829,7 +856,10 @@ struct Actor {
     remote_sounds: HashMap<TrackSid, RemoteSound>,
     share_order: u64,
     watch_choice: Option<ShareId>,
+    watch_stopped: bool,
     share_volume: f32,
+    share_sounds: HashMap<ShareId, junto_client_core::voice::ShareSound>,
+    share_sound_defaults: HashMap<AccountId, junto_client_core::voice::ShareSound>,
     /// The size in pixels inside which the interface draws the watched share.
     view_size: (u32, u32),
     view: watch::Sender<View>,
@@ -990,7 +1020,9 @@ impl Actor {
         });
         let internal = self.internal.clone();
         self.runtime.spawn(async move {
-            let connection = Room::connect(&join.url, join.token.expose(), RoomOptions::default());
+            let mut options = RoomOptions::default();
+            options.auto_subscribe = false;
+            let connection = Room::connect(&join.url, join.token.expose(), options);
             let result = connecting(connection)
                 .await
                 .map_err(|error| error.to_string());
@@ -1075,7 +1107,12 @@ impl Actor {
             Command::StopShare(slot) => self.end_share(slot, None),
             Command::ForgetShareEnd => self.forget_share_end(),
             Command::Watch(choice) => self.set_watch(choice),
+            Command::StopWatching => self.stop_watching(),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
+            Command::ShareSound(share, sound) => self.set_share_sound(share, sound),
+            Command::ShareSoundDefault(account, sound) => {
+                self.share_sound_defaults.insert(account, sound);
+            }
             Command::ViewSize(width, height) => self.set_view_size(width, height),
             Command::CameraViews(views) => self.set_camera_views(views),
             #[cfg(feature = "test-support")]
@@ -1132,6 +1169,7 @@ impl Actor {
                         self.sync_microphone();
                         self.publish_camera();
                         self.start_permissions();
+                        self.subscribe_remote_tracks();
                     }
                     Err(error) => {
                         tracing::warn!(%error, "the media connection of the call was not made");
@@ -1260,6 +1298,7 @@ impl Actor {
             RoomEvent::Reconnected => {
                 self.change(|state| state.connection = Connection::Connected);
                 self.sync_publication();
+                self.subscribe_remote_tracks();
             }
             RoomEvent::Disconnected { reason } => {
                 let lost = match reason {
@@ -1271,6 +1310,15 @@ impl Actor {
                 };
                 tracing::info!(?reason, "the media connection of the call ended");
                 self.lost(lost, events).await;
+            }
+            RoomEvent::ParticipantDisconnected(participant) => {
+                self.remote_sharer_left(participant.identity().as_str());
+            }
+            RoomEvent::TrackPublished {
+                publication,
+                participant,
+            } => {
+                self.remote_track_published(publication, participant.identity().as_str());
             }
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Video(track),
@@ -1326,6 +1374,11 @@ impl Actor {
                         task,
                     },
                 );
+            }
+            RoomEvent::TrackUnsubscribed { publication, .. }
+                if publication.source() == TrackSource::Screenshare =>
+            {
+                self.remote_picture_unsubscribed(&publication.sid());
             }
             RoomEvent::TrackUnsubscribed { publication, .. }
             | RoomEvent::TrackUnpublished { publication, .. } => {

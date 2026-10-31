@@ -147,6 +147,7 @@ impl AppState {
                     self.use_camera(&camera, cx);
                 }
             }
+            KeyAction::StopWatching => self.stop_watching(),
             KeyAction::LeaveCall => {
                 if self.calls.view().call.is_some() {
                     self.leave_call(cx);

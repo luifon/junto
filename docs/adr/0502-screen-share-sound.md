@@ -88,3 +88,17 @@ Windows:
 - The recorder writes shared sound as a separate audio file (ADR 0602), and the transcript labels its lines as shared audio (ADR 0603).
 - On macOS the permission is kept across updates only with a stable code identity (ADR 0704).
 - The Linux capture was tested with PipeWire 1.6.8 and one session manager in an X11 session, and with a client that PipeWire classified as a Flatpak sandbox. A Wayland session, a real Flatpak build and an AppImage build were not tested. The capture uses no interface of the display server.
+
+A viewer can explicitly stop watching without ending any share. The stage then shows the
+people of the call and Watch controls for every available share. The device unsubscribes
+from every remote share picture and sound track while stopped, including new publications;
+voice and cameras continue. The list of available shares comes from publication metadata,
+so it remains available without receiving pictures. The watched-share report becomes none,
+which removes the viewer from the count and produces the existing viewer-leave sound.
+
+A stopped choice lasts through signal resumes and a new media connection of the same call.
+A new share, including reuse of the same person's slot, does not start watching. Only an
+explicit Watch resumes subscriptions. A new call restores automatic initial selection.
+Stopping an own preview leaves its capture and publication running. Both windows expose
+Stop watching in the watched header and its context menu; Keybinds lists an assignable call
+action with no default key. The sound preferences of each slot survive stopping and resuming.

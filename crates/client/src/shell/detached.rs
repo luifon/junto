@@ -312,6 +312,7 @@ impl Shell {
                             .as_ref()
                             .map(|warning| self.render_sound_warning(warning, &theme, cx)),
                     )
+                    .children(self.render_muted_speech(&view.controls, cx))
                     .children(self.render_camera_notice(cx)),
             );
         self.call_panel_overlay = !beside;

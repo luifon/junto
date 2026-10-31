@@ -198,6 +198,7 @@ pub struct ActiveCall {
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets.
+    pub share_sounds: HashMap<ShareId, junto_client_core::voice::ShareSound>,
     pub watched: Option<ShareId>,
     /// What the permissions of the voice channel do not allow the person to publish.
     pub withheld: Withheld,
@@ -364,7 +365,10 @@ enum SessionCommand {
     StopShare(Option<u8>),
     ForgetShareEnd,
     Watch(Option<ShareId>),
+    StopWatching,
     ShareVolume(f32),
+    ShareSound(ShareId, junto_client_core::voice::ShareSound),
+    ShareSoundDefault(AccountId, junto_client_core::voice::ShareSound),
     ViewSize(u32, u32),
     CameraViews(HashMap<Person, (u32, u32)>),
     #[cfg(feature = "test-support")]
@@ -410,6 +414,7 @@ struct Shared {
     volumes: HashMap<(ServerId, AccountId), f32>,
     /// The volume of the sound of the share that the person watches: 1.0 is 100 %.
     share_volume: Option<f32>,
+    share_sound_defaults: HashMap<(ServerId, AccountId), junto_client_core::voice::ShareSound>,
     /// The size in pixels inside which the interface draws the watched share.
     view_size: Option<(u32, u32)>,
     camera_views: Option<HashMap<Person, (u32, u32)>>,
@@ -959,11 +964,41 @@ impl Calls {
         self.inner.tell(SessionCommand::Watch(Some(share)));
     }
 
+    pub fn stop_watching(&self) {
+        self.inner.tell(SessionCommand::StopWatching);
+    }
+
     /// The volume of the sound of the watched share: 1.0 is 100 %, and 0.0 keeps the
     /// picture without its sound.
     pub fn set_share_volume(&self, gain: f32) {
-        self.inner.shared().share_volume = Some(gain);
+        {
+            let mut shared = self.inner.shared();
+            if shared.active.is_none() {
+                shared.share_volume = Some(gain);
+            }
+        }
         self.inner.tell(SessionCommand::ShareVolume(gain));
+    }
+
+    pub fn set_share_sound_default(
+        &self,
+        server: ServerId,
+        account: AccountId,
+        sound: junto_client_core::voice::ShareSound,
+    ) {
+        let mut shared = self.inner.shared();
+        shared.share_sound_defaults.insert((server, account), sound);
+        if let Some(active) = &shared.active
+            && active.target.server_id == server
+        {
+            let _ = active
+                .commands
+                .send(SessionCommand::ShareSoundDefault(account, sound));
+        }
+    }
+
+    pub fn set_share_sound(&self, share: ShareId, sound: junto_client_core::voice::ShareSound) {
+        self.inner.tell(SessionCommand::ShareSound(share, sound));
     }
 
     /// The size in pixels inside which the interface draws the watched share. The media
@@ -1010,6 +1045,11 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn show_view_for_test(&self, view: CallsView) {
         self.inner.view.send_replace(view);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn show_levels_for_test(&self, levels: Levels) {
+        self.inner.levels.send_replace(levels);
     }
 
     /// Gives a picture of the watched share to the readers, as the session of a call
@@ -1521,6 +1561,11 @@ fn start(
             volume: shared.share_volume.unwrap_or(1.0),
         },
     );
+    for ((server, account), sound) in &shared.share_sound_defaults {
+        if *server == target.server_id {
+            engine.set_share_sound_default(*account, *sound);
+        }
+    }
     if let Some(views) = &shared.camera_views {
         engine.set_camera_views(views.clone());
     }
@@ -2967,7 +3012,12 @@ impl Session {
             SessionCommand::StopShare(slot) => self.engine.stop_share(slot),
             SessionCommand::ForgetShareEnd => self.engine.forget_share_end(),
             SessionCommand::Watch(choice) => self.engine.watch(choice),
+            SessionCommand::StopWatching => self.engine.stop_watching(),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
+            SessionCommand::ShareSound(share, sound) => self.engine.set_share_sound(share, sound),
+            SessionCommand::ShareSoundDefault(account, sound) => {
+                self.engine.set_share_sound_default(account, sound)
+            }
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
             SessionCommand::CameraViews(views) => self.engine.set_camera_views(views),
             #[cfg(feature = "test-support")]
@@ -3730,6 +3780,7 @@ impl Session {
             own_shares: state.own_shares.clone(),
             share_ended: state.share_ended.clone(),
             shares: state.shares.clone(),
+            share_sounds: state.share_sounds.clone(),
             watched: state.watched,
             withheld: self.withheld,
         };

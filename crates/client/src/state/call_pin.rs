@@ -38,6 +38,7 @@ impl AppState {
         self.pinned_call
             .as_ref()
             .filter(|pin| self.pin_context_current(pin, false))
+            .filter(|pin| !(self.own_camera_hidden() && pin.account == pin.owner.account_id))
             .cloned()
     }
 
@@ -46,6 +47,9 @@ impl AppState {
     }
 
     pub fn can_pin_call_person(&self, owner: Owner, seat: &Seat, account: AccountId) -> bool {
+        if self.own_camera_hidden() && account == owner.account_id {
+            return false;
+        }
         self.pin_context_current(
             &PinnedPerson {
                 owner,
@@ -65,6 +69,9 @@ impl AppState {
         pinned: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        if pinned && self.own_camera_hidden() && account == owner.account_id {
+            return false;
+        }
         let pin = PinnedPerson {
             owner,
             seat: seat.clone(),
@@ -110,11 +117,10 @@ impl AppState {
     }
 
     pub(super) fn reconcile_call_pin(&mut self) {
-        if self
-            .pinned_call
-            .as_ref()
-            .is_some_and(|pin| !self.pin_context_current(pin, false))
-        {
+        if self.pinned_call.as_ref().is_some_and(|pin| {
+            !self.pin_context_current(pin, false)
+                || (self.own_camera_hidden() && pin.account == pin.owner.account_id)
+        }) {
             self.pinned_call = None;
         }
     }

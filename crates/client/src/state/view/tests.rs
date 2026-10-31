@@ -1132,6 +1132,7 @@ pub(super) mod calls {
             own_shares: std::collections::BTreeMap::new(),
             share_ended: None,
             shares: Vec::new(),
+            share_sounds: Default::default(),
             watched: None,
             withheld: Default::default(),
         }
@@ -3480,4 +3481,32 @@ fn role_appearance_covers_a_roster_larger_than_the_profile_cache_without_images(
     assert!(faces.face(last).is_none());
     assert_eq!(faces.color(last), Some(global));
     assert_eq!(faces.in_workspace(Some(workspace_id)).color(last), local);
+}
+
+#[test]
+fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_call() {
+    let mut controls = Controls {
+        microphone: MicrophoneButton::Muted,
+        seat: Some(junto_media::calls::Seat {
+            target: junto_media::calls::CallTarget {
+                server_id: ServerId::generate(),
+                place: CallPlace::direct(AccountId::generate(), AccountId::generate()),
+            },
+            identity: "seat".into(),
+        }),
+        ..Default::default()
+    };
+    controls.show_muted_speech(0, true);
+    assert!(!controls.muted_speech);
+    controls.show_muted_speech(20, true);
+    assert!(controls.muted_speech);
+    controls.show_muted_speech(20, false);
+    assert!(!controls.muted_speech);
+    controls.microphone = MicrophoneButton::Open;
+    controls.show_muted_speech(20, true);
+    assert!(!controls.muted_speech);
+    controls.microphone = MicrophoneButton::Muted;
+    controls.warning = Some(SoundWarning::NoMicrophoneAccess);
+    controls.show_muted_speech(20, true);
+    assert!(!controls.muted_speech);
 }

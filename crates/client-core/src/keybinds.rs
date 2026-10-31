@@ -20,6 +20,7 @@ pub enum KeyAction {
     PushToMute,
     ToggleCamera,
     ShareScreen,
+    StopWatching,
     LeaveCall,
     AnswerCall,
     DeclineCall,
@@ -67,13 +68,14 @@ pub enum ActionGroup {
 }
 
 impl KeyAction {
-    pub const ALL: [KeyAction; 41] = [
+    pub const ALL: [KeyAction; 42] = [
         KeyAction::ToggleMute,
         KeyAction::ToggleSoundOff,
         KeyAction::PushToTalk,
         KeyAction::PushToMute,
         KeyAction::ToggleCamera,
         KeyAction::ShareScreen,
+        KeyAction::StopWatching,
         KeyAction::LeaveCall,
         KeyAction::AnswerCall,
         KeyAction::DeclineCall,
@@ -115,7 +117,7 @@ impl KeyAction {
         use KeyAction::*;
         match self {
             ToggleMute | ToggleSoundOff | PushToTalk | PushToMute | ToggleCamera | ShareScreen
-            | LeaveCall | AnswerCall | DeclineCall | ShowCall | ToggleCallPanel => {
+            | StopWatching | LeaveCall | AnswerCall | DeclineCall | ShowCall | ToggleCallPanel => {
                 ActionGroup::Call
             }
             Back
@@ -162,6 +164,7 @@ impl KeyAction {
             PushToMute => "Push to mute in a call of Junto",
             ToggleCamera => "Turn the camera on or off in a call of Junto",
             ShareScreen => "Share a screen or a window in a call of Junto",
+            StopWatching => "Stop watching a screen share in a call of Junto",
             LeaveCall => "Leave the call of Junto",
             AnswerCall => "Answer a call of Junto",
             DeclineCall => "Decline a call of Junto",
@@ -218,6 +221,7 @@ impl KeyAction {
                 | PushToMute
                 | ToggleCamera
                 | ShareScreen
+                | StopWatching
                 | LeaveCall
                 | AnswerCall
                 | DeclineCall
@@ -243,7 +247,7 @@ impl KeyAction {
         let keys: &[Key] = match self {
             ToggleMute => &[Control, Shift, Letter('M')],
             ToggleSoundOff => &[Control, Shift, Letter('D')],
-            PushToTalk | PushToMute => return None,
+            PushToTalk | PushToMute | StopWatching => return None,
             ToggleCamera => &[Control, Shift, Letter('E')],
             ShareScreen => &[Control, Shift, Letter('S')],
             LeaveCall => &[Control, Shift, Letter('H')],

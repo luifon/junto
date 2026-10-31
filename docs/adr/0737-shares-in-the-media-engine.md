@@ -69,3 +69,31 @@ Sound of a share before the call library:
 - The recorder receives the share tracks as any participant does (ADR 0602).
 - The preview of a shared screen that shows the client draws the client inside itself.
 - The order of the requests for a size depends on how the call library sends a request (`livekit` 0.9.4: one task for each request, and every wait on the way to the connection serves the tasks in the order of their arrival). It is checked again with each new version of the call library; the test of the last size of a drawing fails when the order is lost.
+
+## Local sound of each received share
+
+A viewer has a volume from 0 to 200 percent and an independent mute for each account and
+slot. Muting leaves the picture and the saved volume intact. Only the watched share enters
+the sound mix. Changing another share's volume or mute does not change the watched share.
+The settings of each slot last for the call, including a reconnect and reuse of the slot.
+The latest change for an account is saved with the server and account in the sound settings;
+it seeds that person's slots in later calls. These preferences require sound settings version 7 or later, so an older
+client cannot replace these preferences when it writes its own settings. Slots already present in a call keep their own
+values when another slot changes. The old `share_volume` value seeds accounts without a
+saved value, so an upgrade keeps the earlier listening level. Microphone volumes are separate.
+
+The header, share tiles and share context menus expose mute, and the Members panel shows
+each received share and its mute. The context menu exposes that share's volume even when
+another share is watched. The Settings volume acts on the watched share. Both windows use
+the same controls and media state, and their buttons and volume controls accept keyboard input.
+These are local preferences and require no server change.
+
+An explicit stopped choice overrides the automatic selection above (ADR 0502). Share
+publications are retained separately from their receiving tasks; an unsubscribe drops the
+task without removing the share from the list, and an unpublish or departure removes it.
+Connections start without automatic subscriptions and request voice, cameras and, unless
+stopped, shares explicitly. The intent is sent again after reconnect even when its local
+desired flag is already set: a publication can arrive during replacement of the SDK session,
+so its earlier request can belong to the session that ended. The media-server restart test
+checks restored sound in both directions. A shared picture gate rejects delivery under each picture-channel
+lock before stopped pictures are cleared, including a frame already being converted.

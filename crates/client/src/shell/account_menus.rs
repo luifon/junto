@@ -243,6 +243,13 @@ impl OpenAccountMenu {
                                         .any(|person| person.account_id == *account_id)
                                 })
                             }
+                            CallSurface::Tile => {
+                                !(state.own_camera_hidden() && *account_id == self.owner.account_id)
+                                    && panel
+                                        .people
+                                        .iter()
+                                        .any(|person| person.account_id == *account_id)
+                            }
                             CallSurface::Hidden
                             | CallSurface::InviteChoice
                             | CallSurface::Presenter
