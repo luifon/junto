@@ -317,10 +317,14 @@ The live tier accepts `JUNTO_TEST_PARTICIPANT` as an executable path, so a debug
 be used: `cargo build --manifest-path spikes/test-participant/Cargo.toml --target-dir target`,
 then set the variable to the absolute path of `target/debug/test-participant`.
 
-Unix-mode, symbolic-link and process-group tests are compiled only on Unix. On Windows
-the recording-file implementation refuses operations with Unsupported; Windows CI currently
-builds server tests but does not run the database tier (ADR 0905). The unsupported-storage implementation and its refusal tests compile on every test platform, including Unix; a Windows runner is still needed to check the complete Windows build. Unix process-group
-termination has no Windows equivalent in this implementation.
+Unix-mode, symbolic-link and process-group tests are compiled only on Unix. Windows CI
+runs the file-store unit tests and the applicable client window tests against native
+PostgreSQL and a safe standard-library file backend (ADR 0912). This backend is for the
+controlled test tree only; the production storage guarantees apply to Unix (ADR 0606).
+The Windows job excludes the LiveKit tier and the finished-recording and transcript
+fixtures that need FFmpeg and /bin/sh. The full server database tier runs on Linux.
+The unsupported-storage fallback for other systems and its refusal tests compile on every
+test platform. Unix process-group termination has no Windows equivalent in this implementation.
 
 ## Checks
 
