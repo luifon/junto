@@ -94,10 +94,15 @@ pair-call end, and rejection of old owners and seats.
 ## Local input while muted
 
 A connected call shows a short "You are muted" notice with Unmute when the person's
-explicit mute is on and the local microphone meter reaches the segment containing
--45 dBFS, the speaking threshold used by the media engine. The meter's existing release removes the
-notice after the input becomes quiet. Remote voices, shared sound and the output mix do
-not feed this decision. The warning starts no capture and opens no sending gate.
+explicit mute is on and the independently echo-filtered local input reaches the segment
+containing -45 dBFS, the speaking threshold used by the media engine. Its meter release
+removes the notice after the input becomes quiet. A separate echo canceller always takes
+a copy of the microphone and the actual output mix as its reference, even when optional
+sending processing is off. It does not change the settings input meter or the sent samples.
+Remote playback picked up by the microphone is filtered before detection. The warning
+starts no capture and opens no sending gate. An isolated virtual-device test routes
+playback into capture, then adds local speech beside it, with all sending processing off
+and the sending gate closed.
 
 The main and detached windows show the same notice. Unmute names the seat drawn by the
 control. In push-to-talk mode an explicit mute still warns, but waiting for the talk key

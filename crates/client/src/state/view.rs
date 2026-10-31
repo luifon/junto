@@ -137,6 +137,8 @@ pub struct Selection {
 pub struct ShownLevels {
     /// The lit segments of the input meter, of [`INPUT_SEGMENTS`].
     pub input: usize,
+    /// The independently echo-filtered input, for the muted-speech notice.
+    pub speech_input: usize,
     /// The lit segments of the meter of the person, of [`LEVEL_SEGMENTS`], and whether the
     /// person speaks.
     pub own: (usize, bool),
@@ -1846,7 +1848,7 @@ impl ShellView {
     /// again (ADR 0730).
     pub fn show_levels(&mut self, levels: &ShownLevels) {
         self.controls.show_muted_speech(
-            levels.input,
+            levels.speech_input,
             self.call
                 .as_ref()
                 .is_some_and(|call| call.phase == Phase::Connected),
@@ -4085,7 +4087,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         seat,
     };
     controls.show_muted_speech(
-        known.media.levels.input,
+        known.media.levels.speech_input,
         active.is_some_and(|call| {
             call.phase == Phase::Connected && call.microphone == MicrophoneState::Running
         }),

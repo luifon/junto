@@ -231,3 +231,14 @@ the choices, audible test signals, rendered preview, errors and retry, persisten
 source changes. `live::device_checks::` checks that call entry releases local test devices and
 that the preview is not published. Native permission dialogs and physical devices remain in
 the native device tier of ADR 0913.
+
+The muted-speech notice has a separate echo-cancellation module. It receives copies of
+the raw microphone and the mixed playout at 48 kHz, before optional sending processing.
+Noise suppression and gain control are off for this detector; user processing changes do
+not reset its echo history. Only its filtered level reaches the notice. It never opens the
+capture gate or changes what the sending processor or the output device receives. A
+failed detection frame reports silence and logs the failure once. The detector supplies
+the required stream-delay parameter as zero; AEC3 uses its internal delay estimator,
+and the host callbacks provide no device latency estimate. The virtual PipeWire
+check routes real output back into capture with sending processing off and checks echo
+rejection, preserved local input beside playback and silent frames at the closed gate.

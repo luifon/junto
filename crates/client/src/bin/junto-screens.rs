@@ -1009,6 +1009,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
         },
         levels: ShownLevels {
             input: 5,
+            speech_input: 5,
             own: (0, false),
             people: [(person("Ana"), (4, true)), (person("Carla"), (1, false))]
                 .into_iter()

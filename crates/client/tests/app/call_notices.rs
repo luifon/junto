@@ -705,6 +705,7 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
     });
     calls.show_levels_for_test(junto_media::engine::Levels {
         input: 1.0,
+        speech_input: 1.0,
         ..Default::default()
     });
     window.until("the local input is measured", |window| {
@@ -714,6 +715,7 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
     });
     assert!(window.shows("muted-speech"));
     calls.show_levels_for_test(junto_media::engine::Levels {
+        input: 1.0,
         people: [(
             crate::support::logged_in(&admin.handle),
             junto_media::engine::PersonLevel {
@@ -730,6 +732,7 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
     );
     calls.show_levels_for_test(junto_media::engine::Levels {
         input: 1.0,
+        speech_input: 1.0,
         ..Default::default()
     });
     window.until("local sound brings the warning back", |window| {

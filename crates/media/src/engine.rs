@@ -218,6 +218,8 @@ pub struct PersonLevel {
 pub struct Levels {
     /// The microphone after the processing, also while it is muted.
     pub input: f32,
+    /// Local input with an independent echo filter, also while the sending gate is closed.
+    pub speech_input: f32,
     /// What this device sends.
     pub own: PersonLevel,
     /// The other people whose sound arrives.
@@ -1866,6 +1868,7 @@ impl Actor {
         }
         let levels = Levels {
             input: level::meter(self.link.input.read()),
+            speech_input: level::meter(self.link.speech_input.read()),
             own: PersonLevel {
                 level: level::meter(self.link.sent.read()),
                 speaking: self.link.speaking(),

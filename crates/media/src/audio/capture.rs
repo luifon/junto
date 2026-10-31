@@ -26,6 +26,8 @@ pub struct CaptureLink {
     /// The level of the microphone after the processing, also while nothing is sent. A
     /// person checks a microphone with it.
     pub input: LevelCell,
+    /// The independently echo-filtered local input used by the muted-speech notice.
+    pub speech_input: LevelCell,
     /// The level of what is sent.
     pub sent: LevelCell,
     speaking: AtomicBool,
@@ -65,6 +67,7 @@ impl Default for CaptureLink {
             open: AtomicBool::default(),
             closures: AtomicU64::default(),
             input: LevelCell::default(),
+            speech_input: LevelCell::default(),
             sent: LevelCell::default(),
             speaking: AtomicBool::default(),
             dropped: AtomicU64::default(),
@@ -151,6 +154,7 @@ impl CaptureLink {
     /// The device stopped: the levels show nothing.
     pub fn closed(&self) {
         self.input.silence();
+        self.speech_input.silence();
         self.sent.silence();
         self.speaking.store(false, Ordering::Relaxed);
     }
@@ -294,6 +298,10 @@ impl CaptureChain {
 
     fn send(&mut self, mut frame: Vec<i16>) {
         self.link.captured.count();
+        if let Ok(mut speech) = <[i16; FRAME_SAMPLES]>::try_from(frame.as_slice()) {
+            self.processor.speech(&mut speech);
+            self.link.speech_input.frame(&speech);
+        }
         self.processor.capture(&mut frame);
         self.link.input.frame(&frame);
         // Read before the gate: a closure after this line makes the frame an old one.
