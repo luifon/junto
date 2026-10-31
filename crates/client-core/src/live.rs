@@ -210,6 +210,8 @@ pub(crate) struct Shared {
     view: watch::Sender<LiveView>,
     notices: broadcast::Sender<Notice>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) typing_watches: Mutex<Vec<junto_protocol::typing::TypingPlace>>,
     /// The numbers that this client gives to its waiting messages and to its uploads.
     numbers: std::sync::atomic::AtomicU64,
     /// The position of the state of each view that the readers were given, in order. The
@@ -225,6 +227,8 @@ impl Shared {
             view: watch::Sender::new(LiveView::default()),
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            typing_watches: Mutex::default(),
             numbers: std::sync::atomic::AtomicU64::new(1),
             #[cfg(test)]
             shown_positions: Mutex::default(),
@@ -289,6 +293,15 @@ impl LiveServer {
     /// The status and the state now. The call copies two words and two pointers.
     pub fn view(&self) -> LiveView {
         self.shared.view.borrow().clone()
+    }
+
+    /// Whether the full subscription acknowledged this place's transient typing watch.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn typing_watched_for_test(&self, place: PlaceId) -> bool {
+        let view = self.view();
+        view.status == StreamStatus::Live
+            && view.level == Some(Level::Full)
+            && lock(&self.shared.typing_watches).contains(&place.typing_place())
     }
 
     /// A value that gives the newest view after each change.

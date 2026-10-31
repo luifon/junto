@@ -59,3 +59,5 @@ the insert left all per-row deferred bookkeeping after subscription, consuming
 the connection lifetime while the test client was not polling it. The event
 count, live commit, resynchronization assertion and every server limit remain
 unchanged.
+
+Typing identity window tests issue their initial edits once, only after the current full subscriptions acknowledge the exact typing place. History loading alone is not a watch acknowledgement: transient activity before a watch is intentionally not replayed (ADR 0206). The test-support live reader records these acknowledgements and clears them on watch replacement, resubscription or disconnection. The existing bounded assertion drives the one-time input and observes the result; no extra timer, repeated send or enlarged deadline establishes readiness. The tests keep the real stream, composer input, profile controls and membership withdrawal assertions.

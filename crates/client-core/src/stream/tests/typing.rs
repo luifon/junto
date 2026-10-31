@@ -23,6 +23,12 @@ async fn typing_is_owner_and_watch_scoped_without_moving_the_cursor_and_resets_o
     assert!(
         matches!(serde_json::from_str(&watch).unwrap(), ClientMessage::TypingWatch { places } if places == [room.place.typing_place()])
     );
+    assert!(!room.rig.live.typing_watched_for_test(room.place));
+    room.peer
+        .send(&ServerMessage::TypingWatching {
+            places: vec![room.place.typing_place()],
+        })
+        .await;
     let mut notices = room.rig.live.notices();
     room.rig
         .live
@@ -50,6 +56,7 @@ async fn typing_is_owner_and_watch_scoped_without_moving_the_cursor_and_resets_o
         })
         .await;
     assert_eq!(next_typing(&mut notices).await, Some(activity.clone()));
+    assert!(room.rig.live.typing_watched_for_test(room.place));
     assert_eq!(room.rig.model().cursor, cursor);
     let mut hidden = activity.clone();
     hidden.place =
@@ -70,6 +77,7 @@ async fn typing_is_owner_and_watch_scoped_without_moving_the_cursor_and_resets_o
     assert_eq!(next_typing(&mut notices).await, Some(stopped));
     room.rig.off();
     assert_eq!(next_typing(&mut notices).await, None);
+    assert!(!room.rig.live.typing_watched_for_test(room.place));
     assert!(room.peer.dropped().await);
 }
 

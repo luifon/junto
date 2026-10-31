@@ -572,6 +572,8 @@ impl Client {
     }
 
     fn disconnect(&mut self) {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::flow::machine::lock(&self.shared.typing_watches).clear();
         self.link = None;
         self.opening = None;
         self.tell_connection();
@@ -694,6 +696,8 @@ impl Client {
                 .ok()
                 .is_some_and(|text| link.outgoing.try_send(text).is_ok())
             {
+                #[cfg(any(test, feature = "test-support"))]
+                crate::flow::machine::lock(&self.shared.typing_watches).clear();
                 link.typing_watches = places;
             }
         }
@@ -749,6 +753,8 @@ impl Client {
         }
         link.send_at = None;
         link.typing_watches.clear();
+        #[cfg(any(test, feature = "test-support"))]
+        crate::flow::machine::lock(&self.shared.typing_watches).clear();
         let message = ClientMessage::Subscribe {
             appearance: self.server_events.is_some_and(|revision| revision >= 12),
             presence: self
@@ -989,6 +995,12 @@ impl Client {
                 self.server_reload();
             }
             return;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let ServerMessage::TypingWatching { places } = &message
+            && *places == link.typing_watches
+        {
+            *crate::flow::machine::lock(&self.shared.typing_watches) = places.clone();
         }
         match message {
             ServerMessage::TypingWatching { .. } => {}

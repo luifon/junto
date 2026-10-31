@@ -109,6 +109,7 @@ test-support = [
     "gpui_platform/test-support",
     "gpui-base/test-support",
     "junto-media/test-support",
+    "junto-client-core/test-support",
 ]
 # The native stage of the window (ADR 0913): a share of a real screen through the window.
 # Only `tools/native-devices.sh` builds with it.

@@ -414,6 +414,12 @@ mod tests {
         );
         assert!(!activity.current(&receiver.try_recv().unwrap()));
         assert!(activity.subscribe().try_recv().is_err());
+        let watched = place();
+        activity.update(from, watched, "Ada".to_owned(), true, 8000, Instant::now());
+        assert!(activity.current(&receiver.try_recv().unwrap()));
+        assert!(activity.subscribe().try_recv().is_err());
+        activity.close(from.connection);
+        assert!(!receiver.try_recv().unwrap().active);
         for _ in 0..MOST_TYPING_PLACES {
             activity.update(from, place(), "Ada".to_owned(), true, 8000, Instant::now());
             receiver.try_recv().unwrap();

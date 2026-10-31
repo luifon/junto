@@ -237,10 +237,23 @@ fn a_typing_person_opens_its_profile_without_changing_the_draft(cx: &mut TestApp
             choice: PresenceChoice::DoNotDisturb,
         }))
         .unwrap();
-    writer.type_into("composer-input", "an unsent plan");
+    let place = junto_client_core::model::PlaceId::Channel(writer.selected_channel());
+    let writer_live = writer.handle().live().clone();
+    let reader_live = reader.handle().live().clone();
+    let mut edit = Some("an unsent plan");
     reader.until("the other reader sees activity", |window| {
+        if writer_live.typing_watched_for_test(place)
+            && reader_live.typing_watched_for_test(place)
+            && let Some(text) = edit.take()
+        {
+            writer.type_into("composer-input", text);
+        }
         window.shows("typing-indicator")
     });
+    assert!(
+        edit.is_none(),
+        "the input was issued once after both watches were acknowledged"
+    );
     assert!(
         reader.shows_named(format!("typing-person:{account}")),
         "a typing identity has a profile control"
