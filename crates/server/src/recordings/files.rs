@@ -2,7 +2,8 @@
 //!
 //! The recorder writes into this directory. The server builds every path from identifiers
 //! that it generated, never from a name that the recorder reports, and it opens a file one
-//! path part at a time without following a link.
+//! path part at a time without following a link. The descriptor-relative guarantees are
+//! those of the Unix store; the Windows window-test backend has the scope of ADR 0912.
 
 use std::fs::File;
 use std::io;

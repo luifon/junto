@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
-use std::os::windows::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -131,7 +130,7 @@ fn path_components_refuse_windows_devices_and_path_escapes() {
 #[tokio::test]
 async fn a_junction_cannot_be_followed_for_reads_writes_or_removal() {
     use std::os::windows::process::CommandExt as _;
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let scratch = Scratch::new();
     let root = scratch.0.join("root");
@@ -174,142 +173,54 @@ async fn a_junction_cannot_be_followed_for_reads_writes_or_removal() {
     assert!(!outside.join("new-file").exists());
 }
 
-fn turn_into_junction(path: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_SHARE_DELETE, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-    };
-    use windows_sys::Win32::System::IO::DeviceIoControl;
-    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
-    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
-
-    let target = fs::canonicalize(target)?;
-    let print: Vec<u16> = target.as_os_str().encode_wide().collect();
-    assert_eq!(&print[..4], &[92, 92, 63, 92]);
-    let mut substitute = vec![92, 63, 63, 92];
-    substitute.extend_from_slice(&print[4..]);
-    let substitute_bytes = u16::try_from(substitute.len() * 2).unwrap();
-    let print_bytes = u16::try_from(print.len() * 2).unwrap();
-    let mut data = Vec::new();
-    data.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
-    data.extend_from_slice(&(8 + substitute_bytes + 2 + print_bytes + 2).to_le_bytes());
-    for value in [0, 0, substitute_bytes, substitute_bytes + 2, print_bytes] {
-        data.extend_from_slice(&value.to_le_bytes());
+#[test]
+fn every_operation_refuses_escaping_components() {
+    let scratch = Scratch::new();
+    let root = scratch.0.join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(scratch.0.join("kept"), b"outside").unwrap();
+    let safe = place(&["safe"]);
+    write_new(&root, &safe, b"inside").unwrap();
+    for parts in [vec!["..", "kept"], vec!["../kept"], vec!["NUL"]] {
+        let invalid = place(&parts);
+        assert!(open_file(&root, &invalid).is_err());
+        assert!(create_file(&root, &invalid).is_err());
+        assert!(write_new(&root, &invalid, b"replace").is_err());
+        assert!(create_directory(&root, &invalid).is_err());
+        assert!(remove(&root, &invalid).is_err());
+        assert!(remove_if_empty(&root, &invalid).is_err());
+        assert!(rename(&root, &safe, &invalid).is_err());
+        assert!(rename(&root, &invalid, &safe).is_err());
+        assert!(finish(&root, &safe, &invalid).is_err());
+        assert!(finish(&root, &invalid, &safe).is_err());
+        assert!(listed(&root, &invalid, |_| true).is_err());
+        assert!(pieces(&root, &invalid).is_err());
+        assert!(entries_after(&root, &invalid, None, 1, |_| true).is_err());
     }
-    for value in substitute.into_iter().chain([0]).chain(print).chain([0]) {
-        data.extend_from_slice(&value.to_le_bytes());
-    }
-    let file = OpenOptions::new()
-        .access_mode(FILE_WRITE_DATA)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    let mut returned = 0;
-    // SAFETY: the input encodes a mount-point REPARSE_DATA_BUFFER; the synchronous call
-    // borrows its bytes, the directory handle, and the returned-byte count until it returns.
-    let result = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
-            FSCTL_SET_REPARSE_POINT,
-            data.as_ptr().cast(),
-            u32::try_from(data.len()).unwrap(),
-            std::ptr::null_mut(),
-            0,
-            &mut returned,
-            std::ptr::null_mut(),
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    assert_eq!(fs::read(scratch.0.join("kept")).unwrap(), b"outside");
+    assert_eq!(fs::read(root.join("safe")).unwrap(), b"inside");
 }
 
 #[test]
-fn a_checked_directory_cannot_be_redirected_by_an_in_place_junction() {
+fn cursor_entries_keep_only_the_first_matching_names_after_the_cursor() {
     let scratch = Scratch::new();
-    let root = scratch.0.join("root");
-    let outside = scratch.0.join("outside");
-    fs::create_dir(&root).unwrap();
-    fs::create_dir(&outside).unwrap();
-    fs::create_dir(root.join("checked")).unwrap();
-    fs::write(outside.join("kept"), b"outside").unwrap();
-    let held = directory(&root, &["checked".to_owned()]).unwrap();
-    turn_into_junction(&root.join("checked"), &outside).unwrap();
-    assert!(reparse(&held.file.metadata().unwrap()));
-    assert!(held.names().is_err());
-    assert!(
-        held.open(
-            OsStr::new("kept"),
-            FILE_GENERIC_READ,
-            FILE_OPEN,
-            FILE_NON_DIRECTORY_FILE,
-            SHARING
-        )
-        .is_err()
-    );
-    assert!(open_file(&root, &place(&["checked", "kept"])).is_err());
-    assert!(write_new(&root, &place(&["checked", "injected"]), b"injected").is_err());
-    assert!(create_directory(&root, &place(&["checked", "injected-dir"])).is_err());
-    assert!(rename(&root, &place(&["checked", "kept"]), &place(&["taken"])).is_err());
-    assert!(!outside.join("injected").exists());
-    assert!(!outside.join("injected-dir").exists());
-    drop(held);
-    remove(&root, &place(&["checked"])).unwrap();
-    assert_eq!(fs::read(outside.join("kept")).unwrap(), b"outside");
-}
-
-#[test]
-fn relative_child_opens_cannot_follow_a_parent_changed_after_its_check() {
-    let scratch = Scratch::new();
-    let outside = scratch.0.join("outside");
-    let root = scratch.0.join("root");
-    fs::create_dir(&root).unwrap();
-    fs::create_dir(&outside).unwrap();
-    fs::create_dir(root.join("checked")).unwrap();
-    fs::write(outside.join("kept"), b"outside").unwrap();
-    write_new(&root, &place(&["moving"]), b"inside").unwrap();
-    let parent = directory(&root, &[]).unwrap();
-    let moving = parent
-        .open(OsStr::new("moving"), DELETE, FILE_OPEN, 0, SHARING)
-        .unwrap();
-    let held = directory(&root, &["checked".to_owned()]).unwrap();
-    held.validate().unwrap();
-    turn_into_junction(&root.join("checked"), &outside).unwrap();
-    assert!(
-        native::open(
-            &held.file,
-            OsStr::new("kept"),
-            FILE_GENERIC_READ,
-            FILE_OPEN,
-            FILE_NON_DIRECTORY_FILE,
-            SHARING
-        )
-        .is_err()
-    );
-    if let Ok(mut inside) = native::open(
-        &held.file,
-        OsStr::new("injected"),
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-        FILE_CREATE,
-        FILE_NON_DIRECTORY_FILE,
-        SHARING,
-    ) {
-        inside.write_all(b"inside").unwrap();
-        inside.sync_all().unwrap();
-        assert!(!outside.join("injected").exists());
-        native::remove(&inside).unwrap();
+    for name in ["d", "b", "a", "c", "ignored.partial"] {
+        write_new(&scratch.0, &place(&[name]), b"entry").unwrap();
     }
-    if let Ok(names) = native::names(&held.file) {
-        assert!(!names.contains(&OsString::from("kept")));
-    }
-    let _ = native::rename(&moving, &held.file, OsStr::new("moved"), true);
-    assert!(!outside.join("moved").exists());
-    native::remove(&moving).unwrap();
-    drop(moving);
-    drop(held);
-    remove(&root, &place(&["checked"])).unwrap();
-    assert_eq!(fs::read(outside.join("kept")).unwrap(), b"outside");
-    assert!(!outside.join("injected").exists());
+    let selected = entries_after(&scratch.0, &place(&[]), Some("a"), 2, |name| {
+        !name.contains('.')
+    })
+    .unwrap();
+    assert_eq!(
+        selected
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "c"]
+    );
+    assert!(
+        entries_after(&scratch.0, &place(&[]), None, 0, |_| true)
+            .unwrap()
+            .is_empty()
+    );
 }

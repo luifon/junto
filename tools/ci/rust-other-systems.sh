@@ -67,7 +67,7 @@ run cargo test --no-fail-fast --locked -p junto-authz -p junto-protocol
 # The reading of the free space of a directory, which differs between Unix and Windows
 # (ADR 0605).
 run cargo test --no-fail-fast --locked -p junto-server --lib storage::
-# Descriptor-relative files on Unix and pinned directories on Windows (ADR 0606).
+# Directory-relative files on Unix and the Windows test store (ADR 0606, ADR 0912).
 run cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::
 run cargo test --no-fail-fast --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"

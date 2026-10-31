@@ -1,25 +1,19 @@
-//! Windows file storage below pinned directory handles (ADR 0606).
-#![allow(unsafe_code)]
+//! Standard-library storage for the Windows window-test server (ADR 0912).
+#![forbid(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
-};
-use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE,
-};
-#[path = "windows/native.rs"]
-mod native;
-const DIRECTORY_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE;
-const SHARING: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const FILE_SHARE_READ: u32 = 1;
+const FILE_SHARE_WRITE: u32 = 2;
 
 use super::{Place, piece_number};
 
@@ -59,7 +53,7 @@ fn reparse(metadata: &fs::Metadata) -> bool {
 
 fn pin(path: &Path) -> io::Result<File> {
     let directory = OpenOptions::new()
-        .access_mode(DIRECTORY_ACCESS | SYNCHRONIZE)
+        .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
@@ -75,51 +69,40 @@ fn pin(path: &Path) -> io::Result<File> {
 
 struct Directory {
     pins: Vec<File>,
-    file: File,
+    path: PathBuf,
 }
 
 impl Directory {
     fn root(root: &Path) -> io::Result<Self> {
+        let path = fs::canonicalize(root)?;
         Ok(Self {
-            pins: Vec::new(),
-            file: pin(&fs::canonicalize(root)?)?,
+            pins: vec![pin(&path)?],
+            path,
         })
     }
+
     fn validate(&self) -> io::Result<()> {
-        for file in self.pins.iter().chain([&self.file]) {
-            let metadata = file.metadata()?;
+        for pin in &self.pins {
+            let metadata = pin.metadata()?;
             if reparse(&metadata) || !metadata.is_dir() {
                 return Err(invalid("a changed stored directory"));
             }
         }
         Ok(())
     }
-    fn open(
-        &self,
-        name: &OsStr,
-        access: u32,
-        disposition: u32,
-        options: u32,
-        sharing: u32,
-    ) -> io::Result<File> {
+
+    fn child_path(&self, name: &OsStr) -> io::Result<PathBuf> {
         self.validate()?;
-        native::open(&self.file, name, access, disposition, options, sharing)
+        Ok(self.path.join(name))
     }
+
     fn enter(&mut self, name: &OsStr) -> io::Result<()> {
-        let next = self.open(
-            name,
-            DIRECTORY_ACCESS,
-            FILE_OPEN,
-            FILE_DIRECTORY_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-        )?;
-        let metadata = next.metadata()?;
-        if reparse(&metadata) || !metadata.is_dir() {
-            return Err(invalid("not a regular stored directory"));
-        }
-        self.pins.push(std::mem::replace(&mut self.file, next));
+        let path = self.child_path(name)?;
+        self.pins.push(pin(&path)?);
+        self.path = path;
         Ok(())
     }
+
     fn child(&self, name: &OsStr) -> io::Result<Self> {
         let mut child = Self {
             pins: self
@@ -127,18 +110,17 @@ impl Directory {
                 .iter()
                 .map(File::try_clone)
                 .collect::<io::Result<_>>()?,
-            file: self.file.try_clone()?,
+            path: self.path.clone(),
         };
         child.enter(name)?;
         Ok(child)
     }
+
     fn names(&self) -> io::Result<Vec<OsString>> {
         self.validate()?;
-        native::names(&self.file)
-    }
-    fn metadata(&self, name: &OsStr) -> io::Result<fs::Metadata> {
-        self.open(name, FILE_READ_ATTRIBUTES, FILE_OPEN, 0, SHARING)?
-            .metadata()
+        fs::read_dir(&self.path)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect()
     }
 }
 
@@ -158,20 +140,22 @@ fn holder<'a>(root: &Path, place: &'a Place) -> io::Result<(Directory, &'a OsStr
     Ok((directory(root, above)?, component(name)?))
 }
 
-pub fn open_file(root: &Path, place: &Place) -> io::Result<File> {
-    let (parent, name) = holder(root, place)?;
-    let file = parent.open(
-        name,
-        FILE_GENERIC_READ,
-        FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE,
-        SHARING,
-    )?;
+fn regular_file(path: &Path, writable: bool) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
     let metadata = file.metadata()?;
     if reparse(&metadata) || !metadata.is_file() {
         return Err(invalid("not a regular stored file"));
     }
     Ok(file)
+}
+
+pub fn open_file(root: &Path, place: &Place) -> io::Result<File> {
+    let (parent, name) = holder(root, place)?;
+    regular_file(&parent.child_path(name)?, false)
 }
 
 pub fn pieces(root: &Path, place: &Place) -> io::Result<Vec<String>> {
@@ -184,7 +168,7 @@ pub fn pieces(root: &Path, place: &Place) -> io::Result<Vec<String>> {
         else {
             continue;
         };
-        let metadata = directory.metadata(OsStr::new(name))?;
+        let metadata = fs::symlink_metadata(directory.child_path(OsStr::new(name))?)?;
         if metadata.is_file() && !reparse(&metadata) {
             numbered.push((number, name.to_owned()));
         }
@@ -216,9 +200,9 @@ pub fn entries_after(
     let directory = directory(root, place.parts())?;
     let mut first = std::collections::BTreeSet::new();
     directory.validate()?;
-    native::for_each_name(&directory.file, |entry| {
-        let Ok(name) = entry.into_string() else {
-            return;
+    for entry in fs::read_dir(&directory.path)? {
+        let Ok(name) = entry?.file_name().into_string() else {
+            continue;
         };
         if wanted(&name) && after.is_none_or(|after| name.as_str() > after) {
             first.insert(name);
@@ -226,10 +210,10 @@ pub fn entries_after(
                 first.pop_last();
             }
         }
-    })?;
+    }
     let mut entries = Vec::with_capacity(first.len());
     for name in first {
-        match directory.metadata(OsStr::new(&name)) {
+        match fs::symlink_metadata(directory.child_path(OsStr::new(&name))?) {
             Ok(metadata) => {
                 let changed = match metadata.modified()?.duration_since(UNIX_EPOCH) {
                     Ok(age) => i64::try_from(age.as_secs()).unwrap_or(i64::MAX),
@@ -251,20 +235,30 @@ pub fn entries_after(
 }
 
 fn remove_entry(parent: &Directory, name: &OsStr, depth: usize) -> io::Result<()> {
-    let metadata = parent.metadata(name)?;
-    if !reparse(&metadata) && metadata.is_dir() {
-        if depth >= 16 {
-            return Err(io::Error::other("the directory is deeper than a recording"));
-        }
-        let child = parent.child(name)?;
-        for name in child.names()? {
-            match remove_entry(&child, &name, depth + 1) {
-                Err(error) if super::is_absent(&error) => {}
-                removed => removed?,
-            }
+    let path = parent.child_path(name)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if reparse(&metadata) {
+        return if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        };
+    }
+    if !metadata.is_dir() {
+        return fs::remove_file(path);
+    }
+    if depth >= 16 {
+        return Err(io::Error::other("the directory is deeper than a recording"));
+    }
+    let child = parent.child(name)?;
+    for name in child.names()? {
+        match remove_entry(&child, &name, depth + 1) {
+            Err(error) if super::is_absent(&error) => {}
+            removed => removed?,
         }
     }
-    native::remove(&parent.open(name, DELETE, FILE_OPEN, 0, SHARING)?)
+    drop(child);
+    fs::remove_dir(path)
 }
 
 pub fn remove(root: &Path, place: &Place) -> io::Result<()> {
@@ -275,42 +269,27 @@ pub fn remove(root: &Path, place: &Place) -> io::Result<()> {
 pub fn finish(root: &Path, from: &Place, to: &Place) -> io::Result<()> {
     let (source, from) = holder(root, from)?;
     let (destination, to) = holder(root, to)?;
-    let file = source.open(
-        from,
-        DELETE | FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-        FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE,
-        SHARING,
-    )?;
+    let (from, to) = (source.child_path(from)?, destination.child_path(to)?);
+    let file = regular_file(&from, true)?;
     file.sync_all()?;
-    destination.validate()?;
-    match native::rename(&file, &destination.file, to, false) {
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => native::remove(&file),
-        moved => {
-            moved?;
-            file.sync_all()
-        }
+    match fs::hard_link(&from, to) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
     }
+    fs::remove_file(from)
 }
 
 pub fn create_directory(root: &Path, place: &Place) -> io::Result<()> {
     let mut directory = Directory::root(root)?;
     for part in place.parts() {
         let name = component(part)?;
-        let created = directory.open(
-            name,
-            DIRECTORY_ACCESS,
-            FILE_OPEN_IF,
-            FILE_DIRECTORY_FILE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-        )?;
-        let metadata = created.metadata()?;
-        if reparse(&metadata) || !metadata.is_dir() {
-            return Err(invalid("not a regular stored directory"));
+        match fs::create_dir(directory.child_path(name)?) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
         }
-        directory
-            .pins
-            .push(std::mem::replace(&mut directory.file, created));
+        directory.enter(name)?;
     }
     Ok(())
 }
@@ -318,9 +297,7 @@ pub fn create_directory(root: &Path, place: &Place) -> io::Result<()> {
 pub fn rename(root: &Path, from: &Place, to: &Place) -> io::Result<()> {
     let (source, from) = holder(root, from)?;
     let (destination, to) = holder(root, to)?;
-    let file = source.open(from, DELETE, FILE_OPEN, 0, SHARING)?;
-    destination.validate()?;
-    native::rename(&file, &destination.file, to, true)
+    fs::rename(source.child_path(from)?, destination.child_path(to)?)
 }
 
 pub fn write_new(root: &Path, place: &Place, bytes: &[u8]) -> io::Result<()> {
@@ -331,19 +308,17 @@ pub fn write_new(root: &Path, place: &Place, bytes: &[u8]) -> io::Result<()> {
 
 pub fn create_file(root: &Path, place: &Place) -> io::Result<File> {
     let (parent, name) = holder(root, place)?;
-    parent.open(
-        name,
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-        FILE_CREATE,
-        FILE_NON_DIRECTORY_FILE,
-        SHARING,
-    )
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(parent.child_path(name)?)
 }
 
 pub fn remove_if_empty(root: &Path, place: &Place) -> io::Result<()> {
     let (parent, name) = holder(root, place)?;
-    let file = parent.open(name, DELETE, FILE_OPEN, FILE_DIRECTORY_FILE, SHARING)?;
-    match native::remove(&file) {
+    match fs::remove_dir(parent.child_path(name)?) {
         Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
         removed => removed,
     }
