@@ -72,6 +72,15 @@ fn the_production_host_captures_its_playback_through_a_null_device() {
     let output = named(&devices.outputs, name).expect("the null sink is an output");
     assert!(input.id.0.to_lowercase().contains("pipewire"));
     assert!(output.id.0.to_lowercase().contains("pipewire"));
+    let link = Arc::new(junto_media::audio::capture::CaptureLink::default());
+    let (frames, taken) = tokio::sync::mpsc::channel(256);
+    let mut chain = junto_media::audio::capture::CaptureChain::new(
+        link.clone(),
+        Arc::new(junto_media::audio::processing::Processor::new(
+            junto_media::audio::processing::Processing::OFF,
+        )),
+        frames,
+    );
     let samples = Arc::new(Mutex::new((Vec::new(), 0)));
     let captured = samples.clone();
     let faults = Arc::new(Mutex::new(Vec::new()));
@@ -80,6 +89,7 @@ fn the_production_host_captures_its_playback_through_a_null_device() {
         .open_input(
             Some(&input.id),
             Box::new(move |data, format| {
+                chain.deliver(data, format);
                 let mut captured = captured.lock().unwrap();
                 captured.1 = format.sample_rate;
                 captured.0.extend(
@@ -117,6 +127,24 @@ fn the_production_host_captures_its_playback_through_a_null_device() {
             && captured.0.len() >= captured.1 as usize
             && tone_level(&captured.0, captured.1, 440.0) > -20.0
     });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let mut queue = junto_media::audio::capture::FrameQueue::new(link.clone(), taken);
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..300 {
+                let frame = queue.next().await.unwrap();
+                assert!(frame.iter().all(|sample| *sample == 0));
+                queue.taken();
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(link.input.read() > -20.0);
+    assert!(!link.is_open() && !link.speaking());
     let captured = samples.lock().unwrap();
     assert!(tone_level(&captured.0, captured.1, 1_700.0) < -50.0);
     assert!(

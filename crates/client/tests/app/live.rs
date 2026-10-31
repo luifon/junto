@@ -41,6 +41,7 @@ mod device_checks;
 mod direct;
 mod groups;
 mod lines;
+mod muted_speech;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;
 mod permissions;

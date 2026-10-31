@@ -1651,11 +1651,29 @@ pub enum MicrophoneAction {
 pub struct Controls {
     pub microphone: MicrophoneButton,
     pub microphone_action: MicrophoneAction,
+    pub muted_speech: bool,
     /// The person turned the sound off.
     pub sound_off: bool,
     pub warning: Option<SoundWarning>,
     /// The call and the seat of this device that the controls were derived for.
     pub seat: Option<Seat>,
+}
+
+impl Controls {
+    fn show_muted_speech(&mut self, input: usize, connected: bool) {
+        let threshold = junto_media::audio::level::segments(
+            junto_media::audio::level::meter(-45.0),
+            INPUT_SEGMENTS,
+        );
+        self.muted_speech = connected
+            && self.seat.is_some()
+            && self.microphone == MicrophoneButton::Muted
+            && input >= threshold
+            && !matches!(
+                self.warning.as_ref(),
+                Some(SoundWarning::NoMicrophoneAccess | SoundWarning::MicrophoneFailed)
+            );
+    }
 }
 
 /// The call of this device, as the strip above the profile strip shows it. It is shown
@@ -1827,6 +1845,12 @@ impl ShellView {
     /// change of the levels alone, at most every 50 ms, therefore does not derive the view
     /// again (ADR 0730).
     pub fn show_levels(&mut self, levels: &ShownLevels) {
+        self.controls.show_muted_speech(
+            levels.input,
+            self.call
+                .as_ref()
+                .is_some_and(|call| call.phase == Phase::Connected),
+        );
         let Some(SelectedServer {
             content: Content::Lists(lists),
             ..
@@ -4040,7 +4064,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         }
     };
     let seat = active.map(ActiveCall::seat);
-    Controls {
+    let mut controls = Controls {
         microphone: if held.is_some() {
             MicrophoneButton::Held
         } else if withheld.microphone {
@@ -4055,10 +4079,18 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         } else {
             MicrophoneAction::Close
         },
+        muted_speech: false,
         sound_off: calls.deafened,
         warning,
         seat,
-    }
+    };
+    controls.show_muted_speech(
+        known.media.levels.input,
+        active.is_some_and(|call| {
+            call.phase == Phase::Connected && call.microphone == MicrophoneState::Running
+        }),
+    );
+    controls
 }
 
 fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option<CallStrip> {

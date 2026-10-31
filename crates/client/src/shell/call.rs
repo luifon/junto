@@ -2214,6 +2214,55 @@ impl Shell {
             .map(IntoElement::into_any_element)
     }
 
+    pub(crate) fn render_muted_speech(
+        &self,
+        controls: &crate::state::view::Controls,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !controls.muted_speech {
+            return None;
+        }
+        let state = self.state.read(cx);
+        let held = state.holds_mute();
+        let ptt = state.voice().input_mode == junto_client_core::voice::InputMode::PushToTalk
+            || state
+                .media_calls()
+                .call
+                .is_some_and(|call| call.withheld.voice_activity);
+        let hint = if held {
+            text::MUTED_SPEECH_HOLD
+        } else if ptt {
+            text::MUTED_SPEECH_PTT
+        } else {
+            ""
+        };
+        let label = if hint.is_empty() {
+            text::YOU_ARE_MUTED.to_owned()
+        } else {
+            format!("{}. {hint}", text::YOU_ARE_MUTED)
+        };
+        let action = crate::state::view::MicrophoneAction::Open(controls.seat.clone());
+        Some(
+            crate::ui::Notice::new(label)
+                .selector("muted-speech")
+                .stacked()
+                .action(
+                    Button::new("unmute-muted-speech")
+                        .label(text::UNMUTE)
+                        .selector("unmute-muted-speech")
+                        .disabled(held)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, _| {
+                                if !state.holds_mute() {
+                                    state.use_microphone(&action);
+                                }
+                            });
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The line above the profile strip about the sound of this device.
     pub(crate) fn render_sound_warning(
         &mut self,

@@ -685,3 +685,57 @@ fn available_shares_without_a_watch_leave_the_people_stage_visible(cx: &mut Test
     assert!(detached.shows("call-stage") && detached.shows("shares-bar"));
     assert!(!detached.shows("share-viewport"));
 }
+
+#[gpui::test]
+fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = call_with_share(&mut window, "Daily", None);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    calls.show_view_for_test(CallsView {
+        call: Some(call),
+        muted: true,
+        ..Default::default()
+    });
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        input: 1.0,
+        ..Default::default()
+    });
+    window.until("the local input is measured", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.shown_levels().input > 7)
+    });
+    assert!(window.shows("muted-speech"));
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        people: [(
+            crate::support::logged_in(&admin.handle),
+            junto_media::engine::PersonLevel {
+                level: 1.0,
+                speaking: true,
+            },
+        )]
+        .into(),
+        ..Default::default()
+    });
+    window.until(
+        "remote sound alone shows no muted speech warning",
+        |window| !window.shows("muted-speech"),
+    );
+    calls.show_levels_for_test(junto_media::engine::Levels {
+        input: 1.0,
+        ..Default::default()
+    });
+    window.until("local sound brings the warning back", |window| {
+        window.shows("muted-speech")
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("muted-speech") && detached.shows("unmute-muted-speech"));
+}

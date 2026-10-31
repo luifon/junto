@@ -1047,6 +1047,11 @@ impl Calls {
         self.inner.view.send_replace(view);
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn show_levels_for_test(&self, levels: Levels) {
+        self.inner.levels.send_replace(levels);
+    }
+
     /// Gives a picture of the watched share to the readers, as the session of a call
     /// does, for a test of a reader.
     #[cfg(feature = "test-support")]
