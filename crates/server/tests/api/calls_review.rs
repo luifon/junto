@@ -612,6 +612,11 @@ async fn every_request_that_changes_a_call_is_limited() {
     let routes: Vec<(Method, String, Value)> = vec![
         (Method::DELETE, "/api/v1/call".to_owned(), none.clone()),
         (
+            Method::POST,
+            "/api/v1/call/idle".to_owned(),
+            json!({"call_id":absent,"identity":"absent-seat","system_idle_seconds":900,"microphone_silent_seconds":900}),
+        ),
+        (
             Method::PUT,
             "/api/v1/call/state".to_owned(),
             json!({ "muted": true, "deafened": false }),

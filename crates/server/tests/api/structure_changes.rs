@@ -577,6 +577,7 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
             "workspace_created",
             "workspace_role_created",
             "workspace_member_added",
+            "channel_created",
             "workspace_role_updated",
             "channel_created",
             "workspace_updated",

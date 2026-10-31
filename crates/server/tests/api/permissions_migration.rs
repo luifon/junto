@@ -73,11 +73,14 @@ async fn permission_migration_keeps_access_and_custom_channel_rules() {
             .await
             .unwrap();
     assert_eq!(rules, (4 | (1 << 29), 1));
-    let synced: Vec<(uuid::Uuid, bool)> =
-        sqlx::query_as("select id,permissions_synced from channels order by position")
-            .fetch_all(&mut connection)
-            .await
-            .unwrap();
+    let synced: Vec<(uuid::Uuid, bool)> = sqlx::query_as(
+        "select id,permissions_synced from channels where id in ($1,$2) order by position",
+    )
+    .bind(custom)
+    .bind(plain)
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
     assert_eq!(synced, [(custom, false), (plain, true)]);
     let tables: i64 = sqlx::query_scalar("select count(*) from information_schema.tables where table_schema='public' and table_name in ('server_person_overrides','workspace_person_overrides','category_overrides','category_person_overrides','channel_person_overrides')")
         .fetch_one(&mut connection).await.unwrap();

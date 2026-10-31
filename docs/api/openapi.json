@@ -15028,6 +15028,28 @@
           }
         }
       },
+      "AfkEntry": {
+        "type": "object",
+        "required": [
+          "channel",
+          "enabled",
+          "idle_minutes"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "idle_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "AfkSettings": {
         "type": "object",
         "required": [
@@ -22876,6 +22898,28 @@
           {
             "type": "object",
             "required": [
+              "workspace",
+              "settings",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "set_workspace_afk"
+                ]
+              },
+              "settings": {
+                "$ref": "#/components/schemas/AfkEntry"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "positions",
               "change"
             ],
@@ -23601,7 +23645,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 5. This tool also reads the formats 1 to 4.",
+            "description": "The version of the file format: 6. This tool also reads the formats 1 to 5.",
             "minimum": 0
           },
           "server_roles": {
@@ -24398,6 +24442,16 @@
           "name"
         ],
         "properties": {
+          "afk": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AfkEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "categories": {
             "type": "array",
             "items": {

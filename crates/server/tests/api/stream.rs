@@ -855,8 +855,7 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].workspace = workspace;
             }
         }
-        // The client loads a snapshot (ADR 0208). The lists of the permissions of the
-        // account are part of it (ADR 0310).
+        // The client loads permission and message-state lists from a snapshot (ADR 0208).
         Event::PermissionsChanged {
             workspace_id: Some(workspace_id),
         } => {
@@ -869,6 +868,11 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].permissions = current.permissions.clone();
                 snapshot.workspaces[index].channel_permissions =
                     current.channel_permissions.clone();
+                let belongs = |message: &junto_protocol::message::MessageState| matches!(message.place, junto_protocol::message::MessagePlace::Channel { workspace_id: id, .. } if id == workspace_id);
+                snapshot.messages.retain(|message| !belongs(message));
+                snapshot
+                    .messages
+                    .extend(loaded.messages.into_iter().filter(belongs));
             }
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {

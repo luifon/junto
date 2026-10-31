@@ -177,7 +177,7 @@ async fn everyone_cannot_be_hoisted_and_structure_export_keeps_appearance() {
         .await
         .ok(StatusCode::OK);
     let structure = export.get("structure").unwrap_or(&export);
-    assert_eq!(structure["format"], 5);
+    assert_eq!(structure["format"], 6);
     assert!(
         structure["server_roles"]
             .as_array()

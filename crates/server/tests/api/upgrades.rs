@@ -990,7 +990,7 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
     .fetch_one(database.pool())
     .await
     .unwrap();
-    assert_eq!(in_workspace, 2);
+    assert_eq!(in_workspace, 3);
     database.close().await;
     delete_databases(&[name]).await;
 }

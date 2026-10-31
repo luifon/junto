@@ -72,7 +72,8 @@ async fn first_start_makes_a_usable_server_and_the_owner_code_makes_the_owner() 
         kinds,
         [
             (ChannelKind::Text, "general"),
-            (ChannelKind::Voice, "voice")
+            (ChannelKind::Voice, "voice"),
+            (ChannelKind::Voice, "AFK")
         ]
     );
 
