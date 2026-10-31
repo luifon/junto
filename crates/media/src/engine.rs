@@ -216,6 +216,7 @@ pub struct PersonLevel {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Levels {
+    pub last_microphone_speech: Option<std::time::Instant>,
     /// The microphone after the processing, also while it is muted.
     pub input: f32,
     /// What this device sends.
@@ -1862,6 +1863,7 @@ impl Actor {
             entry.speaking |= remote.speaking.load(std::sync::atomic::Ordering::Relaxed);
         }
         let levels = Levels {
+            last_microphone_speech: self.link.last_speech(),
             input: level::meter(self.link.input.read()),
             own: PersonLevel {
                 level: level::meter(self.link.sent.read()),

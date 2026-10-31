@@ -1523,13 +1523,18 @@ fn start(
     let refresh = None;
     let accepted = read_at;
     // The permissions of the channel hold from the first moment too (ADR 0790).
-    let withheld = server
+    let mut withheld = server
         .live()
         .view()
         .model
         .as_deref()
         .and_then(|model| Withheld::in_call(model, &target.place))
         .unwrap_or_default();
+    if answer.listen_only {
+        withheld.microphone = true;
+        withheld.camera = true;
+        withheld.share = true;
+    }
     let controls = Controls {
         muted: shared.muted,
         deafened: shared.deafened,
@@ -1600,6 +1605,10 @@ fn start(
         controls,
         microphone_block: answer.microphone_block,
         sound_block: answer.sound_block,
+        listen_only: answer.listen_only,
+        afk_dirty: false,
+        afk_reading: false,
+        afk_read_at: Instant::now(),
         withheld,
         blocks_untold,
         refresh,
@@ -2242,6 +2251,7 @@ const REPORT_RETRY: Duration = Duration::from_secs(3);
 const CAUSE_WAIT: Duration = Duration::from_millis(500);
 
 enum Done {
+    AfkMode(Box<Result<junto_client_core::protocol::call::OwnCallView, ApiError>>),
     State(bool),
     Speaking(bool),
     Share(bool),
@@ -2482,6 +2492,10 @@ struct Session {
     microphone_block: Option<MicrophoneBlock>,
     sound_block: Option<SoundBlock>,
     withheld: Withheld,
+    listen_only: bool,
+    afk_dirty: bool,
+    afk_reading: bool,
+    afk_read_at: Instant,
     /// The server has not told the blocks of the person for this place yet (see
     /// [`blocks_untold`]). The sound stays off until it has, so that a sound block holds
     /// from the first moment of the media connection (ADR 0503).
@@ -2737,6 +2751,12 @@ impl Session {
                 self.end_kept_block();
                 self.place.note(*id, event);
                 self.note_move(event);
+                if let Event::WorkspaceAfkChanged { workspace_id } = &**event
+                    && matches!(self.target.place, CallPlace::Channel { workspace_id: current, .. } if current == *workspace_id)
+                {
+                    self.afk_dirty = true;
+                    self.afk_read_at = Instant::now();
+                }
                 // The server ends the watch of a share when a new share starts in its slot
                 // (ADR 0502); the client then reports the watch again.
                 if let Event::CallParticipantJoined {
@@ -2756,6 +2776,12 @@ impl Session {
                 }
             }
             Notice::Reloaded { cursor } => {
+                if matches!(self.target.place, CallPlace::Channel { .. })
+                    && (self.server.entry().capabilities.afk_channel || self.listen_only)
+                {
+                    self.afk_dirty = true;
+                    self.afk_read_at = Instant::now();
+                }
                 if self.grants.cursor.epoch != cursor.epoch {
                     self.grants.restarted(*cursor);
                 } else {
@@ -3397,7 +3423,12 @@ impl Session {
     /// Takes what the permissions of the voice channel withhold. A source that they no
     /// longer allow stops now: the camera and the share end, and the microphone and the
     /// sound of a share are closed as by a block (ADR 0790).
-    fn set_withheld(&mut self, withheld: Withheld) {
+    fn set_withheld(&mut self, mut withheld: Withheld) {
+        if self.listen_only {
+            withheld.microphone = true;
+            withheld.camera = true;
+            withheld.share = true;
+        }
         let before = std::mem::replace(&mut self.withheld, withheld);
         if before == withheld {
             return;
@@ -3462,6 +3493,33 @@ impl Session {
     fn finished(&mut self, result: Done) {
         let now = Instant::now();
         match result {
+            Done::AfkMode(answer) => {
+                self.afk_reading = false;
+                match *answer {
+                    Ok(view) if !self.afk_dirty => {
+                        if let Some(state) = view.call.filter(|state| {
+                            state.own.identity == self.place.identity()
+                                && state.own.place == self.target.place
+                        }) {
+                            self.listen_only = state.listen_only;
+                            let withheld = self
+                                .server
+                                .live()
+                                .view()
+                                .model
+                                .as_deref()
+                                .and_then(|model| Withheld::in_call(model, &self.target.place))
+                                .unwrap_or(self.withheld);
+                            self.set_withheld(withheld);
+                        }
+                    }
+                    Err(_) if !self.afk_dirty => {
+                        self.afk_dirty = true;
+                        self.afk_read_at = now + REPORT_RETRY;
+                    }
+                    _ => {}
+                }
+            }
             Done::State(taken) => self.state_report.done(taken, REPORT_RETRY, now),
             Done::Speaking(taken) => self.speaking_report.done(taken, REPORT_RETRY, now),
             Done::Share(taken) => self.share_reports.done(taken, REPORT_RETRY, now),
@@ -3472,6 +3530,19 @@ impl Session {
                 self.review = true;
                 match *answer {
                     Ok(answer) => {
+                        self.listen_only = answer.listen_only;
+                        self.afk_dirty |= matches!(self.target.place, CallPlace::Channel { .. })
+                            && (self.server.entry().capabilities.afk_channel || self.listen_only);
+                        self.afk_read_at = now;
+                        let withheld = self
+                            .server
+                            .live()
+                            .view()
+                            .model
+                            .as_deref()
+                            .and_then(|model| Withheld::in_call(model, &self.target.place))
+                            .unwrap_or(self.withheld);
+                        self.set_withheld(withheld);
                         let read_at = read_at(&answer, &self.server, self.accepted);
                         let same_history = read_at.epoch == self.accepted.epoch;
                         // This answer identifies the seat requested by this renewal, even
@@ -3622,6 +3693,19 @@ impl Session {
     /// Starts what is due now and returns when the next thing is due.
     fn work(&mut self, now: Instant, done: &mpsc::UnboundedSender<Done>) -> Instant {
         let mut wake = far();
+        if self.afk_dirty && !self.afk_reading {
+            if now >= self.afk_read_at {
+                self.afk_dirty = false;
+                self.afk_reading = true;
+                let api = self.server.api();
+                let done = done.clone();
+                drop(self.inner.runtime.spawn(async move {
+                    let _ = done.send(Done::AfkMode(Box::new(api.own_call().await)));
+                }));
+            } else {
+                wake = wake.min(self.afk_read_at);
+            }
+        }
         if let Some(moving) = &self.moving {
             wake = wake.min(moving.deadline);
         }
@@ -3660,6 +3744,7 @@ impl Session {
         }
         // A person whose microphone cannot be used is told to the others as muted.
         let silent = self.controls.muted
+            || self.listen_only
             || !matches!(
                 state.microphone,
                 MicrophoneState::Running | MicrophoneState::Closed

@@ -44,6 +44,7 @@ pub async fn archive_channel(
         })?;
         let workspace_id = record.channel.workspace_id;
         let days = archive::period(connection, workspace_id).await?;
+        super::afk::require_replace_before_removal(connection, channel_id).await?;
         if record.archived_at.is_some() {
             return archive::view(connection, record, days, now).await;
         }

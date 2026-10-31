@@ -3,6 +3,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "components": {
     "schemas": {
+      "AfkEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "idle_minutes": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channel",
+          "enabled",
+          "idle_minutes"
+        ],
+        "type": "object"
+      },
       "CategoryEntry": {
         "additionalProperties": false,
         "properties": {
@@ -319,7 +341,7 @@
             "description": "The entries that applying the file deletes. Nothing else is deleted."
           },
           "format": {
-            "description": "The version of the file format: 5. This tool also reads the formats 1 to 4.",
+            "description": "The version of the file format: 6. This tool also reads the formats 1 to 5.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -350,6 +372,16 @@
       "WorkspaceEntry": {
         "additionalProperties": false,
         "properties": {
+          "afk": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AfkEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "categories": {
             "items": {
               "$ref": "#/components/schemas/CategoryEntry"
@@ -434,6 +466,6 @@
       }
     }
   },
-  "description": "The structure of a Junto server as the setup tool writes it: format 5. The tool reads the formats 1 to 5. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "description": "The structure of a Junto server as the setup tool writes it: format 6. The tool reads the formats 1 to 6. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
   "title": "Junto structure file"
 }

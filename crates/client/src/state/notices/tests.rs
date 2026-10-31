@@ -2102,6 +2102,8 @@ mod events {
         workspace.channels.push(channel);
         let moved = |account_id| Event::CallMoveRequested {
             call_move: CallMove {
+                destination_identity: None,
+                afk: false,
                 id: CallMoveId::generate(),
                 account_id,
                 from: scene.daily_place(),

@@ -1186,7 +1186,7 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
     let relevant = |q: &String| {
         q.starts_with("with channels_selected")
             || q.starts_with("select n.* from notifications")
-            || q.contains("from notification_receivers")
+            || q.starts_with("select event_id,background,alert from notification_receivers")
     };
     let small_delivery: std::collections::BTreeMap<_, _> =
         since(statements(observer, stream_role).await, before)

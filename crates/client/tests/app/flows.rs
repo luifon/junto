@@ -76,7 +76,10 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
     assert_eq!(view.servers[0].workspaces.len(), 1);
     assert!(view.servers[0].workspaces[0].selected);
     let kinds: Vec<ChannelKind> = window.channels().iter().map(|row| row.kind).collect();
-    assert_eq!(kinds, [ChannelKind::Text, ChannelKind::Voice]);
+    assert_eq!(
+        kinds,
+        [ChannelKind::Text, ChannelKind::Voice, ChannelKind::Voice]
+    );
     assert_eq!(
         workspace.channel.as_ref().map(|channel| channel.kind),
         Some(ChannelKind::Text)
@@ -163,7 +166,7 @@ fn a_code_that_the_server_refuses_is_told_and_an_invite_code_creates_the_account
     window.until_ready();
     assert!(!window.shows("join-dialog"));
     assert_eq!(window.view().person.name, "Luca");
-    assert_eq!(window.channel_names().len(), 2);
+    assert_eq!(window.channel_names().len(), 3);
 }
 
 #[gpui::test]
@@ -215,7 +218,7 @@ fn a_request_for_access_waits_and_opens_when_an_administrator_approves_it(cx: &m
         )
         .unwrap();
     window.until_ready();
-    assert_eq!(window.channel_names().len(), 2);
+    assert_eq!(window.channel_names().len(), 3);
     assert!(!window.shows("waiting-for-approval"));
 }
 
@@ -474,7 +477,7 @@ fn the_lists_follow_the_events_of_the_server_without_a_reload(cx: &mut TestAppCo
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     let workspace_id = window.view().workspace().unwrap().id;
     let before = window.channel_names();
-    assert_eq!(before.len(), 2);
+    assert_eq!(before.len(), 3);
 
     // A channel that the administrator creates appears, is renamed and goes.
     let api = admin.handle.api();

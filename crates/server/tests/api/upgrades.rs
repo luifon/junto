@@ -971,7 +971,8 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
     for (table, rows) in [
         ("workspaces", 1),
         ("workspace_roles", 1),
-        ("channels", 2),
+        ("channels", 3),
+        ("workspace_afk", 1),
         ("server_state", 1),
     ] {
         let counted: i64 =
@@ -989,7 +990,7 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
     .fetch_one(database.pool())
     .await
     .unwrap();
-    assert_eq!(in_workspace, 2);
+    assert_eq!(in_workspace, 3);
     database.close().await;
     delete_databases(&[name]).await;
 }

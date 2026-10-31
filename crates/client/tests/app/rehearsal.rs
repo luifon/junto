@@ -193,7 +193,10 @@ impl Rehearsal {
         assert_eq!(view.servers.len(), 1);
         assert_eq!(view.person.name, A_NAME);
         let kinds: Vec<ChannelKind> = a.channels().iter().map(|row| row.kind).collect();
-        assert_eq!(kinds, [ChannelKind::Text, ChannelKind::Voice]);
+        assert_eq!(
+            kinds,
+            [ChannelKind::Text, ChannelKind::Voice, ChannelKind::Voice]
+        );
         // The owner has the administration in the menu of the server.
         a.click("server-menu-button");
         assert!(a.shows("menu-administration"));

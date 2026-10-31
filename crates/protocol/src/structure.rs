@@ -341,3 +341,12 @@ mod tests {
         assert!(matches!(set.category_id, Some(Some(_))));
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AfkSettings {
+    pub channel_id: ChannelId,
+    pub enabled: bool,
+    pub idle_minutes: u32,
+}

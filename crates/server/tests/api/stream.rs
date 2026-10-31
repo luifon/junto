@@ -855,8 +855,7 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].workspace = workspace;
             }
         }
-        // The client loads a snapshot (ADR 0208). The lists of the permissions of the
-        // account are part of it (ADR 0310).
+        // The client loads permission and message-state lists from a snapshot (ADR 0208).
         Event::PermissionsChanged {
             workspace_id: Some(workspace_id),
         } => {
@@ -869,6 +868,11 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].permissions = current.permissions.clone();
                 snapshot.workspaces[index].channel_permissions =
                     current.channel_permissions.clone();
+                let belongs = |message: &junto_protocol::message::MessageState| matches!(message.place, junto_protocol::message::MessagePlace::Channel { workspace_id: id, .. } if id == workspace_id);
+                snapshot.messages.retain(|message| !belongs(message));
+                snapshot
+                    .messages
+                    .extend(loaded.messages.into_iter().filter(belongs));
             }
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
@@ -1043,7 +1047,7 @@ async fn a_snapshot_and_the_events_after_its_cursor_give_the_live_state() {
 
     let live = sorted(server.snapshot(&member).await);
     assert_eq!(live.workspaces[0].workspace.name, "Renamed");
-    assert_eq!(live.workspaces[0].channels.len(), 2 + 16);
+    assert_eq!(live.workspaces[0].channels.len(), 3 + 16);
     assert!(
         snapshots
             .windows(2)
@@ -1098,7 +1102,7 @@ async fn a_snapshot_holds_only_what_the_caller_may_see() {
     assert!(of(&inside).roles[0].is_everyone);
 
     assert!(of(&outside).own_role_ids.is_empty());
-    assert_eq!(of(&outside).channels.len(), 2);
+    assert_eq!(of(&outside).channels.len(), 3);
     let text = server.get(&outsider, "/api/v1/snapshot").await.text();
     assert!(!text.contains(&secret.id.to_string()));
     assert!(!text.contains("secret-plans"));

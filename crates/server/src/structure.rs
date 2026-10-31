@@ -156,9 +156,12 @@ pub const EXPORT_SERVER_ROLES: &str =
      from server_roles r
      left join structure_identifiers i on i.kind = 'server_role' and i.object_id = r.id
      order by r.id";
-pub const EXPORT_WORKSPACES: &str = "select w.id, coalesce(i.identifier, w.id), w.name
+pub const EXPORT_WORKSPACES: &str = "select w.id, coalesce(i.identifier, w.id), w.name,
+     coalesce(ci.identifier, a.channel_id), a.enabled, a.idle_minutes
      from workspaces w
      left join structure_identifiers i on i.kind = 'workspace' and i.object_id = w.id
+     left join workspace_afk a on a.workspace_id = w.id
+     left join structure_identifiers ci on ci.kind = 'channel' and ci.object_id = a.channel_id
      where w.deleted_at is null
      order by w.id";
 pub const EXPORT_ROLES: &str =
@@ -254,6 +257,14 @@ fn override_entries(
 }
 
 type ExportedRoleRow = (WorkspaceId, Uuid, String, i64, bool, i32, Option<i32>, bool);
+type ExportedWorkspaceRow = (
+    WorkspaceId,
+    Uuid,
+    String,
+    Option<Uuid>,
+    Option<bool>,
+    Option<i32>,
+);
 
 /// The whole structure of the server as the transaction sees it.
 async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
@@ -263,7 +274,7 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
         sqlx::query_as(EXPORT_SERVER_ROLES)
             .fetch_all(&mut *connection)
             .await?;
-    let workspaces: Vec<(WorkspaceId, Uuid, String)> = sqlx::query_as(EXPORT_WORKSPACES)
+    let workspaces: Vec<ExportedWorkspaceRow> = sqlx::query_as(EXPORT_WORKSPACES)
         .fetch_all(&mut *connection)
         .await?;
     let roles: Vec<ExportedRoleRow> = sqlx::query_as(EXPORT_ROLES)
@@ -289,9 +300,19 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let mut category_overrides_of = override_entries(category_overrides)?;
     let mut entries: Vec<WorkspaceEntry> = Vec::with_capacity(workspaces.len());
     let mut place: HashMap<WorkspaceId, usize> = HashMap::new();
-    for (id, entry, name) in workspaces {
+    for (id, entry, name, channel, enabled, minutes) in workspaces {
         place.insert(id, entries.len());
         entries.push(WorkspaceEntry {
+            afk: channel
+                .zip(enabled)
+                .zip(minutes)
+                .map(
+                    |((channel, enabled), minutes)| junto_protocol::structure_file::AfkEntry {
+                        channel: StructureId::from_uuid(channel),
+                        enabled,
+                        idle_minutes: minutes as u32,
+                    },
+                ),
             id: StructureId::from_uuid(entry),
             name,
             default: id == default_workspace,
@@ -880,6 +901,44 @@ async fn apply_one(
             let ids = (ChannelId::from_uuid(channel_id), *synced);
             crate::routes::rules::set_channel_sync_in(connection, &app.calls, access, now, ids)
                 .await?;
+            Ok(())
+        }
+        StructureChange::SetWorkspaceAfk {
+            workspace,
+            settings,
+        } => {
+            let workspace_id =
+                WorkspaceId::from_uuid(resolve(connection, Workspace, *workspace).await?);
+            let channel_id =
+                ChannelId::from_uuid(resolve(connection, Channel, settings.channel).await?);
+            let provisional = if created.iter().any(|entry| {
+                entry.kind == StructureKind::Workspace && entry.id == workspace_id.as_uuid()
+            }) {
+                Some(
+                    crate::routes::afk::settings(connection, workspace_id)
+                        .await?
+                        .channel_id,
+                )
+            } else {
+                None
+            };
+            crate::routes::afk::set_in(
+                connection,
+                app,
+                access,
+                now,
+                workspace_id,
+                &junto_protocol::structure::AfkSettings {
+                    channel_id,
+                    enabled: settings.enabled,
+                    idle_minutes: settings.idle_minutes,
+                },
+            )
+            .await?;
+            if let Some(provisional) = provisional.filter(|id| *id != channel_id) {
+                channels::delete_channel_in(connection, &app.calls, access, now, provisional)
+                    .await?;
+            }
             Ok(())
         }
         StructureChange::ReplaceGlossary { workspace, terms } => {

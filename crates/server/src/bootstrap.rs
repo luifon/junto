@@ -691,6 +691,14 @@ pub async fn create_workspace(
         .bind(now)
         .execute(&mut *connection)
         .await?;
+    let afk_id = ChannelId::generate();
+    sqlx::query("insert into channels (id, workspace_id, kind, name, position, created_at) values ($1, $2, 'voice', 'AFK', 2, $3)")
+        .bind(afk_id).bind(workspace_id).bind(now).execute(&mut *connection).await?;
+    sqlx::query("insert into workspace_afk (workspace_id, channel_id) values ($1, $2)")
+        .bind(workspace_id)
+        .bind(afk_id)
+        .execute(&mut *connection)
+        .await?;
     let everyone = WorkspaceRole {
         color: None,
         hoist: false,

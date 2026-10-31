@@ -254,6 +254,10 @@ fn a_typing_person_opens_its_profile_without_changing_the_draft(cx: &mut TestApp
         edit.is_none(),
         "the input was issued once after both watches were acknowledged"
     );
+    assert_eq!(
+        writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "an unsent plan"
+    );
     assert!(
         reader.shows_named(format!("typing-person:{account}")),
         "a typing identity has a profile control"

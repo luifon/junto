@@ -21,6 +21,32 @@ use super::session::ServerApi;
 use super::transport::Method;
 
 impl ServerApi {
+    pub async fn afk_settings(
+        &self,
+        workspace_id: junto_protocol::ids::WorkspaceId,
+    ) -> Result<junto_protocol::structure::AfkSettings, ApiError> {
+        self.get(format!("/workspaces/{workspace_id}/afk")).await
+    }
+    pub async fn set_afk_settings(
+        &self,
+        workspace_id: junto_protocol::ids::WorkspaceId,
+        settings: &junto_protocol::structure::AfkSettings,
+    ) -> Result<junto_protocol::structure::AfkSettings, ApiError> {
+        self.send(
+            Method::Put,
+            format!("/workspaces/{workspace_id}/afk"),
+            settings,
+        )
+        .await
+    }
+    pub async fn report_call_idle(
+        &self,
+        report: &junto_protocol::call::ReportCallIdle,
+    ) -> Result<CallMove, ApiError> {
+        self.send(Method::Post, "/call/idle".to_owned(), report)
+            .await
+    }
+
     /// The state that the event stream continues from the cursor of the answer (ADR 0207),
     /// with the newest private moderation notices of the account (ADR 0120).
     pub async fn snapshot(&self) -> Result<SnapshotResponse, ApiError> {

@@ -320,3 +320,122 @@ async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn an_afk_move_uses_the_real_media_server_and_keeps_the_microphone_closed() {
+    limited(async {
+        use junto_client_core::protocol::call::ReportCallIdle;
+        use junto_media::calls::CallTarget;
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let afk = ann_at.api().afk_settings(room.workspace_id).await.unwrap();
+        let target = CallTarget {
+            server_id: room.target.server_id,
+            place: CallPlace::Channel {
+                workspace_id: room.workspace_id,
+                channel_id: afk.channel_id,
+            },
+        };
+        ben.enter(room.target).await;
+        ben.calls.mute();
+        let own = ben_at.api().own_call().await.unwrap().call.unwrap();
+        let moved = ben_at
+            .api()
+            .report_call_idle(&ReportCallIdle {
+                call_id: own.call.id,
+                identity: own.own.identity,
+                system_idle_seconds: 900,
+                microphone_silent_seconds: 900,
+            })
+            .await
+            .unwrap();
+        assert!(moved.afk);
+        let view = ben
+            .until(
+                "the AFK move is connected with all sources withheld",
+                |view| {
+                    view.call.as_ref().is_some_and(|call| {
+                        call.target == target
+                            && call.phase == Phase::Connected
+                            && call.withheld.microphone
+                            && call.withheld.camera
+                            && call.withheld.share
+                    })
+                },
+            )
+            .await;
+        let seat = view.call.unwrap().seat();
+        ben.calls.unmute_in(Some(&seat));
+        let error = ben_at
+            .api()
+            .report_call_state(false, false)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.rejection().unwrap().code,
+            junto_client_core::protocol::error::ErrorCode::Forbidden
+        );
+        ann.enter(target).await;
+        ben.until_silent(&ann).await;
+        ann.until_silent(&ben).await;
+        let mut settings = afk.clone();
+        settings.enabled = false;
+        ann_at
+            .api()
+            .set_afk_settings(room.workspace_id, &settings)
+            .await
+            .unwrap();
+        ben.until(
+            "disabling AFK restores the sources without replacing the seat",
+            |view| {
+                view.call.as_ref().is_some_and(|call| {
+                    call.seat() == seat
+                        && !call.withheld.microphone
+                        && !call.withheld.camera
+                        && !call.withheld.share
+                })
+            },
+        )
+        .await;
+        ann.until(
+            "the other AFK seat also gets its publication controls back",
+            |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| !call.withheld.microphone)
+            },
+        )
+        .await;
+        ann.until_heard_afresh(&ben).await;
+        settings.enabled = true;
+        ann_at
+            .api()
+            .set_afk_settings(room.workspace_id, &settings)
+            .await
+            .unwrap();
+        ben.until(
+            "enabling AFK withdraws the sources from the existing seat",
+            |view| {
+                view.call.as_ref().is_some_and(|call| {
+                    call.seat() == seat
+                        && call.withheld.microphone
+                        && call.withheld.camera
+                        && call.withheld.share
+                })
+            },
+        )
+        .await;
+        ann.until_silent(&ben).await;
+        ben.enter(room.target).await;
+        ben.until("the previous channel allows speaking again", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.target == room.target && !call.withheld.microphone)
+        })
+        .await;
+    })
+    .await;
+}

@@ -207,7 +207,7 @@ fn a_member_adds_a_second_server_and_enters_it_when_its_administrator_approves(
     assert_eq!(view.servers[1].workspaces.len(), 1);
     assert!(view.servers[1].workspaces[0].selected);
     assert!(view.workspace().is_some());
-    assert_eq!(window.channel_names().len(), 2);
+    assert_eq!(window.channel_names().len(), 3);
     assert!(!window.shows("waiting-for-approval"));
     assert!(window.shows("feed") && window.shows("composer"));
     assert_eq!(window.view().person.name, "Luca");

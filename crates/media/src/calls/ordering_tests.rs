@@ -96,6 +96,7 @@ fn fixture() -> Fixture {
         }],
     };
     let answer = CallJoin {
+        listen_only: false,
         cursor: Some(Cursor {
             epoch: StreamEpoch::generate(),
             position: 45,
@@ -197,6 +198,10 @@ fn fixture() -> Fixture {
     );
     let timing = options.timing;
     let session = Session {
+        afk_dirty: false,
+        afk_reading: false,
+        afk_read_at: Instant::now(),
+        listen_only: false,
         inner: calls.inner,
         key: 1,
         server,
@@ -443,6 +448,8 @@ async fn a_model_without_the_current_participant_revokes_admission() {
 async fn a_move_present_in_the_refreshed_model_is_started_without_its_notice() {
     let mut f = fixture();
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.model.account.id,
         from: f.session.target.place,
@@ -1988,6 +1995,8 @@ async fn renewal_waits_for_its_answer_when_the_old_seat_ends() {
 
 fn a_move(f: &Fixture) -> CallMove {
     CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.model.account.id,
         from: f.session.target.place,
@@ -2879,6 +2888,8 @@ async fn a_move_that_is_told_while_a_login_runs_is_followed() {
     // (ADR 0787), so the move can arrive while the device holds no session.
     assert!(f.session.server.account().is_none());
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.session.grants.account_id,
         from: f.session.target.place,
@@ -2896,4 +2907,36 @@ async fn a_move_that_is_told_while_a_login_runs_is_followed() {
     );
     f.session.end_move();
     f.session.engine.close().await;
+}
+
+#[test]
+fn an_afk_mode_read_cannot_undo_a_later_setting_change_or_change_another_seat() {
+    use junto_client_core::protocol::call::{OwnCallState, OwnCallView};
+    let mut f = fixture();
+    let view = OwnCallView {
+        cursor: Some(f.model.cursor),
+        call: Some(OwnCallState {
+            listen_only: false,
+            own: f.model.own_call.as_ref().unwrap().clone(),
+            call: f.answer.call.clone(),
+            entry_requests: Vec::new(),
+            inside: Some(true),
+            meeting_grant: Some(false),
+        }),
+    };
+    f.session.listen_only = true;
+    f.session.afk_dirty = true;
+    f.session.afk_reading = true;
+    f.session
+        .finished(Done::AfkMode(Box::new(Ok(view.clone()))));
+    assert!(f.session.listen_only);
+    assert!(f.session.afk_dirty);
+    assert!(!f.session.afk_reading);
+    f.session.afk_dirty = false;
+    let mut other = view.clone();
+    other.call.as_mut().unwrap().own.identity = "another-seat".into();
+    f.session.finished(Done::AfkMode(Box::new(Ok(other))));
+    assert!(f.session.listen_only);
+    f.session.finished(Done::AfkMode(Box::new(Ok(view))));
+    assert!(!f.session.listen_only);
 }

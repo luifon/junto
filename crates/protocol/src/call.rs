@@ -253,6 +253,8 @@ pub struct OwnCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CallJoin {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listen_only: bool,
     /// The position in the event log up to which this answer holds the events. It is read
     /// with the call and the blocks, after the place was made (ADR 0519). A server from
     /// before that ADR sends none.
@@ -336,6 +338,8 @@ pub struct CallJoinQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnCallState {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub listen_only: bool,
     /// True after admission has observed this seat. Absent means not stated by the server (ADR 0517).
     #[serde(default)]
     pub inside: Option<bool>,
@@ -495,6 +499,10 @@ pub struct MuteDirectConversation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CallMove {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub afk: bool,
     pub id: CallMoveId,
     pub account_id: AccountId,
     pub from: CallPlace,
@@ -709,4 +717,14 @@ mod tests {
         let set: UpdateCallSettings = serde_json::from_str(r#"{"user_limit":4}"#).unwrap();
         assert_eq!(set.user_limit, Some(Some(4)));
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReportCallIdle {
+    pub call_id: CallId,
+    pub identity: String,
+    pub system_idle_seconds: u32,
+    pub microphone_silent_seconds: u32,
 }

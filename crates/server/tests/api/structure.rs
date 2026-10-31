@@ -237,6 +237,7 @@ async fn an_administrator_role_gives_the_administrator_pass() {
         .await
         .ok(StatusCode::OK);
     assert_eq!(seen.len(), 2);
+    let mut expected_channels = visible_channels(&server, &administrator, side.id).await;
     create_role(&server, &administrator, side.id, W::ALL).await;
     let channel = create_channel(&server, &administrator, side.id, "hidden").await;
     let everyone = everyone_role(&server, &administrator, side.id).await;
@@ -250,9 +251,10 @@ async fn an_administrator_role_gives_the_administrator_pass() {
     )
     .await
     .ok::<PermissionRule>(StatusCode::OK);
+    expected_channels.push(channel.id);
     assert_eq!(
         visible_channels(&server, &administrator, side.id).await,
-        [channel.id]
+        expected_channels
     );
     let renamed: Workspace = server
         .patch(
@@ -300,10 +302,13 @@ async fn a_new_workspace_has_an_everyone_role_and_its_creator_as_member() {
         .ok(StatusCode::OK);
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].account_id, creator.account_id);
-    assert!(
-        visible_channels(&server, &creator, workspace.id)
-            .await
-            .is_empty()
+    let afk: junto_protocol::structure::AfkSettings = server
+        .get(&owner, &format!("/api/v1/workspaces/{}/afk", workspace.id))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        visible_channels(&server, &creator, workspace.id).await,
+        [afk.channel_id]
     );
 
     server
@@ -820,7 +825,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         .await
         .ok(StatusCode::CREATED);
     assert_eq!(channel.kind, ChannelKind::Voice);
-    assert_eq!(channel.position, 2);
+    assert_eq!(channel.position, 3);
     assert_eq!(channel.category_id, Some(category.id));
     assert!(!channel.permanent_messages);
 
@@ -850,7 +855,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
     let categories: Vec<&str> = list.categories.iter().map(|c| c.name.as_str()).collect();
     assert!(categories.is_empty());
     let names: Vec<&str> = list.channels.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["general", "voice", "roadmap"]);
+    assert_eq!(names, ["general", "voice", "AFK", "roadmap"]);
 
     server
         .post(

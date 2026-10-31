@@ -139,7 +139,7 @@ async fn rule_40_export_writes_the_structure_of_the_server() {
         junto_protocol::structure_file::STRUCTURE_FORMAT
     );
     assert_eq!(file.workspaces.len(), 1);
-    assert_eq!(file.workspaces[0].channels.len(), 2);
+    assert_eq!(file.workspaces[0].channels.len(), 3);
     assert!(
         printed
             .err
@@ -213,14 +213,23 @@ async fn rule_41_42_plan_changes_nothing_and_a_second_apply_changes_nothing() {
         .unwrap();
     assert_eq!(team.id.to_string(), id(2));
     assert_eq!(team.roles[0].id.to_string(), id(13));
-    assert_eq!(team.channels[0].overrides[0].role.to_string(), id(13));
+    assert_eq!(
+        team.channels
+            .iter()
+            .find(|channel| channel.name == "lobby")
+            .unwrap()
+            .overrides[0]
+            .role
+            .to_string(),
+        id(13)
+    );
     let main_entry = export
         .structure
         .workspaces
         .iter()
         .find(|entry| entry.default)
         .unwrap();
-    assert_eq!(main_entry.channels.len(), 4);
+    assert_eq!(main_entry.channels.len(), 5);
     let hall = main_entry
         .channels
         .iter()
@@ -297,7 +306,7 @@ async fn rule_43_the_export_of_one_server_is_applied_to_an_empty_server() {
     let (source_main, target_main) = (default_of(&source_file), default_of(&target_file));
     assert_ne!(target_main.id, source_main.id);
     assert_eq!(target_main.name, source_main.name);
-    assert_eq!(target_main.channels.len(), source_main.channels.len() + 2);
+    assert_eq!(target_main.channels.len(), source_main.channels.len() + 3);
     for channel in &source_main.channels {
         let copy = target_main
             .channels
@@ -932,4 +941,69 @@ async fn rule_54_a_file_sets_the_glossary_that_it_states_and_keeps_an_absent_one
         refused.err
     );
     assert_eq!(state(&server).await, after);
+}
+
+#[tokio::test]
+async fn afk_settings_export_plan_and_apply_and_an_older_file_preserves_them() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let workspace = server.default_workspace(&owner).await;
+    let voice = server.voice(&owner, workspace.id, "Away").await;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("afk.json");
+    let input = json!({"format":6,"workspaces":[{"id":workspace.id,"name":workspace.name,
+        "afk":{"channel":voice.id,"enabled":false,"idle_minutes":30}}]});
+    std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
+    tool(&server, &token, &["apply", path.to_str().unwrap()])
+        .await
+        .succeeded();
+    let exported = tool(&server, &token, &["export"]).await.succeeded();
+    let file: StructureFile = serde_json::from_str(&exported.out).unwrap();
+    let afk = file.workspaces[0].afk.as_ref().unwrap();
+    assert_eq!(afk.channel.as_uuid(), voice.id.as_uuid());
+    assert!(!afk.enabled);
+    assert_eq!(afk.idle_minutes, 30);
+    let plan = tool(&server, &token, &["plan", path.to_str().unwrap()])
+        .await
+        .succeeded();
+    assert!(!plan.out.contains("~ AFK"));
+    let old = json!({"format":1,"workspaces":[{"id":workspace.id,"name":workspace.name}]});
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    tool(&server, &token, &["apply", path.to_str().unwrap()])
+        .await
+        .succeeded();
+    let settings: Value = server
+        .get(&owner, &format!("/api/v1/workspaces/{}/afk", workspace.id))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(settings["idle_minutes"], 30);
+    assert_eq!(settings["enabled"], false);
+}
+
+#[tokio::test]
+async fn afk_import_of_a_new_workspace_keeps_one_designated_channel_without_a_duplicate_default() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("afk-new.json");
+    let input = json!({"format":6,"workspaces":[{"id":id(501),"name":"Imported workspace",
+        "channels":[{"id":id(502),"name":"Away","kind":"voice"}],
+        "afk":{"channel":id(502),"enabled":true,"idle_minutes":60}}]});
+    std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
+    tool(&server, &token, &["apply", path.to_str().unwrap()])
+        .await
+        .succeeded();
+    let exported = tool(&server, &token, &["export"]).await.succeeded();
+    let file: StructureFile = serde_json::from_str(&exported.out).unwrap();
+    let workspace = file
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.name == "Imported workspace")
+        .unwrap();
+    assert_eq!(workspace.channels.len(), 1);
+    assert_eq!(workspace.channels[0].name, "Away");
+    assert_eq!(workspace.afk.as_ref().unwrap().channel.to_string(), id(502));
+    assert_eq!(workspace.afk.as_ref().unwrap().idle_minutes, 60);
 }

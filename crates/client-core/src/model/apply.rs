@@ -391,6 +391,7 @@ impl ServerModel {
                     }
                 }
             }
+            Event::WorkspaceAfkChanged { .. } => {}
             Event::WorkspaceCreated { workspace } | Event::WorkspaceUpdated { workspace } => {
                 let created = matches!(event, Event::WorkspaceCreated { .. });
                 match self

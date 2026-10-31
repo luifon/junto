@@ -281,7 +281,8 @@ impl AuditGroup {
             | AuditEvent::ChannelDeleted { .. }
             | AuditEvent::ChannelArchived
             | AuditEvent::ChannelRestored => Self::Structure,
-            AuditEvent::ChannelCallSettingsUpdated { .. }
+            AuditEvent::WorkspaceAfkSet { .. }
+            | AuditEvent::ChannelCallSettingsUpdated { .. }
             | AuditEvent::VoiceChannelStatusUpdated { .. }
             | AuditEvent::CallMicrophoneBlocked { .. }
             | AuditEvent::CallMicrophoneUnblocked { .. }
@@ -329,7 +330,8 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 80] = [
+pub const ACTIONS: [(&str, AuditGroup); 81] = [
+    ("workspace_afk_set", AuditGroup::Calls),
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
     ("account_banned", AuditGroup::Members),
@@ -1532,6 +1534,7 @@ mod tests {
             AuditEvent::WorkspacePersonPermissionsSet { .. } => 78,
             AuditEvent::ServerPersonPermissionsSet { .. } => 79,
             AuditEvent::VoiceChannelStatusUpdated { .. } => 80,
+            AuditEvent::WorkspaceAfkSet { .. } => 81,
         }
     }
 
@@ -1550,6 +1553,17 @@ mod tests {
         let join_request_id = JoinRequestId::generate();
         let account_id = ana;
         vec![
+            (
+                AuditEvent::WorkspaceAfkSet {
+                    workspace_id: scene.studio,
+                    settings: junto_client_core::protocol::structure::AfkSettings {
+                        channel_id: scene.general,
+                        enabled: true,
+                        idle_minutes: 15,
+                    },
+                },
+                vec!["AFK"],
+            ),
             (AuditEvent::OwnerClaimed { account_id }, vec!["Ana"]),
             (
                 AuditEvent::OwnerAssigned {
@@ -2887,7 +2901,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..81).collect::<Vec<usize>>());
+        assert_eq!(places, (0..82).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

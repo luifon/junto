@@ -1074,6 +1074,7 @@ impl Shell {
                             text::admin::CHANNELS_HELP,
                             &theme,
                         ))
+                        .child(this.render_afk_settings(&view, &page, cx))
                         .children(
                             (!page.may_manage)
                                 .then(|| sentence(text::MANAGE_NO_PERMISSION, &theme)),

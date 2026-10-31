@@ -305,6 +305,10 @@ async fn world() -> World {
     let none = Value::Null;
     let new_key = || json!({ "public_key": DeviceKey::generate().public() });
     let (ws, closed_id, target_id) = (workspace.id, closed.id, target.account_id);
+    let afk: Value = server
+        .get(&owner, &format!("/api/v1/workspaces/{ws}/afk"))
+        .await
+        .ok(StatusCode::OK);
 
     let mut operations = vec![
         operation(
@@ -1142,6 +1146,27 @@ async fn world() -> World {
             &[&ws],
             none.clone(),
             &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/afk",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/afk",
+            &[&ws],
+            afk,
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/idle",
+            &[],
+            json!({"call_id":seat.join.call.id,"identity":seat.identity,"system_idle_seconds":900,"microphone_silent_seconds":900}),
+            &own,
         ),
         operation(Method::GET, "/api/v1/call", &[], none.clone(), &own),
         operation(

@@ -4644,6 +4644,7 @@ async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.set_info(|info| {
+        info.capabilities.afk_channel = false;
         info.capabilities.channel_topics = false;
         info.capabilities.message_format.event_revision = 0;
         info.capabilities.search = junto_protocol::discovery::SearchCapabilities::default();
@@ -4651,6 +4652,7 @@ async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
     let device = device(&network);
     let handle = device.add("acme").await;
     handle.dispatch(claim()).await.unwrap();
+    assert!(!handle.entry().capabilities.afk_channel);
     assert!(!handle.entry().capabilities.channel_topics);
     assert_eq!(handle.entry().capabilities.message_format.event_revision, 0);
     assert_eq!(
@@ -4669,11 +4671,13 @@ async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
             0
         };
         server.set_info(|info| {
+            info.capabilities.afk_channel = supported;
             info.capabilities.channel_topics = supported;
             info.capabilities.message_format.event_revision = revision;
             info.capabilities.search = search;
         });
         handle.connect().await.unwrap();
+        assert_eq!(handle.entry().capabilities.afk_channel, supported);
         assert_eq!(handle.entry().capabilities.channel_topics, supported);
         assert_eq!(
             handle.entry().capabilities.message_format.event_revision,
@@ -4693,6 +4697,7 @@ async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
         assert_eq!(handle.api().search_capabilities().await.unwrap(), search);
         let reopened = device.reopened(&network);
         let saved = reopened.server(handle.id()).unwrap();
+        assert_eq!(saved.entry().capabilities.afk_channel, supported);
         assert_eq!(saved.entry().capabilities.channel_topics, supported);
         assert_eq!(
             saved.entry().capabilities.message_format.event_revision,
@@ -4700,6 +4705,7 @@ async fn refreshed_capabilities_survive_restarts_and_track_reconnects() {
         );
         assert_eq!(saved.entry().capabilities.search, search);
         saved.connect().await.unwrap();
+        assert_eq!(saved.entry().capabilities.afk_channel, supported);
         assert_eq!(saved.entry().capabilities.channel_topics, supported);
         assert_eq!(
             saved.entry().capabilities.message_format.event_revision,

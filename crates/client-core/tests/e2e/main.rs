@@ -218,7 +218,7 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
     assert_eq!(workspaces.len(), 1);
     assert!(workspaces[0].is_default);
     let channels = member.api().channels(workspaces[0].id).await.unwrap();
-    assert_eq!(channels.channels.len(), 2);
+    assert_eq!(channels.channels.len(), 3);
 
     let error = member
         .api()

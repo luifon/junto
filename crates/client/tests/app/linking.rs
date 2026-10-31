@@ -213,7 +213,7 @@ fn a_second_device_is_linked_on_one_server_through_both_windows(
     let person = new.view().person;
     assert_eq!(person.account_id, Some(account_id));
     assert_eq!(person.name, "Luca");
-    assert_eq!(new.channel_names().len(), 2);
+    assert_eq!(new.channel_names().len(), 3);
 
     // "Done" returns to the entry of a code.
     first.click("link-done");

@@ -285,8 +285,8 @@ fn replies_edits_and_selected_files_recover_after_restart(cx: &mut TestAppContex
     let reply = window.until_message("kept reply");
     assert_eq!(reply.message.reply_to, Some(root.id));
     assert_eq!(reply.message.attachments.len(), 2);
-    window.right_click_named(format!("message:{}", reply.message.id));
-    window.click("message-edit");
+    window.hover_named(format!("message:{}", reply.message.id));
+    window.click_named(format!("edit:{}", reply.message.id));
     window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "kept edit", window, cx));
     quit(window);
     let mut window = open(cx, directory.path());

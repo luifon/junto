@@ -648,6 +648,7 @@ pub(crate) mod testing {
             logo_path: None,
             api_versions: vec![1],
             capabilities: junto_protocol::server::Capabilities {
+                afk_channel: true,
                 channel_topics: true,
                 message_format: junto_protocol::message::DocumentFormat {
                     event_revision: junto_protocol::events::EVENT_REVISION,

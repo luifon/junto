@@ -1248,7 +1248,7 @@ async fn rule_d11_the_content_is_removed_in_bounded_parts() {
         .empty(StatusCode::NO_CONTENT);
     // The request removed the structure. The content waits for the purge.
     assert_eq!(content(&server, channel.id).await, before);
-    assert_eq!(server.count("purges").await, 2);
+    assert_eq!(server.count("purges").await, 3);
 
     let mut seen: Vec<i64> = vec![messages(&before)];
     let mut live: Vec<i64> = vec![before[9].1];
@@ -1263,7 +1263,7 @@ async fn rule_d11_the_content_is_removed_in_bounded_parts() {
     )
     .await
     .unwrap();
-    assert_eq!(finished, 2);
+    assert_eq!(finished, 3);
     for counts in [&seen, &live] {
         let largest = counts
             .windows(2)

@@ -1107,6 +1107,10 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             "{} was moved out of the call of the channel into another voice channel.",
             account(*account_id)
         ),
+        AuditEvent::WorkspaceAfkSet { settings, .. } => format!(
+            "AFK channel settings changed: {} minutes, enabled: {}",
+            settings.idle_minutes, settings.enabled
+        ),
         AuditEvent::CallMemberMovedIn { account_id } => format!(
             "{} was moved into the call of the channel from another voice channel.",
             account(*account_id)

@@ -1529,3 +1529,81 @@ fn the_private_switch_hides_a_channel_from_the_members_and_shows_it_again(cx: &m
         |model| model.channel(plans).is_some(),
     );
 }
+
+#[gpui::test]
+fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window) = named(cx, "Ada");
+    window.find_server(&server.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    let handle = window.handle();
+    let workspace = window.view().workspace().unwrap().id;
+    let original = world.run(handle.api().afk_settings(workspace)).unwrap();
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.click("afk-settings-open");
+    window.until("the AFK form is loaded", |window| {
+        window.shows("afk-time-5")
+    });
+    window.click("afk-time-5");
+    window.until("the timeout is saved", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .afk_admin(handle.id(), workspace)
+                .is_some_and(|admin| {
+                    !admin.changing
+                        && admin
+                            .settings
+                            .is_some_and(|settings| settings.idle_minutes == 5)
+                })
+        })
+    });
+    assert_eq!(
+        world
+            .run(handle.api().afk_settings(workspace))
+            .unwrap()
+            .idle_minutes,
+        5
+    );
+    let state = window.state.clone();
+    window.simulate(|cx| {
+        cx.update(|_, cx| {
+            state.update(cx, |state, cx| {
+                state.read_afk_admin(handle.id(), workspace, cx);
+            });
+        });
+    });
+    window.press_as_drawn("afk-enabled");
+    window.until("AFK is disabled", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .afk_admin(handle.id(), workspace)
+                .is_some_and(|admin| {
+                    !admin.changing && admin.settings.is_some_and(|settings| !settings.enabled)
+                })
+        })
+    });
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|channel| channel.kind == ChannelKind::Voice && channel.id != original.channel_id)
+        .unwrap();
+    window.click(selector(format!("afk-channel-{}", voice.id)));
+    window.until("the AFK channel is changed", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .afk_admin(handle.id(), workspace)
+                .is_some_and(|admin| {
+                    !admin.changing
+                        && admin
+                            .settings
+                            .is_some_and(|settings| settings.channel_id == voice.id)
+                })
+        })
+    });
+    let settings = world.run(handle.api().afk_settings(workspace)).unwrap();
+    assert!(!settings.enabled);
+    assert_eq!(settings.channel_id, voice.id);
+}

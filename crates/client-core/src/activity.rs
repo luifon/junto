@@ -1,6 +1,6 @@
 //! Inactivity in the desktop session, read away from the window thread.
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -19,9 +19,21 @@ pub enum ActivityState {
 struct Shared {
     state: AtomicU8,
     stop: AtomicBool,
+    idle_since: Mutex<Option<Instant>>,
 }
 impl Shared {
     fn set(&self, idle: Option<bool>) {
+        let mut since = self
+            .idle_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match idle {
+            Some(true) => {
+                since.get_or_insert_with(|| Instant::now() - IDLE_AFTER);
+            }
+            _ => *since = None,
+        }
+        drop(since);
         self.state.store(
             match idle {
                 Some(false) => 1,
@@ -30,6 +42,14 @@ impl Shared {
             },
             Ordering::SeqCst,
         );
+    }
+    fn set_duration(&self, idle: Option<Duration>) {
+        self.set(idle.map(|duration| duration >= IDLE_AFTER));
+        *self
+            .idle_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            idle.and_then(|duration| Instant::now().checked_sub(duration));
     }
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
@@ -51,6 +71,7 @@ impl SystemActivity {
         let shared = Arc::new(Shared {
             state: AtomicU8::new(0),
             stop: AtomicBool::new(false),
+            idle_since: Mutex::new(None),
         });
         let work = shared.clone();
         let worker = std::thread::Builder::new()
@@ -61,6 +82,21 @@ impl SystemActivity {
             shared.set(None);
         }
         Self { shared, worker }
+    }
+    pub fn idle_duration(&self) -> Option<Duration> {
+        if matches!(
+            self.state(),
+            ActivityState::Starting | ActivityState::Unavailable
+        ) {
+            return None;
+        }
+        Some(
+            self.shared
+                .idle_since
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .map_or(Duration::ZERO, |since| since.elapsed()),
+        )
     }
     pub fn state(&self) -> ActivityState {
         match self.shared.state.load(Ordering::SeqCst) {
@@ -97,7 +133,7 @@ fn run(shared: Arc<Shared>) {
         let idle = windows::read();
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let idle = None;
-        shared.set(idle);
+        shared.set_duration(idle);
         let until = Instant::now() + READ_EVERY;
         while !shared.stopped() && Instant::now() < until {
             std::thread::park_timeout(until.saturating_duration_since(Instant::now()));
@@ -106,8 +142,8 @@ fn run(shared: Arc<Shared>) {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn idle_seconds(seconds: f64) -> Option<bool> {
-    (seconds.is_finite() && seconds >= 0.).then(|| seconds >= IDLE_AFTER.as_secs_f64())
+fn idle_seconds(seconds: f64) -> Option<Duration> {
+    Duration::try_from_secs_f64(seconds).ok()
 }
 #[cfg(any(windows, test))]
 fn tick_elapsed(last: u32, now: u32) -> Duration {
@@ -143,6 +179,7 @@ mod tests {
                 activity.state(),
                 ActivityState::Active | ActivityState::Idle
             ));
+            assert!(activity.idle_duration().is_some());
         }
         let released = Arc::downgrade(&activity.shared);
         drop(activity);
@@ -157,9 +194,30 @@ mod tests {
     }
 
     #[test]
+    fn duration_survives_the_presence_threshold_and_unknown_activity_never_qualifies() {
+        let activity = SystemActivity {
+            shared: Arc::new(Shared {
+                state: AtomicU8::new(0),
+                stop: AtomicBool::new(false),
+                idle_since: Mutex::new(None),
+            }),
+            worker: None,
+        };
+        activity.shared.set_duration(Some(Duration::from_secs(900)));
+        assert_eq!(activity.state(), ActivityState::Idle);
+        assert!(activity.idle_duration().unwrap() >= Duration::from_secs(900));
+        activity.shared.set_duration(Some(Duration::from_secs(12)));
+        assert_eq!(activity.state(), ActivityState::Active);
+        assert!(activity.idle_duration().unwrap() < IDLE_AFTER);
+        activity.shared.set_duration(None);
+        assert_eq!(activity.state(), ActivityState::Unavailable);
+        assert_eq!(activity.idle_duration(), None);
+    }
+
+    #[test]
     fn idle_uses_session_time_and_windows_tick_wrap_is_not_activity() {
-        assert_eq!(idle_seconds(299.9), Some(false));
-        assert_eq!(idle_seconds(300.), Some(true));
+        assert_eq!(idle_seconds(299.9).unwrap().as_secs(), 299);
+        assert_eq!(idle_seconds(300.), Some(IDLE_AFTER));
         for invalid in [-1., f64::NAN, f64::INFINITY] {
             assert_eq!(idle_seconds(invalid), None);
         }

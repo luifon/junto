@@ -2,6 +2,7 @@
 //! a list of pages at the left and the open page at the right. A page shows a form or a
 //! question in the row that it belongs to, so no second layer opens above this one.
 
+mod afk;
 mod archive;
 mod channels;
 mod glossary;

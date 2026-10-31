@@ -767,6 +767,7 @@ fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() 
     });
     assert_eq!(follow.load, [Part::OwnCall]);
     let answer = |participants: Vec<CallParticipant>| OwnCallState {
+        listen_only: false,
         inside: None,
         meeting_grant: None,
         own: own.clone(),
@@ -853,6 +854,7 @@ fn what_the_server_says_of_the_own_seat_is_held_until_an_event_lists_the_account
         left: None,
     });
     let answer = |inside: Option<bool>| OwnCallState {
+        listen_only: false,
         meeting_grant: None,
         inside,
         own: own.clone(),
@@ -931,6 +933,7 @@ fn a_read_of_the_own_call_states_a_grant_of_its_seat() {
         left: None,
     });
     let answer = |meeting_grant: Option<bool>| OwnCallState {
+        listen_only: false,
         meeting_grant,
         inside: Some(true),
         own: own.clone(),
@@ -1058,6 +1061,7 @@ fn a_read_of_a_hidden_call_that_the_account_left_shows_nothing_of_it() {
     }
     model.set_own_call(
         Some(OwnCallState {
+            listen_only: false,
             inside: None,
             meeting_grant: None,
             own,
@@ -1101,6 +1105,8 @@ fn a_snapshot_gives_the_moves_the_sent_invitations_and_the_own_requests_to_enter
         invitation(other, scene.account_id),
     );
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: other,
         from: place,
@@ -1165,6 +1171,7 @@ fn the_account_that_leaves_a_call_that_never_started_keeps_nothing_of_it() {
     });
     model.set_own_call(
         Some(OwnCallState {
+            listen_only: false,
             inside: None,
             meeting_grant: None,
             own: own.clone(),
@@ -1221,6 +1228,7 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
         expires_at: time(),
     };
     let loaded = |call_id| OwnCallState {
+        listen_only: false,
         inside: None,
         meeting_grant: None,
         own: OwnCall {
@@ -1321,6 +1329,8 @@ fn invitations_and_moves_wait_until_their_outcome_or_the_end_of_their_place() {
     assert!(model.invitations.is_empty());
 
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: scene.account_id,
         from: place,
@@ -1512,6 +1522,7 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
         left: None,
     });
     let answer = OwnCallState {
+        listen_only: false,
         inside: None,
         meeting_grant: None,
         own,
@@ -1592,6 +1603,7 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
     });
     model.set_own_call(
         Some(OwnCallState {
+            listen_only: false,
             inside: None,
             meeting_grant: None,
             own,
@@ -1867,6 +1879,7 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     });
     model.set_own_call(
         Some(OwnCallState {
+            listen_only: false,
             inside: None,
             meeting_grant: None,
             own: scene.own_call(call_id, scene.daily),
@@ -1887,6 +1900,7 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     assert!(!Part::Members(scene.workspace_id).concerns(&during[0], &model));
     model.set_own_call(
         Some(OwnCallState {
+            listen_only: false,
             inside: None,
             meeting_grant: None,
             own: scene.own_call(call_id, scene.daily),

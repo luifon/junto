@@ -1550,6 +1550,21 @@ impl Shell {
                     ),
             ));
         }
+        if self.state.read(cx).afk_notice() {
+            notices.push(wrap(
+                Notice::new("You were moved to AFK after being inactive.")
+                    .selector("afk-notice")
+                    .action(
+                        Button::new("afk-return")
+                            .label("Rejoin previous channel")
+                            .selector("afk-return")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.rejoin_before_afk(cx));
+                            })),
+                    ),
+            ));
+        }
         let pending = self.state.read(cx).pending();
         if let Some(told) = pending.call_told.clone() {
             notices.push(wrap(

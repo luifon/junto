@@ -141,6 +141,7 @@ Status values:
 | [0520](0520-a-request-for-a-token-names-the-seat-that-it-renews.md) | A request for a token names the seat that it renews | Accepted | `renews` on the two join routes: a token for that seat or `seat_ended` with the reason in `error.left`; such a request makes, ends and takes no seat. The server keeps the last ended seat of each account. |
 | [0521](0521-the-state-of-a-call-states-a-grant-of-meeting-mode.md) | The state of a call states a grant of meeting mode | Accepted | A mark on the seat, set when a block ends as a grant, cleared by a new block and by a report that opens the microphone; only the person reads it, in `GET /api/v1/call` and in the join answer. |
 | [0522](0522-voice-channel-status.md) | Voice channel status | Accepted | Plain text activity below a voice channel; a confirmed participant or channel manager with the status permission edits it, and the channel event carries it. |
+| [0523](0523-afk-voice-channel.md) | The AFK voice channel of a workspace | Accepted | System input inactivity and microphone silence trigger a permission-checked move to a workspace destination that permits listening only. |
 
 ## 0601–0699 Recording and transcripts
 

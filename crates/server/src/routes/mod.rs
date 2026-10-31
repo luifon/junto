@@ -23,6 +23,7 @@ use crate::state::AppState;
 pub mod access_tokens;
 pub mod account;
 mod account_cards;
+pub mod afk;
 pub mod archive;
 pub mod attachments;
 pub mod audit_log;
@@ -325,6 +326,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(workspaces::update_workspace, workspaces::delete_workspace)
     });
+    add(&mut router, || routes!(afk::get_afk, afk::set_afk));
+    add(&mut router, || routes!(afk::report_idle));
     add(&mut router, || routes!(workspaces::list_members));
     add(&mut router, || routes!(workspaces::add_member));
     add(&mut router, || routes!(workspaces::remove_member));

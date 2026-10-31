@@ -4,7 +4,7 @@ use windows_sys::Win32::{
     UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
 };
 
-pub(super) fn read() -> Option<bool> {
+pub(super) fn read() -> Option<std::time::Duration> {
     let mut info = LASTINPUTINFO {
         cbSize: u32::try_from(std::mem::size_of::<LASTINPUTINFO>()).ok()?,
         dwTime: 0,
@@ -15,5 +15,5 @@ pub(super) fn read() -> Option<bool> {
     }
     // SAFETY: GetTickCount takes no pointers and reads the system's millisecond counter.
     let now = unsafe { GetTickCount() };
-    Some(super::tick_elapsed(info.dwTime, now) >= super::IDLE_AFTER)
+    Some(super::tick_elapsed(info.dwTime, now))
 }

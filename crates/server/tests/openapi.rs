@@ -120,6 +120,7 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
         "server_roles": [{ "id": id, "name": "r", "position": 1, "permissions": ["administrator"], "color":"#336699", "hoist":true }],
         "workspaces": [{
             "id": id, "name": "w", "default": true,
+            "afk": { "channel": id, "enabled": true, "idle_minutes": 15 },
             "roles": [{ "id": id, "name": "r", "everyone": true, "position": 0, "permissions": [], "color":null, "hoist":false }],
             "categories": [{ "id": id, "name": "c", "position": 1,
                              "overrides": [{ "role": id, "allow": [], "deny": [] }] }],
@@ -151,6 +152,7 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
     described("Deletions", &written["delete"]);
     described("ServerRoleEntry", &written["server_roles"][0]);
     described("WorkspaceEntry", workspace);
+    described("AfkEntry", &workspace["afk"]);
     described("RoleEntry", &workspace["roles"][0]);
     described("CategoryEntry", &workspace["categories"][0]);
     described("ChannelEntry", &workspace["channels"][0]);

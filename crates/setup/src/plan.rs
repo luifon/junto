@@ -250,6 +250,13 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
         unique(planner, "workspace", workspace.id);
         planner.check_name("workspace", workspace.id, &workspace.name);
         kept(planner, "workspace", workspace.id, &delete.workspaces);
+        if workspace
+            .afk
+            .as_ref()
+            .is_some_and(|afk| delete.channels.contains(&afk.channel))
+        {
+            planner.problem("the AFK channel is listed for deletion".to_owned());
+        }
         if workspace.roles.iter().filter(|role| role.everyone).count() > 1 {
             planner.problem(format!(
                 "the workspace {} has two roles marked as its everyone role",
@@ -313,6 +320,30 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
                 ("channel", channel.id),
                 &channel.overrides,
                 &delete.roles,
+            );
+        }
+    }
+    let current_afk: Vec<_> = planner
+        .current
+        .workspaces
+        .iter()
+        .filter_map(|workspace| {
+            workspace
+                .afk
+                .as_ref()
+                .map(|afk| (workspace.id, workspace.default, afk.channel))
+        })
+        .collect();
+    for (workspace, default, channel) in current_afk {
+        if delete.channels.contains(&channel)
+            && !delete.workspaces.contains(&workspace)
+            && !file.workspaces.iter().any(|entry| {
+                (entry.id == workspace || (entry.default && default))
+                    && entry.afk.as_ref().is_some_and(|afk| afk.channel != channel)
+            })
+        {
+            planner.problem(
+                "choose another AFK channel before deleting the selected channel".to_owned(),
             );
         }
     }
@@ -754,6 +785,14 @@ fn existing_workspace(
         }
         channel_rules(planner, channel, existing, &rules, &role_names);
     }
+    afk(
+        planner,
+        id,
+        entry.afk.as_ref(),
+        found.afk.as_ref(),
+        entry,
+        Some(found),
+    );
     let stored = found.glossary.as_deref().unwrap_or_default();
     glossary(planner, id, &found.name, stored, entry.glossary.as_deref());
 }
@@ -854,6 +893,7 @@ fn new_workspace(planner: &mut Planner<'_>, places: &Places<'_>, entry: &Workspa
             channel_rules(planner, channel, None, &rules, &role_names);
         }
     }
+    afk(planner, id, entry.afk.as_ref(), None, entry, None);
     glossary(
         planner,
         id,
@@ -1496,4 +1536,49 @@ fn position_line(
         .collect::<Vec<_>>()
         .join(", ");
     format!("~ {scope}: reorder {roles}")
+}
+
+fn afk(
+    planner: &mut Planner<'_>,
+    workspace: StructureId,
+    wanted: Option<&junto_protocol::structure_file::AfkEntry>,
+    stored: Option<&junto_protocol::structure_file::AfkEntry>,
+    entry: &WorkspaceEntry,
+    existing: Option<&WorkspaceEntry>,
+) {
+    let Some(wanted) = wanted else { return };
+    if ![5, 15, 30, 60].contains(&wanted.idle_minutes) {
+        planner.problem("AFK idle time must be 5, 15, 30 or 60 minutes".to_owned());
+        return;
+    }
+    let channel = entry
+        .channels
+        .iter()
+        .find(|channel| channel.id == wanted.channel)
+        .or_else(|| {
+            existing.and_then(|workspace| {
+                workspace
+                    .channels
+                    .iter()
+                    .find(|channel| channel.id == wanted.channel)
+            })
+        });
+    if channel.is_none_or(|channel| channel.kind != ChannelKind::Voice) {
+        planner.problem(
+            "the AFK channel must name a retained voice channel of its workspace".to_owned(),
+        );
+        return;
+    }
+    if stored != Some(wanted) {
+        planner.add(
+            StructureChange::SetWorkspaceAfk {
+                workspace,
+                settings: wanted.clone(),
+            },
+            format!(
+                "~ AFK settings of workspace {workspace}: channel {}, {} minutes, enabled {}",
+                wanted.channel, wanted.idle_minutes, wanted.enabled
+            ),
+        );
+    }
 }

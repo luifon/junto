@@ -1427,3 +1427,91 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
     window.click("leave-call");
     world.run(caller.calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn afk_inactivity_moves_the_window_and_the_notice_rejoins_the_previous_channel(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the source call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window.until("the source seat is listed", |window| own(window).is_some());
+    let handle = window.handle();
+    let workspace = window.view().workspace().unwrap().id;
+    let afk = world.run(handle.api().afk_settings(workspace)).unwrap();
+    let source = room(&mut window).id;
+    for (input, speech) in [(900, 899), (899, 900)] {
+        window.in_shell(|shell, _, cx| {
+            shell.state().update(cx, |state, cx| {
+                state.afk_test_activity(Duration::from_secs(input), Duration::from_secs(speech), cx)
+            });
+        });
+        window.until(
+            "one missing idle condition leaves the call in place",
+            |window| {
+                !window
+                    .state
+                    .read_with(&window.cx, |state, _| state.afk_test_pending())
+            },
+        );
+        assert_eq!(window.view().call.unwrap().name.as_deref(), Some(ROOM));
+        assert!(!window.shows("afk-notice"));
+    }
+    window.in_shell(|shell, _, cx| {
+        shell.state().update(cx, |state, cx| {
+            state.calls().mute();
+            state.afk_test_activity(Duration::from_secs(900), Duration::from_secs(900), cx);
+        });
+    });
+    window.until("the AFK move and notice are shown", |window| {
+        window.shows("afk-notice")
+            && window.view().call.is_some_and(|call| {
+                call.phase == Phase::Connected && call.channel_id == Some(afk.channel_id)
+            })
+    });
+    window.until("the AFK move sound is played", |window| {
+        let (played, rate) = window.tones.played_since_clear();
+        junto_media::audio::sounds::heard::recognise(&played, rate)
+            == Some(junto_media::audio::sounds::Sound::Moved)
+    });
+    window.in_shell(|shell, _, cx| {
+        shell.state().update(cx, |state, cx| {
+            state.afk_test_activity(Duration::ZERO, Duration::ZERO, cx)
+        });
+    });
+    world
+        .run(admin.handle.api().archive_channel(source))
+        .unwrap();
+    window.click("afk-return");
+    window.until("the refused return keeps the AFK control", |window| {
+        matches!(
+            window.view().call_notice,
+            Some(junto_client::state::view::CallNotice::JoinFailed { .. })
+        )
+    });
+    assert!(window.shows("afk-notice"));
+    assert_eq!(window.view().call.unwrap().channel_id, Some(afk.channel_id));
+    world
+        .run(admin.handle.api().restore_channel(source))
+        .unwrap();
+    window.click("afk-return");
+    window.until("one press rejoins the source", |window| {
+        !window.shows("afk-notice")
+            && window.view().call.is_some_and(|call| {
+                call.phase == Phase::Connected && call.name.as_deref() == Some(ROOM)
+            })
+    });
+    window.click("leave-call");
+    window.until("the call ends", |window| window.view().call.is_none());
+}

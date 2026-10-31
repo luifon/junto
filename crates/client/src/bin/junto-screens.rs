@@ -540,6 +540,7 @@ impl Transport for OneServer {
                 logo_path: None,
                 api_versions: vec![SupportedVersions::THIS_BUILD.current()],
                 capabilities: junto_client_core::protocol::server::Capabilities {
+                    afk_channel: true,
                     channel_topics: true,
                     message_format: junto_client_core::protocol::message::DocumentFormat {
                         event_revision: junto_client_core::protocol::events::EVENT_REVISION,

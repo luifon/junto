@@ -24,7 +24,7 @@ use crate::structure::{ChannelKind, present};
 
 /// The format version that this build writes. It reads every format from
 /// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
-pub const STRUCTURE_FORMAT: u32 = 5;
+pub const STRUCTURE_FORMAT: u32 = 6;
 
 /// The oldest format version that this build reads.
 pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
@@ -43,7 +43,7 @@ pub const MOST_CHANGES: usize = 200;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 5. This tool also reads the formats 1 to 4.
+    /// The version of the file format: 6. This tool also reads the formats 1 to 5.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -113,6 +113,8 @@ pub struct ServerRoleEntry {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub afk: Option<AfkEntry>,
     pub id: StructureId,
     pub name: String,
     /// True for the default workspace. An entry with this mark whose identifier the server
@@ -255,6 +257,10 @@ pub struct StructureExport {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum StructureChange {
+    SetWorkspaceAfk {
+        workspace: StructureId,
+        settings: AfkEntry,
+    },
     ReorderServerRoles {
         positions: Vec<StructureRolePosition>,
     },
@@ -458,6 +464,7 @@ impl StructureChange {
             Self::SetChannelOverride { .. } => "set_channel_override",
             Self::SetCategoryOverride { .. } => "set_category_override",
             Self::SetChannelSync { .. } => "set_channel_sync",
+            Self::SetWorkspaceAfk { .. } => "set_workspace_afk",
             Self::ReplaceGlossary { .. } => "replace_glossary",
             Self::DeleteChannel { .. } => "delete_channel",
             Self::DeleteCategory { .. } => "delete_category",
@@ -622,7 +629,7 @@ mod tests {
             serde_json::json!([])
         );
         assert!(workspace["channels"][0].get("synced").is_none());
-        assert_eq!(STRUCTURE_FORMAT, 5);
+        assert_eq!(STRUCTURE_FORMAT, 6);
     }
 
     #[test]
@@ -676,4 +683,13 @@ mod tests {
             );
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AfkEntry {
+    pub channel: StructureId,
+    pub enabled: bool,
+    pub idle_minutes: u32,
 }
