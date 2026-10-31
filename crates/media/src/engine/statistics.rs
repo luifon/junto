@@ -39,6 +39,8 @@ pub struct SoundCheck {
     /// Each remote audio track: the identity, the source, subscribed, muted.
     pub remote_tracks: Vec<(String, String, bool, bool)>,
     pub remote_share_tracks: Vec<(String, String, bool, bool)>,
+    #[cfg(feature = "test-support")]
+    pub remote_participants: Vec<livekit::prelude::RemoteParticipant>,
     /// The frames that the thread of the microphone made.
     pub captured: String,
     /// The frames that the media connection took with sound, and as silence.
@@ -259,6 +261,8 @@ impl Actor {
             gate_open: self.link.is_open(),
             remote_tracks,
             remote_share_tracks,
+            #[cfg(feature = "test-support")]
+            remote_participants: self.room.iter().flat_map(|room| room.remote_participants().into_values()).collect(),
             captured: self.link.captured.line(SPAN),
             sent: self.link.taken.sound.line(SPAN),
             sent_as_silence: self.link.taken.silence.line(SPAN),

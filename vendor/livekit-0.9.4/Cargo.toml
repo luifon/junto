@@ -58,6 +58,8 @@ check = [
 ]
 
 [features]
+# Modified: fault injection in the workspace media tests only.
+test-support = []
 __lk-e2e-test = ["livekit-data-stream/test-utils"]
 __lk-internal = []
 __rustls-tls = ["livekit-signaling/__rustls-tls"]
