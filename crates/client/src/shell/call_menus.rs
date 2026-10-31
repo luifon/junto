@@ -179,6 +179,7 @@ enum CallMenuAction {
     Sound(bool),
     Camera(crate::state::CameraAction),
     Hand(bool),
+    OwnCameraView(bool),
     Pin(bool),
     Leave,
     WatchShare(junto_media::engine::ShareId),
@@ -398,6 +399,18 @@ impl Shell {
             ),
             camera,
         ];
+        if camera_on {
+            let hidden = self.state.read(cx).voice().hide_own_camera;
+            items.push(make(
+                "call-menu-own-camera-view",
+                if hidden {
+                    text::SHOW_OWN_CAMERA
+                } else {
+                    text::HIDE_OWN_CAMERA
+                },
+                CallMenuAction::OwnCameraView(!hidden),
+            ));
+        }
         if let Some(raised) = hand {
             items.push(make(
                 "call-menu-hand",
@@ -470,6 +483,9 @@ impl Shell {
                             CallMenuAction::Sound(off) => state.set_sound_off(*off),
                             CallMenuAction::Camera(action) => state.use_camera(action, cx),
                             CallMenuAction::Hand(raised) => state.set_hand(*raised, cx),
+                            CallMenuAction::OwnCameraView(hidden) => {
+                                state.set_hide_own_camera(*hidden, cx)
+                            }
                             CallMenuAction::Pin(pinned) => {
                                 if let Some(AccountSource::CallOccupant {
                                     seat, account_id, ..

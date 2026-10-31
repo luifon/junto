@@ -13,7 +13,7 @@ use crate::global_keys::{Key, KeyCombo};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 7;
+pub const VOICE_FORMAT_VERSION: u32 = 8;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -38,6 +38,7 @@ const VOICE: Versioned = Versioned {
         settings_of_sound_kinds,
         settings_of_individual_sounds,
         settings_of_share_sounds,
+        settings_of_own_camera_view,
     ],
     limit: 512 * 1024,
 };
@@ -157,6 +158,15 @@ fn settings_of_share_sounds(mut value: serde_json::Value) -> Result<serde_json::
         .ok_or("the sound settings are not an object")?
         .entry("share_sounds")
         .or_insert(serde_json::json!({}));
+    Ok(value)
+}
+
+fn settings_of_own_camera_view(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?
+        .entry("hide_own_camera")
+        .or_insert(false.into());
     Ok(value)
 }
 
@@ -354,6 +364,7 @@ pub struct VoiceSettings {
     pub share_volume: u16,
     /// The strip of a call shows only the people who send a camera picture.
     pub hide_people_without_video: bool,
+    pub hide_own_camera: bool,
     /// The switches of the sounds of the application (ADR 0707).
     pub sounds: Sounds,
     /// Voice activation sends the microphone only while its level reaches this many dBFS,
@@ -384,6 +395,7 @@ impl Default for VoiceSettings {
             share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
             share_volume: VOLUME_DEFAULT_PERCENT,
             hide_people_without_video: false,
+            hide_own_camera: false,
             sounds: Sounds::default(),
             voice_threshold: None,
         }
@@ -498,6 +510,8 @@ struct VoiceFile {
     share_frame_rate: u32,
     share_volume: u16,
     hide_people_without_video: bool,
+    #[serde(default)]
+    hide_own_camera: bool,
     sounds: Sounds,
     #[serde(default)]
     voice_threshold: Option<i16>,
@@ -533,6 +547,7 @@ impl VoiceStore {
             share_frame_rate: file.share_frame_rate,
             share_volume: file.share_volume,
             hide_people_without_video: file.hide_people_without_video,
+            hide_own_camera: file.hide_own_camera,
             sounds: file.sounds,
             voice_threshold: file.voice_threshold,
         }
@@ -574,6 +589,7 @@ impl VoiceStore {
                 share_frame_rate: settings.share_frame_rate,
                 share_volume: settings.share_volume,
                 hide_people_without_video: settings.hide_people_without_video,
+                hide_own_camera: settings.hide_own_camera,
                 sounds: settings.sounds.clone(),
                 voice_threshold: settings.voice_threshold,
             },
@@ -587,6 +603,20 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn hiding_the_own_camera_is_saved_and_older_files_default_to_showing_it() {
+        let (_directory, data, store) = store();
+        store.update(|voice| voice.hide_own_camera = true).unwrap();
+        assert!(store.load().unwrap().hide_own_camera);
+        let file = data.root().join(VOICE_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        value["format_version"] = 7.into();
+        value.as_object_mut().unwrap().remove("hide_own_camera");
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!store.load().unwrap().hide_own_camera);
+    }
 
     #[test]
     fn the_old_shared_volume_seeds_people_without_a_saved_share_sound() {

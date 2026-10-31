@@ -77,7 +77,7 @@ slot. Muting leaves the picture and the saved volume intact. Only the watched sh
 the sound mix. Changing another share's volume or mute does not change the watched share.
 The settings of each slot last for the call, including a reconnect and reuse of the slot.
 The latest change for an account is saved with the server and account in the sound settings;
-it seeds that person's slots in later calls. The sound settings use version 7 so an older
+it seeds that person's slots in later calls. These preferences require sound settings version 7 or later, so an older
 client cannot replace these preferences when it writes its own settings. Slots already present in a call keep their own
 values when another slot changes. The old `share_volume` value seeds accounts without a
 saved value, so an upgrade keeps the earlier listening level. Microphone volumes are separate.

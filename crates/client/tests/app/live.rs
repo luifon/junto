@@ -34,6 +34,7 @@ use crate::harness::{
     heard, member,
 };
 
+mod camera_view;
 mod cameras;
 mod channels;
 mod detached;

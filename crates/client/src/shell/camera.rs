@@ -121,7 +121,9 @@ impl super::Shell {
             && call.phase == Phase::Connected
         {
             ids.extend(call.cameras.into_iter().map(Person::Of));
-            if matches!(call.camera, CameraState::Starting | CameraState::Running) {
+            if matches!(call.camera, CameraState::Starting | CameraState::Running)
+                && !state.voice().hide_own_camera
+            {
                 ids.push(Person::Own);
             }
         }

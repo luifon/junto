@@ -739,3 +739,39 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
     let mut detached = window.call_window();
     assert!(detached.shows("muted-speech") && detached.shows("unmute-muted-speech"));
 }
+
+#[gpui::test]
+fn a_hidden_own_camera_keeps_its_running_mark_and_controls_in_both_windows(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    call.camera = junto_media::camera::CameraState::Running;
+    give_calls(&mut window, call);
+    window.click("toggle-own-camera-view");
+    window.until("the running camera has a hidden-view mark", |window| {
+        window.shows("own-camera-hidden")
+    });
+    window.click("show-own-camera");
+    window.until("the view can be restored", |window| {
+        !window.shows("own-camera-hidden")
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    detached.click("toggle-own-camera-view");
+    detached.until("the detached camera has its hidden-view mark", |window| {
+        window.shows("own-camera-hidden")
+    });
+    assert!(detached.state.read_with(&detached.cx, |state, _| {
+        state
+            .calls()
+            .view()
+            .call
+            .is_some_and(|call| call.camera == junto_media::camera::CameraState::Running)
+    }));
+}

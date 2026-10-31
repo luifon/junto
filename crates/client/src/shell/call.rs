@@ -2067,6 +2067,7 @@ impl Shell {
                             }
                         })),
                 )
+                .children(self.render_own_camera_view_button(cx))
                 .child(
                     Button::new("camera-focus")
                         .disabled(self.state.read(cx).pinned_call_person().is_some())
@@ -2212,6 +2213,70 @@ impl Shell {
                     )
             })
             .map(IntoElement::into_any_element)
+    }
+
+    pub(crate) fn render_own_camera_view_button(&self, cx: &mut Context<Self>) -> Option<Button> {
+        let state = self.state.read(cx);
+        let call = state.media_calls().call?;
+        if !matches!(
+            call.camera,
+            junto_media::camera::CameraState::Starting | junto_media::camera::CameraState::Running
+        ) {
+            return None;
+        }
+        let hidden = state.voice().hide_own_camera;
+        let label = if hidden {
+            text::SHOW_OWN_CAMERA
+        } else {
+            text::HIDE_OWN_CAMERA
+        };
+        Some(
+            Button::new("toggle-own-camera-view")
+                .kind(if hidden {
+                    ButtonKind::CallOn
+                } else {
+                    ButtonKind::Call
+                })
+                .icon(Icon::EyeOff)
+                .tooltip(label)
+                .accessible_label(label)
+                .selected(hidden)
+                .selector("toggle-own-camera-view")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.set_hide_own_camera(!hidden, cx))
+                })),
+        )
+    }
+
+    fn render_own_camera_hidden_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.state.read(cx);
+        if !state.own_camera_hidden() {
+            return None;
+        }
+        let running = state.media_calls().call.is_some_and(|call| {
+            call.phase == Phase::Connected
+                && !call.withheld.camera
+                && call.camera == junto_media::camera::CameraState::Running
+        });
+        Some(
+            crate::ui::Notice::new(if running {
+                text::OWN_CAMERA_HIDDEN
+            } else {
+                text::OWN_CAMERA_VIEW_HIDDEN
+            })
+            .selector("own-camera-hidden")
+            .action(
+                Button::new("show-own-camera")
+                    .label(text::SHOW_OWN_CAMERA)
+                    .selector("show-own-camera")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_hide_own_camera(false, cx))
+                    })),
+            )
+            .into_any_element(),
+        )
     }
 
     pub(crate) fn render_muted_speech(
@@ -2461,6 +2526,13 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let hidden = self.state.read(cx).own_camera_hidden();
+        let shown = hidden.then(|| {
+            let mut shown = panel.clone();
+            shown.people.retain(|person| !person.is_self);
+            shown
+        });
+        let panel = shown.as_ref().unwrap_or(panel);
         let pin = self.state.read(cx).pinned_call();
         let body = match &panel.stage {
             Some(shares)
@@ -2494,6 +2566,7 @@ impl Shell {
             .w_full()
             .children(self.render_pin_bar(panel, theme, cx))
             .child(body)
+            .children(self.render_own_camera_hidden_note(cx))
             .into_any_element()
     }
 

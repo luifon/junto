@@ -1478,6 +1478,29 @@ impl AppState {
         self.change_voice(cx, move |voice| voice.share_frame_rate = frame_rate);
     }
 
+    pub fn own_camera_hidden(&self) -> bool {
+        self.known.media.voice.hide_own_camera
+            && self.calls.view().call.is_some_and(|call| {
+                matches!(
+                    call.camera,
+                    junto_media::camera::CameraState::Starting
+                        | junto_media::camera::CameraState::Running
+                )
+            })
+    }
+
+    pub fn set_hide_own_camera(&mut self, hide: bool, cx: &mut Context<Self>) {
+        if hide
+            && self
+                .pinned_call
+                .as_ref()
+                .is_some_and(|pin| pin.account == pin.owner.account_id)
+        {
+            self.pinned_call = None;
+        }
+        self.change_voice(cx, move |voice| voice.hide_own_camera = hide);
+    }
+
     pub fn set_hide_without_video(&mut self, hide: bool, cx: &mut Context<Self>) {
         self.change_voice(cx, move |voice| voice.hide_people_without_video = hide);
     }
