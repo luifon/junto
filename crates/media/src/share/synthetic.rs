@@ -250,7 +250,11 @@ impl SyntheticCapture {
     /// The number of captures that run now.
     pub fn running(&self) -> usize {
         let mut state = self.lock();
-        state.live.retain(|live| live.stop.strong_count() > 0);
+        state.live.retain(|live| {
+            live.stop
+                .upgrade()
+                .is_some_and(|stop| !stop.load(Ordering::Acquire))
+        });
         state.live.len()
     }
 
@@ -456,8 +460,10 @@ impl ScreenCapture for SyntheticCapture {
                 );
             })?;
             if let Some((stall, done)) = stall {
+                let stop = stop.clone();
                 workers.spawn("stalled-capture", move || {
                     let _ = stall.recv_timeout(Duration::from_secs(120));
+                    drop(stop);
                     let _ = done.send(());
                 })?;
             }
@@ -521,5 +527,46 @@ fn produce(
             }
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::share::ShareQuality;
+    struct Sink;
+    impl CaptureSink for Sink {
+        fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {}
+        fn sound(&self, _: &[f32], _: Format) {}
+        fn ended(&self, _: CaptureError) {}
+    }
+    #[tokio::test]
+    async fn a_cancelled_capture_is_not_counted_while_its_worker_is_still_held() {
+        let capture = SyntheticCapture::new();
+        let (release, finished) = capture.stall_next_stop();
+        let stream = capture
+            .start(
+                CaptureRequest {
+                    picture: PictureSource::Display(1),
+                    sound: SoundChoice::None,
+                    quality: ShareQuality::default(),
+                    dialog_parent: None,
+                },
+                Arc::new(Sink),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capture.running(), 1);
+        drop(stream);
+        let count = capture.running();
+        let premature = finished.try_recv();
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(premature.is_err());
+        assert_eq!(
+            count, 0,
+            "a cancelled capture was counted because its worker was alive"
+        );
     }
 }
