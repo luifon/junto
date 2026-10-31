@@ -435,9 +435,12 @@ async fn the_release_of_an_installed_version_is_requested_by_its_name_without_fr
             .await;
         assert_eq!(result.is_ok(), valid, "{stated}");
         let paths = task.await.unwrap();
-        assert_eq!(paths[0], "/release-0.1.0-macos-bundle-aarch64.json");
+        assert_eq!(
+            paths[0],
+            "/download/v0.1.0/release-0.1.0-macos-bundle-aarch64.json"
+        );
         if valid {
-            assert_eq!(paths[1], "/junto-0.2.0.junto");
+            assert_eq!(paths[1], "/download/v0.1.0/junto-0.2.0.junto");
             assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
         } else {
             assert_eq!(paths.len(), 1);
@@ -460,35 +463,142 @@ async fn a_product_build_refuses_another_release_source_before_it_reads_the_inst
     );
 }
 
-/// The update source is the directory `updates/` of the release site (ADR 0727): the client
-/// takes the download page and the notes page of a version from it.
+/// The source is laid out as GitHub releases (ADR 0724): the client takes the page of the
+/// newest release and the page of the release of a version from its address.
 #[test]
-fn a_source_in_the_updates_directory_names_the_site_and_the_notes_of_a_version() {
-    let keys = trust(vec![key().verifying_key()]);
+fn a_source_names_the_page_of_the_newest_release_and_of_each_version() {
     let source = HttpSource::new(
-        "https://releases.example.test/junto/updates/",
-        keys.clone(),
+        "https://releases.example.test/junto/",
+        trust(vec![key().verifying_key()]),
         Version::new(0, 1, 0),
         target("linux", "x86_64"),
     )
     .unwrap();
     assert_eq!(
-        source.site().map(String::from).as_deref(),
-        Some("https://releases.example.test/junto/")
+        source.download_page().map(String::from).as_deref(),
+        Some("https://releases.example.test/junto/latest")
     );
     assert_eq!(
         source.notes_page(Version::new(0, 1, 1)).as_deref(),
-        Some("https://releases.example.test/junto/notes/0.1.1.html")
+        Some("https://releases.example.test/junto/tag/v0.1.1")
     );
-    let other = HttpSource::new(
-        "https://releases.example.test/junto/",
-        keys,
+}
+
+/// Answers each connection in order with its response while the request names the expected
+/// path, and returns the paths of the requests and any request that carried a `Referer`.
+async fn answer_in_order(
+    listener: tokio::net::TcpListener,
+    answers: Vec<(String, Vec<u8>)>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    for (expected, response) in answers {
+        let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(2), listener.accept()).await
+        else {
+            break;
+        };
+        let mut request = [0; 4096];
+        let count = stream.read(&mut request).await.unwrap();
+        let line = String::from_utf8_lossy(&request[..count]).into_owned();
+        let path = line.split(' ').nth(1).unwrap_or_default().to_owned();
+        paths.push(path.clone());
+        if line.to_ascii_lowercase().contains("\r\nreferer:") {
+            paths.push(format!("a Referer header in the request of {path}"));
+        }
+        if path != expected {
+            break;
+        }
+        let _ = stream.write_all(&response).await;
+    }
+    paths
+}
+
+fn found(location: &str) -> Vec<u8> {
+    format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .into_bytes()
+}
+
+fn ok(body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+/// GitHub answers a file of a release with a redirect from the newest release to its tag and
+/// from the tag to the storage of the file, whose address holds a query. The client follows
+/// both within its bound and verifies what it receives.
+#[tokio::test]
+async fn the_redirects_of_a_github_release_are_followed_to_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("original");
+    std::fs::write(&original, b"archive").unwrap();
+    let signing = key();
+    let mut metadata = manifest();
+    sign_archive(&original, &mut metadata, &signing).unwrap();
+    let wire = sign_manifest(&metadata, &signing).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}/", listener.local_addr().unwrap());
+    let latest = "latest-macos-bundle-aarch64.json";
+    let answers = vec![
+        (
+            format!("/latest/download/{latest}"),
+            found(&format!("{address}download/v0.2.0/{latest}")),
+        ),
+        (
+            format!("/download/v0.2.0/{latest}"),
+            found(&format!("{address}storage/1?sig=a%3D&name={latest}")),
+        ),
+        (format!("/storage/1?sig=a%3D&name={latest}"), ok(&wire)),
+        (
+            "/download/v0.2.0/junto-0.2.0.junto".to_owned(),
+            found("/storage/2?sig=b"),
+        ),
+        ("/storage/2?sig=b".to_owned(), ok(b"archive")),
+    ];
+    let expected: Vec<String> = answers.iter().map(|(path, _)| path.clone()).collect();
+    let server = tokio::spawn(answer_in_order(listener, answers));
+    let source = HttpSource::new(
+        &address,
+        trust(vec![signing.verifying_key()]),
         Version::new(0, 1, 0),
-        target("linux", "x86_64"),
+        target("macos", "aarch64"),
     )
     .unwrap();
-    assert_eq!(other.site(), None);
-    assert_eq!(other.notes_page(Version::new(0, 1, 1)), None);
+    let destination = root.path().join("download");
+    let archive = source.download(&destination).await.unwrap();
+    assert_eq!(archive.manifest().version, "0.2.0");
+    assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
+    assert_eq!(server.await.unwrap(), expected);
+}
+
+/// A source that redirects without end is left after the bound of redirects.
+#[tokio::test]
+async fn a_request_follows_at_most_the_bound_of_redirects() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}/", listener.local_addr().unwrap());
+    let latest = "/latest/download/latest-macos-bundle-aarch64.json";
+    let answers = (0..=junto_client_core::releases::MAX_REDIRECTS + 2)
+        .map(|_| (latest.to_owned(), found(latest)))
+        .collect();
+    let server = tokio::spawn(answer_in_order(listener, answers));
+    let source = HttpSource::new(
+        &address,
+        trust(vec![key().verifying_key()]),
+        Version::new(0, 1, 0),
+        target("macos", "aarch64"),
+    )
+    .unwrap();
+    assert!(matches!(
+        source.check().await,
+        Err(junto_client_core::releases::Error::Network(_))
+    ));
+    drop(source);
+    let paths = server.await.unwrap();
+    assert_eq!(paths.len(), junto_client_core::releases::MAX_REDIRECTS + 1);
 }
 
 /// A directory that the Debian package installed names the package `deb` in its

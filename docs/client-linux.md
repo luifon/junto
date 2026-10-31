@@ -1,6 +1,6 @@
 # Install Junto on Linux
 
-Junto runs on x86-64 Linux with PipeWire, under X11 or Wayland (ADR 0705). Obtain a package from the download page of the release site or from a source you have verified with whoever runs your server, and compare its SHA-256 with `SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS`). There are three packages with the same program (ADR 0754, ADR 0728):
+Junto runs on x86-64 Linux with PipeWire, under X11 or Wayland (ADR 0705). Obtain a package from the GitHub releases of the project, `https://github.com/luifon/junto/releases`, or from a source you have verified with whoever runs your server, and compare its SHA-256 with `SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS`). There are three packages with the same program (ADR 0754, ADR 0728):
 
 - `junto_<version>_amd64.deb`: a Debian package, for Debian 12, Ubuntu 22.04 and later releases of both.
 - `junto-<version>-linux-x86_64.tar.gz`: a directory `junto`.

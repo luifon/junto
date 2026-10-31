@@ -230,10 +230,17 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(check_lifecycle.versions(manifest), ["0.4.9", "0.4.10"])
 
     def test_an_update_asks_for_the_new_release_then_the_installed_one(self):
+        latest = ["/latest/download/latest-linux-appimage-x86_64.json",
+                  "/download/v0.1.1/latest-linux-appimage-x86_64.json",
+                  "/storage/v0.1.1/latest-linux-appimage-x86_64.json"]
         self.assertEqual(check_lifecycle.requests("linux", "appimage", "x86_64", ["0.1.0", "0.1.1"]), [
-            "/latest-linux-appimage-x86_64.json", "/latest-linux-appimage-x86_64.json",
-            "/junto-0.1.1-linux-appimage-x86_64.junto",
-            "/release-0.1.0-linux-appimage-x86_64.json", "/junto-0.1.0-linux-appimage-x86_64.junto"])
+            *latest, *latest,
+            "/download/v0.1.1/junto-0.1.1-linux-appimage-x86_64.junto",
+            "/storage/v0.1.1/junto-0.1.1-linux-appimage-x86_64.junto",
+            "/download/v0.1.0/release-0.1.0-linux-appimage-x86_64.json",
+            "/storage/v0.1.0/release-0.1.0-linux-appimage-x86_64.json",
+            "/download/v0.1.0/junto-0.1.0-linux-appimage-x86_64.junto",
+            "/storage/v0.1.0/junto-0.1.0-linux-appimage-x86_64.junto"])
 
     def test_the_window_reports_the_notice_the_installed_version_and_the_restart(self):
         output = "\n".join([

@@ -118,6 +118,10 @@ pub fn build_label() -> String {
 
 pub const MAX_METADATA: usize = 64 * 1024;
 pub const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
+/// The redirects that one request of the source follows. GitHub answers a file of the newest
+/// release with two redirects (to its tag, then to the storage of the file) and a file of a
+/// tag with one.
+pub const MAX_REDIRECTS: usize = 5;
 /// The latest expiry of a freshness statement that a client accepts, counted from its clock.
 /// The release tool signs 30 days; the rest allows for a clock that is behind.
 pub const MAX_FRESHNESS_AHEAD: u64 = 45 * 24 * 60 * 60;
@@ -184,6 +188,34 @@ impl Target {
         Ok(())
     }
 }
+
+/// The tag of the release of a version at the source: `v` and the version (ADR 0724).
+pub fn tag(version: Version) -> String {
+    format!("v{version}")
+}
+
+/// Whether a request of the source follows a redirect to `to`: to an HTTPS address without a
+/// user name or a password, or to an address of the origin of the source, so that a loopback
+/// test source can redirect as GitHub does. A redirect from HTTPS to plain HTTP is refused.
+pub fn redirect_allowed(source: &url::Origin, to: &url::Url) -> bool {
+    to.username().is_empty()
+        && to.password().is_none()
+        && (to.scheme() == "https" && to.host().is_some() || to.origin() == *source)
+}
+
+fn redirects(base: &url::Url) -> reqwest::redirect::Policy {
+    let source = base.origin();
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else if redirect_allowed(&source, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.error("a redirect to another origin without HTTPS")
+        }
+    })
+}
+
 const METADATA_DOMAIN: &[u8] = b"junto-release-metadata-v1\0";
 const FRESHNESS_DOMAIN: &[u8] = b"junto-release-freshness-v1\0";
 const ARCHIVE_DOMAIN: &[u8] = b"junto-release-archive-sha256-v1\0";
@@ -756,6 +788,10 @@ impl Drop for RemoveFile {
     }
 }
 
+/// The source of releases at one base address, laid out as the releases of a GitHub
+/// repository (ADR 0724): the release information of the newest release at
+/// `latest/download/<file>`, and every file of the release of a version at
+/// `download/v<version>/<file>`.
 #[derive(Clone)]
 pub struct HttpSource {
     base: url::Url,
@@ -780,7 +816,8 @@ impl HttpSource {
         }
         let client = reqwest::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(redirects(&base))
+            .referer(false)
             .connect_timeout(Duration::from_secs(15))
             .build()?;
         Ok(Self {
@@ -816,22 +853,37 @@ impl HttpSource {
         &self.target
     }
 
-    /// The release site whose directory `updates/` is this source (ADR 0727): its download
-    /// page. Absent for a source that is not such a directory.
-    pub fn site(&self) -> Option<url::Url> {
-        self.base
-            .path()
-            .ends_with("/updates/")
-            .then(|| self.base.join("../").ok())
-            .flatten()
+    /// The page of the newest release, where a person downloads it: `latest` of the source.
+    pub fn download_page(&self) -> Option<url::Url> {
+        self.address("latest").ok()
     }
 
-    /// The page of the notes of a version on the release site.
+    /// The page of the release of a version, with its notes and files: `tag/v<version>`.
     pub fn notes_page(&self, version: Version) -> Option<String> {
-        self.site()?
-            .join(&format!("notes/{version}.html"))
+        self.address(&format!("tag/{}", tag(version)))
             .ok()
             .map(String::from)
+    }
+
+    fn address(&self, path: &str) -> Result<url::Url, Error> {
+        self.base
+            .join(path)
+            .map_err(|_| Error::Invalid("release address"))
+    }
+
+    /// The release information of the newest release: `latest/download/<file>`. GitHub
+    /// serves there the file of the newest release that is not a pre-release.
+    pub fn latest_address(&self) -> Result<url::Url, Error> {
+        self.address(&format!("latest/download/{}", self.target.latest()))
+    }
+
+    /// A file of the release of one version: `download/v<version>/<file>`. These addresses
+    /// stay valid after newer releases.
+    pub fn version_address(&self, version: Version, file: &str) -> Result<url::Url, Error> {
+        if !filename(file) {
+            return Err(Error::Invalid("release file name"));
+        }
+        self.address(&format!("download/{}/{file}", tag(version)))
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, Error> {
@@ -843,11 +895,7 @@ impl HttpSource {
         Ok(self)
     }
 
-    async fn get(&self, filename: &str) -> Result<reqwest::Response, Error> {
-        let address = self
-            .base
-            .join(filename)
-            .map_err(|_| Error::Invalid("release address"))?;
+    async fn get(&self, address: url::Url) -> Result<reqwest::Response, Error> {
         let response = self.client.get(address).send().await?;
         if response.status() != reqwest::StatusCode::OK {
             return Err(Error::Invalid("HTTP status"));
@@ -859,8 +907,8 @@ impl HttpSource {
         self.check_with_wire().await.map(|(manifest, _)| manifest)
     }
 
-    async fn information(&self, filename: &str) -> Result<Vec<u8>, Error> {
-        let mut response = self.get(filename).await?;
+    async fn information(&self, address: url::Url) -> Result<Vec<u8>, Error> {
+        let mut response = self.get(address).await?;
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             if bytes.len() + chunk.len() > MAX_METADATA {
@@ -873,7 +921,7 @@ impl HttpSource {
 
     async fn check_with_wire(&self) -> Result<(Manifest, Vec<u8>), Error> {
         tokio::time::timeout(self.timeout, async {
-            let bytes = self.information(&self.target.latest()).await?;
+            let bytes = self.information(self.latest_address()?).await?;
             let manifest = verify_manifest(&bytes, &self.keys, self.current, &self.target)?;
             Ok((manifest, bytes))
         })
@@ -895,7 +943,8 @@ impl HttpSource {
         destination: &Path,
     ) -> Result<VerifiedArchive, Error> {
         let (manifest, wire) = tokio::time::timeout(self.timeout, async {
-            let bytes = self.information(&self.target.release(version)).await?;
+            let address = self.version_address(version, &self.target.release(version))?;
+            let bytes = self.information(address).await?;
             let manifest = verify_version(&bytes, &self.keys, version, &self.target)?;
             Ok::<_, Error>((manifest, bytes))
         })
@@ -910,6 +959,8 @@ impl HttpSource {
         wire: Vec<u8>,
         destination: &Path,
     ) -> Result<VerifiedArchive, Error> {
+        let version = Version::parse(&manifest.version).map_err(|_| Error::Invalid("version"))?;
+        let address = self.version_address(version, &manifest.archive)?;
         let total = self.idle + Duration::from_secs(manifest.size.div_ceil(16 * 1024));
         tokio::time::timeout(total, async {
             let mut options = OpenOptions::new();
@@ -923,7 +974,7 @@ impl HttpSource {
             let cleanup = RemoveFile(destination.to_owned());
             let mut file = tokio::fs::File::from_std(file);
             use tokio::io::AsyncWriteExt;
-            let mut response = tokio::time::timeout(self.idle, self.get(&manifest.archive))
+            let mut response = tokio::time::timeout(self.idle, self.get(address))
                 .await
                 .map_err(|_| Error::Timeout)??;
             if response
@@ -1018,6 +1069,87 @@ mod timing_tests {
 #[cfg(test)]
 mod source_tests {
     use super::*;
+
+    #[test]
+    fn a_redirect_is_followed_to_https_or_within_the_origin_of_the_source() {
+        let github = url::Url::parse("https://github.com/luifon/junto/releases/").unwrap();
+        let loopback = url::Url::parse("http://127.0.0.1:8080/").unwrap();
+        let address = |text: &str| url::Url::parse(text).unwrap();
+        for to in [
+            "https://github.com/luifon/junto/releases/download/v0.1.0/latest-linux-directory-x86_64.json",
+            "https://release-assets.example.test/production/1/2?sp=r&sig=abc%3D",
+            "https://objects.example.test/a",
+        ] {
+            assert!(redirect_allowed(&github.origin(), &address(to)), "{to}");
+            assert!(redirect_allowed(&loopback.origin(), &address(to)), "{to}");
+        }
+        for to in [
+            "http://github.com/luifon/junto/releases/download/v0.1.0/a",
+            "http://release-assets.example.test/a",
+            "http://127.0.0.1:8080/a",
+            "https://user@release-assets.example.test/a",
+            "https://user:secret@release-assets.example.test/a",
+            "ftp://release-assets.example.test/a",
+            "file:///etc/passwd",
+        ] {
+            assert!(!redirect_allowed(&github.origin(), &address(to)), "{to}");
+        }
+        assert!(redirect_allowed(
+            &loopback.origin(),
+            &address("http://127.0.0.1:8080/download/v1.0.0/a")
+        ));
+        for to in [
+            "http://127.0.0.1:8081/a",
+            "http://localhost:8080/a",
+            "http://[::1]:8080/a",
+            "http://user@127.0.0.1:8080/a",
+        ] {
+            assert!(!redirect_allowed(&loopback.origin(), &address(to)), "{to}");
+        }
+    }
+
+    #[test]
+    fn the_files_of_a_source_are_laid_out_as_github_releases() {
+        let keys = TrustedKeys::new(Vec::new());
+        let target = Target::new("linux", "directory", "x86_64").unwrap();
+        let version = Version::new(0, 1, 2);
+        for base in [
+            "https://github.com/luifon/junto/releases/",
+            "https://github.com/luifon/junto/releases",
+        ] {
+            let source = HttpSource::new(base, keys.clone(), version, target.clone()).unwrap();
+            assert_eq!(
+                source.latest_address().unwrap().as_str(),
+                "https://github.com/luifon/junto/releases/latest/download/latest-linux-directory-x86_64.json"
+            );
+            assert_eq!(
+                source
+                    .version_address(version, &target.archive(version))
+                    .unwrap()
+                    .as_str(),
+                "https://github.com/luifon/junto/releases/download/v0.1.2/junto-0.1.2-linux-directory-x86_64.junto"
+            );
+            assert_eq!(
+                source
+                    .version_address(version, &target.release(version))
+                    .unwrap()
+                    .as_str(),
+                "https://github.com/luifon/junto/releases/download/v0.1.2/release-0.1.2-linux-directory-x86_64.json"
+            );
+            assert_eq!(
+                source.download_page().unwrap().as_str(),
+                "https://github.com/luifon/junto/releases/latest"
+            );
+            assert_eq!(
+                source.notes_page(Version::new(0, 2, 0)).as_deref(),
+                Some("https://github.com/luifon/junto/releases/tag/v0.2.0")
+            );
+            for file in ["../a", "a/b", "", "a?b", "https://other.example.test/a"] {
+                assert!(source.version_address(version, file).is_err(), "{file}");
+            }
+        }
+        assert_eq!(tag(Version::new(10, 0, 3)), "v10.0.3");
+    }
 
     #[test]
     fn only_a_test_configuration_accepts_another_release_source() {

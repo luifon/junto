@@ -17,11 +17,11 @@ tools/serial.sh cargo run -p junto-client-core --bin junto-release -- \
 
 Each seed is generated randomly, written privately and never overwritten. Keep both outside repositories with encrypted offline backups. Copy only the release public array to `packaging/update-keys.json` and the freshness public array to `packaging/freshness-keys.json`, review and track both. A key in both files stops the build. Release keys authorize code and are brought online only for a new release. Keep freshness keys in a separate private signing environment for renewal before each 30-day expiry; a freshness key cannot authorize new code. The release host needs neither private key.
 
-The release tool and every package are built with the same `JUNTO_UPDATE_SOURCE` (the HTTPS base address of releases) from the same checkout. The tool uses the trust sets compiled into it.
+The release tool and every package are built with the same `JUNTO_UPDATE_SOURCE`, `https://github.com/luifon/junto/releases/`, from the same checkout. The tool uses the trust sets compiled into it.
 
 ## The release source
 
-For every release and every target the source holds the archive `junto-<version>-<system>-<package>-<architecture>.junto` and the release information `release-<version>-<system>-<package>-<architecture>.json`; `latest-<system>-<package>-<architecture>.json` is the release information of the newest release. Keep the files of earlier releases: an update downloads the installed version from them to keep it for a rollback. The release commands write into a new, empty directory for each release, because they never replace a file; copy the files of that directory to the source beside the files of earlier releases. The targets are `macos-bundle-aarch64`, `linux-directory-x86_64`, `linux-appimage-x86_64` and `windows-directory-x86_64`. The first-install files (the macOS ZIP, the Linux tarball and AppImage, the Windows ZIP) are offered beside them.
+The source is the GitHub releases of the repository (ADR 0724). The release of version V has the tag `v<V>` and holds, for every target, the archive `junto-<V>-<system>-<package>-<architecture>.junto`, the release information `release-<V>-<system>-<package>-<architecture>.json` and `latest-<system>-<package>-<architecture>.json`, the release information of the newest release. A client reads the latest file at `https://github.com/luifon/junto/releases/latest/download/latest-<target>.json`, which GitHub serves from the newest release that is neither a draft nor a pre-release, and every file of version V at `https://github.com/luifon/junto/releases/download/v<V>/<file>`. Keep the files of earlier releases: an update downloads the installed version from them to keep it for a rollback. The release commands write into a new, empty directory for each release, because they never replace a file. The targets are `macos-bundle-aarch64`, `linux-directory-x86_64`, `linux-appimage-x86_64` and `windows-directory-x86_64`. The first-install files are in the same release.
 
 ## macOS
 
@@ -46,7 +46,7 @@ The helper signs the recovery program and then the bundle. It temporarily includ
 Create the macOS release files without uploading them:
 
 ```sh
-JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
+JUNTO_UPDATE_SOURCE='https://github.com/luifon/junto/releases/' \
 JUNTO_UPDATE_KEY='/absolute/offline/release.seed' \
 JUNTO_FRESHNESS_KEY='/absolute/freshness/freshness.seed' \
 JUNTO_CODESIGN_IDENTITY='<certificate fingerprint>' \
@@ -61,7 +61,7 @@ Use a new absolute output directory. The command builds the version, assembles a
 On an x86-64 Linux host with Docker, build the packages in the Linux build image:
 
 ```sh
-JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
+JUNTO_UPDATE_SOURCE='https://github.com/luifon/junto/releases/' \
     packaging/release_linux.sh target/linux-release
 ```
 
@@ -93,14 +93,20 @@ target/release/junto-release publish windows directory x86_64 <output>/package-d
 
 ## Freshness
 
-Refresh your retained, known release files before expiry, even without a new release:
+Renew the freshness of the newest release at most 21 days after its last statement, even without a new release, on the machine that holds the freshness key:
 
 ```sh
-target/release/junto-release refresh /private/releases/latest-macos-bundle-aarch64.json \
-    /private/releases/junto-2.0.0-macos-bundle-aarch64.junto 2.0.0 /private/freshness/freshness.seed
+python3 packaging/renew_freshness.py /private/releases/0.1.0/junto-release /private/releases/0.1.0/assets \
+    /private/freshness/freshness.seed --upload v0.1.0
 ```
 
-The named version is mandatory. The tool verifies release signatures, version, archive size, hash and signature with its compiled trust sets before atomically replacing only freshness information. It never needs a release private key. Never refresh files fetched back from the release host. Upload the resulting metadata through the release process. Keep renewal scheduled before 30 days; a missed date or incorrect client clock prevents updating until freshness is valid again. A client refuses a statement that expires more than 45 days after its clock.
+The first argument is the release tool built with the release, the second the retained output directory of `release_assets.py`. For each target the command runs the release tool:
+
+```sh
+junto-release refresh <directory>/latest-<target>.json <directory>/junto-<version>-<target>.junto <version> /private/freshness/freshness.seed
+```
+
+The tool verifies release signatures, version, archive size, hash and signature with its compiled trust sets before atomically replacing only freshness information. It never needs a release private key. The command requires 29 days or more of validity afterwards. With `--upload <tag>` it first requires the tag to be `v<version>` of the directory and the GitHub command to be signed in, then replaces the four latest files of that GitHub release with `gh release upload --clobber` (the GitHub command-line tool, signed in with the right to publish releases) and reads each one back from `https://github.com/luifon/junto/releases/latest/download/`. Never refresh files fetched back from GitHub. A missed date or incorrect client clock prevents updating until freshness is valid again. A client refuses a statement that expires more than 45 days after its clock.
 
 For release-key rotation, build clients with both public keys and pass additional release-secret paths after the freshness secret of `publish` or `release.sh`; both keys then sign the release and archive. The lower-level `package SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...]` supports the same overlap. For freshness-key rotation, include both freshness public keys and pass both freshness secrets to `refresh` before publishing. Keep signatures for every supported old trust set; an overlap client alone does not reach users who skipped that version.
 
@@ -112,23 +118,20 @@ Each package holds `licences/Junto-LICENSE.txt` and `licences/third-party-licenc
 
 External test-only public-key, freshness-key, certificate and version variables mark the build as "test configuration" in Version and `--version`. `publish` of such a build requires `--test-configuration`; a product build refuses that flag for every command. The public release wrappers refuse overrides. Tests never rewrite tracked trust or version files. `JUNTO_TEST_KEYCHAIN_LOCK` selects an isolated lock for controlled tests; every unit test sets it.
 
-CI runs the portable Rust release, installer and configuration tests and the Python unit tests on every system. `check_signing.py` compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py` builds the release tool and the recovery program with test keys and a test certificate, then runs a real update of signed test bundles from a local source and the documented recovery command while the new executable fails; these fixture executables only end with a status. It then runs `check_lifecycle.py` on the real client: two builds of the checkout with temporary test keys, the workspace version and the next patch version, in the target directory `lifecycle` inside the target directory. The first package is installed in a folder whose name holds a space and a character outside ASCII; the window of the installed client finds the newer version on a local source, installs it with the update action of its version line and offers the restart (`--update-source` and `--check-update`, which only a test configuration accepts); the recovery program rolls the update back. At each of the three stages the installation must equal the package of the expected version file by file (on macOS also `codesign --verify --deep --strict`), and the client must state that version and draw its first frame with a new empty profile. `check_linux.py` (in the Linux build image) and `check_windows.py` check the Linux and Windows packages (ADR 0754, ADR 0755) and run the same lifecycle; Linux starts under X11 and Wayland and uses FUSE for the AppImage when its prerequisites are there, else states why it uses extract-and-run. The processes of every command are ended when it returns. These checks build in the repository's target directory; a local caller holds `tools/serial.sh`.
+CI runs the portable Rust release, installer and configuration tests and the Python unit tests on every system. `check_signing.py` compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py` builds the release tool and the recovery program with test keys and a test certificate, then runs a real update of signed test bundles from a local source, which `release_tools.py` serves in the layout of GitHub releases with their two redirects, and the documented recovery command while the new executable fails; these fixture executables only end with a status. It then runs `check_lifecycle.py` on the real client: two builds of the checkout with temporary test keys, the workspace version and the next patch version, in the target directory `lifecycle` inside the target directory. The first package is installed in a folder whose name holds a space and a character outside ASCII; the window of the installed client finds the newer version on a local source, installs it with the update action of its version line and offers the restart (`--update-source` and `--check-update`, which only a test configuration accepts); the recovery program rolls the update back. At each of the three stages the installation must equal the package of the expected version file by file (on macOS also `codesign --verify --deep --strict`), and the client must state that version and draw its first frame with a new empty profile. `check_linux.py` (in the Linux build image) and `check_windows.py` check the Linux and Windows packages (ADR 0754, ADR 0755) and run the same lifecycle; Linux starts under X11 and Wayland and uses FUSE for the AppImage when its prerequisites are there, else states why it uses extract-and-run. The processes of every command are ended when it returns. These checks build in the repository's target directory; a local caller holds `tools/serial.sh`.
 
 `check_release.py`, under the shared lock, builds two real macOS product releases with temporary role-separated keys. It checks test-build marking, publication refusal, compiled-source installation and the documented recovery command while the new executable fails. It removes temporary identities and files; remove the release build output afterwards. `check_start.py <Junto.app>` is separate: it starts the bundled executable with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires the first-frame line. Neither packaging nor signing grants microphone, camera, screen or notification permission.
 
-## The release site
+## The GitHub release
 
-`site.py` writes the static files of the release site from the retained release directories (ADR 0727). It needs Python 3.11 or later and no build:
+`release_assets.py` collects the files of one release for its GitHub release (ADR 0727). It needs Python 3.11 or later and no build:
 
 ```sh
-python3 packaging/site.py /private/releases docs/releases /private/new-site \
-    --base https://releases.example.test/junto/ \
-    --server-install https://docs.example.test/junto/install.html
+python3 packaging/release_assets.py 0.1.0 /private/releases/0.1.0/all /private/releases/0.1.0/assets
 ```
 
-- The first argument is a directory with one directory per published version, named with the version (`0.1.0`), with every file of that release from every system: the update files of each target and the first-install files `Junto-<version>-macos-aarch64.dmg`, `Junto-<version>-macos-aarch64.zip`, `Junto-<version>-windows-x86_64-setup.exe`, `Junto-<version>-windows-x86_64.zip`, `Junto-<version>-windows-x86_64.pdb`, `Junto-<version>-x86_64.AppImage`, `junto-<version>-linux-x86_64.tar.gz` and `junto_<version>_amd64.deb`. Other directories are ignored; an unknown file stops the command. The newest version must hold every first-install file and at least one latest file.
-- The second argument is the directory of the notes, `docs/releases`, with `<version>.md` for every version.
-- The third argument is the new output directory. It must not exist; a failure leaves no output directory. The command does not change the releases directory.
-- `--base` is the HTTPS address of the site, ending in `/`. `<base>updates/` is the update source, which every build of the release takes as `JUNTO_UPDATE_SOURCE`. `--server-install` is the address of the server install document. Neither address is written in a tracked file.
+- The second argument is a directory with every file of the release from every system: the first-install files `Junto-<version>-macos-aarch64.dmg`, `Junto-<version>-macos-aarch64.zip`, `Junto-<version>-windows-x86_64-setup.exe`, `Junto-<version>-windows-x86_64.zip`, `Junto-<version>-x86_64.AppImage`, `junto-<version>-linux-x86_64.tar.gz` and `junto_<version>_amd64.deb`, the symbols file `Junto-<version>-windows-x86_64.pdb`, and the latest file, release file and archive of each of the four targets. A missing or unknown file, or update files of one target that do not belong together, stop the command; the error names each file.
+- The third argument is the new output directory. It must not exist; a failure leaves no output directory. The command does not change the release directory.
+- The tag is always `v<version>`. `--title` and `--notes` set the title (default `Junto <version>`) and the notes file (default `docs/releases/<version>.md`). `--prerelease` publishes a test release as a pre-release and prints the command of its later promotion to the newest release, with `--final-title` and `--final-notes`; the promotion changes no file.
 
-The output holds `index.html`, `notes/<version>.html`, `download/<version>/` with the first-install files, the symbols file and `SHA256SUMS`, and `updates/` with the archives and release files of every version and the newest latest file of each target. The command prints every file with its size and, last, the order of upload: every file except `updates/latest-*.json`, then the latest files.
+The output holds every file and `SHA256SUMS`, which lists every file except the latest files. The command prints every file with its size and the publication: `gh release create` of a draft with every file and the notes, then `gh release edit --draft=false --latest`. Keep the output directory: the freshness renewal reads it.

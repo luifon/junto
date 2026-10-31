@@ -29,8 +29,8 @@ pub enum UpdateWay {
 pub(super) struct InstallState {
     action: Option<Install>,
     way: Option<UpdateWay>,
-    /// The download page of the release site, when the source is its `updates/` directory.
-    site: Option<String>,
+    /// The page of the newest release of the source, where a person downloads it.
+    download_page: Option<String>,
     working: bool,
     installed: bool,
     status: Option<String>,
@@ -72,7 +72,7 @@ impl InstallState {
             state.way = Some(UpdateWay::NoSource);
             return state;
         };
-        state.site = source.site().map(String::from);
+        state.download_page = source.download_page().map(String::from);
         if junto_client_core::releases::install::running_from_system_package() {
             state.way = Some(UpdateWay::SystemPackage);
             return state;
@@ -209,9 +209,9 @@ impl AppState {
             .unwrap_or(UpdateWay::NoSource)
     }
 
-    /// The download page of the release site of this build.
-    pub fn release_site(&self) -> Option<&str> {
-        self.update_install.site.as_deref()
+    /// The page of the newest release of the source of this build.
+    pub fn download_page(&self) -> Option<&str> {
+        self.update_install.download_page.as_deref()
     }
 
     /// An update is being downloaded and installed.
@@ -272,12 +272,12 @@ impl AppState {
     pub fn show_update_way_fixture(
         &mut self,
         way: UpdateWay,
-        site: Option<&str>,
+        download_page: Option<&str>,
         installed: bool,
         cx: &mut Context<Self>,
     ) {
         self.update_install.way = Some(way);
-        self.update_install.site = site.map(str::to_owned);
+        self.update_install.download_page = download_page.map(str::to_owned);
         self.update_install.installed = installed;
         if installed {
             self.update_install.status = Some(txt::installed(

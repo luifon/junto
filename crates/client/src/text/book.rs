@@ -221,7 +221,7 @@ pub const RESTART_JUNTO: &str = "Restart Junto";
 pub const COPY_COMMAND: &str = "Copy command";
 pub const DOWNLOAD_PAGE: &str = "Address of the download page";
 
-/// The name of the Debian package of a version, as the release site offers it (ADR 0727).
+/// The name of the Debian package of a version, as its release offers it (ADR 0727).
 pub fn deb_name(version: Version) -> String {
     format!("junto_{version}_amd64.deb")
 }

@@ -130,10 +130,18 @@ impl Release {
         };
         sign_archive(&archive, &mut manifest, &self.release).unwrap();
         let wire = sign_manifest(&manifest, &self.release, &self.freshness).unwrap();
-        self.files.insert(archive_name, fs::read(&archive).unwrap());
-        self.files.insert(self.target.release(parsed), wire.clone());
+        let tag = releases::tag(parsed);
+        self.files.insert(
+            format!("download/{tag}/{archive_name}"),
+            fs::read(&archive).unwrap(),
+        );
+        self.files.insert(
+            format!("download/{tag}/{}", self.target.release(parsed)),
+            wire.clone(),
+        );
         if newest {
-            self.files.insert(self.target.latest(), wire);
+            self.files
+                .insert(format!("latest/download/{}", self.target.latest()), wire);
         }
     }
     /// The installation of `version` as a person places it from the first-install package.
@@ -151,7 +159,7 @@ impl Release {
     }
 }
 
-/// Serves the files of a release by their names and records the names asked for.
+/// Serves the files of the releases by their paths and records the paths asked for.
 async fn serve(files: HashMap<String, Vec<u8>>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}/", listener.local_addr().unwrap());
@@ -222,10 +230,10 @@ async fn an_appimage_is_replaced_while_its_file_is_open_and_rolled_back() {
     assert_eq!(
         *asked.lock().unwrap(),
         [
-            format!("latest-linux-appimage-{arch}.json"),
-            format!("junto-2.0.0-linux-appimage-{arch}.junto"),
-            format!("release-1.0.0-linux-appimage-{arch}.json"),
-            format!("junto-1.0.0-linux-appimage-{arch}.junto"),
+            format!("latest/download/latest-linux-appimage-{arch}.json"),
+            format!("download/v2.0.0/junto-2.0.0-linux-appimage-{arch}.junto"),
+            format!("download/v1.0.0/release-1.0.0-linux-appimage-{arch}.json"),
+            format!("download/v1.0.0/junto-1.0.0-linux-appimage-{arch}.junto"),
         ]
     );
     let update = app

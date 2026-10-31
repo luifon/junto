@@ -29,10 +29,9 @@ pub(crate) struct BookUi {
     page: Entity<InputState>,
     /// The address that the field holds.
     page_shown: Option<String>,
-    /// The address of the download page of the release site, as text that a person can
-    /// select.
-    site: Entity<InputState>,
-    site_shown: Option<String>,
+    /// The address of the page of the newest release, as text that a person can select.
+    download_page: Entity<InputState>,
+    download_page_shown: Option<String>,
     /// The address that was given to the clipboard while the settings are open.
     copied: Option<String>,
     /// The position of the open section of the settings.
@@ -47,13 +46,13 @@ impl BookUi {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         let page = Field::state("", window, cx);
         page.update(cx, |field, cx| field.set_readonly(true, cx));
-        let site = Field::state("", window, cx);
-        site.update(cx, |field, cx| field.set_readonly(true, cx));
+        let download_page = Field::state("", window, cx);
+        download_page.update(cx, |field, cx| field.set_readonly(true, cx));
         Self {
             page,
             page_shown: None,
-            site,
-            site_shown: None,
+            download_page,
+            download_page_shown: None,
             copied: None,
             settings_scroll: ScrollHandle::new(),
             settings_nav_scroll: ScrollHandle::new(),
@@ -657,7 +656,7 @@ impl Shell {
         let installed = state.update_installed();
         let can_install = state.can_install_update();
         let status = state.update_install_status().map(str::to_owned);
-        let site = state.release_site().map(str::to_owned);
+        let download_page = state.download_page().map(str::to_owned);
         let available = match &version.check {
             CheckShown::Available { version, .. } => Some(*version),
             _ => None,
@@ -752,8 +751,8 @@ impl Shell {
                             .into_any_element(),
                     );
                 }
-                if let Some(site) = site {
-                    parts.extend(self.render_site_address(site, theme, window, cx));
+                if let Some(download_page) = download_page {
+                    parts.extend(self.render_download_page(download_page, theme, window, cx));
                 }
             }
             (_, None) => parts.push(
@@ -769,21 +768,21 @@ impl Shell {
 
     /// The address of the download page in a field that takes no change, with "Copy
     /// address". The client opens no browser.
-    fn render_site_address(
+    fn render_download_page(
         &mut self,
-        site: String,
+        download_page: String,
         _theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        if self.book.site_shown.as_deref() != Some(site.as_str()) {
-            let shown = site.clone();
+        if self.book.download_page_shown.as_deref() != Some(download_page.as_str()) {
+            let shown = download_page.clone();
             self.book
-                .site
+                .download_page
                 .update(cx, |field, cx| field.set_value(shown, window, cx));
-            self.book.site_shown = Some(site.clone());
+            self.book.download_page_shown = Some(download_page.clone());
         }
-        let copied = self.book.copied.as_deref() == Some(site.as_str());
+        let copied = self.book.copied.as_deref() == Some(download_page.as_str());
         vec![
             div()
                 .flex()
@@ -791,9 +790,12 @@ impl Shell {
                 .items_center()
                 .gap(u(8.0))
                 .mt(u(8.0))
-                .child(div().flex_1().min_w_0().child(
-                    Field::new(&self.book.site, txt::DOWNLOAD_PAGE).selector("download-page"),
-                ))
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Field::new(&self.book.download_page, txt::DOWNLOAD_PAGE)
+                            .selector("download-page"),
+                    ),
+                )
                 .child(
                     Button::new("copy-download-page")
                         .label(if copied {
@@ -806,8 +808,8 @@ impl Shell {
                         .h(u(32.0))
                         .px(u(12.0))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(site.clone()));
-                            this.book.copied = Some(site.clone());
+                            cx.write_to_clipboard(ClipboardItem::new_string(download_page.clone()));
+                            this.book.copied = Some(download_page.clone());
                             cx.notify();
                         })),
                 )

@@ -420,7 +420,7 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
     // update, expanded and collapsed (ADR 0780).
     {
         use junto_client::state::update_install::UpdateWay;
-        const SITE: &str = "https://releases.example.test/junto/";
+        const DOWNLOAD_PAGE: &str = "https://releases.example.test/junto/latest";
         let ways: [(&'static str, UpdatesKnown, UpdateWay, bool); 9] = [
             (
                 "book-version-current",
@@ -485,7 +485,7 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
             studio.draw(Screen::new(name, three_servers(0)), move |shell, _, cx| {
                 show_updates(shell, updates, cx);
                 shell.state().clone().update(cx, |state, cx| {
-                    state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                    state.show_update_way_fixture(way, Some(DOWNLOAD_PAGE), installed, cx);
                     if collapsed {
                         state.set_server_book_collapsed(true, cx);
                     }
@@ -507,7 +507,7 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
                 move |shell, window, cx| {
                     show_updates(shell, available(Some(PAGE)), cx);
                     shell.state().clone().update(cx, |state, cx| {
-                        state.show_update_way_fixture(way, Some(SITE), installed, cx);
+                        state.show_update_way_fixture(way, Some(DOWNLOAD_PAGE), installed, cx);
                     });
                     shell.open_version_settings(window, cx);
                 },

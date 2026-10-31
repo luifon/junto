@@ -350,14 +350,11 @@ def update_lines(output, versions, *, restarted=False):
 
 def requests(system, kind, arch, versions):
     """The requests of an update from the first version to the second, as the window makes
-    them: the latest metadata of the check, the latest metadata of the update action, the new
-    archive, then the metadata and archive of the installed version for the rollback."""
+    them, with the redirects of the source: the latest file of the check, the latest file of
+    the update action, the new archive, then the release file and archive of the installed
+    version for the rollback."""
     current, new = versions
-    return [f"/latest-{system}-{kind}-{arch}.json",
-            f"/latest-{system}-{kind}-{arch}.json",
-            f"/junto-{new}-{system}-{kind}-{arch}.junto",
-            f"/release-{current}-{system}-{kind}-{arch}.json",
-            f"/junto-{current}-{system}-{kind}-{arch}.junto"]
+    return release_tools.update_requests(f"{system}-{kind}-{arch}", current, new, checks=1)
 
 
 def contents(path):
@@ -452,14 +449,11 @@ def check(parent, system, files, *, signing=None):
         work = root / kind
         work.mkdir()
         source = work / "source"
-        source.mkdir()
         for index, version in enumerate(built):
             published = work / f"release-{index}"
             release_tools.package(packager, files, packages[index] / f"package-{kind}", published,
                                   version, system, kind, arch)
-            for path in published.iterdir():
-                if index == 1 or not path.name.startswith("latest-"):
-                    shutil.copy2(path, source / path.name)
+            release_tools.publish_into(source, published, version)
         installed = work / "installed"
         installed.mkdir()
         if system == "macos":

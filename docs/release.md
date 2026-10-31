@@ -1,15 +1,18 @@
 # Release Junto
 
 A release names one reviewed commit, one workspace version and its packages and server
-images. The commands below prepare files; the operator supplies the release host, registry
-and private signing environment. The repository does not currently publish releases
-through a tag or scheduled job.
+images. The commands below prepare files; the operator supplies the registry and the
+private signing environment, and publishes the GitHub release. The repository does not
+publish releases through a tag or scheduled job.
 
 ## Before the first release
 
-Choose a stable HTTPS release directory and an image registry. Clients compile that
-HTTPS address as `JUNTO_UPDATE_SOURCE`; changing it later does not redirect clients that
-are already installed. Keep earlier archives at that address for recovery.
+The update source and the download location are the GitHub releases of the public
+repository (ADR 0724, ADR 0727). Every build compiles
+`JUNTO_UPDATE_SOURCE=https://github.com/luifon/junto/releases/`; changing it later does not
+move clients that are already installed. The release of version V has the tag `v<V>` and
+keeps its files: clients download the installed version from it for a rollback. Choose an
+image registry for the server images.
 
 Follow [the key and certificate instructions](../packaging/README.md#keys) to create
 separate release and freshness keys and the permanent macOS signing identity. Track only
@@ -18,10 +21,12 @@ separate release and freshness keys and the permanent macOS signing identity. Tr
 files do not make an installable update source. Keep the private material outside the
 checkout and the release host, with encrypted backups.
 
-Arrange renewal of freshness information before its 30-day expiry. The renewal signer
-needs the retained, verified release files and the freshness key; it needs no release key.
-The repository supplies the renewal command, but installs no scheduled job or hosting
-credentials. [Packaging](../packaging/README.md#freshness) describes rotation and renewal.
+Arrange renewal of freshness information before its 30-day expiry: run
+`packaging/renew_freshness.py` at most 21 days after the last statement. The renewal signer
+needs the retained release files, the release tool of the release and the freshness key;
+it needs no release key. The repository supplies the renewal command, but installs no
+scheduled job or credentials. [Packaging](../packaging/README.md#freshness) describes
+rotation and renewal.
 
 ## Choose and verify the commit
 
@@ -85,20 +90,18 @@ registry digests, and models needed to reproduce or restore that deployment.
 
 ## Publish and check
 
-Upload immutable versioned archives, metadata and first-install packages first. Verify
-that they can be fetched from the chosen HTTPS source. Replace each target's `latest-…json`
-only after its referenced archive is present, using an atomic replacement supported by
-the host. Retain the previous versioned files; overwriting a latest pointer does not
-replace those files. Do not upload a private key, keychain, signing password or test key.
-
-Write the release site with `packaging/site.py` from the retained release directories of
-every published version and the notes in `docs/releases/`, as described in
-[the release site](../packaging/README.md#the-release-site) and ADR 0727. Its `updates/`
-directory is the update source, `<base>updates/`, that the builds compile. Upload the site
-in the order that the command prints: every file except `updates/latest-*.json`, then the
-latest files. The GitHub release of the tag gets the files of `download/<version>/` of the
-site (the first-install files, the symbols file and `SHA256SUMS`), and the notes file
-`docs/releases/<version>.md` as its text.
+Copy every file of the release from every build system into one directory and collect
+them with `packaging/release_assets.py`, as described in
+[the GitHub release](../packaging/README.md#the-github-release) and ADR 0727. It checks the
+set of files, writes `SHA256SUMS` and prints the publication: a draft release of the tag
+`v<version>` with every file and the notes `docs/releases/<version>.md`, then its
+publication as the newest release. A test release is published under the same tag as a
+pre-release (`--prerelease`), which no client is offered, and later edited into the newest
+release without a change of its files. The files of a draft are not served, so every latest
+file becomes available with the archives that it names. Never replace or delete a file of
+an earlier release; only the freshness renewal replaces the latest files of the newest
+release. Keep the output directory as the retained files of the release. Do not upload a
+private key, keychain, signing password or test key.
 
 Test a first install and an update from the preceding supported release through the
 public source on every system. Check signature verification, the displayed version,
