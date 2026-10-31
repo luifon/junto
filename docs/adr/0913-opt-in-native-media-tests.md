@@ -120,3 +120,5 @@ administrator, and does not test the drivers of real cameras.
 They are separate from default CI and from generated-media regression tests. Native results
 do not establish packaged-app permission identity, acoustic quality, physical
 device reconnection or behavior on other operating systems.
+
+The verified-device guard disarms its callbacks and active count synchronously with OpenStream cancellation. It preserves the underlying stream owner, whose native close is supervised; a retained output callback produces silence immediately after the guard is dropped, including a callback that finishes filling after disarm.
