@@ -63,6 +63,8 @@ struct State {
     /// Reports a failure of the open input stream, as a disconnected device does.
     input_failed: Option<Failed>,
     output_failed: Option<Failed>,
+    input_stall: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
+    output_stall: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
 }
 
 /// A host with a fake device list. Every clone shares one state.
@@ -94,12 +96,29 @@ impl SyntheticHost {
                 played_format: None,
                 input_failed: None,
                 output_failed: None,
+                input_stall: None,
+                output_stall: None,
             })),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn stall_next_stop(
+        &self,
+        input: bool,
+    ) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+        let (release, held) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel();
+        let mut state = self.lock();
+        if input {
+            state.input_stall = Some((held, done));
+        } else {
+            state.output_stall = Some((held, done));
+        }
+        (release, finished)
     }
 
     /// Adds a second microphone with another tone.
@@ -278,7 +297,7 @@ impl Ticker {
                 // The ticks follow the clock, so a late tick is made up and the rate of the
                 // device holds over time.
                 let due = (started.elapsed().as_millis() / 10) as u32;
-                while done < due {
+                while done < due && !stopped.load(Ordering::Acquire) {
                     tick();
                     done += 1;
                 }
@@ -289,6 +308,17 @@ impl Ticker {
             stop,
             thread: Some(thread),
         }
+    }
+}
+
+struct Stalled {
+    held: std::sync::mpsc::Receiver<()>,
+    done: std::sync::mpsc::Sender<()>,
+}
+impl Drop for Stalled {
+    fn drop(&mut self) {
+        let _ = self.held.recv_timeout(Duration::from_secs(120));
+        let _ = self.done.send(());
     }
 }
 
@@ -332,6 +362,7 @@ impl AudioHost for SyntheticHost {
             .ok_or(AudioError::NoDevice)?;
         state.input_failed = Some(failed);
         let voice = Self::voice(&mut state, &info.id.0);
+        let stall = state.input_stall.take();
         drop(state);
         let rate = u64::from(tone.format.sample_rate);
         let channels = usize::from(tone.format.channels);
@@ -361,7 +392,13 @@ impl AudioHost for SyntheticHost {
             drop(voice);
             deliver(&buffer, tone.format);
         });
-        Ok(OpenStream::new(info, ticker))
+        let stop = ticker.stop.clone();
+        let stream =
+            OpenStream::new(info, ticker).on_cancel(move || stop.store(true, Ordering::Release));
+        Ok(match stall {
+            Some((held, done)) => stream.keep_alive(Stalled { held, done }),
+            None => stream,
+        })
     }
 
     fn open_output(
@@ -388,6 +425,7 @@ impl AudioHost for SyntheticHost {
         state.played_format = Some(format);
         state.played.clear();
         state.output_failed = Some(failed);
+        let stall = state.output_stall.take();
         drop(state);
         let shared = self.state.clone();
         let mut buffer = vec![0.0f32; 480 * 2];
@@ -400,7 +438,13 @@ impl AudioHost for SyntheticHost {
             let surplus = state.played.len().saturating_sub(kept);
             state.played.drain(..surplus);
         });
-        Ok(OpenStream::new(info, ticker))
+        let stop = ticker.stop.clone();
+        let stream =
+            OpenStream::new(info, ticker).on_cancel(move || stop.store(true, Ordering::Release));
+        Ok(match stall {
+            Some((held, done)) => stream.keep_alive(Stalled { held, done }),
+            None => stream,
+        })
     }
 }
 

@@ -253,6 +253,8 @@ pub enum CaptureError {
 pub enum CaptureKind {
     Share,
     Camera,
+    Microphone,
+    SoundOutput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -677,6 +677,8 @@ pub fn capture_notice(notice: &junto_media::share::CaptureNotice, limit: u8) -> 
     match notice.kind {
         junto_media::share::CaptureKind::Share => share_ended(&notice.error, limit),
         junto_media::share::CaptureKind::Camera => "Junto stopped sending your camera, but could not confirm that its capture stopped. If you are still in the call, you can leave it. Restart Junto before turning the camera on again.".to_owned(),
+        junto_media::share::CaptureKind::Microphone => "Junto stopped sending your microphone, but could not confirm that its device stopped. If you are still in the call, you can leave it. Restart Junto before opening the microphone again.".to_owned(),
+        junto_media::share::CaptureKind::SoundOutput => "Junto could not confirm that the call's sound device stopped. If you are still in the call, you can leave it. Restart Junto before starting another call.".to_owned(),
     }
 }
 

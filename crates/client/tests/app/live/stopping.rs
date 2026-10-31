@@ -119,3 +119,63 @@ fn stalled_capture(cx: &mut TestAppContext, camera: bool) {
         finished.recv_timeout(PATIENCE).unwrap();
     }
 }
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_stalled_microphone_or_output_reports_cleanup_after_leave(cx: &mut TestAppContext) {
+    use junto_media::engine::{MicrophoneState, OutputState};
+    use junto_media::share::CaptureKind;
+    let world = World::new();
+    let server = world.server_with_media("Sound stop");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    for input in [true, false] {
+        let (release, finished) = window.sound.stall_next_stop(input);
+        window.click("join-call");
+        window.until("sound devices running", |window| {
+            window.state.read_with(&window.cx, |state, _| {
+                state.media_calls().call.is_some_and(|call| {
+                    call.phase == Phase::Connected
+                        && call.microphone == MicrophoneState::Running
+                        && call.output == OutputState::Running
+                })
+            })
+        });
+        window.click("leave-call");
+        window.until("Leave completes with a held sound destructor", |window| {
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().call.is_none())
+                && own(window).is_none()
+        });
+        window.until(
+            "sound cleanup failure remains visible after Leave",
+            |window| {
+                window.state.read_with(&window.cx, |state, _| {
+                    state
+                        .calls()
+                        .view()
+                        .share_stop_failed
+                        .is_some_and(|notice| {
+                            notice.kind
+                                == if input {
+                                    CaptureKind::Microphone
+                                } else {
+                                    CaptureKind::SoundOutput
+                                }
+                        })
+                }) && window.shows("share-notice")
+            },
+        );
+        assert!(
+            finished.try_recv().is_err(),
+            "the native destructor was not held"
+        );
+        window.click("dismiss-share-notice");
+        assert!(!window.shows("share-notice"));
+        let _ = release.send(());
+        finished.recv_timeout(PATIENCE).unwrap();
+    }
+}

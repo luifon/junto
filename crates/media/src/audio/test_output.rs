@@ -48,10 +48,6 @@ impl AudioHost for TestOutput {
                 .recv();
         }
         let stream = self.host.open_output(device, fill, failed)?;
-        let device = stream.device.clone();
-        Ok(OpenStream::new(
-            device,
-            (stream, Closed(self.closed.clone())),
-        ))
+        Ok(stream.keep_alive(Closed(self.closed.clone())))
     }
 }

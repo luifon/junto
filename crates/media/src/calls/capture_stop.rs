@@ -142,3 +142,45 @@ impl crate::camera::CameraSink for CameraSink {
             .send_modify(|view| view.share_stop_failed = Some(notice));
     }
 }
+
+pub(super) fn reporting_audio(
+    host: Arc<dyn crate::audio::AudioHost>,
+    view: watch::Sender<CallsView>,
+) -> Arc<dyn crate::audio::AudioHost> {
+    Arc::new(Audio { host, view })
+}
+struct Audio {
+    host: Arc<dyn crate::audio::AudioHost>,
+    view: watch::Sender<CallsView>,
+}
+impl crate::audio::AudioHost for Audio {
+    fn devices(&self) -> Result<crate::audio::Devices, crate::audio::AudioError> {
+        self.host.devices()
+    }
+    fn open_input(
+        &self,
+        device: Option<&crate::audio::DeviceId>,
+        deliver: crate::audio::host::Deliver,
+        failed: crate::audio::host::Failed,
+    ) -> Result<crate::audio::OpenStream, crate::audio::AudioError> {
+        let view = self.view.clone();
+        self.host.open_input(device, deliver, failed).map(|stream| {
+            stream.reporting(crate::share::CaptureKind::Microphone, move |notice| {
+                view.send_modify(|view| view.share_stop_failed = Some(notice));
+            })
+        })
+    }
+    fn open_output(
+        &self,
+        device: Option<&crate::audio::DeviceId>,
+        fill: crate::audio::host::Fill,
+        failed: crate::audio::host::Failed,
+    ) -> Result<crate::audio::OpenStream, crate::audio::AudioError> {
+        let view = self.view.clone();
+        self.host.open_output(device, fill, failed).map(|stream| {
+            stream.reporting(crate::share::CaptureKind::SoundOutput, move |notice| {
+                view.send_modify(|view| view.share_stop_failed = Some(notice));
+            })
+        })
+    }
+}

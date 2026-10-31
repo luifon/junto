@@ -527,8 +527,10 @@ pub struct Calls {
 }
 
 impl Calls {
-    pub fn new(client: Client, options: MediaOptions) -> Self {
+    pub fn new(client: Client, mut options: MediaOptions) -> Self {
         let runtime = client.runtime().handle().clone();
+        let view = watch::Sender::new(CallsView::default());
+        options.host = capture_stop::reporting_audio(options.host, view.clone());
         let (turns_given, turns_taken) = mpsc::unbounded_channel();
         runtime.spawn(turns(runtime.clone(), turns_taken));
         Self {
@@ -538,7 +540,7 @@ impl Calls {
                 runtime,
                 options,
                 shared: Mutex::new(Shared::default()),
-                view: watch::Sender::new(CallsView::default()),
+                view,
                 levels: watch::Sender::new(Levels::default()),
                 main_picture: watch::Sender::new(None),
                 small_pictures: watch::Sender::new(HashMap::new()),
