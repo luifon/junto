@@ -8,8 +8,8 @@
 pub(crate) mod latest;
 pub(crate) mod pixels;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use super::{CaptureError, CaptureSink, ShareQuality};
@@ -20,91 +20,7 @@ pub(crate) use latest::Latest;
 /// in it; the room is for the portions of the capture and for a late reader.
 pub(crate) const CAPACITY: usize = 48_000 * 2 / 5;
 
-/// A call that makes a waiting thread of a capture look at the state of the capture.
-type Waker = Box<dyn Fn() + Send + Sync>;
-
-/// The state of one capture that its threads share.
-#[derive(Default)]
-pub(crate) struct Life {
-    stopped: AtomicBool,
-    /// The owner of the capture stopped it; the sink is not told an end.
-    pub cancelled: AtomicBool,
-    failure: Mutex<Option<CaptureError>>,
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", any(feature = "test-support", test))
-    ))]
-    cleanup_failure: Mutex<Option<CaptureError>>,
-    /// Called when the capture stops, so that no thread waits for a time limit to see it.
-    wakers: Mutex<Vec<Waker>>,
-}
-impl Life {
-    pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
-    }
-    /// Stops the capture. The first stop runs each waker once and drops it; a later stop
-    /// runs none, so that no waker acts on a thread that has ended since.
-    pub fn stop(&self) {
-        let mut held = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
-        self.stopped.store(true, Ordering::Release);
-        let wakers = std::mem::take(&mut *held);
-        drop(held);
-        for wake in wakers {
-            wake();
-        }
-    }
-    /// Calls `wake` when the capture stops, or now when it has stopped.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub fn on_stop(&self, wake: impl Fn() + Send + Sync + 'static) {
-        let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.stopped() {
-            drop(wakers);
-            wake();
-        } else {
-            wakers.push(Box::new(wake));
-        }
-    }
-    pub fn fail(&self, failure: CaptureError) {
-        let mut held = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
-        if !self.stopped() && held.is_none() {
-            *held = Some(failure);
-            drop(held);
-            self.stop();
-        }
-    }
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", any(feature = "test-support", test))
-    ))]
-    pub fn cleanup_failed(&self, failure: CaptureError) {
-        tracing::error!(%failure, "screen capture cleanup failed");
-        let mut held = self
-            .cleanup_failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if held.is_none() {
-            *held = Some(failure);
-        }
-    }
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", any(feature = "test-support", test))
-    ))]
-    pub fn cleanup_result(&self) -> Result<(), CaptureError> {
-        self.cleanup_failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .map_or(Ok(()), Err)
-    }
-    pub fn result(&self) -> Result<(), CaptureError> {
-        self.failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .map_or(Ok(()), Err)
-    }
-}
+pub(crate) use super::life::Life;
 
 /// Delivers pictures on this thread and sound on a thread of its own, so that the
 /// conversion of a large picture does not delay the sound. Both have ended before the
@@ -330,6 +246,7 @@ impl SoundClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn a_stop_wakes_each_waiting_thread_once_and_a_later_waker_at_once() {

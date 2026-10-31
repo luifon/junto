@@ -285,25 +285,6 @@ async fn start(
 
 type Ready<T> = oneshot::Sender<Result<T, CaptureError>>;
 
-pub(crate) fn worker_finished(thread: &std::thread::JoinHandle<()>) -> Result<bool, CaptureError> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows::Win32::System::Threading::WaitForSingleObject;
-
-    // SAFETY: the borrowed join handle keeps the native thread handle open; the wait never blocks.
-    let result = unsafe { WaitForSingleObject(HANDLE(thread.as_raw_handle()), 0) };
-    if result == WAIT_OBJECT_0 {
-        Ok(true)
-    } else if result == WAIT_TIMEOUT {
-        Ok(false)
-    } else {
-        Err(CaptureError::Failed(format!(
-            "could not observe capture worker completion: {}",
-            windows::core::Error::from_thread()
-        )))
-    }
-}
-
 /// A failure is sent as the answer to the start while nobody has an answer yet, so the
 /// start reads the reason and not a closed channel.
 fn finish<T>(life: &Life, ready: &mut Option<Ready<T>>, result: Result<(), CaptureError>) {

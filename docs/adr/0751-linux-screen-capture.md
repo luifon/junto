@@ -54,3 +54,5 @@ A Wayland client cannot enumerate another application's windows or obtain their 
 - [Pinned test backend source](https://github.com/emersion/xdg-desktop-portal-wlr/tree/v0.7.1).
 - [PipeWire stream API](https://docs.pipewire.org/group__pw__stream.html).
 - ADR 0502 and `spikes/audio-capture-linux/RESULT.md`.
+
+Capture cancellation wakes picture delivery and closes the portal asynchronously. Picture, sound, delivery and portal-close workers use the common two-second cleanup supervisor (ADR 0706); dropping the share performs no join on the media engine. Portal proxy creation, Close and connection close share a two-second deadline. Returned errors and timeouts are logged and retained for the visible cleanup notice after Leave.

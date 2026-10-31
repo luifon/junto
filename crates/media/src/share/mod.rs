@@ -6,6 +6,7 @@
 
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(crate) mod delivery;
+pub(crate) mod life;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -19,10 +20,6 @@ pub mod sound;
 pub mod synthetic;
 #[cfg(any(target_os = "windows", test))]
 pub mod windows;
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "linux", any(feature = "test-support", test))
-))]
 pub(crate) mod workers;
 
 use std::any::Any;
@@ -318,10 +315,6 @@ impl CaptureStream {
         }
     }
 
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", any(feature = "test-support", test))
-    ))]
     pub(crate) fn with_stop_result(
         mut self,
         stopped: tokio::sync::oneshot::Receiver<Result<(), CaptureError>>,

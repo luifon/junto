@@ -77,6 +77,9 @@ pub(super) fn run(
         if let Some(ready) = ready.take() {
             let _ = ready.send(Err(failure.clone()));
         }
+        if life.cancelled.load(Ordering::Acquire) {
+            life.cleanup_failed(failure.clone());
+        }
         life.fail(failure);
     }
 }
@@ -244,7 +247,10 @@ fn capture(
             false
         }
     })?;
-    stream.disconnect().map_err(error)?;
+    stream
+        .disconnect()
+        .map_err(error)
+        .inspect_err(|error| life.cleanup_failed(error.clone()))?;
     drop(listener);
     Ok(())
 }

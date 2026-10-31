@@ -298,27 +298,75 @@ impl Portal {
     }
 }
 
-impl Drop for Portal {
-    fn drop(&mut self) {
-        let connection = self.connection.clone();
+impl Portal {
+    pub async fn close(mut self) -> Result<(), CaptureError> {
         let session = self.session.take();
         let pending = self
             .pending
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        close(self.connection.clone(), pending, session).await
+    }
+}
+
+async fn close(
+    connection: Connection,
+    pending: Option<OwnedObjectPath>,
+    session: Option<OwnedObjectPath>,
+) -> Result<(), CaptureError> {
+    let closing = async {
+        let mut failures = Vec::new();
+        for (path, interface) in [(pending, REQUEST), (session, SESSION)] {
+            if let Some(path) = path {
+                let result = async {
+                    let proxy = Proxy::new(&connection, SERVICE, path, interface).await?;
+                    proxy.call::<_, _, ()>("Close", &()).await
+                }
+                .await;
+                if let Err(error) = result {
+                    tracing::error!(%error, interface, "desktop portal object did not close");
+                    failures.push(error.to_string());
+                }
+            }
+        }
+        if let Err(error) = connection.close().await {
+            tracing::error!(%error, "desktop portal connection did not close");
+            failures.push(error.to_string());
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CaptureError::StopFailed(failures.join("; ")))
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), closing)
+        .await
+        .map_err(|_| {
+            CaptureError::StopFailed("the desktop portal did not close within 2 seconds".into())
+        })?
+}
+
+impl Drop for Portal {
+    fn drop(&mut self) {
+        let session = self.session.take();
+        let pending = self
+            .pending
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if session.is_none() && pending.is_none() {
+            return;
+        }
+        let connection = self.connection.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                for (path, interface) in [(pending, REQUEST), (session, SESSION)] {
-                    if let Some(path) = path
-                        && let Ok(proxy) = Proxy::new(&connection, SERVICE, path, interface).await
-                    {
-                        let _ =
-                            tokio::time::timeout(WAIT, proxy.call::<_, _, ()>("Close", &())).await;
-                    }
+                if let Err(error) = close(connection, pending, session).await {
+                    tracing::error!(%error, "desktop portal cleanup failed");
                 }
-                let _ = connection.close().await;
             });
+        } else {
+            tracing::error!("desktop portal cleanup could not start without the media runtime");
         }
     }
 }

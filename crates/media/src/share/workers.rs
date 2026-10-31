@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use super::delivery::Life;
+use super::life::Life;
 use super::{CaptureError, CaptureNotice, CaptureSink};
 
 const STOP_LIMIT: Duration = Duration::from_secs(2);
@@ -16,7 +16,7 @@ pub(crate) struct Workers {
     life: Arc<Life>,
     threads: Vec<JoinHandle<()>>,
     stopped: Option<oneshot::Sender<Result<(), CaptureError>>>,
-    sink: Option<Arc<dyn CaptureSink>>,
+    report: Option<Arc<dyn Fn(CaptureNotice) + Send + Sync>>,
 }
 
 impl Workers {
@@ -27,14 +27,18 @@ impl Workers {
                 life,
                 threads: Vec::new(),
                 stopped: Some(stopped),
-                sink: None,
+                report: None,
             },
             result,
         )
     }
 
     pub fn report_failures_to(&mut self, sink: Arc<dyn CaptureSink>) {
-        self.sink = Some(sink);
+        self.report_failures_with(move |notice| sink.stop_failed(notice));
+    }
+
+    pub fn report_failures_with(&mut self, report: impl Fn(CaptureNotice) + Send + Sync + 'static) {
+        self.report = Some(Arc::new(report));
     }
 
     pub fn spawn(
@@ -44,17 +48,35 @@ impl Workers {
     ) -> Result<(), CaptureError> {
         let life = self.life.clone();
         let name = name.to_owned();
+        let pending = Arc::new(std::sync::Mutex::new(Some(work)));
+        let task = pending.clone();
         let thread = std::thread::Builder::new()
             .name(name.clone())
             .spawn(move || {
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+                let work = task
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(work) = work
+                    && std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err()
+                {
                     let error = CaptureError::Failed(format!("capture worker {name} panicked"));
                     life.cleanup_failed(error.clone());
                     life.fail(error);
                     life.stop();
                 }
-            })
-            .map_err(|error| CaptureError::Failed(error.to_string()))?;
+            });
+        let thread = match thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                // Retain native resources when no worker can take ownership of their destructor.
+                std::mem::forget(pending);
+                let error =
+                    CaptureError::StopFailed(format!("capture worker could not start: {error}"));
+                self.life.cleanup_failed(error.clone());
+                return Err(error);
+            }
+        };
         self.threads.push(thread);
         Ok(())
     }
@@ -67,14 +89,14 @@ impl Drop for Workers {
         let threads = std::mem::take(&mut self.threads);
         let stopped = self.stopped.take();
         let life = self.life.clone();
-        let sink = self.sink.take();
-        let fallback = sink.clone();
+        let report = self.report.take();
+        let fallback = report.clone();
         let result = std::thread::Builder::new()
-            .name("share-stop".into())
+            .name("capture-stop".into())
             .spawn(move || {
                 let result = finish(threads, &life, STOP_LIMIT);
-                if let (Err(error), Some(sink)) = (&result, sink) {
-                    sink.stop_failed(CaptureNotice::new(error.clone()));
+                if let (Err(error), Some(report)) = (&result, report) {
+                    report(CaptureNotice::new(error.clone()));
                 }
                 if let Some(stopped) = stopped {
                     let _ = stopped.send(result);
@@ -82,8 +104,8 @@ impl Drop for Workers {
             });
         if let Err(error) = result {
             tracing::error!("screen capture cleanup could not start: {error}");
-            if let Some(sink) = fallback {
-                sink.stop_failed(CaptureNotice::new(CaptureError::StopFailed(format!(
+            if let Some(report) = fallback {
+                report(CaptureNotice::new(CaptureError::StopFailed(format!(
                     "capture cleanup could not start: {error}"
                 ))));
             }
@@ -98,39 +120,47 @@ fn finish(
 ) -> Result<(), CaptureError> {
     let deadline = Instant::now() + limit;
     let mut errors = Vec::new();
-    loop {
-        let mut index = 0;
-        while index < threads.len() {
-            #[cfg(target_os = "windows")]
-            let finished = super::windows::worker_finished(&threads[index]);
-            #[cfg(not(target_os = "windows"))]
-            let finished: Result<bool, CaptureError> = Ok(threads[index].is_finished());
-            match finished {
-                Ok(true) => drop(threads.swap_remove(index)),
-                Ok(false) => index += 1,
-                Err(error) => {
-                    tracing::error!(%error, "capture worker completion check failed");
-                    errors.push(error.to_string());
-                    drop(threads.swap_remove(index));
+    let (finished, results) = std::sync::mpsc::channel();
+    let mut pending = Vec::new();
+    for thread in threads.drain(..) {
+        let name = thread.thread().name().unwrap_or("unnamed").to_owned();
+        pending.push(name.clone());
+        let finished = finished.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("capture-join".into())
+            .spawn(move || {
+                let result = thread
+                    .join()
+                    .map_err(|_| format!("capture worker {name} panicked"));
+                let _ = finished.send((name, result));
+            })
+        {
+            errors.push(format!(
+                "capture completion observer could not start: {error}"
+            ));
+        }
+    }
+    drop(finished);
+    while !pending.is_empty() {
+        match results.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((name, result)) => {
+                if let Some(index) = pending.iter().position(|pending| *pending == name) {
+                    pending.swap_remove(index);
+                }
+                if let Err(error) = result {
+                    errors.push(error);
                 }
             }
-        }
-        if threads.is_empty() {
-            break;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            for thread in threads {
-                let name = thread.thread().name().unwrap_or("unnamed");
-                let error = format!(
-                    "capture worker {name} did not stop within {limit:?}; restart Junto to release its remaining capture resources"
-                );
-                tracing::error!("{error}");
-                errors.push(error);
+            Err(_) => {
+                for name in pending {
+                    errors.push(format!("capture worker {name} did not stop within {limit:?}; restart Junto to release its remaining capture resources"));
+                }
+                break;
             }
-            break;
         }
-        std::thread::park_timeout(remaining.min(Duration::from_millis(5)));
+    }
+    for error in &errors {
+        tracing::error!("{error}");
     }
     if let Err(error) = life.cleanup_result() {
         errors.push(error.to_string());
@@ -178,6 +208,86 @@ mod tests {
             error.contains("stuck-picture") && error.contains("did not stop"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn thread_local_native_cleanup_is_included_in_the_deadline() {
+        struct NativeCleanup(std::sync::mpsc::Receiver<()>);
+        impl Drop for NativeCleanup {
+            fn drop(&mut self) {
+                let _ = self.0.recv_timeout(Duration::from_secs(5));
+            }
+        }
+        thread_local! {
+            static NATIVE: std::cell::RefCell<Option<NativeCleanup>> = const { std::cell::RefCell::new(None) };
+        }
+        let (release, held) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            NATIVE.with_borrow_mut(|native| *native = Some(NativeCleanup(held)))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "worker never reached native cleanup"
+            );
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        let result = finish(vec![worker], &Life::default(), Duration::from_millis(50));
+        let _ = release.send(());
+        assert!(matches!(result, Err(CaptureError::StopFailed(_))));
+    }
+
+    fn platform_capture_stop(platform: &str) {
+        let (mut workers, result) = Workers::new(Arc::new(Life::default()));
+        let mut releases = Vec::new();
+        let mut returned = Vec::new();
+        for part in ["screen", "window", "sound", "camera"] {
+            let (release, held) = std::sync::mpsc::channel();
+            let (done, stopped) = std::sync::mpsc::channel();
+            workers
+                .spawn(&format!("{platform}-{part}"), move || {
+                    let _ = held.recv_timeout(Duration::from_secs(10));
+                    let _ = done.send(());
+                })
+                .unwrap();
+            releases.push(release);
+            returned.push(stopped);
+        }
+        let before = Instant::now();
+        drop(workers);
+        assert!(before.elapsed() < Duration::from_secs(1));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let result =
+            runtime.block_on(async { tokio::time::timeout(Duration::from_secs(4), result).await });
+        for release in releases {
+            let _ = release.send(());
+        }
+        for stopped in returned {
+            stopped.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let error = result.unwrap().unwrap().unwrap_err().to_string();
+        for part in ["screen", "window", "sound", "camera"] {
+            assert!(error.contains(&format!("{platform}-{part}")), "{error}");
+        }
+    }
+
+    #[test]
+    fn linux_capture_cleanup_does_not_hold_its_owner() {
+        platform_capture_stop("linux");
+    }
+
+    #[test]
+    fn macos_capture_cleanup_does_not_hold_its_owner() {
+        platform_capture_stop("macos");
+    }
+
+    #[test]
+    fn windows_capture_cleanup_does_not_hold_its_owner() {
+        platform_capture_stop("windows");
     }
 
     #[tokio::test(start_paused = true)]
