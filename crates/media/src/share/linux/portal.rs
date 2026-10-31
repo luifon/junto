@@ -9,7 +9,8 @@ use serde::Serialize;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type, Value};
 use zbus::{Connection, Proxy};
 
-use crate::share::{CaptureError, ShareKind};
+use crate::share::{CaptureError, CaptureNotice, CaptureSink, ShareKind};
+use std::sync::Arc;
 
 const SERVICE: &str = "org.freedesktop.portal.Desktop";
 const OBJECT: &str = "/org/freedesktop/portal/desktop";
@@ -34,6 +35,7 @@ pub(super) struct Portal {
     pending: std::sync::Mutex<Option<OwnedObjectPath>>,
     /// The longest wait for the answer to a request that shows no dialog.
     limit: Duration,
+    reporter: Option<Arc<dyn CaptureSink>>,
 }
 
 pub(super) struct Capabilities {
@@ -61,7 +63,12 @@ impl Portal {
             session: None,
             pending: std::sync::Mutex::new(None),
             limit: WAIT,
+            reporter: None,
         })
+    }
+
+    pub fn report_failures_to(&mut self, sink: Arc<dyn CaptureSink>) {
+        self.reporter = Some(sink);
     }
 
     async fn proxy(&self) -> Result<Proxy<'static>, CaptureError> {
@@ -300,6 +307,7 @@ impl Portal {
 
 impl Portal {
     pub async fn close(mut self) -> Result<(), CaptureError> {
+        self.reporter = None;
         let session = self.session.take();
         let pending = self
             .pending
@@ -325,8 +333,13 @@ async fn close(
                 }
                 .await;
                 if let Err(error) = result {
-                    tracing::error!(%error, interface, "desktop portal object did not close");
-                    failures.push(error.to_string());
+                    if matches!(&error, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.DBus.Error.UnknownObject")
+                    {
+                        tracing::debug!(%error, interface, "desktop portal object already closed");
+                    } else {
+                        tracing::error!(%error, interface, "desktop portal object did not close");
+                        failures.push(error.to_string());
+                    }
                 }
             }
         }
@@ -359,14 +372,24 @@ impl Drop for Portal {
             return;
         }
         let connection = self.connection.clone();
+        let reporter = self.reporter.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 if let Err(error) = close(connection, pending, session).await {
                     tracing::error!(%error, "desktop portal cleanup failed");
+                    if let Some(reporter) = reporter {
+                        reporter.stop_failed(CaptureNotice::new(error));
+                    }
                 }
             });
         } else {
-            tracing::error!("desktop portal cleanup could not start without the media runtime");
+            let error = CaptureError::StopFailed(
+                "desktop portal cleanup could not start without the media runtime".into(),
+            );
+            tracing::error!(%error);
+            if let Some(reporter) = reporter {
+                reporter.stop_failed(CaptureNotice::new(error));
+            }
         }
     }
 }

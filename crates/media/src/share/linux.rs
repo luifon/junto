@@ -88,6 +88,7 @@ async fn start(
         return Err(error("unsupported share frame rate"));
     }
     let mut portal = portal::Portal::connect().await?;
+    portal.report_failures_to(sink.clone());
     let parent = request.dialog_parent.as_deref().unwrap_or_default();
     let (source, mut closed) = portal.start(kind, parent).await?;
     let life = Arc::new(Life::default());
@@ -120,8 +121,15 @@ async fn start(
             let _ = closed_portal.send(result);
         }
     });
-    workers.spawn("linux-share-portal", move || {
-        let _ = portal_closed.blocking_recv();
+    workers.spawn("linux-share-portal", {
+        let life = life.clone();
+        move || {
+            if let Err(error) = portal_closed.blocking_recv() {
+                life.cleanup_failed(CaptureError::StopFailed(format!(
+                    "desktop portal cleanup ended without a result: {error}"
+                )));
+            }
+        }
     })?;
     let (ready, first_frame) = oneshot::channel();
     workers.spawn("linux-share-picture", {
