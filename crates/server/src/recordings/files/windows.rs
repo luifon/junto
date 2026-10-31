@@ -11,8 +11,7 @@ use std::time::UNIX_EPOCH;
 
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH,
-    MoveFileExW,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
 use super::{Place, piece_number};
@@ -54,7 +53,7 @@ fn reparse(metadata: &fs::Metadata) -> bool {
 fn pin(path: &Path) -> io::Result<File> {
     let directory = OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     let metadata = directory.metadata()?;

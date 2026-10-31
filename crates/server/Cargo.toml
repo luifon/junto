@@ -64,7 +64,7 @@ url = "2"
 rustix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tower = { version = "=0.5.3", features = ["util"] }
@@ -72,7 +72,7 @@ junto-setup = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 
 # The workspace forbids unsafe code. This crate denies it and allows it in Windows-only
-# modules for free space (ADR 0605), non-replacing file renames (ADR 0606), and the end of the
+# modules for free space (ADR 0605), file storage (ADR 0606), and the end of the
 # process that started the server (ADR 0915).
 [lints.rust]
 unsafe_code = "deny"
