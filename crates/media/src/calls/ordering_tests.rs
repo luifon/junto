@@ -96,6 +96,7 @@ fn fixture() -> Fixture {
         }],
     };
     let answer = CallJoin {
+        listen_only: false,
         cursor: Some(Cursor {
             epoch: StreamEpoch::generate(),
             position: 45,
@@ -443,6 +444,8 @@ async fn a_model_without_the_current_participant_revokes_admission() {
 async fn a_move_present_in_the_refreshed_model_is_started_without_its_notice() {
     let mut f = fixture();
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.model.account.id,
         from: f.session.target.place,
@@ -1988,6 +1991,8 @@ async fn renewal_waits_for_its_answer_when_the_old_seat_ends() {
 
 fn a_move(f: &Fixture) -> CallMove {
     CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.model.account.id,
         from: f.session.target.place,
@@ -2879,6 +2884,8 @@ async fn a_move_that_is_told_while_a_login_runs_is_followed() {
     // (ADR 0787), so the move can arrive while the device holds no session.
     assert!(f.session.server.account().is_none());
     let call_move = CallMove {
+        destination_identity: None,
+        afk: false,
         id: CallMoveId::generate(),
         account_id: f.session.grants.account_id,
         from: f.session.target.place,

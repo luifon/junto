@@ -1043,7 +1043,7 @@ async fn a_snapshot_and_the_events_after_its_cursor_give_the_live_state() {
 
     let live = sorted(server.snapshot(&member).await);
     assert_eq!(live.workspaces[0].workspace.name, "Renamed");
-    assert_eq!(live.workspaces[0].channels.len(), 2 + 16);
+    assert_eq!(live.workspaces[0].channels.len(), 3 + 16);
     assert!(
         snapshots
             .windows(2)
@@ -1098,7 +1098,7 @@ async fn a_snapshot_holds_only_what_the_caller_may_see() {
     assert!(of(&inside).roles[0].is_everyone);
 
     assert!(of(&outside).own_role_ids.is_empty());
-    assert_eq!(of(&outside).channels.len(), 2);
+    assert_eq!(of(&outside).channels.len(), 3);
     let text = server.get(&outsider, "/api/v1/snapshot").await.text();
     assert!(!text.contains(&secret.id.to_string()));
     assert!(!text.contains("secret-plans"));

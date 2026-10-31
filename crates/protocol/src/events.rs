@@ -292,7 +292,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 16;
+pub const EVENT_REVISION: u32 = 17;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -409,6 +409,9 @@ pub enum Event {
     /// The device withdrew its waiting request, or its key got an account in another way.
     JoinRequestWithdrawn {
         join_request_id: JoinRequestId,
+    },
+    WorkspaceAfkChanged {
+        workspace_id: WorkspaceId,
     },
     WorkspaceCreated {
         workspace: Workspace,
@@ -830,6 +833,7 @@ impl Event {
         "join_request_created",
         "join_request_decided",
         "join_request_withdrawn",
+        "workspace_afk_changed",
         "workspace_created",
         "workspace_updated",
         "workspace_member_added",
@@ -936,6 +940,7 @@ impl Event {
             Self::JoinRequestCreated { .. } => "join_request_created",
             Self::JoinRequestDecided { .. } => "join_request_decided",
             Self::JoinRequestWithdrawn { .. } => "join_request_withdrawn",
+            Self::WorkspaceAfkChanged { .. } => "workspace_afk_changed",
             Self::WorkspaceCreated { .. } => "workspace_created",
             Self::WorkspaceUpdated { .. } => "workspace_updated",
             Self::WorkspaceMemberAdded { .. } => "workspace_member_added",
@@ -1350,6 +1355,7 @@ mod tests {
             Event::JoinRequestWithdrawn {
                 join_request_id: JoinRequestId::generate(),
             },
+            Event::WorkspaceAfkChanged { workspace_id },
             Event::WorkspaceCreated {
                 workspace: workspace.clone(),
             },
@@ -1479,6 +1485,8 @@ mod tests {
             },
             Event::CallMoveRequested {
                 call_move: CallMove {
+                    destination_identity: None,
+                    afk: false,
                     id: CallMoveId::generate(),
                     account_id,
                     from: place,

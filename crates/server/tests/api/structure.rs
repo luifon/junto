@@ -850,7 +850,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
     let categories: Vec<&str> = list.categories.iter().map(|c| c.name.as_str()).collect();
     assert!(categories.is_empty());
     let names: Vec<&str> = list.channels.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["general", "voice", "roadmap"]);
+    assert_eq!(names, ["general", "voice", "AFK", "roadmap"]);
 
     server
         .post(

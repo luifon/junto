@@ -2917,6 +2917,72 @@
         ]
       }
     },
+    "/api/v1/call/idle": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "report_idle",
+        "parameters": [
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportCallIdle"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallMove"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/call/invitations/{invitation_id}": {
       "delete": {
         "tags": [
@@ -11933,6 +11999,142 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/afk": {
+      "get": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "get_afk",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AfkSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "calls"
+        ],
+        "operationId": "set_afk",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AfkSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AfkSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/archive-period": {
       "get": {
         "tags": [
@@ -14826,6 +15028,28 @@
           }
         }
       },
+      "AfkSettings": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "enabled",
+          "idle_minutes"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "idle_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "AnswerEntryRequest": {
         "type": "object",
         "required": [
@@ -16268,6 +16492,28 @@
             "type": "object",
             "description": "A moderator moved a person into the call of the channel from another voice channel.\nThe entry does not name that channel.",
             "required": [
+              "workspace_id",
+              "settings",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_afk_set"
+                ]
+              },
+              "settings": {
+                "$ref": "#/components/schemas/AfkSettings"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "account_id",
               "action"
             ],
@@ -17444,6 +17690,9 @@
           "identity": {
             "type": "string"
           },
+          "listen_only": {
+            "type": "boolean"
+          },
           "media_url": {
             "type": "string",
             "description": "The address of the media server for the device."
@@ -17525,6 +17774,15 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "afk": {
+            "type": "boolean"
+          },
+          "destination_identity": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_at": {
             "type": "string",
@@ -17718,6 +17976,9 @@
       "Capabilities": {
         "type": "object",
         "properties": {
+          "afk_channel": {
+            "type": "boolean"
+          },
           "channel_topics": {
             "type": "boolean"
           },
@@ -20556,6 +20817,9 @@
             ],
             "description": "True after admission has observed this seat. Absent means not stated by the server (ADR 0517)."
           },
+          "listen_only": {
+            "type": "boolean"
+          },
           "meeting_grant": {
             "type": [
               "boolean",
@@ -21353,6 +21617,34 @@
             }
           }
         }
+      },
+      "ReportCallIdle": {
+        "type": "object",
+        "required": [
+          "call_id",
+          "identity",
+          "system_idle_seconds",
+          "microphone_silent_seconds"
+        ],
+        "properties": {
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "microphone_silent_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "system_idle_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ReportCallState": {
         "type": "object",

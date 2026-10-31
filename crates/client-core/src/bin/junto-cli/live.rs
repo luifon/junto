@@ -1101,7 +1101,7 @@ fn event_details(event: &Event) -> String {
             role_id,
         } => format!("workspace={workspace_id} role={role_id}"),
         Event::ServerRoleDeleted { role_id } => format!("role={role_id}"),
-        Event::WorkspaceDeleted { workspace_id } => format!("workspace={workspace_id}"),
+        Event::WorkspaceDeleted { workspace_id } | Event::WorkspaceAfkChanged { workspace_id } => format!("workspace={workspace_id}"),
         Event::ExportUpdated { export } => {
             format!("export={} state={}", export.id, word(&export.state))
         }

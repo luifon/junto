@@ -64,6 +64,7 @@ pub struct Entered {
     /// The display name of the account at the time of the entry.
     pub name: String,
     pub publishing: Publishing,
+    pub listen_only: bool,
     pub entry_requests: Vec<EntryRequest>,
     pub microphone_block: Option<MicrophoneBlock>,
     pub sound_block: Option<SoundBlock>,
@@ -84,6 +85,7 @@ impl Entered {
             store::blocks_at_join(&mut *connection, &call, account_id).await?;
         Ok(Self {
             meeting_grant: store::meeting_grant(&mut *connection, &call, account_id).await?,
+            listen_only: crate::routes::afk::is_afk(connection, &call.place).await?,
             publishing: store::publishing_at_join(&mut *connection, &call, account_id).await?,
             entry_requests: if shows_requests {
                 store::entry_requests(&mut *connection, now, &call, account_id).await?
@@ -126,6 +128,7 @@ impl Entered {
             .join_token(&grant)
             .map_err(|error| ApiError::internal(&error))?;
         Ok(CallJoin {
+            listen_only: self.listen_only,
             cursor,
             call: self.call,
             media_url: media.client_url().to_owned(),

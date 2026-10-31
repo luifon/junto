@@ -268,6 +268,10 @@ pub enum AuditEvent {
     },
     /// A moderator moved a person into the call of the channel from another voice channel.
     /// The entry does not name that channel.
+    WorkspaceAfkSet {
+        workspace_id: WorkspaceId,
+        settings: crate::structure::AfkSettings,
+    },
     CallMemberMovedIn {
         account_id: AccountId,
     },
@@ -470,6 +474,7 @@ impl AuditEvent {
             Self::CallSoundUnblocked { .. } => "call_sound_unblocked",
             Self::CallMemberDisconnected { .. } => "call_member_disconnected",
             Self::CallMemberMovedOut { .. } => "call_member_moved_out",
+            Self::WorkspaceAfkSet { .. } => "workspace_afk_set",
             Self::CallMemberMovedIn { .. } => "call_member_moved_in",
             Self::RecordingStarted { .. } => "recording_started",
             Self::RecordingStopped { .. } => "recording_stopped",

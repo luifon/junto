@@ -789,6 +789,7 @@ pub(crate) async fn delete_channel_in(
         content,
     })?;
 
+    super::afk::require_replace_before_removal(connection, channel_id).await?;
     let removed = Removed {
         id: channel_id,
         workspace_id: record.channel.workspace_id,

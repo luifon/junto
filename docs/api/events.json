@@ -2077,6 +2077,24 @@
       ],
       "type": "object"
     },
+    "workspace_afk_changed": {
+      "properties": {
+        "type": {
+          "enum": [
+            "workspace_afk_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "workspace_created": {
       "properties": {
         "type": {
@@ -2653,6 +2671,15 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "afk": {
+            "type": "boolean"
+          },
+          "destination_identity": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_at": {
             "format": "date-time",
@@ -3747,6 +3774,24 @@
             },
             "required": [
               "join_request_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "workspace_afk_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
               "type"
             ],
             "type": "object"

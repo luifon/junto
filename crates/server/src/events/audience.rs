@@ -55,7 +55,8 @@ impl Class {
 
     pub const fn of(event: &Event) -> Self {
         match event {
-            Event::DeviceAdded { .. }
+            Event::WorkspaceAfkChanged { .. }
+            | Event::DeviceAdded { .. }
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::JoinRequestWithdrawn { .. }
@@ -814,6 +815,7 @@ impl Audience {
             | Event::JoinRequestWithdrawn { .. } => {
                 permission(ServerPermission::ApproveJoinRequests)
             }
+            Event::WorkspaceAfkChanged { workspace_id } => workspace(*workspace_id),
             Event::WorkspaceCreated { workspace: changed }
             | Event::WorkspaceUpdated { workspace: changed } => workspace(changed.id),
             Event::WorkspaceMemberAdded { workspace_id, .. }
@@ -1857,6 +1859,8 @@ mod tests {
 
         let moved = Event::CallMoveRequested {
             call_move: junto_protocol::call::CallMove {
+                destination_identity: None,
+                afk: false,
                 id: junto_protocol::ids::CallMoveId::generate(),
                 account_id: me.account_id,
                 from: channel(&place),
@@ -2287,4 +2291,17 @@ mod tests {
             audience
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn afk_setting_changes_reach_workspace_members_in_background() {
+    let workspace_id = WorkspaceId::generate();
+    let event = Event::WorkspaceAfkChanged { workspace_id };
+    assert_eq!(Class::of(&event), Class::Control);
+    assert!(Class::of(&event).reaches(Level::Background));
+    assert_eq!(
+        Audience::fixed_by(&event),
+        Some(Audience::Workspace { workspace_id })
+    );
 }

@@ -891,6 +891,15 @@ fn export_line(export: &Export) -> String {
 fn audit_details(event: &AuditEvent) -> Vec<String> {
     use AuditEvent as E;
     match event {
+        E::WorkspaceAfkSet {
+            workspace_id,
+            settings,
+        } => vec![
+            pair("workspace", workspace_id),
+            pair("channel", settings.channel_id),
+            pair("idle_minutes", settings.idle_minutes),
+            pair("enabled", settings.enabled),
+        ],
         E::OwnerClaimed { account_id }
         | E::AccountUnbanned { account_id }
         | E::WorkspaceMemberAdded { account_id }

@@ -139,7 +139,7 @@ async fn rule_40_export_writes_the_structure_of_the_server() {
         junto_protocol::structure_file::STRUCTURE_FORMAT
     );
     assert_eq!(file.workspaces.len(), 1);
-    assert_eq!(file.workspaces[0].channels.len(), 2);
+    assert_eq!(file.workspaces[0].channels.len(), 3);
     assert!(
         printed
             .err
@@ -213,14 +213,23 @@ async fn rule_41_42_plan_changes_nothing_and_a_second_apply_changes_nothing() {
         .unwrap();
     assert_eq!(team.id.to_string(), id(2));
     assert_eq!(team.roles[0].id.to_string(), id(13));
-    assert_eq!(team.channels[0].overrides[0].role.to_string(), id(13));
+    assert_eq!(
+        team.channels
+            .iter()
+            .find(|channel| channel.name == "lobby")
+            .unwrap()
+            .overrides[0]
+            .role
+            .to_string(),
+        id(13)
+    );
     let main_entry = export
         .structure
         .workspaces
         .iter()
         .find(|entry| entry.default)
         .unwrap();
-    assert_eq!(main_entry.channels.len(), 4);
+    assert_eq!(main_entry.channels.len(), 5);
     let hall = main_entry
         .channels
         .iter()
@@ -297,7 +306,7 @@ async fn rule_43_the_export_of_one_server_is_applied_to_an_empty_server() {
     let (source_main, target_main) = (default_of(&source_file), default_of(&target_file));
     assert_ne!(target_main.id, source_main.id);
     assert_eq!(target_main.name, source_main.name);
-    assert_eq!(target_main.channels.len(), source_main.channels.len() + 2);
+    assert_eq!(target_main.channels.len(), source_main.channels.len() + 3);
     for channel in &source_main.channels {
         let copy = target_main
             .channels

@@ -971,7 +971,8 @@ async fn a_first_start_that_runs_again_gives_one_consistent_result() {
     for (table, rows) in [
         ("workspaces", 1),
         ("workspace_roles", 1),
-        ("channels", 2),
+        ("channels", 3),
+        ("workspace_afk", 1),
         ("server_state", 1),
     ] {
         let counted: i64 =

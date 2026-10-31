@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod access_tokens;
+mod afk;
 mod archive;
 mod attachment_permissions;
 mod audit;

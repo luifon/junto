@@ -155,7 +155,10 @@ async fn moderated(
 /// The call that the caller's account is in, when the calling device is the one in it and
 /// the account may still be at the place of the call. A member row alone is not enough: it
 /// can outlive the access until the next admission check.
-async fn own(connection: &mut PgConnection, access: &Access) -> ApiResult<(CallRow, MemberRow)> {
+pub(super) async fn own(
+    connection: &mut PgConnection,
+    access: &Access,
+) -> ApiResult<(CallRow, MemberRow)> {
     let member = store::member_of(&mut *connection, access.account_id, true)
         .await?
         .filter(|member| {
@@ -202,6 +205,7 @@ pub async fn get_own_call(
         Ok(OwnCallView {
             cursor,
             call: Some(OwnCallState {
+                listen_only: super::afk::is_afk(connection, &call.place).await?,
                 inside: Some(store::is_inside(connection, call.id, access.account_id).await?),
                 meeting_grant: store::meeting_grant(connection, &call, access.account_id).await?,
                 own: member.own_call(&call),
@@ -572,6 +576,12 @@ pub async fn report_speaking(
             .ok_or_else(not_in_call)?;
         if !may_be_at(connection, &access, &call.place).await? {
             return Err(not_in_call());
+        }
+        if body.speaking && super::afk::is_afk(connection, &call.place).await? {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "speaking is unavailable in the AFK channel",
+            ));
         }
         let in_a_channel = matches!(call.place, CallPlace::Channel { .. });
         Ok((in_a_channel && member.connected_at.is_some()).then_some((call.id, access.account_id)))
@@ -1596,6 +1606,8 @@ pub async fn move_participant(
         .await
         .map_err(ApiError::concurrent)?;
         let pending = MoveRow {
+            afk_idle_seconds: None,
+            automatic_afk: false,
             id,
             account_id,
             from_call_id: from.id,
@@ -1671,7 +1683,12 @@ pub async fn join_move(
     let entered = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (pending, _, to) = own_move(connection, &access, move_id).await?;
+        let (pending, from, to) = own_move(connection, &access, move_id).await?;
+        if pending.automatic_afk
+            && !super::afk::pending_allowed(connection, &pending, &from.place, &to.place).await?
+        {
+            return Err(ApiError::conflict("the AFK move is no longer eligible"));
+        }
         if pending.expires_at <= now || !may_be_at(connection, &access, &to.place).await? {
             return Err(ApiError::not_found());
         }
@@ -1740,6 +1757,11 @@ pub async fn start_meeting(
             permission: WorkspacePermission::RunMeetingMode,
         })?;
         let (call, _) = inside(connection, &access, &voice).await?;
+        if super::afk::is_afk(connection, &call.place).await? {
+            return Err(ApiError::conflict(
+                "meeting mode is unavailable in the AFK channel",
+            ));
+        }
         match &call.meeting {
             Some(meeting) if meeting.presenter == access.account_id => return Ok(()),
             Some(_) => {

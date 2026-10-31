@@ -19,6 +19,8 @@ pub struct ServerInfo {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Capabilities {
     #[serde(default)]
+    pub afk_channel: bool,
+    #[serde(default)]
     pub channel_topics: bool,
     #[serde(default)]
     pub message_format: crate::message::DocumentFormat,
@@ -56,6 +58,7 @@ mod tests {
     fn absent_topic_capabilities_are_unsupported_and_unknown_capabilities_are_ignored() {
         let mut old = serde_json::json!({ "server_id": ServerId::generate(), "name": "Example Studio", "logo_path": null, "api_versions": [1] });
         let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
+        assert!(!read.capabilities.afk_channel);
         assert!(!read.capabilities.channel_topics);
         assert_eq!(read.capabilities.message_format.event_revision, 0);
         assert_eq!(
@@ -64,6 +67,7 @@ mod tests {
         );
         old["capabilities"] = serde_json::json!({ "future_feature": true });
         let read: ServerInfo = serde_json::from_value(old.clone()).unwrap();
+        assert!(!read.capabilities.afk_channel);
         assert!(!read.capabilities.channel_topics);
         assert_eq!(read.capabilities.message_format.event_revision, 0);
         old["capabilities"]["channel_topics"] = serde_json::json!(true);

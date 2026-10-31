@@ -295,6 +295,10 @@ async fn may_still_move(
     pending: &MoveRow,
     places: [&CallPlace; 2],
 ) -> ApiResult<bool> {
+    if pending.automatic_afk {
+        return crate::routes::afk::pending_allowed(connection, pending, places[0], places[1])
+            .await;
+    }
     let Some(mover) = Access::of_account(&mut *connection, pending.moved_by).await? else {
         return Ok(false);
     };

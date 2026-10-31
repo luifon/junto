@@ -993,6 +993,10 @@ async fn allowed_publishing(
     mut publishing: Publishing,
 ) -> ApiResult<Publishing> {
     use crate::media::TrackSource;
+    if crate::routes::afk::is_afk(connection, &call.place).await? {
+        publishing.sources.clear();
+        return Ok(publishing);
+    }
     use junto_authz::{Request, WorkspacePermission as W};
     if let CallPlace::Channel { channel_id, .. } = call.place {
         let Some(access) = crate::access::Access::of_account(connection, account_id).await? else {
@@ -1257,6 +1261,8 @@ pub async fn end_meeting_without_share(
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct MoveRow {
+    pub afk_idle_seconds: Option<i32>,
+    pub automatic_afk: bool,
     pub id: CallMoveId,
     pub account_id: AccountId,
     pub from_call_id: CallId,
@@ -1266,8 +1272,7 @@ pub struct MoveRow {
     pub expires_at: OffsetDateTime,
 }
 
-pub const MOVE_COLUMNS: &str =
-    "id, account_id, from_call_id, to_call_id, moved_by, identity, expires_at";
+pub const MOVE_COLUMNS: &str = "id, account_id, from_call_id, to_call_id, moved_by, identity, expires_at, automatic_afk, afk_idle_seconds";
 
 /// Ends a move that did not complete and tells the moved person and the person who moved:
 /// nothing changed (ADR 0511). The identity of the move stops being allowed in the
@@ -1325,6 +1330,8 @@ pub async fn tell_access_ended(
 
 pub fn call_move(pending: &MoveRow, from: CallPlace, to: CallPlace) -> CallMove {
     CallMove {
+        destination_identity: pending.automatic_afk.then(|| pending.identity.clone()),
+        afk: pending.automatic_afk,
         id: pending.id,
         account_id: pending.account_id,
         from,

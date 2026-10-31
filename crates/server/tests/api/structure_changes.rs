@@ -524,7 +524,7 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
         other.roles[0].permissions,
         Some(vec![WorkspacePermission::ViewChannel])
     );
-    assert_eq!(other.channels.len(), 1);
+    assert_eq!(other.channels.len(), 2);
     assert_eq!(after.structure.server_roles.len(), 1);
 
     // The single routes show the same objects under the identifiers of the server.
@@ -1068,7 +1068,7 @@ async fn rule_26_an_entry_keeps_the_identifier_that_created_it() {
     assert_eq!(renamed.created, []);
     let export = server.structure(&owner).await;
     let main = default_of(&export);
-    assert_eq!(main.channels.len(), 3);
+    assert_eq!(main.channels.len(), 4);
     let channel = channel_named(main, "renamed");
     assert_eq!((channel.id, channel.position), (plans, Some(4)));
     assert_eq!(channel.category, Some(Some(category)));
@@ -1266,7 +1266,7 @@ async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_
     drop(held);
     let export = server.structure(&owner).await;
     assert_eq!(export.structure.workspaces.len(), 41);
-    assert_eq!(default_of(&export).channels.len(), 302);
+    assert_eq!(default_of(&export).channels.len(), 303);
 
     let mut connection = server.db.acquire().await.unwrap();
     sqlx::query("set enable_seqscan = off")
@@ -1342,9 +1342,14 @@ async fn rule_30_a_new_workspace_has_its_creator_as_member_and_a_named_everyone_
         .find(|entry| entry.id == workspace)
         .unwrap();
     assert_eq!(team.roles[0].id, everyone);
-    assert_eq!(team.channels[0].overrides[0].role, everyone);
+    let private = team
+        .channels
+        .iter()
+        .find(|channel| channel.name == "private")
+        .unwrap();
+    assert_eq!(private.overrides[0].role, everyone);
     assert_eq!(
-        team.channels[0].overrides[0].deny,
+        private.overrides[0].deny,
         [WorkspacePermission::ViewChannel]
     );
 
