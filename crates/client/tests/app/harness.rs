@@ -644,7 +644,8 @@ impl Window {
                 self.cx.executor().now().duration_since(clock_start),
                 self.state
                     .read_with(&self.cx, |state, _| state.calls().view()),
-                self.admin()
+                self.state
+                    .read_with(&self.cx, |state, _| state.admin_view())
             );
             self.pass(Duration::from_millis(20));
         }
