@@ -364,6 +364,7 @@ impl AppState {
         seat: &Seat,
         owner: Owner,
         settings: &AfkSettings,
+        system_idle: Option<Duration>,
     ) -> Option<ReportCallIdle> {
         if self.owner(owner.entry.server_id) != Some(owner)
             || !settings.enabled
@@ -377,14 +378,6 @@ impl AppState {
             .call
             .as_ref()
             .filter(|call| call.phase == Phase::Connected && call.seat() == *seat)?;
-        #[cfg(feature = "test-support")]
-        let system_idle = self
-            .afk
-            .test_idle
-            .map(|(idle, _)| idle)
-            .or_else(|| self.system_idle_duration());
-        #[cfg(not(feature = "test-support"))]
-        let system_idle = self.system_idle_duration();
         let idle = system_idle?;
         let server = self.client.server(call.target.server_id)?;
         let live = server.live().view();
@@ -445,8 +438,18 @@ impl AppState {
         self.afk.task = Some(cx.spawn(async move |this, cx| {
             let result = async {
                 let settings = api.afk_settings(workspace_id).await.ok()?;
+                let reading = this
+                    .update(cx, |this, _| this.read_system_idle_duration())
+                    .ok()?;
+                let idle = reading.await;
+                #[cfg(feature = "test-support")]
+                let idle = this
+                    .update(cx, |this, _| {
+                        this.afk.test_idle.map(|(idle, _)| idle).or(idle)
+                    })
+                    .ok()?;
                 let body = this
-                    .update(cx, |this, _| this.afk_report(&seat, owner, &settings))
+                    .update(cx, |this, _| this.afk_report(&seat, owner, &settings, idle))
                     .ok()??;
                 api.report_call_idle(&body).await.ok()
             }

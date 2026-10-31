@@ -26,3 +26,5 @@ alter table call_moves add column afk_idle_seconds integer
     check (afk_idle_seconds is null or afk_idle_seconds between 300 and 3600);
 alter table call_moves add constraint call_move_afk_duration
     check (automatic_afk = (afk_idle_seconds is not null));
+
+update event_stream set epoch = gen_random_uuid();

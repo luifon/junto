@@ -166,11 +166,13 @@ impl AppState {
         }));
     }
 
-    pub(super) fn system_idle_duration(&mut self) -> Option<Duration> {
+    pub(super) fn read_system_idle_duration(
+        &mut self,
+    ) -> impl Future<Output = Option<Duration>> + use<> {
         self.presence
             .activity
             .get_or_insert_with(SystemActivity::new)
-            .idle_duration()
+            .read_idle_duration()
     }
     fn presence_tick(&mut self, cx: &mut Context<Self>) {
         self.afk_tick(cx);

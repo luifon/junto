@@ -426,3 +426,64 @@ async fn raising_the_idle_timeout_cancels_a_move_that_has_not_completed() {
         source.join.call.id
     );
 }
+
+#[tokio::test]
+async fn migration_0056_requires_a_snapshot_when_a_pre_upgrade_client_reconnects() {
+    use crate::stream_support::Frame;
+    use crate::support::TestServer;
+    use junto_protocol::events::{ClientMessage, Level, ResyncReason, ServerMessage};
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    // Restore the populated schema at 0055, before the migration creates any channels.
+    sqlx::raw_sql(
+        "with old as (delete from workspace_afk returning channel_id)
+        delete from channels where id in (select channel_id from old)",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let before = server.snapshot(&owner).await;
+    assert!(before.workspaces.iter().all(|workspace| {
+        workspace
+            .channels
+            .iter()
+            .all(|channel| channel.name != "AFK")
+    }));
+    sqlx::raw_sql(
+        "drop table workspace_afk;
+        alter table call_moves drop constraint call_move_afk_duration;
+        alter table call_moves drop column automatic_afk, drop column afk_idle_seconds;
+        delete from _sqlx_migrations where version=56;",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let upgraded = server.restart().await;
+    let mut stream = upgraded.stream(&owner).await;
+    stream
+        .send(&ClientMessage::Subscribe {
+            presence: false,
+            appearance: false,
+            level: Level::Full,
+            cursor: Some(before.cursor),
+        })
+        .await;
+    assert_eq!(
+        stream.next().await,
+        Frame::Message(ServerMessage::Resync {
+            reason: ResyncReason::UnknownCursor
+        })
+    );
+    let after = upgraded.snapshot(&owner).await;
+    assert_ne!(before.cursor.epoch, after.cursor.epoch);
+    assert!(after.workspaces.iter().all(|workspace| {
+        workspace
+            .channels
+            .iter()
+            .any(|channel| channel.name == "AFK")
+    }));
+    assert_eq!(
+        stream.subscribe(Level::Full, Some(after.cursor)).await,
+        after.cursor
+    );
+}
