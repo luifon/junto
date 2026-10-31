@@ -818,7 +818,7 @@ async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched(
         ann.until("a fourth share is refused", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share_ended == Some(CaptureError::TooMany))
+                .is_some_and(|call| call.share_ended.as_ref().map(|notice| &notice.error) == Some(&CaptureError::TooMany))
         })
         .await;
         assert_eq!(ann.capture.running(), 3);
@@ -1183,7 +1183,7 @@ async fn a_further_share_is_published_only_after_the_permissions_that_withhold_i
         let started = std::time::Instant::now();
         loop {
             let call = ann.calls.view().call.unwrap();
-            if matches!(call.share_ended, Some(CaptureError::Failed(_))) {
+            if matches!(call.share_ended.as_ref().map(|notice| &notice.error), Some(CaptureError::Failed(_))) {
                 break;
             }
             assert_eq!(
@@ -1203,7 +1203,7 @@ async fn a_further_share_is_published_only_after_the_permissions_that_withhold_i
         let call = ann.calls.view().call.unwrap();
         assert_eq!(call.own_shares.keys().copied().collect::<Vec<_>>(), [0]);
         ann.calls.hold_permissions(false);
-        ann.calls.forget_share_end();
+        ann.calls.forget_share_end(ann.calls.view().call.as_ref().unwrap().share_ended.as_ref().unwrap().generation);
         until_received(
             &old,
             ann_id,
@@ -1667,7 +1667,7 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         ann.until("the share did not start", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share_ended == Some(CaptureError::NotAllowed))
+                .is_some_and(|call| call.share_ended.as_ref().map(|notice| &notice.error) == Some(&CaptureError::NotAllowed))
         })
         .await;
         assert_eq!(ann.capture.running(), 0);
@@ -1734,7 +1734,7 @@ async fn a_share_that_ends_by_itself_is_told_and_a_still_screen_reaches_a_late_v
         ann.until("the share ended by itself", |view| {
             view.call
                 .as_ref()
-                .is_some_and(|call| call.share_ended == Some(CaptureError::SourceGone))
+                .is_some_and(|call| call.share_ended.as_ref().map(|notice| &notice.error) == Some(&CaptureError::SourceGone))
         })
         .await;
         ben.until("the share of Ann has ended", |view| {

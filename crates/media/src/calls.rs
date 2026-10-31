@@ -45,8 +45,8 @@ use crate::engine::{
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::VideoPicture;
 use crate::share::{
-    CaptureError, CaptureRequest, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareKind,
-    ShareSources,
+    CaptureError, CaptureNotice, CaptureRequest, Pending, PictureSource, ScreenAccess,
+    ScreenCapture, ShareKind, ShareSources,
 };
 
 /// The times of the work that the calls do by themselves.
@@ -196,7 +196,7 @@ pub struct ActiveCall {
     pub own_shares: BTreeMap<u8, ShareState>,
     /// Why the last own share that ended by itself ended, until the person starts or stops
     /// a share or puts the statement away.
-    pub share_ended: Option<CaptureError>,
+    pub share_ended: Option<CaptureNotice>,
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets.
@@ -316,7 +316,7 @@ pub(crate) enum Entry {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallsView {
     /// Capture cleanup failed. Retained across call changes until the person dismisses it.
-    pub share_stop_failed: Option<CaptureError>,
+    pub share_stop_failed: Option<CaptureNotice>,
     /// The person closed the microphone. The setting holds in a call and outside one.
     pub muted: bool,
     /// The person turned the sound off.
@@ -366,7 +366,7 @@ enum SessionCommand {
     RetryMicrophone(Seat),
     StartShare(Seat, CaptureRequest),
     StopShare(Option<u8>),
-    ForgetShareEnd,
+    ForgetShareEnd(u64),
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
@@ -898,11 +898,20 @@ impl Calls {
     }
 
     /// Puts away the statement that a share ended by itself. The shares that run go on.
-    pub fn forget_share_end(&self) {
-        self.inner
-            .view
-            .send_if_modified(|view| view.share_stop_failed.take().is_some());
-        self.inner.tell(SessionCommand::ForgetShareEnd);
+    pub fn forget_share_end(&self, generation: u64) {
+        self.inner.view.send_if_modified(|view| {
+            if view
+                .share_stop_failed
+                .as_ref()
+                .is_some_and(|notice| notice.generation == generation)
+            {
+                view.share_stop_failed = None;
+                true
+            } else {
+                false
+            }
+        });
+        self.inner.tell(SessionCommand::ForgetShareEnd(generation));
     }
 
     /// The share that the person chose to watch in the call of this device (ADR 0502).
@@ -2911,7 +2920,7 @@ impl Session {
                 }
             }
             SessionCommand::StopShare(slot) => self.engine.stop_share(slot),
-            SessionCommand::ForgetShareEnd => self.engine.forget_share_end(),
+            SessionCommand::ForgetShareEnd(generation) => self.engine.forget_share_end(generation),
             SessionCommand::Watch(choice) => self.engine.watch(choice),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),

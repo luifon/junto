@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use super::delivery::Life;
-use super::{CaptureError, CaptureSink};
+use super::{CaptureError, CaptureNotice, CaptureSink};
 
 const STOP_LIMIT: Duration = Duration::from_secs(2);
 
@@ -74,7 +74,7 @@ impl Drop for Workers {
             .spawn(move || {
                 let result = finish(threads, &life, STOP_LIMIT);
                 if let (Err(error), Some(sink)) = (&result, sink) {
-                    sink.stop_failed(error.clone());
+                    sink.stop_failed(CaptureNotice::new(error.clone()));
                 }
                 if let Some(stopped) = stopped {
                     let _ = stopped.send(result);
@@ -83,9 +83,9 @@ impl Drop for Workers {
         if let Err(error) = result {
             tracing::error!("screen capture cleanup could not start: {error}");
             if let Some(sink) = fallback {
-                sink.stop_failed(CaptureError::StopFailed(format!(
+                sink.stop_failed(CaptureNotice::new(CaptureError::StopFailed(format!(
                     "capture cleanup could not start: {error}"
-                )));
+                ))));
             }
         }
     }

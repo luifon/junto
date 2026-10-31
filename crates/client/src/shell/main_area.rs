@@ -1041,14 +1041,15 @@ impl Shell {
         });
         // The share of this device that ended by itself, and a request for a recording that
         // the server did not take. Both concern the one call of this client.
-        let share_notice = view.share_notice.as_ref().map(|error| {
+        let share_notice = view.share_notice.as_ref().map(|notice| {
+            let generation = notice.generation;
             div()
                 .flex_none()
                 .px(u(16.0))
                 .pt(u(10.0))
                 .child(
                     Notice::new(text::share_ended(
-                        error,
+                        &notice.error,
                         view.call
                             .as_ref()
                             .map_or(junto_client_core::protocol::call::MAX_SHARES, |call| {
@@ -1061,9 +1062,9 @@ impl Shell {
                         Button::new("dismiss-share-notice")
                             .label(text::DISMISS)
                             .selector("dismiss-share-notice")
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.state
-                                    .update(cx, |state, cx| state.dismiss_share_notice(cx));
+                                    .update(cx, |state, cx| state.dismiss_share_notice(generation, cx));
                             })),
                     ),
                 )

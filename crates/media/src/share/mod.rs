@@ -252,8 +252,37 @@ pub enum CaptureError {
     StopFailed(String),
 }
 
-/// What a capture gives. The calls come from threads of the capture, in the order of the
-/// pictures and of the sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureKind {
+    Share,
+    Camera,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureNotice {
+    pub generation: u64,
+    pub kind: CaptureKind,
+    pub error: CaptureError,
+}
+
+impl CaptureNotice {
+    pub fn new(error: CaptureError) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            generation: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            kind: CaptureKind::Share,
+            error,
+        }
+    }
+}
+
+impl fmt::Display for CaptureNotice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+/// What a capture gives, on its picture and sound threads.
 pub trait CaptureSink: Send + Sync + 'static {
     /// One picture of the screen or the window.
     fn picture(&self, buffer: Arc<dyn VideoBuffer>);
@@ -267,7 +296,7 @@ pub trait CaptureSink: Send + Sync + 'static {
     fn ended(&self, error: CaptureError);
 
     /// Cleanup failed after cancellation; delivery has stopped, but native resources may remain.
-    fn stop_failed(&self, _error: CaptureError) {}
+    fn stop_failed(&self, _notice: CaptureNotice) {}
 }
 
 /// A running capture. Dropping it requests shutdown; `stop` also awaits its cleanup result.

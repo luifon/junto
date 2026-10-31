@@ -7,8 +7,8 @@ use tokio::sync::watch;
 use super::CallsView;
 use crate::audio::Format;
 use crate::share::{
-    CaptureError, CaptureRequest, CaptureSink, CaptureStream, Pending, PictureSource, ScreenAccess,
-    ScreenCapture, ShareSources, picture::PictureFrame,
+    CaptureError, CaptureNotice, CaptureRequest, CaptureSink, CaptureStream, Pending,
+    PictureSource, ScreenAccess, ScreenCapture, ShareSources, picture::PictureFrame,
 };
 use livekit::webrtc::video_frame::VideoBuffer;
 
@@ -86,7 +86,7 @@ impl CaptureSink for Sink {
         self.sink.ended(error);
     }
 
-    fn stop_failed(&self, error: CaptureError) {
+    fn stop_failed(&self, error: CaptureNotice) {
         self.view
             .send_modify(|view| view.share_stop_failed = Some(error));
     }

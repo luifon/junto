@@ -206,15 +206,6 @@ fn shown_levels(levels: &Levels) -> ShownLevels {
     }
 }
 
-/// The calls state that the own share ended by itself, and have not put it away.
-fn share_ended(calls: &junto_media::calls::CallsView) -> bool {
-    calls.share_stop_failed.is_some()
-        || calls
-            .call
-            .as_ref()
-            .is_some_and(|call| call.share_ended.is_some())
-}
-
 /// The quality of a share as the media engine takes it.
 fn share_quality(voice: &VoiceSettings) -> ShareQuality {
     ShareQuality {
@@ -1268,10 +1259,7 @@ impl AppState {
             self.pending.call_told = Some(text::microphone_closed(why).to_owned());
             self.calls.dismiss_closed();
         }
-        let new_stop_failure = view.share_stop_failed.is_some()
-            && view.share_stop_failed != self.known.media.calls.share_stop_failed;
         self.known.media.calls = view;
-        self.known.share_notice_dismissed &= !new_stop_failure && share_ended(&self.shown_calls());
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
             // that its acceptance does not replace this call.
@@ -1336,9 +1324,14 @@ impl AppState {
     /// Puts away the notice of the own share that ended by itself. The notice goes at
     /// once: the calls put the ended share away on their own threads, and until then they
     /// still state the end.
-    pub fn dismiss_share_notice(&mut self, cx: &mut Context<Self>) {
-        self.known.share_notice_dismissed = true;
-        self.calls.forget_share_end();
+    pub fn dismiss_share_notice(&mut self, generation: u64, cx: &mut Context<Self>) {
+        self.known.share_notice_dismissed = Some(
+            self.known
+                .share_notice_dismissed
+                .unwrap_or_default()
+                .max(generation),
+        );
+        self.calls.forget_share_end(generation);
         self.changed(cx);
     }
 
@@ -2634,9 +2627,6 @@ impl AppState {
     /// uses it to draw a call without a media server.
     #[cfg(feature = "test-support")]
     pub fn show_media_fixture(&mut self, media: MediaSnapshot, cx: &mut Context<Self>) {
-        let new_stop_failure = media.calls.share_stop_failed.is_some()
-            && media.calls.share_stop_failed != self.shown_calls().share_stop_failed;
-        self.known.share_notice_dismissed &= !new_stop_failure && share_ended(&media.calls);
         self.media_fixture = Some(media);
         self.changed(cx);
     }

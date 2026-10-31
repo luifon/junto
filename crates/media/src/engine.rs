@@ -42,7 +42,7 @@ use crate::audio::{
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::VideoPicture;
-use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
+use crate::share::{CaptureError, CaptureNotice, CaptureRequest, ScreenCapture};
 
 mod camera;
 mod order;
@@ -198,7 +198,7 @@ pub struct EngineState {
     pub share_limit: u8,
     /// Why the last share of this device that ended by itself ended. It stays until the
     /// person starts a share, stops one, or puts the statement away.
-    pub share_ended: Option<CaptureError>,
+    pub share_ended: Option<CaptureNotice>,
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets now.
@@ -268,7 +268,7 @@ enum Command {
     /// a share ended by itself.
     StopShare(Option<u8>),
     /// Puts away the statement that a share ended by itself.
-    ForgetShareEnd,
+    ForgetShareEnd(u64),
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
@@ -312,7 +312,7 @@ enum Internal {
     /// The capture of a share has answered. The share holds the answer.
     ShareStarted(u64),
     ShareEnded(u64, CaptureError),
-    ShareStopFailed(CaptureError),
+    ShareStopFailed(CaptureNotice),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
     ShareSoundRetry(u64),
@@ -590,8 +590,8 @@ impl Engine {
     }
 
     /// Puts away the statement that a share ended by itself. The shares that run go on.
-    pub fn forget_share_end(&self) {
-        let _ = self.commands.send(Command::ForgetShareEnd);
+    pub fn forget_share_end(&self, generation: u64) {
+        let _ = self.commands.send(Command::ForgetShareEnd(generation));
     }
 
     /// The share that the person chose to watch.
@@ -823,7 +823,7 @@ struct Actor {
     /// The share tracks whose publication has not answered and that no share uses any more.
     arriving: HashSet<share::Arriving>,
     /// Why the last own share that ended by itself ended, until the person acts.
-    share_ended: Option<CaptureError>,
+    share_ended: Option<CaptureNotice>,
     /// Counts the shares that were started. The result of an earlier one is not used.
     share_generation: u64,
     remote_pictures: HashMap<TrackSid, RemotePicture>,
@@ -1074,7 +1074,7 @@ impl Actor {
             }
             Command::StartShare(request, stops) => self.start_share(request, stops),
             Command::StopShare(slot) => self.end_share(slot, None),
-            Command::ForgetShareEnd => self.forget_share_end(),
+            Command::ForgetShareEnd(generation) => self.forget_share_end(generation),
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
             Command::ViewSize(width, height) => self.set_view_size(width, height),

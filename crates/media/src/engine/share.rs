@@ -36,8 +36,8 @@ use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
 use crate::share::picture::VideoPicture;
 use crate::share::sound::{SHARE_CHANNELS, SHARE_FRAME_SAMPLES, SoundChain, WAITING_FRAMES};
 use crate::share::{
-    CaptureError, CaptureRequest, CaptureSink, CaptureStream, ShareKind, read_sound_name,
-    read_track_name, sound_name, track_name,
+    CaptureError, CaptureNotice, CaptureRequest, CaptureSink, CaptureStream, ShareKind,
+    read_sound_name, read_track_name, sound_name, track_name,
 };
 
 /// The number of slots of the own shares, one for each share that a person can run.
@@ -360,7 +360,7 @@ impl CaptureSink for ShareSink {
         }
     }
 
-    fn stop_failed(&self, error: CaptureError) {
+    fn stop_failed(&self, error: CaptureNotice) {
         let _ = self.internal.send(Internal::ShareStopFailed(error));
     }
 }
@@ -895,12 +895,12 @@ impl Actor {
     pub(super) fn start_share(&mut self, request: CaptureRequest, stops: [u64; MAX_SLOTS]) {
         self.share_ended = None;
         if !self.joined() {
-            self.share_ended = Some(CaptureError::Interrupted);
+            self.share_ended = Some(CaptureNotice::new(CaptureError::Interrupted));
             self.tell_shares();
             return;
         }
         let Some(slot) = free_slot(self.own_shares.keys().copied(), self.share_limit) else {
-            self.share_ended = Some(CaptureError::TooMany);
+            self.share_ended = Some(CaptureNotice::new(CaptureError::TooMany));
             self.tell_shares();
             return;
         };
@@ -999,14 +999,19 @@ impl Actor {
             drop(share);
             self.pictures.forget(ShareId::own(slot));
         }
-        self.share_ended = error;
+        self.share_ended = error.map(CaptureNotice::new);
         self.tell_shares();
     }
 
     /// Puts away the statement that a share ended by itself, and leaves the shares that
     /// run.
-    pub(super) fn forget_share_end(&mut self) {
-        if self.share_ended.take().is_some() {
+    pub(super) fn forget_share_end(&mut self, generation: u64) {
+        if self
+            .share_ended
+            .as_ref()
+            .is_some_and(|notice| notice.generation == generation)
+        {
+            self.share_ended = None;
             self.tell_shares();
         }
     }
