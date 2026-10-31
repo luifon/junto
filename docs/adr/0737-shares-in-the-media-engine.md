@@ -87,3 +87,13 @@ each received share and its mute. The context menu exposes that share's volume e
 another share is watched. The Settings volume acts on the watched share. Both windows use
 the same controls and media state, and their buttons and volume controls accept keyboard input.
 These are local preferences and require no server change.
+
+An explicit stopped choice overrides the automatic selection above (ADR 0502). Share
+publications are retained separately from their receiving tasks; an unsubscribe drops the
+task without removing the share from the list, and an unpublish or departure removes it.
+Connections start without automatic subscriptions and request voice, cameras and, unless
+stopped, shares explicitly. The intent is sent again after reconnect even when its local
+desired flag is already set: a publication can arrive during replacement of the SDK session,
+so its earlier request can belong to the session that ended. The media-server restart test
+checks restored sound in both directions. A shared picture gate rejects delivery under each picture-channel
+lock before stopped pictures are cleared, including a frame already being converted.

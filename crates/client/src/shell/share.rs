@@ -1516,6 +1516,207 @@ impl Shell {
         share_action_button(button)
     }
 
+    pub(super) fn render_share_bar(
+        &mut self,
+        stage: &ShareStage,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let colors = theme.colors;
+        let faces = self.shown_faces().in_workspace(
+            self.view
+                .as_ref()
+                .and_then(|view| view.call.as_ref())
+                .and_then(|call| call.workspace_id),
+        );
+        let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
+        (stage.shares.len() > 1 || stage.watched().is_none())
+            .then(|| {
+                let cards = stage.shares.iter().enumerate().map(|(index, share)| {
+                    let id = share.id;
+                    let title: SharedString = title_of(share).into();
+                    let small = self
+                        .pictures
+                        .small
+                        .get(&share.id)
+                        .map(|(_, picture)| picture.clone());
+                    let ring = focus_ring(colors.ochre, theme.metrics.focus_ring);
+                    let title_element = if id.person == Person::Own {
+                        div()
+                            .child(crate::ui::paint_text(title.clone(), None))
+                            .into_any_element()
+                    } else {
+                        let name = share.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+                        let suffix = title.strip_prefix(name).unwrap_or_default().to_owned();
+                        let background = if share.watched {
+                            colors.basalt_rule
+                        } else {
+                            colors.basalt_3
+                        };
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(super::people::person_element(
+                                &faces,
+                                share.account_id,
+                                name,
+                                "share-person-name",
+                                div()
+                                    .when_some(faces.color(share.account_id), |name, color| {
+                                        name.text_color(crate::theme::role_ink(color, background))
+                                    })
+                                    .child(crate::ui::paint_text(name.to_owned().into(), None)),
+                            ))
+                            .child(suffix)
+                            .into_any_element()
+                    };
+                    div()
+                        .id(("share-card", index))
+                        .role(Role::RadioButton)
+                        .aria_label(title.clone())
+                        .aria_selected(share.watched)
+                        .debug_selector(move || match id.person {
+                            Person::Own => format!("share-card:own:{}", id.slot),
+                            Person::Of(account_id) => {
+                                format!("share-card:{account_id}:{}", id.slot)
+                            }
+                        })
+                        .tooltip(tooltip(format!("{} {title}", text::WATCH)))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(10.0))
+                        .h(u(62.0))
+                        .rounded(u(theme.metrics.radius))
+                        .cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(move |style| style.shadow(ring))
+                        .map(|card| {
+                            if share.watched {
+                                card.pl(u(5.0))
+                                    .pr(u(9.0))
+                                    .border_2()
+                                    .border_color(Hsla::from(colors.ochre))
+                                    .bg(Hsla::from(colors.basalt_rule))
+                            } else {
+                                card.pl(u(6.0))
+                                    .pr(u(10.0))
+                                    .border_1()
+                                    .border_color(Hsla::from(colors.basalt_rule))
+                                    .bg(Hsla::from(colors.basalt_3))
+                            }
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, _| state.watch_share(id));
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .debug_selector(move || match id.person {
+                                    Person::Own => format!("share-thumbnail:own:{}", id.slot),
+                                    Person::Of(account_id) => {
+                                        format!("share-thumbnail:{account_id}:{}", id.slot)
+                                    }
+                                })
+                                .w(u(88.0))
+                                .h(u(55.0))
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(Hsla::from(colors.basalt_deep))
+                                .bg(Hsla::from(colors.stage))
+                                .when_some(small, |frame, picture| frame.child(picture.element())),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(u(6.0))
+                                        .typeface(theme.types.name, theme)
+                                        .text_size(u(14.0))
+                                        .line_height(u(19.0))
+                                        .ink(colors.bone)
+                                        .child(
+                                            super::people::avatar(&faces, share.account_id, 16.0)
+                                                .radius(2.0),
+                                        )
+                                        .child(title_element),
+                                )
+                                .child(
+                                    div()
+                                        .typeface(theme.types.small, theme)
+                                        .line_height(u(17.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .ink(colors.bone_2)
+                                        .child(text::share_kind(share.kind)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(u(5.0))
+                                .ml(u(8.0))
+                                .h(u(24.0))
+                                .px(u(8.0))
+                                .rounded(u(theme.metrics.radius))
+                                .border_1()
+                                .typeface(theme.types.control_strong, theme)
+                                .text_size(u(13.0))
+                                .map(|tag| {
+                                    if share.watched {
+                                        tag.border_color(Hsla::from(colors.ochre))
+                                            .bg(Hsla::from(colors.ochre))
+                                            .ink(colors.stage)
+                                            .child(icon(Icon::Check, 13.0, colors.stage))
+                                            .child(text::WATCHING)
+                                    } else {
+                                        tag.border_color(Hsla::from(colors.basalt_tag_rule))
+                                            .ink(colors.bone)
+                                            .child(text::WATCH)
+                                    }
+                                }),
+                        )
+                        .when(id.person != Person::Own, |card| {
+                            card.child(self.share_mute_button(share, "share-mute-tile", cx))
+                        })
+                        .map(|frame| self.call_share_frame(frame, share, false, cx))
+                });
+                div()
+                    .id("shares-bar")
+                    .role(Role::RadioGroup)
+                    .aria_label(text::shares_count(stage.shares.len()))
+                    .debug_selector(|| "shares-bar".to_owned())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(8.0))
+                    .h(u(78.0))
+                    .px(u(12.0))
+                    .overflow_x_scroll()
+                    .bg(Hsla::from(colors.basalt_2))
+                    .border_b_1()
+                    .border_color(Hsla::from(colors.basalt_rule))
+                    .child(
+                        div()
+                            .flex_none()
+                            .mr(u(4.0))
+                            .typeface(theme.types.overline, theme)
+                            .ink(colors.bone_label)
+                            .child(text::shares_count(stage.shares.len())),
+                    )
+                    .children(cards)
+            })
+            .map(|bar| bar.into_any_element())
+    }
+
     /// The stage of a call with a share: the bar of the shares when there are several, the
     /// line about the watched one, its picture, and the strip of the people.
     pub(crate) fn render_share_stage(
@@ -1536,187 +1737,7 @@ impl Shell {
         let several = stage.shares.len() > 1;
         let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
 
-        let bar = several.then(|| {
-            let cards = stage.shares.iter().enumerate().map(|(index, share)| {
-                let id = share.id;
-                let title: SharedString = title_of(share).into();
-                let small = self
-                    .pictures
-                    .small
-                    .get(&share.id)
-                    .map(|(_, picture)| picture.clone());
-                let ring = focus_ring(colors.ochre, theme.metrics.focus_ring);
-                let title_element = if id.person == Person::Own {
-                    div()
-                        .child(crate::ui::paint_text(title.clone(), None))
-                        .into_any_element()
-                } else {
-                    let name = share.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
-                    let suffix = title.strip_prefix(name).unwrap_or_default().to_owned();
-                    let background = if share.watched {
-                        colors.basalt_rule
-                    } else {
-                        colors.basalt_3
-                    };
-                    div()
-                        .flex()
-                        .items_center()
-                        .child(super::people::person_element(
-                            &faces,
-                            share.account_id,
-                            name,
-                            "share-person-name",
-                            div()
-                                .when_some(faces.color(share.account_id), |name, color| {
-                                    name.text_color(crate::theme::role_ink(color, background))
-                                })
-                                .child(crate::ui::paint_text(name.to_owned().into(), None)),
-                        ))
-                        .child(suffix)
-                        .into_any_element()
-                };
-                div()
-                    .id(("share-card", index))
-                    .role(Role::RadioButton)
-                    .aria_label(title.clone())
-                    .aria_selected(share.watched)
-                    .debug_selector(move || match id.person {
-                        Person::Own => format!("share-card:own:{}", id.slot),
-                        Person::Of(account_id) => format!("share-card:{account_id}:{}", id.slot),
-                    })
-                    .tooltip(tooltip(format!("{} {title}", text::WATCH)))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(u(10.0))
-                    .h(u(62.0))
-                    .rounded(u(theme.metrics.radius))
-                    .cursor_pointer()
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(move |style| style.shadow(ring))
-                    .map(|card| {
-                        if share.watched {
-                            card.pl(u(5.0))
-                                .pr(u(9.0))
-                                .border_2()
-                                .border_color(Hsla::from(colors.ochre))
-                                .bg(Hsla::from(colors.basalt_rule))
-                        } else {
-                            card.pl(u(6.0))
-                                .pr(u(10.0))
-                                .border_1()
-                                .border_color(Hsla::from(colors.basalt_rule))
-                                .bg(Hsla::from(colors.basalt_3))
-                        }
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state.update(cx, |state, _| state.watch_share(id));
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .debug_selector(move || match id.person {
-                                Person::Own => format!("share-thumbnail:own:{}", id.slot),
-                                Person::Of(account_id) => {
-                                    format!("share-thumbnail:{account_id}:{}", id.slot)
-                                }
-                            })
-                            .w(u(88.0))
-                            .h(u(55.0))
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(Hsla::from(colors.basalt_deep))
-                            .bg(Hsla::from(colors.stage))
-                            .when_some(small, |frame, picture| frame.child(picture.element())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(u(6.0))
-                                    .typeface(theme.types.name, theme)
-                                    .text_size(u(14.0))
-                                    .line_height(u(19.0))
-                                    .ink(colors.bone)
-                                    .child(
-                                        super::people::avatar(&faces, share.account_id, 16.0)
-                                            .radius(2.0),
-                                    )
-                                    .child(title_element),
-                            )
-                            .child(
-                                div()
-                                    .typeface(theme.types.small, theme)
-                                    .line_height(u(17.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .ink(colors.bone_2)
-                                    .child(text::share_kind(share.kind)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(u(5.0))
-                            .ml(u(8.0))
-                            .h(u(24.0))
-                            .px(u(8.0))
-                            .rounded(u(theme.metrics.radius))
-                            .border_1()
-                            .typeface(theme.types.control_strong, theme)
-                            .text_size(u(13.0))
-                            .map(|tag| {
-                                if share.watched {
-                                    tag.border_color(Hsla::from(colors.ochre))
-                                        .bg(Hsla::from(colors.ochre))
-                                        .ink(colors.stage)
-                                        .child(icon(Icon::Check, 13.0, colors.stage))
-                                        .child(text::WATCHING)
-                                } else {
-                                    tag.border_color(Hsla::from(colors.basalt_tag_rule))
-                                        .ink(colors.bone)
-                                        .child(text::WATCH)
-                                }
-                            }),
-                    )
-                    .when(id.person != Person::Own, |card| {
-                        card.child(self.share_mute_button(share, "share-mute-tile", cx))
-                    })
-                    .map(|frame| self.call_share_frame(frame, share, false, cx))
-            });
-            div()
-                .id("shares-bar")
-                .role(Role::RadioGroup)
-                .aria_label(text::shares_count(stage.shares.len()))
-                .debug_selector(|| "shares-bar".to_owned())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(8.0))
-                .h(u(78.0))
-                .px(u(12.0))
-                .overflow_x_scroll()
-                .bg(Hsla::from(colors.basalt_2))
-                .border_b_1()
-                .border_color(Hsla::from(colors.basalt_rule))
-                .child(
-                    div()
-                        .flex_none()
-                        .mr(u(4.0))
-                        .typeface(theme.types.overline, theme)
-                        .ink(colors.bone_label)
-                        .child(text::shares_count(stage.shares.len())),
-                )
-                .children(cards)
-        });
+        let bar = self.render_share_bar(stage, theme, cx);
 
         let header =
             watched.map(|share| {
@@ -1848,7 +1869,8 @@ impl Shell {
                     .child(div().flex_1())
                     .child(
                         div()
-                            .flex_none()
+                            .min_w_0()
+                            .truncate()
                             .typeface(theme.types.small, theme)
                             .ink(colors.bone_2)
                             .child(measure),
@@ -1856,6 +1878,18 @@ impl Shell {
                     .when(!own, |header| {
                         header.child(self.share_mute_button(share, "share-mute-header", cx))
                     })
+                    .child(share_action_button(
+                        Button::new("stop-watching")
+                            .label(text::STOP_WATCHING)
+                            .selector("stop-watching")
+                            .on_click(cx.listener({
+                                let id = share.id;
+                                move |this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, _| state.stop_watching_share(id));
+                                }
+                            })),
+                    ))
                     .map(|header| self.call_share_frame(header, share, true, cx))
             });
 

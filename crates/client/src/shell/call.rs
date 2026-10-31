@@ -2416,11 +2416,26 @@ impl Shell {
         let body = match &panel.stage {
             Some(shares)
                 if share_visible(panel.phase)
+                    && shares.watched().is_some()
                     && !pin.as_ref().is_some_and(|pin| pin.show_person) =>
             {
                 self.render_share_stage(panel, shares, theme, cx)
             }
-            _ => self.render_stage(panel, theme, cx.weak_entity(), cx),
+            _ => {
+                let bar = panel
+                    .stage
+                    .as_ref()
+                    .filter(|stage| stage.watched().is_none())
+                    .and_then(|stage| self.render_share_bar(stage, theme, cx));
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .children(bar)
+                    .child(self.render_stage(panel, theme, cx.weak_entity(), cx))
+                    .into_any_element()
+            }
         };
         div()
             .flex()

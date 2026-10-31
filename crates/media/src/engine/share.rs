@@ -225,7 +225,15 @@ pub(super) struct View {
 /// the share of another person that was seen first; otherwise the own share of the lowest
 /// slot. `own` holds the slots of the own shares that run, `others` the shares of the
 /// other people in the order in which they were seen.
-pub fn watched(choice: Option<ShareId>, own: &[u8], others: &[ShareId]) -> Option<ShareId> {
+pub fn watched(
+    stopped: bool,
+    choice: Option<ShareId>,
+    own: &[u8],
+    others: &[ShareId],
+) -> Option<ShareId> {
+    if stopped {
+        return None;
+    }
     let runs = |share: &ShareId| match share.person {
         Person::Own => own.contains(&share.slot),
         Person::Of(_) => others.contains(share),
@@ -261,6 +269,7 @@ fn remember_share_sounds(
 /// The channels to an interface.
 #[derive(Clone)]
 pub(super) struct Pictures {
+    pub receiving: Arc<AtomicBool>,
     pub main: Arc<watch::Sender<Option<MainPicture>>>,
     pub small: Arc<watch::Sender<HashMap<ShareId, Arc<VideoPicture>>>>,
 }
@@ -274,20 +283,33 @@ impl Pictures {
         view: View,
         small_at: &mut Option<Instant>,
     ) {
+        if !self.receiving.load(Ordering::Acquire) {
+            return;
+        }
         if view.watched == Some(share)
             && let Some(frame) = VideoPicture::of_buffer(buffer, false, view.size)
         {
-            self.main.send_replace(Some(MainPicture {
-                share,
-                frame: Arc::new(frame),
-            }));
+            self.main.send_if_modified(|main| {
+                if !self.receiving.load(Ordering::Acquire) {
+                    return false;
+                }
+                *main = Some(MainPicture {
+                    share,
+                    frame: Arc::new(frame),
+                });
+                true
+            });
         }
         if small_at.is_none_or(|at| at.elapsed() >= SMALL_INTERVAL)
             && let Some(frame) = VideoPicture::new(buffer.as_ref(), false, SMALL_PICTURE)
         {
             *small_at = Some(Instant::now());
-            self.small.send_modify(|small| {
+            self.small.send_if_modified(|small| {
+                if !self.receiving.load(Ordering::Acquire) {
+                    return false;
+                }
                 small.insert(share, Arc::new(frame));
+                true
             });
         }
     }
@@ -534,7 +556,7 @@ pub(super) struct RemotePicture {
     asked: Option<(u32, u32)>,
     /// The order in which the shares were seen.
     order: u64,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl RemotePicture {
@@ -553,7 +575,9 @@ impl RemotePicture {
 
 impl Drop for RemotePicture {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -717,7 +741,7 @@ impl Actor {
             self.share_volume,
             &others,
         );
-        let now = watched(self.watch_choice, &own, &others);
+        let now = watched(self.watch_stopped, self.watch_choice, &own, &others);
         let view = View {
             watched: now,
             size: self.view_size,
@@ -782,8 +806,129 @@ impl Actor {
     }
 
     pub(super) fn set_watch(&mut self, choice: Option<ShareId>) {
+        self.pictures.receiving.store(true, Ordering::Release);
+        self.watch_stopped = false;
         self.watch_choice = choice;
+        self.sync_share_subscriptions();
         self.tell_shares();
+    }
+
+    pub(super) fn stop_watching(&mut self) {
+        self.pictures.receiving.store(false, Ordering::Release);
+        self.watch_stopped = true;
+        self.watch_choice = None;
+        for picture in self.remote_pictures.values_mut() {
+            if let Some(task) = picture.task.take() {
+                task.abort();
+            }
+            self.pictures.forget(picture.share);
+        }
+        self.remote_sounds.clear();
+        self.pictures.main.send_replace(None);
+        self.pictures.small.send_replace(HashMap::new());
+        self.sync_share_subscriptions();
+        self.tell_shares();
+    }
+
+    fn sync_share_subscriptions(&self) {
+        let Some(room) = &self.room else { return };
+        for participant in room.remote_participants().into_values() {
+            for publication in participant.track_publications().into_values() {
+                if matches!(
+                    publication.source(),
+                    TrackSource::Screenshare | TrackSource::ScreenshareAudio
+                ) && publication.is_desired() == self.watch_stopped
+                {
+                    publication.set_subscribed(!self.watch_stopped);
+                }
+            }
+        }
+    }
+
+    pub(super) fn subscribe_remote_tracks(&mut self) {
+        let tracks: Vec<_> = self
+            .room
+            .iter()
+            .flat_map(|room| room.remote_participants().into_values())
+            .flat_map(|person| {
+                let identity = person.identity().as_str().to_owned();
+                person
+                    .track_publications()
+                    .into_values()
+                    .map(move |publication| (publication, identity.clone()))
+            })
+            .collect();
+        for (publication, identity) in tracks {
+            self.remote_track_published(publication, &identity);
+        }
+    }
+
+    pub(super) fn remote_track_published(
+        &mut self,
+        publication: RemoteTrackPublication,
+        identity: &str,
+    ) {
+        if publication.source() == TrackSource::Screenshare {
+            self.remember_remote_picture(publication.clone(), identity);
+        }
+        let share = matches!(
+            publication.source(),
+            TrackSource::Screenshare | TrackSource::ScreenshareAudio
+        );
+        let subscribe = !share || !self.watch_stopped;
+        // A publication can arrive before the SDK replaces its session. Reconnected
+        // sends the subscription again even when the local intent is already set.
+        publication.set_subscribed(subscribe);
+    }
+
+    fn remember_remote_picture(&mut self, publication: RemoteTrackPublication, identity: &str) {
+        let Some(account_id) = account_of(identity) else {
+            return;
+        };
+        let sid = publication.sid();
+        if self.remote_pictures.contains_key(&sid) {
+            return;
+        }
+        let stated = read_track_name(&publication.name());
+        self.share_order += 1;
+        self.remote_pictures.insert(
+            sid,
+            RemotePicture {
+                share: ShareId::of(account_id, stated.map_or(0, |stated| stated.slot)),
+                publication,
+                kind: stated.map(|stated| stated.kind),
+                frame_rate: stated.map(|stated| stated.frame_rate),
+                size: None,
+                asked: None,
+                order: self.share_order,
+                task: None,
+            },
+        );
+        self.tell_shares();
+    }
+
+    pub(super) fn remote_sharer_left(&mut self, identity: &str) {
+        let Some(account) = account_of(identity) else {
+            return;
+        };
+        let tracks: Vec<_> = self
+            .remote_pictures
+            .iter()
+            .filter(|(_, picture)| picture.share.person == Person::Of(account))
+            .map(|(sid, _)| sid.clone())
+            .collect();
+        for sid in tracks {
+            self.remote_track_ended(&sid);
+        }
+    }
+
+    pub(super) fn remote_picture_unsubscribed(&mut self, sid: &TrackSid) {
+        if let Some(picture) = self.remote_pictures.get_mut(sid) {
+            if let Some(task) = picture.task.take() {
+                task.abort();
+            }
+            self.pictures.forget(picture.share);
+        }
     }
 
     pub(super) fn set_view_size(&mut self, width: u32, height: u32) {
@@ -827,34 +972,27 @@ impl Actor {
         identity: &str,
     ) {
         // A participant without an account, such as the recorder, shares nothing.
-        let Some(account_id) = account_of(identity) else {
+        self.remember_remote_picture(publication.clone(), identity);
+        if self.watch_stopped {
+            publication.set_subscribed(false);
+            return;
+        }
+        let sid = publication.sid();
+        let Some(picture) = self.remote_pictures.get_mut(&sid) else {
             return;
         };
-        let sid = publication.sid();
-        let stated = read_track_name(&publication.name());
-        let share = ShareId::of(account_id, stated.map_or(0, |stated| stated.slot));
-        self.share_order += 1;
         let task = self.runtime.spawn(watch_pictures(
             NativeVideoStream::new(track.rtc_track()),
-            sid.clone(),
-            share,
+            sid,
+            picture.share,
             self.pictures.clone(),
             self.view.subscribe(),
             self.internal.clone(),
         ));
-        self.remote_pictures.insert(
-            sid,
-            RemotePicture {
-                share,
-                publication,
-                kind: stated.map(|stated| stated.kind),
-                frame_rate: stated.map(|stated| stated.frame_rate),
-                size: None,
-                asked: None,
-                order: self.share_order,
-                task,
-            },
-        );
+        if let Some(previous) = picture.task.replace(task) {
+            previous.abort();
+        }
+        picture.asked = None;
         self.tell_shares();
         let watched = self.view.borrow().watched;
         self.sync_sizes(watched);
@@ -871,6 +1009,10 @@ impl Actor {
         let Some(account_id) = account_of(identity) else {
             return;
         };
+        if self.watch_stopped {
+            publication.set_subscribed(false);
+            return;
+        }
         let sid = publication.sid();
         let share = ShareId::of(account_id, read_sound_name(&publication.name()));
         let source = Arc::new(self.mixer.add(0.0));
@@ -1509,29 +1651,44 @@ mod tests {
             ShareId::of(ben, 1),
         );
         // Nothing is shared.
-        assert_eq!(watched(None, &[], &[]), None);
-        assert_eq!(watched(Some(ShareId::own(0)), &[], &[]), None);
+        assert_eq!(watched(false, None, &[], &[]), None);
+        assert_eq!(watched(false, Some(ShareId::own(0)), &[], &[]), None);
         // The own share alone is the preview of the sharer; of two, the lowest slot.
-        assert_eq!(watched(None, &[0], &[]), Some(ShareId::own(0)));
-        assert_eq!(watched(None, &[2, 1], &[]), Some(ShareId::own(1)));
+        assert_eq!(watched(false, None, &[0], &[]), Some(ShareId::own(0)));
+        assert_eq!(watched(false, None, &[2, 1], &[]), Some(ShareId::own(1)));
         // Without a choice: the share of another person that was seen first.
-        assert_eq!(watched(None, &[0], &[ann_0, ben_0]), Some(ann_0));
+        assert_eq!(watched(false, None, &[0], &[ann_0, ben_0]), Some(ann_0));
         // The choice holds while its share runs, also a second share of one person.
-        assert_eq!(watched(Some(ben_0), &[0], &[ann_0, ben_0]), Some(ben_0));
-        assert_eq!(watched(Some(ben_1), &[], &[ben_0, ben_1]), Some(ben_1));
         assert_eq!(
-            watched(Some(ShareId::own(1)), &[0, 1], &[ann_0, ben_0]),
+            watched(false, Some(ben_0), &[0], &[ann_0, ben_0]),
+            Some(ben_0)
+        );
+        assert_eq!(
+            watched(false, Some(ben_1), &[], &[ben_0, ben_1]),
+            Some(ben_1)
+        );
+        assert_eq!(
+            watched(false, Some(ShareId::own(1)), &[0, 1], &[ann_0, ben_0]),
             Some(ShareId::own(1))
         );
         // A choice whose share has ended gives way to the rule without a choice: another
         // share of the same person is not chosen for the viewer.
-        assert_eq!(watched(Some(ben_1), &[], &[ann_0, ben_0]), Some(ann_0));
-        assert_eq!(watched(Some(ben_0), &[0], &[]), Some(ShareId::own(0)));
         assert_eq!(
-            watched(Some(ShareId::own(2)), &[0], &[]),
+            watched(false, Some(ben_1), &[], &[ann_0, ben_0]),
+            Some(ann_0)
+        );
+        assert_eq!(
+            watched(false, Some(ben_0), &[0], &[]),
             Some(ShareId::own(0))
         );
-        assert_eq!(watched(Some(ShareId::own(0)), &[], &[ben_1]), Some(ben_1));
+        assert_eq!(
+            watched(false, Some(ShareId::own(2)), &[0], &[]),
+            Some(ShareId::own(0))
+        );
+        assert_eq!(
+            watched(false, Some(ShareId::own(0)), &[], &[ben_1]),
+            Some(ben_1)
+        );
     }
 
     #[test]
@@ -1595,6 +1752,15 @@ mod tests {
             }
         );
         assert_eq!(held[&ShareId::of(ann, 2)], defaults[&ann]);
+    }
+
+    #[test]
+    fn stopping_watching_prevents_every_automatic_choice_until_watch() {
+        let share = ShareId::of(AccountId::generate(), 0);
+        assert_eq!(watched(true, Some(share), &[0], &[share]), None);
+        assert_eq!(watched(true, None, &[0], &[]), None);
+        assert_eq!(watched(true, None, &[], &[share]), None);
+        assert_eq!(watched(false, Some(share), &[0], &[share]), Some(share));
     }
 
     #[test]
@@ -1718,6 +1884,7 @@ mod tests {
     fn a_picture_at_the_size_of_the_drawing_holds_the_received_planes() {
         let share = ShareId::of(AccountId::generate(), 0);
         let pictures = Pictures {
+            receiving: Arc::new(AtomicBool::new(true)),
             main: Arc::new(watch::Sender::new(None)),
             small: Arc::new(watch::Sender::new(HashMap::new())),
         };
@@ -1746,6 +1913,7 @@ mod tests {
     async fn a_share_of_60_pictures_per_second_is_drawn_30_times_and_its_last_picture_always() {
         let share = ShareId::of(AccountId::generate(), 1);
         let pictures = Pictures {
+            receiving: Arc::new(AtomicBool::new(true)),
             main: Arc::new(watch::Sender::new(None)),
             small: Arc::new(watch::Sender::new(HashMap::new())),
         };

@@ -182,6 +182,7 @@ enum CallMenuAction {
     Pin(bool),
     Leave,
     WatchShare(junto_media::engine::ShareId),
+    StopWatching(junto_media::engine::ShareId),
     MuteShare(junto_media::engine::ShareId),
     StopShare(u8),
     Participant(ParticipantAction),
@@ -277,6 +278,15 @@ impl Shell {
                 label: text::WATCH,
                 action: CallMenuAction::WatchShare(*id),
                 disabled: share.watched,
+                detail: None,
+            });
+        }
+        if share.watched {
+            items.push(CallControl {
+                id: "call-menu-stop-watching",
+                label: text::STOP_WATCHING,
+                action: CallMenuAction::StopWatching(*id),
+                disabled: false,
                 detail: None,
             });
         }
@@ -476,6 +486,7 @@ impl Shell {
                             }
                             CallMenuAction::Leave => state.leave_call(cx),
                             CallMenuAction::WatchShare(id) => state.watch_share(*id),
+                            CallMenuAction::StopWatching(id) => state.stop_watching_share(*id),
                             CallMenuAction::MuteShare(id) => state.toggle_share_sound(*id, cx),
                             CallMenuAction::StopShare(slot) => state.stop_share(Some(*slot)),
                             CallMenuAction::Participant(action) => {

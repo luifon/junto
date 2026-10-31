@@ -2240,3 +2240,165 @@ async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
     })
     .await;
 }
+
+async fn until_share_subscriptions(person: &Person, count: usize, subscribed: bool) {
+    let mut last = None;
+    let result = tokio::time::timeout(PATIENCE, async {
+        loop {
+            if let Some(check) = person.calls.sound_check().await {
+                let tracks = check.remote_share_tracks;
+                let ready = tracks.len() == count
+                    && tracks
+                        .iter()
+                        .all(|track| track.2 == subscribed && track.3 == subscribed);
+                last = Some(tracks);
+                if ready {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "share subscriptions did not reach {subscribed}: {last:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn stopping_watching_unsubscribes_tracks_and_stays_stopped_until_watch() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let (ann_id, ben_id) = (account(&ann_at), account(&ben_at));
+        let place = room.target.place;
+        ann.capture
+            .set_source_colours(PictureSource::Window(11), GREEN, YELLOW);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing().await;
+        ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+        model_when(&ann_at, "the viewer is listed", |model| {
+            model
+                .call_at(&place)
+                .and_then(|call| call.participant(ben_id))
+                .is_some_and(|person| person.watching.is_some())
+        })
+        .await;
+        ben.calls.stop_watching();
+        ben.until("watching none while the share remains available", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_none() && call.shares.len() == 1)
+        })
+        .await;
+        until_share_subscriptions(&ben, 2, false).await;
+        assert!(ben.calls.main_picture().borrow().is_none());
+        assert!(ben.calls.small_pictures().borrow().is_empty());
+        ben.until_silent_tone(SYSTEM.0).await;
+        ben.until_heard(&ann).await;
+        model_when(&ann_at, "the server lists watching none", |model| {
+            model
+                .call_at(&place)
+                .and_then(|call| call.participant(ben_id))
+                .is_some_and(|person| person.watching.is_none())
+        })
+        .await;
+
+        ann.calls.start_share(window(player()));
+        ann.until_sharing_in(1).await;
+        ben.until("a new share remains unwatched", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_none() && call.shares.len() == 2)
+        })
+        .await;
+        until_share_subscriptions(&ben, 4, false).await;
+        ann.calls.stop_share(Some(0));
+        ben.until("the original share ends", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 1)
+        })
+        .await;
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        ben.until("slot reuse remains unwatched", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_none() && call.shares.len() == 2)
+        })
+        .await;
+        until_share_subscriptions(&ben, 4, false).await;
+
+        ben.calls.simulate_connection_loss();
+        ben.until("the viewer reconnects", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.phase == junto_media::calls::Phase::Reconnecting)
+        })
+        .await;
+        ben.until("the stopped viewer reconnects without a share", |view| {
+            view.call.as_ref().is_some_and(|call| {
+                call.phase == junto_media::calls::Phase::Connected
+                    && call.shares.len() == 2
+                    && call.watched.is_none()
+            })
+        })
+        .await;
+        until_share_subscriptions(&ben, 4, false).await;
+        ben.until_heard(&ann).await;
+        ben.until_silent_tone(SYSTEM.0).await;
+        ben.until_silent_tone(PLAYER.0).await;
+        assert!(ben.calls.main_picture().borrow().is_none());
+
+        let chosen = ShareId::of(ann_id, 1);
+        ben.calls.watch_share(chosen);
+        ben.until_shown(chosen, GREEN, YELLOW).await;
+        until_share_subscriptions(&ben, 4, true).await;
+        ben.until_heard_tone(PLAYER.0).await;
+        ben.until_silent_tone(SYSTEM.0).await;
+        model_when(
+            &ann_at,
+            "the server lists the chosen share again",
+            |model| {
+                model
+                    .call_at(&place)
+                    .and_then(|call| call.participant(ben_id))
+                    .is_some_and(|person| {
+                        person
+                            .watching
+                            .is_some_and(|watch| watch.account_id == ann_id && watch.slot == 1)
+                    })
+            },
+        )
+        .await;
+        ben.calls.leave().await;
+        ben.enter(room.target).await;
+        ben.until("a new call uses automatic watching again", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_some())
+        })
+        .await;
+        ben.calls.stop_watching();
+        until_share_subscriptions(&ben, 4, false).await;
+        ann.calls.leave().await;
+        ben.until(
+            "the stopped viewer loses the shares of a departed person",
+            |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.shares.is_empty() && call.watched.is_none())
+            },
+        )
+        .await;
+    })
+    .await;
+}

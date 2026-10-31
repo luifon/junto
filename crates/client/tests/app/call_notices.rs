@@ -660,3 +660,28 @@ fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppConte
     detached.click("open-call-members");
     assert!(detached.shows("member-share-sound"));
 }
+
+#[gpui::test]
+fn available_shares_without_a_watch_leave_the_people_stage_visible(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    call.shares.push(junto_media::engine::SeenShare {
+        account_id: crate::support::logged_in(&admin.handle),
+        slot: 0,
+        kind: Some(junto_media::share::ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((1280, 720)),
+    });
+    give_calls(&mut window, call);
+    assert!(window.shows("call-stage") && window.shows("shares-bar"));
+    assert!(!window.shows("share-viewport"));
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("call-stage") && detached.shows("shares-bar"));
+    assert!(!detached.shows("share-viewport"));
+}

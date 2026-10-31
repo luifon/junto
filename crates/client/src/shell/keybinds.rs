@@ -237,6 +237,7 @@ impl Shell {
             | KeyAction::PushToMute
             | KeyAction::ToggleCamera
             | KeyAction::LeaveCall
+            | KeyAction::StopWatching
             | KeyAction::AnswerCall
             | KeyAction::DeclineCall => {}
         }

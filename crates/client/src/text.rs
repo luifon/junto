@@ -815,6 +815,7 @@ pub const YOUR_VIEW: &str = "Your view";
 pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
 pub const HIDE_WITHOUT_VIDEO_HELP: &str = "Hides the tiles of people whose camera is off. Only \
      your window changes. They are still in the call and listed under Members.";
+pub const STOP_WATCHING: &str = "Stop watching";
 pub const MUTE_SHARE: &str = "Mute share";
 pub const UNMUTE_SHARE: &str = "Unmute share";
 pub const SHARE_MUTED: &str = "Muted";
@@ -1193,6 +1194,7 @@ pub fn keybind_action(action: junto_client_core::keybinds::KeyAction) -> &'stati
         PushToMute => "Push to mute",
         ToggleCamera => "Turn the camera on or off",
         ShareScreen => "Share a screen or a window",
+        StopWatching => "Stop watching a share",
         LeaveCall => "Leave the call",
         AnswerCall => "Answer a call",
         DeclineCall => "Decline a call",

@@ -47,6 +47,7 @@ mod permissions;
 mod pinning;
 mod profile_cards;
 mod rules;
+mod share_controls;
 mod sound_help;
 mod tones;
 mod tray;
@@ -802,6 +803,23 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         let (played, rate) = window.tones.played_since_clear();
         junto_media::audio::sounds::heard::recognise(&played, rate)
             == Some(junto_media::audio::sounds::Sound::ViewerJoined)
+    });
+
+    window.tones.clear_played();
+    caller.calls.stop_watching();
+    window.until("the stopped viewer is no longer counted", |window| {
+        stage(window).is_some_and(|stage| stage.shares[0].viewers.is_empty())
+    });
+    window.until("the sound of a viewer leaving", |window| {
+        let (played, rate) = window.tones.played_since_clear();
+        junto_media::audio::sounds::heard::recognise(&played, rate)
+            == Some(junto_media::audio::sounds::Sound::ViewerLeft)
+    });
+    caller
+        .calls
+        .watch_share(ShareId::of(window.own_account(), 0));
+    window.until("the viewer watches again", |window| {
+        stage(window).is_some_and(|stage| stage.shares[0].viewers.len() == 1)
     });
 
     // The administrator shares a window with the sound of its application. The window

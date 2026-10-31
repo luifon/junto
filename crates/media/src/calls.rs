@@ -365,6 +365,7 @@ enum SessionCommand {
     StopShare(Option<u8>),
     ForgetShareEnd,
     Watch(Option<ShareId>),
+    StopWatching,
     ShareVolume(f32),
     ShareSound(ShareId, junto_client_core::voice::ShareSound),
     ShareSoundDefault(AccountId, junto_client_core::voice::ShareSound),
@@ -961,6 +962,10 @@ impl Calls {
     /// Its sound is played, and the sound of every other share is not.
     pub fn watch_share(&self, share: ShareId) {
         self.inner.tell(SessionCommand::Watch(Some(share)));
+    }
+
+    pub fn stop_watching(&self) {
+        self.inner.tell(SessionCommand::StopWatching);
     }
 
     /// The volume of the sound of the watched share: 1.0 is 100 %, and 0.0 keeps the
@@ -3002,6 +3007,7 @@ impl Session {
             SessionCommand::StopShare(slot) => self.engine.stop_share(slot),
             SessionCommand::ForgetShareEnd => self.engine.forget_share_end(),
             SessionCommand::Watch(choice) => self.engine.watch(choice),
+            SessionCommand::StopWatching => self.engine.stop_watching(),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
             SessionCommand::ShareSound(share, sound) => self.engine.set_share_sound(share, sound),
             SessionCommand::ShareSoundDefault(account, sound) => {

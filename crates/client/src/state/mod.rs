@@ -1369,6 +1369,21 @@ impl AppState {
         self.calls.watch_share(share);
     }
 
+    pub fn stop_watching(&mut self) {
+        self.calls.stop_watching();
+    }
+
+    pub fn stop_watching_share(&mut self, share: ShareId) {
+        if self
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.watched == Some(share))
+        {
+            self.calls.stop_watching();
+        }
+    }
+
     pub fn share_sound(&self, share: ShareId) -> junto_client_core::voice::ShareSound {
         let Some(call) = self.calls.view().call else {
             return Default::default();
