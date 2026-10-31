@@ -1568,15 +1568,15 @@ impl Actor {
         let generation = self.capture_generation;
         let connected = self.options.host.devices().unwrap_or_default();
         let chosen = usable(self.config.input_device.as_ref(), &connected.inputs);
-        let mut chain = CaptureChain::new(
+        let chain = CaptureChain::new(
             self.link.clone(),
             self.processor.clone(),
             self.frames.clone(),
         );
         let internal = self.internal.clone();
-        let opened = self.options.host.open_input(
+        let opened = chain.open(
+            self.options.host.as_ref(),
             chosen,
-            Box::new(move |samples, format| chain.deliver(samples, format)),
             Box::new(move |error| {
                 let _ = internal.send(Internal::InputFailed(generation, error));
             }),

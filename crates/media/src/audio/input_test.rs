@@ -36,13 +36,8 @@ impl InputTest {
         drop(taken);
         let connected = host.devices().unwrap_or_default();
         let chosen = usable(device, &connected.inputs);
-        let mut chain =
-            CaptureChain::new(link.clone(), Arc::new(Processor::new(processing)), frames);
-        let stream = host.open_input(
-            chosen,
-            Box::new(move |samples, format| chain.deliver(samples, format)),
-            Box::new(|_| {}),
-        )?;
+        let chain = CaptureChain::new(link.clone(), Arc::new(Processor::new(processing)), frames);
+        let stream = chain.open(host, chosen, Box::new(|_| {}))?;
         let publisher = runtime.spawn(async move {
             let mut every = tokio::time::interval(LEVEL_PERIOD);
             loop {
