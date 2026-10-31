@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use block2::RcBlock;
 use livekit::webrtc::video_frame::VideoBuffer;
 use livekit::webrtc::video_frame::native::NativeBuffer;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescription};
@@ -520,7 +520,9 @@ impl Stream {
                         let (mut cleanup, _) = Workers::new(life.clone());
                         cleanup.report_failures_to(sink.clone());
                         let stream = Shared(stream.0.clone());
-                        let _ = cleanup.spawn("macos-share-late-stop", move || stream.stop(&life));
+                        let _ = cleanup.spawn("macos-share-late-stop", move || {
+                            autoreleasepool(|_| stream.stop(&life))
+                        });
                     }
                 },
             )
@@ -1063,31 +1065,34 @@ impl ScreenCapture for SystemCapture {
             workers.report_failures_to(sink.clone());
             let (ready, first) = oneshot::channel();
             workers.spawn("macos-share-capture", move || {
-                let started = (|| {
-                    let (streams, size) = content.streams(&request, &sink, &own, life.clone())?;
-                    drop(content);
-                    let mut starting = vec![streams.picture.start()];
-                    if let Some(sound) = &streams.sound {
-                        starting.push(sound.start());
-                    }
-                    for started in starting {
-                        wait_for_start(started, &life)?;
-                    }
-                    Ok::<_, CaptureError>((streams, size))
-                })();
-                match started {
-                    Err(error) => {
-                        let _ = ready.send(Err(error));
-                    }
-                    Ok((streams, size)) => {
-                        if ready.send(Ok(size)).is_ok() {
-                            while !life.stopped() {
-                                std::thread::park_timeout(Duration::from_millis(100));
-                            }
+                autoreleasepool(|_| {
+                    let started = (|| {
+                        let (streams, size) =
+                            content.streams(&request, &sink, &own, life.clone())?;
+                        drop(content);
+                        let mut starting = vec![streams.picture.start()];
+                        if let Some(sound) = &streams.sound {
+                            starting.push(sound.start());
                         }
-                        drop(streams);
+                        for started in starting {
+                            wait_for_start(started, &life)?;
+                        }
+                        Ok::<_, CaptureError>((streams, size))
+                    })();
+                    match started {
+                        Err(error) => {
+                            let _ = ready.send(Err(error));
+                        }
+                        Ok((streams, size)) => {
+                            if ready.send(Ok(size)).is_ok() {
+                                while !life.stopped() {
+                                    std::thread::park_timeout(Duration::from_millis(100));
+                                }
+                            }
+                            drop(streams);
+                        }
                     }
-                }
+                })
             })?;
             let (width, height) = answer(first).await??;
             Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
