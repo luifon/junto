@@ -125,3 +125,8 @@ panel. Other pins are kept. Turning the camera off restores the ordinary own ava
 "Hide people without video" also hides it. Starting the camera again uses the saved choice.
 The installation stores `hide_own_camera` in sound settings version 8; earlier files default
 to showing the own tile. Hiding requests no own preview size and changes no media gate.
+
+The call side panel's close button returns keyboard focus to the call shell, so Tab can reach
+the stage controls after the close button is removed. The share live check covers tile
+and Members mute with Enter and Space, and context-menu share volume with arrow keys,
+in the main and detached windows.

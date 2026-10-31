@@ -949,7 +949,10 @@ impl Shell {
                         .icon(if narrow { Icon::X } else { Icon::CollapseRight })
                         .tooltip(text::CLOSE_PANEL)
                         .selector("close-call-panel")
-                        .on_click(cx.listener(|this, _, _, cx| this.close_call_panel(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_call_panel(cx);
+                            this.focus.focus(window, cx);
+                        })),
                 ),
             );
         let pane = match (&notices, self.call_tab) {
