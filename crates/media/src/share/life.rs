@@ -70,6 +70,7 @@ impl Life {
             .clone()
             .map_or(Ok(()), Err)
     }
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     pub fn result(&self) -> Result<(), CaptureError> {
         self.failure
             .lock()
