@@ -521,7 +521,10 @@ impl Stream {
                         cleanup.report_failures_to(sink.clone());
                         let stream = Shared(stream.0.clone());
                         let _ = cleanup.spawn("macos-share-late-stop", move || {
-                            autoreleasepool(|_| stream.stop(&life))
+                            autoreleasepool(|_| {
+                                stream.stop(&life);
+                                drop(stream);
+                            })
                         });
                     }
                 },
