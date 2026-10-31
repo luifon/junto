@@ -1,4 +1,5 @@
 // Copyright 2025 LiveKit, Inc.
+// Modified: ordered subscription requests and test-only send controls.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -52,6 +53,18 @@ struct RemoteEvents {
 struct RemoteInfo {
     events: Arc<RemoteEvents>,
     auto_subscribe: bool, // better way to access this from room?
+    // Modified: all publications share one ordered sender.
+    subscription_requests: Arc<super::in_order::InOrder>,
+    // Modified: a test delays one actual subscription request before its send.
+    #[cfg(feature = "test-support")]
+    next_subscription: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(feature = "test-support")]
+    subscriptions_sent: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Clone)]
@@ -104,8 +117,35 @@ impl RemoteParticipant {
                 client_protocol,
                 capabilities,
             ),
-            remote: Arc::new(RemoteInfo { events: Default::default(), auto_subscribe }),
+            remote: Arc::new(RemoteInfo {
+                events: Default::default(),
+                auto_subscribe,
+                subscription_requests: Arc::default(),
+                #[cfg(feature = "test-support")]
+                next_subscription: Mutex::default(),
+                #[cfg(feature = "test-support")]
+                subscriptions_sent: tokio::sync::watch::Sender::new(0),
+            }),
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn subscriptions_sent_for_test(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.remote.subscriptions_sent.subscribe()
+    }
+
+    // Modified: production requests with a controllable send boundary for live tests.
+    #[cfg(feature = "test-support")]
+    pub fn delay_next_subscription_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *self.remote.next_subscription.lock() = Some((entered, released));
+        (waiting, release)
     }
 
     pub(crate) fn internal_track_publications(&self) -> HashMap<TrackSid, TrackPublication> {
@@ -358,10 +398,22 @@ impl RemoteParticipant {
         publication.on_subscription_update_needed({
             let rtc_engine = self.inner.rtc_engine.clone();
             let psid = self.sid();
+            let subscription_requests = self.remote.subscription_requests.clone();
+            #[cfg(feature = "test-support")]
+            let remote = self.remote.clone();
             move |publication, subscribed| {
                 let rtc_engine = rtc_engine.clone();
                 let psid = psid.clone();
-                tokio::spawn(async move {
+                #[cfg(feature = "test-support")]
+                let delayed = remote.next_subscription.lock().take();
+                #[cfg(feature = "test-support")]
+                let sent = remote.subscriptions_sent.clone();
+                subscription_requests.run(async move {
+                    #[cfg(feature = "test-support")]
+                    if let Some((entered, released)) = delayed {
+                        let _ = entered.send(());
+                        let _ = released.await;
+                    }
                     let tsid: String = publication.sid().into();
                     let update_subscription = proto::UpdateSubscription {
                         track_sids: vec![tsid.clone()],
@@ -377,6 +429,8 @@ impl RemoteParticipant {
                             update_subscription,
                         ))
                         .await;
+                    #[cfg(feature = "test-support")]
+                    sent.send_modify(|count| *count += 1);
                 });
             }
         });

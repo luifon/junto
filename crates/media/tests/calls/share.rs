@@ -2418,3 +2418,219 @@ async fn stopping_watching_unsubscribes_tracks_and_stays_stopped_until_watch() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn the_final_watch_choice_follows_a_delayed_subscription_request() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Share ordering", &ann, "Ann").await;
+        room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        let share = ShareId::of(ann_id, 0);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing().await;
+        ben.until_shown(share, RED, BLUE).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+        ben.until_heard(&ann).await;
+        let remote = ben
+            .calls
+            .sound_check()
+            .await
+            .unwrap()
+            .remote_participants
+            .into_iter()
+            .find(|person| {
+                junto_media::engine::account_of(person.identity().as_str()) == Some(ann_id)
+            })
+            .unwrap();
+        let microphone = remote
+            .track_publications()
+            .into_values()
+            .find(|publication| publication.source() == livekit::track::TrackSource::Microphone)
+            .unwrap()
+            .track()
+            .unwrap()
+            .rtc_track()
+            .id();
+        let mut sent = remote.subscriptions_sent_for_test();
+        let before = *sent.borrow();
+        let (waiting, release) = remote.delay_next_subscription_for_test();
+        ben.calls.stop_watching();
+        tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        ben.calls.watch_share(share);
+        ben.until("the last choice is Watch", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched == Some(share))
+        })
+        .await;
+        ben.calls.sound_check().await.unwrap();
+        let overtook = tokio::time::timeout(
+            Duration::from_millis(500),
+            sent.wait_for(|count| *count >= before + 3),
+        )
+        .await
+        .is_ok();
+        release.send(()).unwrap();
+        ann.capture.set_colours(GREEN, YELLOW);
+        ben.until_shown(share, GREEN, YELLOW).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+        let flowing = share_packets(&ben, &microphone).await;
+        assert!(
+            flowing.0 > 0 && flowing.1 > 0,
+            "share RTP counters are absent while watched: {flowing:?}"
+        );
+        assert!(
+            !overtook,
+            "later subscription requests overtook the held request"
+        );
+
+        ben.calls.stop_watching();
+        ben.until("watching stops before the second race", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_none())
+        })
+        .await;
+        let (waiting, release) = remote.delay_next_subscription_for_test();
+        ben.calls.watch_share(share);
+        tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        ben.calls.stop_watching();
+        ben.until("the last choice is Stop watching", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched.is_none())
+        })
+        .await;
+        ben.calls.sound_check().await.unwrap();
+        release.send(()).unwrap();
+        let start = tokio::time::Instant::now();
+        loop {
+            let before = share_packets(&ben, &microphone).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let after = share_packets(&ben, &microphone).await;
+            if before == after {
+                break;
+            }
+            assert!(
+                start.elapsed() < PATIENCE,
+                "stopped share RTP still grows: {before:?} -> {after:?}"
+            );
+        }
+        ben.until_silent_tone(SYSTEM.0).await;
+        assert!(ben.calls.main_picture().borrow().is_none());
+    })
+    .await;
+}
+
+// Count all share receivers, including a replacement created by a late subscribe.
+async fn share_packets(viewer: &Person, microphone: &str) -> (u64, u64) {
+    let mut packets = (0, 0);
+    let stats = viewer.calls.statistics().await.unwrap();
+    for stat in stats
+        .publisher_stats
+        .into_iter()
+        .chain(stats.subscriber_stats)
+    {
+        if let RtcStats::InboundRtp(stat) = stat
+            && stat.inbound.track_identifier != microphone
+        {
+            if stat.stream.kind == "video" {
+                packets.0 += stat.received.packets_received;
+            } else if stat.stream.kind == "audio" {
+                packets.1 += stat.received.packets_received;
+            }
+        }
+    }
+    packets
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn a_saved_mute_is_present_before_an_existing_share_is_discovered() {
+    limited(async {
+        use junto_client_core::voice::ShareSound;
+        use junto_media::engine::{Controls, Engine, EngineOptions, MediaJoin, Watching};
+        use std::sync::Arc;
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, owner) = Room::new("Saved share sound", &ann, "Ann").await;
+        let peer = room.member(&owner, &ben, "Ben").await;
+        let ann_id = account(&owner);
+        let share = ShareId::of(ann_id, 0);
+        let quiet = ShareSound {
+            volume: 65,
+            muted: true,
+        };
+        ann.enter(room.target).await;
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing().await;
+        let answer = peer.api().join_channel_call(room.voice).await.unwrap();
+        let engine = Engine::start(
+            &tokio::runtime::Handle::current(),
+            EngineOptions {
+                camera: Arc::new(ben.camera.clone()),
+                host: Arc::new(ben.host.clone()),
+                permission: Arc::new(ben.permission.clone()),
+                capture: Arc::new(ben.capture.clone()),
+            },
+            MediaJoin {
+                url: answer.media_url,
+                token: answer.token,
+                shares: answer.shares.unwrap_or(1),
+            },
+            crate::scene::plain_voice(),
+            Controls::default(),
+            Default::default(),
+            Watching {
+                sounds: [(ann_id, quiet)].into(),
+                ..Watching::default()
+            },
+        );
+        let mut state = engine.state();
+        tokio::time::timeout(
+            PATIENCE,
+            state.wait_for(|state| state.share_sounds.contains_key(&share)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        // Deliberately withhold the runtime update until discovery has finished.
+        assert_eq!(state.borrow().share_sounds[&share], quiet);
+        engine.set_share_sound_default(ann_id, quiet);
+        let mut pictures = engine.main_picture();
+        tokio::time::timeout(PATIENCE, pictures.wait_for(|picture| picture.is_some()))
+            .await
+            .unwrap()
+            .unwrap();
+        ben.until_silent_tone(SYSTEM.0).await;
+        engine.close().await;
+        peer.api().leave_call_as(&answer.identity).await.unwrap();
+
+        ben.calls
+            .set_share_sound_default(room.target.server_id, ann_id, quiet);
+        ben.enter(room.target).await;
+        ben.until_shown(share, RED, BLUE).await;
+        assert_eq!(ben.calls.view().call.unwrap().share_sounds[&share], quiet);
+        ben.until_silent_tone(SYSTEM.0).await;
+        ben.calls.set_share_sound(
+            share,
+            ShareSound {
+                muted: false,
+                ..quiet
+            },
+        );
+        ben.until_heard_tone(SYSTEM.0).await;
+    })
+    .await;
+}

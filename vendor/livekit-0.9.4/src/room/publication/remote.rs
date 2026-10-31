@@ -1,4 +1,5 @@
 // Copyright 2025 LiveKit, Inc.
+// Modified: reuse the receiver after an explicit unsubscribe and subscribe.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -52,6 +53,8 @@ struct RemoteInfo {
 struct RemoteInner {
     info: RwLock<RemoteInfo>,
     events: RemoteEvents,
+    // Modified: a quick resubscribe can reuse the same native receiver.
+    stopped_track: Mutex<Option<RemoteTrack>>,
 }
 
 #[derive(Clone)]
@@ -80,6 +83,7 @@ impl RemoteTrackPublication {
             remote: Arc::new(RemoteInner {
                 info: RwLock::new(RemoteInfo { subscribed: auto_subscribe, allowed: true }),
                 events: Default::default(),
+                stopped_track: Mutex::default(),
             }),
         }
     }
@@ -246,9 +250,17 @@ impl RemoteTrackPublication {
             }
         }
 
+        // Modified: an unchanged receiver need not produce another track-added event.
         if !subscribed {
-            // TODO(theomonnom): Wait for the PC onRemoveTrack event instead?
+            if let Some(track) = self.track() {
+                *self.remote.stopped_track.lock() = Some(track);
+            }
             self.set_track(None);
+        } else if self.track().is_none() {
+            let previous = self.remote.stopped_track.lock().take();
+            if let Some(track) = previous {
+                self.set_track(Some(track));
+            }
         }
 
         // Request to send an update to the SFU

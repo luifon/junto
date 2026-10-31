@@ -1457,6 +1457,7 @@ pub(super) mod calls {
         let mut known = in_call(active(target(&server, &scene, daily)));
         known.media.levels = ShownLevels {
             input: 7,
+            speech_input: 7,
             own: (2, true),
             people: [(ana, (4, true))].into_iter().collect(),
         };
@@ -1526,6 +1527,7 @@ pub(super) mod calls {
             ShownLevels::default(),
             ShownLevels {
                 input: 7,
+                speech_input: 7,
                 own: (2, true),
                 people: [(ana, (4, true)), (ben, (1, false)), (cyd, (3, true))]
                     .into_iter()
@@ -1533,6 +1535,7 @@ pub(super) mod calls {
             },
             ShownLevels {
                 input: 20,
+                speech_input: 20,
                 own: (5, false),
                 people: [(ana, (0, false))].into_iter().collect(),
             },

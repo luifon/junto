@@ -862,6 +862,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
     });
+    share_controls::share_sound_keyboard_paths(&mut window);
     window.click("detach-call");
     let mut detached = window.call_window();
     detached.click("share-mute-header");
@@ -873,6 +874,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     detached.until("the detached share is audible again", |window| {
         heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
     });
+    share_controls::share_sound_keyboard_paths(&mut detached);
     detached.click("return-call");
     drop(detached);
     window.until("the call returns", |window| window.shows("share-header"));

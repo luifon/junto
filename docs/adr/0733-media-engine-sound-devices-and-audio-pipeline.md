@@ -127,6 +127,13 @@ Order of mute requests:
 - The media live test `sound::a_mute_and_an_open_during_a_restored_connection_reach_the_media_server_in_order` pauses the media server until the clients restore their connection, mutes and opens the microphone three times 200 ms apart, and checks that the other person hears the device and that the server does not hold its track as muted. It failed in 2 of 8 runs with the published version.
 - This correction is removed when a pinned upstream version sends the mute requests of a track in their order. The copy is removed when no correction remains.
 
+Order of subscription requests:
+
+- Every subscription change of a remote participant uses one `InOrder`, shared across its publications. The request finishes before the next starts, including requests from publication and reconnect reconciliation. With independent tasks, a delayed unsubscribe could follow a later subscribe and leave a watched share without picture or sound.
+- The media live test `share::the_final_watch_choice_follows_a_delayed_subscription_request` delays one actual SDK request through the dependency's test-only feature. Stop then Watch must receive fresh pixels and sound; Watch then Stop must stop receiving picture and sound RTP packets. The existing ordering unit tests and both live tiers run when replacing the dependency.
+- The SDK clears the local track on an explicit unsubscribe. It retains that receiver separately and restores the track event on subscribe, since a quick pair of changes can leave the receiver unchanged without another native track-added event. A later native replacement still replaces this track normally.
+- This correction is removed when a pinned upstream version orders subscription changes and restores reception when the receiver is reused. Its source and retained licence notices are kept beside the dependency.
+
 Mute state after a resume:
 
 - The SDK counts a mute request as sent when it has written it to the signal connection. A connection that is lost without a close is found only when its pings are not answered, up to the ping timeout later. A request written in that time stays with the network and reaches the media server late or not at all. When the SDK resumes the session on a new signal connection, the media server (v1.13.9) closes the request channel of the old connection before it answers the resume, and discards a request that arrives on the old connection later. The resume (`SyncState`) sends the publications with the track information of the `AddTrack` response, whose mute flag is the state at the time of publishing: the SDK does not update that information of a local publication later. The media server does not take the mute state from the resume. In the published version an open written in that time was therefore lost: the media server held the track as muted for the rest of the connection while the device sent and showed it open.
@@ -226,3 +233,23 @@ that the preview is not published. Native permission dialogs and physical device
 the native device tier of ADR 0913.
 
 Sound-device ownership follows the bounded capture cleanup policy of ADR 0706. OpenStream cancellation fences callbacks synchronously; native CPAL pause/destruction and generated-device joins run on a supervised cleanup worker. The callback fence sends no microphone samples and fills output with silence once cancelled. Pause errors and errors delivered during close are logged and retained; panics, missing acknowledgements and a two-second native cleanup deadline become persistent microphone/output notices in Calls, including after Leave. Explicit stop also awaits the common bounded acknowledgement. Test wrappers attach lifetime guards to the same native resource instead of nesting independently supervised streams.
+
+The muted-speech notice has a separate echo-cancellation module. It receives copies of
+the raw microphone and the mixed playout at 48 kHz, before optional sending processing.
+Noise suppression and gain control are off for this detector; user processing changes do
+not reset its echo history. Only its filtered level reaches the notice. It never opens the
+capture gate or changes what the sending processor or the output device receives. A
+failed detection frame reports silence and logs the failure once. The detector supplies
+the required stream-delay parameter as zero; AEC3 uses its internal delay estimator,
+and the host callbacks provide no device latency estimate. The virtual PipeWire
+check routes real output back into capture with sending processing off and checks echo
+rejection, preserved local input beside playback and silent frames at the closed gate.
+The capture callback filters the speech copy before the sending processing and writes the
+speech level and the input level only after the cancellation and generation check of the
+bounded cleanup policy, so a retired callback that was inside the speech filter when its
+stream was cancelled writes no level (`audio::capture::tests::a_retired_device_callback_cannot_publish_a_speech_level`).
+
+The sending echo canceller is also checked with playback copied into the microphone
+50 ms later, with noise suppression and gain control off, and with processing off as a
+control. The pinned AEC3 backend estimates this delay internally; the test measures echo
+attenuation and checks that disabled processing leaves the samples unchanged.

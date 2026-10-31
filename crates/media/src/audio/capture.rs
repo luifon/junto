@@ -26,6 +26,8 @@ pub struct CaptureLink {
     /// The level of the microphone after the processing, also while nothing is sent. A
     /// person checks a microphone with it.
     pub input: LevelCell,
+    /// The independently echo-filtered local input used by the muted-speech notice.
+    pub speech_input: LevelCell,
     /// The level of what is sent.
     pub sent: LevelCell,
     speaking: AtomicBool,
@@ -67,6 +69,7 @@ impl Default for CaptureLink {
             open: AtomicBool::default(),
             closures: AtomicU64::default(),
             input: LevelCell::default(),
+            speech_input: LevelCell::default(),
             sent: LevelCell::default(),
             speaking: AtomicBool::default(),
             speech_origin: std::time::Instant::now(),
@@ -159,6 +162,7 @@ impl CaptureLink {
     /// The device stopped: the levels show nothing.
     pub fn closed(&self) {
         self.input.silence();
+        self.speech_input.silence();
         self.sent.silence();
         self.speaking.store(false, Ordering::Relaxed);
     }
@@ -347,9 +351,18 @@ impl CaptureChain {
             return;
         }
         self.link.captured.count();
+        let speech = <[i16; FRAME_SAMPLES]>::try_from(frame.as_slice())
+            .ok()
+            .map(|mut speech| {
+                self.processor.speech(&mut speech);
+                speech
+            });
         self.processor.capture(&mut frame);
         if closures != self.link.closures() || !self.active.load(Ordering::Acquire) {
             return;
+        }
+        if let Some(speech) = speech {
+            self.link.speech_input.frame(&speech);
         }
         self.link.input.frame(&frame);
         if self.link.is_open() && self.above_threshold(&frame) {
@@ -459,6 +472,50 @@ mod tests {
             taken.try_recv().is_err(),
             "a retired device sent samples through the reopened gate"
         );
+    }
+
+    #[test]
+    fn a_retired_device_callback_cannot_publish_a_speech_level() {
+        use super::super::{DeviceId, DeviceInfo, OpenStream};
+        use std::time::{Duration, Instant};
+        let link = Arc::new(CaptureLink::default());
+        let processor = Arc::new(Processor::new(Processing::OFF));
+        let (frames, mut taken) = mpsc::channel(4);
+        let mut chain = CaptureChain::new(link.clone(), processor.clone(), frames);
+        let stream = OpenStream::new(
+            DeviceInfo {
+                id: DeviceId("capture".into()),
+                name: "Capture".into(),
+                is_default: true,
+            },
+            (),
+        )
+        .on_cancel(chain.cancellation());
+        let held = processor.hold_speech_for_test();
+        let format = Format {
+            sample_rate: SAMPLE_RATE,
+            channels: 1,
+        };
+        let samples = tone(format, 440.0, FRAME_SAMPLES, 0);
+        let worker = std::thread::spawn(move || chain.deliver(&samples, format));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while link.captured.total(Duration::from_secs(1)) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the callback did not reach the speech filter"
+            );
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        drop(stream);
+        drop(held);
+        worker.join().unwrap();
+        assert!(
+            link.speech_input.read() <= SILENCE_DBFS,
+            "a retired device published its speech level: {}",
+            link.speech_input.read()
+        );
+        assert!(link.input.read() <= SILENCE_DBFS);
+        assert!(taken.try_recv().is_err());
     }
 
     #[test]

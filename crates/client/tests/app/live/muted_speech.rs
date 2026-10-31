@@ -38,7 +38,8 @@ fn local_speech_while_muted_offers_unmute_without_bypassing_held_keys(cx: &mut T
     window.until("local speech starts the notice again", |window| {
         window.shows("muted-speech")
     });
-    window.click("unmute-muted-speech");
+    window.tab_to("unmute-muted-speech");
+    window.press("enter");
     window.until(
         "Unmute opens the microphone and hides the notice",
         |window| !window.shows("muted-speech") && heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS,
@@ -107,7 +108,8 @@ fn local_speech_while_muted_offers_unmute_without_bypassing_held_keys(cx: &mut T
     window.click("detach-call");
     let mut detached = window.call_window();
     assert!(detached.shows("muted-speech"));
-    detached.click("unmute-muted-speech");
+    detached.tab_to("unmute-muted-speech");
+    detached.press("space");
     detached.until("the detached Unmute works", |window| {
         !window.shows("muted-speech") && heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });

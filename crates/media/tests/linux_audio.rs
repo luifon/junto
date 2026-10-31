@@ -284,3 +284,143 @@ fn removing_a_monitor_ends_the_capture_without_choosing_another_device() {
         junto_media::audio::AudioError::NoDevice
     );
 }
+
+#[test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+fn muted_speech_ignores_playback_captured_by_the_microphone_with_processing_off() {
+    use junto_media::audio::{
+        capture::{CaptureChain, CaptureLink, FrameQueue},
+        playout::{BLOCK_SAMPLES, Mixer, PlayoutChain},
+        processing::{Processing, Processor},
+    };
+    use std::sync::atomic::AtomicBool;
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .try_init();
+    let _limit = limit::watch(limit::TEST_LIMIT);
+    let name = "junto-test-muted-echo";
+    let _sink = Sink::new(name);
+    let host = MediaOptions::system().host;
+    let devices = host.devices().unwrap();
+    let input = named(&devices.inputs, name).unwrap();
+    let output = named(&devices.outputs, name).unwrap();
+    let processor = Arc::new(Processor::new(Processing::OFF));
+    let link = Arc::new(CaptureLink::default());
+    let (frames, mut taken) = tokio::sync::mpsc::channel(2048);
+    let mut capture = CaptureChain::new(link.clone(), processor.clone(), frames);
+    let local = Arc::new(AtomicBool::new(false));
+    let speaking = local.clone();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let levels = observed.clone();
+    let captured = link.clone();
+    let faults = Arc::new(Mutex::new(Vec::new()));
+    let failed = faults.clone();
+    let mut phase = 0.0_f32;
+    let _input = host
+        .open_input(
+            Some(&input.id),
+            Box::new(move |data, format| {
+                let mut data = data.to_vec();
+                if speaking.load(Ordering::Relaxed) {
+                    for frame in data.chunks_exact_mut(usize::from(format.channels)) {
+                        for sample in frame {
+                            *sample += 0.15 * phase.sin();
+                        }
+                        phase = (phase
+                            + std::f32::consts::TAU * 1700.0 / format.sample_rate as f32)
+                            % std::f32::consts::TAU;
+                    }
+                }
+                capture.deliver(&data, format);
+                levels
+                    .lock()
+                    .unwrap()
+                    .push((captured.input.read(), captured.speech_input.read()));
+            }),
+            Box::new(move |error| failed.lock().unwrap().push(error)),
+        )
+        .unwrap();
+    let mixer = Mixer::shared();
+    let source = mixer.add(1.0);
+    let mut playout = PlayoutChain::new(mixer.clone(), processor);
+    let failed = faults.clone();
+    let mut index = 0usize;
+    let _output = host
+        .open_output(
+            Some(&output.id),
+            Box::new(move |data, format| {
+                while mixer.waiting(&source) < 10 {
+                    let mut block = [0i16; BLOCK_SAMPLES];
+                    for frame in block.as_chunks_mut::<2>().0 {
+                        let phase = std::f32::consts::TAU * 440.0 * index as f32 / 48000.0;
+                        frame.fill((phase.sin() * 0.2 * f32::from(i16::MAX)) as i16);
+                        index += 1;
+                    }
+                    source.push(&block);
+                }
+                playout.fill(data, format);
+            }),
+            Box::new(move |error| failed.lock().unwrap().push(error)),
+        )
+        .unwrap();
+    until("the virtual microphone receives loud playback", || {
+        link.input.read() > -25.0
+    });
+    until(
+        "the echo-filtered local signal rejects sustained speaker playback",
+        || {
+            let levels = observed.lock().unwrap();
+            levels.len() >= 100
+                && levels[levels.len() - 100..]
+                    .iter()
+                    .all(|(raw, speech)| *raw > -25.0 && *speech < -45.0)
+        },
+    );
+    let observed_echo = observed.lock().unwrap();
+    let peak = observed_echo
+        .iter()
+        .map(|(_, filtered)| *filtered)
+        .fold(-96.0_f32, f32::max);
+    eprintln!(
+        "echo-only peak filtered level {peak}, last raw/filtered {:?}",
+        observed_echo.last()
+    );
+    assert!(
+        peak < -45.0,
+        "speaker playback triggered detection during startup: {peak}"
+    );
+    drop(observed_echo);
+    observed.lock().unwrap().clear();
+    while taken.try_recv().is_ok() {}
+    local.store(true, Ordering::Relaxed);
+    until("local speech beside playback remains detectable", || {
+        let levels = observed.lock().unwrap();
+        levels.len() >= 10
+            && levels[levels.len() - 10..]
+                .iter()
+                .all(|(_, speech)| *speech > -40.0)
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let mut queue = FrameQueue::new(link.clone(), taken);
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..100 {
+                assert!(
+                    queue
+                        .next()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .all(|sample| *sample == 0)
+                );
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(!link.is_open() && !link.speaking());
+    assert!(faults.lock().unwrap().is_empty());
+}

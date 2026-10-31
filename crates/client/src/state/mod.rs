@@ -189,6 +189,7 @@ fn voice_config(voice: &VoiceSettings) -> VoiceConfig {
 fn shown_levels(levels: &Levels) -> ShownLevels {
     ShownLevels {
         input: level::segments(levels.input, INPUT_SEGMENTS),
+        speech_input: level::segments(levels.speech_input, INPUT_SEGMENTS),
         own: (
             level::segments(levels.own.level, LEVEL_SEGMENTS),
             levels.own.speaking,

@@ -219,6 +219,8 @@ pub struct Levels {
     pub last_microphone_speech: Option<std::time::Instant>,
     /// The microphone after the processing, also while it is muted.
     pub input: f32,
+    /// Local input with an independent echo filter, also while the sending gate is closed.
+    pub speech_input: f32,
     /// What this device sends.
     pub own: PersonLevel,
     /// The other people whose sound arrives.
@@ -235,12 +237,14 @@ pub struct EngineOptions {
 }
 
 /// What the person set for the shares of a call.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Watching {
     /// The share that the person chose to watch. Absent: no choice was made.
     pub choice: Option<ShareId>,
     /// The volume of the sound of the watched share: 1.0 is 100 %, and 0.0 is its mute.
     pub volume: f32,
+    /// Saved sound settings of this server, present before the connection starts.
+    pub sounds: HashMap<AccountId, junto_client_core::voice::ShareSound>,
 }
 
 impl Default for Watching {
@@ -248,6 +252,7 @@ impl Default for Watching {
         Self {
             choice: None,
             volume: 1.0,
+            sounds: HashMap::new(),
         }
     }
 }
@@ -539,7 +544,7 @@ impl Engine {
             watch_stopped: false,
             share_volume: watching.volume.clamp(0.0, MAX_GAIN),
             share_sounds: HashMap::new(),
-            share_sound_defaults: HashMap::new(),
+            share_sound_defaults: watching.sounds,
             view_size: DEFAULT_VIEW,
             view: watch::Sender::new(View {
                 watched: None,
@@ -1870,6 +1875,7 @@ impl Actor {
         let levels = Levels {
             last_microphone_speech: self.link.last_speech(),
             input: level::meter(self.link.input.read()),
+            speech_input: level::meter(self.link.speech_input.read()),
             own: PersonLevel {
                 level: level::meter(self.link.sent.read()),
                 speaking: self.link.speaking(),
