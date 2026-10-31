@@ -2940,3 +2940,82 @@ fn an_afk_mode_read_cannot_undo_a_later_setting_change_or_change_another_seat() 
     f.session.finished(Done::AfkMode(Box::new(Ok(view))));
     assert!(!f.session.listen_only);
 }
+
+#[tokio::test]
+async fn a_dropped_afk_disable_notice_refreshes_the_same_seat_without_accepting_an_older_read() {
+    use junto_client_core::protocol::call::{OwnCallState, OwnCallView};
+    let mut f = fixture();
+    let view = OwnCallView {
+        cursor: Some(f.model.cursor),
+        call: Some(OwnCallState {
+            listen_only: false,
+            own: f.model.own_call.as_ref().unwrap().clone(),
+            call: f.answer.call.clone(),
+            entry_requests: Vec::new(),
+            inside: Some(true),
+            meeting_grant: Some(false),
+        }),
+    };
+    Arc::make_mut(&mut f.model.workspaces[0])
+        .channel_permissions
+        .push(junto_client_core::protocol::structure::ChannelPermissions {
+            channel_id: f.session.target.place.channel_id().unwrap(),
+            permissions: vec![
+                WorkspacePermission::Speak,
+                WorkspacePermission::Video,
+                WorkspacePermission::ShareScreen,
+                WorkspacePermission::UseVoiceActivity,
+            ],
+        });
+    f.session
+        .server
+        .live()
+        .show_for_test(StreamStatus::Live, Some(f.model.clone()));
+    f.session.listen_only = true;
+    f.session.set_withheld(Withheld::default());
+    assert!(f.session.withheld.microphone && f.session.withheld.camera && f.session.withheld.share);
+    f.session.afk_reading = true;
+    let live = f.session.server.live();
+    let mut notices = live.notices();
+    live.tell_for_test(Notice::Event {
+        id: 41,
+        event: Arc::new(Event::WorkspaceAfkChanged {
+            workspace_id: f.model.workspaces[0].workspace.id,
+        }),
+        at: OffsetDateTime::UNIX_EPOCH,
+    });
+    // Overflow the receiver so the settings notice is lost, as on a slow connection.
+    for _ in 0..2048 {
+        live.tell_for_test(Notice::PresenceChanged);
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), notices.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    f.session.missed();
+    assert!(
+        f.session.afk_dirty,
+        "the dropped settings notice requires an own-call read"
+    );
+    f.session
+        .finished(Done::AfkMode(Box::new(Ok(view.clone()))));
+    assert!(
+        f.session.listen_only,
+        "the answer from before the missed notices is stale"
+    );
+    assert!(f.session.afk_dirty);
+    let (done, _results) = mpsc::unbounded_channel();
+    f.session.work(Instant::now(), &done);
+    assert!(f.session.afk_reading);
+    assert!(!f.session.afk_dirty);
+    f.session.finished(Done::AfkMode(Box::new(Ok(view))));
+    assert!(!f.session.listen_only);
+    assert!(
+        !f.session.withheld.microphone && !f.session.withheld.camera && !f.session.withheld.share
+    );
+    assert_eq!(f.session.place.identity(), "seat");
+    f.session.engine.close().await;
+}

@@ -151,6 +151,12 @@ pub(super) fn run(shared: &Arc<Shared>) -> bool {
         if queue.dispatch_pending(&mut state).is_err() {
             return false;
         }
+        if state.globals_done {
+            let idle = shared.idle_duration();
+            for reader in shared.take_readers() {
+                let _ = reader.send(idle);
+            }
+        }
         if state.globals_done && state.notifications.is_empty() {
             return false;
         }
@@ -193,6 +199,9 @@ pub(super) fn run(shared: &Arc<Shared>) -> bool {
                 Err(_) => return false,
             }
         }
+    }
+    for reader in shared.take_readers() {
+        let _ = reader.send(None);
     }
     true
 }

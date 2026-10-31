@@ -2709,8 +2709,7 @@ impl Session {
                 if let Event::WorkspaceAfkChanged { workspace_id } = &**event
                     && matches!(self.target.place, CallPlace::Channel { workspace_id: current, .. } if current == *workspace_id)
                 {
-                    self.afk_dirty = true;
-                    self.afk_read_at = Instant::now();
+                    self.invalidate_afk();
                 }
                 // The server ends the watch of a share when a new share starts in its slot
                 // (ADR 0502); the client then reports the watch again.
@@ -2731,12 +2730,7 @@ impl Session {
                 }
             }
             Notice::Reloaded { cursor } => {
-                if matches!(self.target.place, CallPlace::Channel { .. })
-                    && (self.server.entry().capabilities.afk_channel || self.listen_only)
-                {
-                    self.afk_dirty = true;
-                    self.afk_read_at = Instant::now();
-                }
+                self.invalidate_afk();
                 if self.grants.cursor.epoch != cursor.epoch {
                     self.grants.restarted(*cursor);
                 } else {
@@ -2798,6 +2792,7 @@ impl Session {
     /// it; a grant and the reason of an end are in no state, so the session decides without
     /// them in the direction that opens nothing (ADR 0785).
     fn missed(&mut self) {
+        self.invalidate_afk();
         self.grants.missed();
         self.end_kept_block();
         self.place.untold();
@@ -2805,6 +2800,15 @@ impl Session {
             moving.reloaded = true;
         }
         self.review = true;
+    }
+
+    fn invalidate_afk(&mut self) {
+        if matches!(self.target.place, CallPlace::Channel { .. })
+            && (self.server.entry().capabilities.afk_channel || self.listen_only)
+        {
+            self.afk_dirty = true;
+            self.afk_read_at = Instant::now();
+        }
     }
 
     /// A move of the person of this device (ADR 0511). The device joins the room of the
