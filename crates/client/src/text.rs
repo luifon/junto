@@ -673,6 +673,13 @@ pub fn capture_error(error: &CaptureError) -> String {
     }
 }
 
+pub fn capture_notice(notice: &junto_media::share::CaptureNotice, limit: u8) -> String {
+    match notice.kind {
+        junto_media::share::CaptureKind::Share => share_ended(&notice.error, limit),
+        junto_media::share::CaptureKind::Camera => "Junto stopped sending your camera, but could not confirm that its capture stopped. If you are still in the call, you can leave it. Restart Junto before turning the camera on again.".to_owned(),
+    }
+}
+
 /// The notice about a share that did not start, ended, or could not finish its cleanup.
 pub fn share_ended(error: &CaptureError, limit: u8) -> String {
     match error {

@@ -6,22 +6,25 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use super::{CameraError, CameraSink};
-use crate::share::CaptureStream;
+use crate::share::life::Life;
+use crate::share::workers::Workers;
+use crate::share::{CaptureKind, CaptureNotice, CaptureStream};
 use livekit::webrtc::video_frame::VideoBuffer;
 
 pub(super) struct Delivery {
-    stopped: AtomicBool,
-    sink: Mutex<Option<Arc<dyn CameraSink>>>,
+    life: Arc<Life>,
+    sink: Arc<dyn CameraSink>,
+    ended: AtomicBool,
 }
 
 impl Delivery {
     pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        self.life.stopped()
     }
 
     pub fn picture(&self, frame: Arc<dyn VideoBuffer>) {
-        if let Some(sink) = &*self.sink.lock().unwrap_or_else(PoisonError::into_inner) {
-            sink.picture(frame);
+        if !self.stopped() {
+            self.sink.picture(frame);
         }
     }
 
@@ -47,15 +50,26 @@ impl Delivery {
     }
 
     pub fn ended(&self, error: CameraError) {
-        if let Some(sink) = self
-            .sink
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+        if !self.life.cancelled.load(Ordering::Acquire) && !self.ended.swap(true, Ordering::AcqRel)
         {
-            sink.ended(error);
+            self.life.stop();
+            self.sink.ended(error);
         }
-        self.stopped.store(true, Ordering::Release);
+    }
+
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub fn cleanup_failed(&self, error: impl std::fmt::Display) {
+        self.life
+            .cleanup_failed(crate::share::CaptureError::StopFailed(error.to_string()));
+    }
+}
+
+impl CameraSink for Delivery {
+    fn picture(&self, frame: Arc<dyn VideoBuffer>) {
+        Delivery::picture(self, frame);
+    }
+    fn ended(&self, error: CameraError) {
+        Delivery::ended(self, error);
     }
 }
 
@@ -68,18 +82,6 @@ impl Drop for Claim {
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|held| *held != self.0);
         RELEASED.notify_all();
-    }
-}
-
-struct Running(Arc<Delivery>);
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.0.stopped.store(true, Ordering::Release);
-        self.0
-            .sink
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
     }
 }
 
@@ -198,15 +200,20 @@ pub(super) async fn start(
     sink: Arc<dyn CameraSink>,
     capture: impl FnOnce(Arc<Delivery>, Ready) + Send + 'static,
 ) -> Result<CaptureStream, CameraError> {
+    let life = Arc::new(Life::default());
     let delivery = Arc::new(Delivery {
-        stopped: AtomicBool::new(false),
-        sink: Mutex::new(Some(sink)),
+        life: life.clone(),
+        sink: sink.clone(),
+        ended: AtomicBool::new(false),
     });
-    let running = Running(delivery.clone());
+    let (mut workers, stopped) = Workers::new(life);
+    workers.report_failures_with(move |mut notice: CaptureNotice| {
+        notice.kind = CaptureKind::Camera;
+        sink.stop_failed(notice);
+    });
     let (ready, answer) = oneshot::channel();
-    std::thread::Builder::new()
-        .name("camera-capture".into())
-        .spawn(move || capture(delivery, ready))
+    workers
+        .spawn("camera-capture", move || capture(delivery, ready))
         .map_err(|error| CameraError::Failed(error.to_string()))?;
     let started = tokio::time::timeout(Duration::from_secs(10), answer)
         .await
@@ -218,7 +225,7 @@ pub(super) async fn start(
     {
         *LAST_RATE.lock().unwrap_or_else(PoisonError::into_inner) = started.rate;
     }
-    Ok(CaptureStream::new(started.width, started.height, running))
+    Ok(CaptureStream::new(started.width, started.height, workers).with_stop_result(stopped))
 }
 
 #[cfg(test)]
@@ -409,6 +416,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stalled_camera_delivery_does_not_hold_stop_or_its_cleanup_notice() {
+        struct BlockedSink {
+            entered: Mutex<Option<oneshot::Sender<()>>>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+            failure: Mutex<Option<oneshot::Sender<CaptureNotice>>>,
+        }
+        impl CameraSink for BlockedSink {
+            fn picture(&self, _: Arc<dyn VideoBuffer>) {
+                if let Some(entered) = self.entered.lock().unwrap().take() {
+                    let _ = entered.send(());
+                }
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10));
+            }
+            fn ended(&self, _: CameraError) {}
+            fn stop_failed(&self, notice: CaptureNotice) {
+                if let Some(failure) = self.failure.lock().unwrap().take() {
+                    let _ = failure.send(notice);
+                }
+            }
+        }
+        let (entered, blocked) = oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let (failure, notice) = oneshot::channel();
+        let stream = start(
+            Arc::new(BlockedSink {
+                entered: Mutex::new(Some(entered)),
+                release: Mutex::new(held),
+                failure: Mutex::new(Some(failure)),
+            }),
+            |delivery, ready| {
+                let _ = ready.send(Ok(Started {
+                    width: 4,
+                    height: 2,
+                    rate: None,
+                }));
+                delivery.picture(Arc::new(livekit::webrtc::video_frame::I420Buffer::new(
+                    4, 2,
+                )));
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), blocked)
+            .await
+            .unwrap()
+            .unwrap();
+        let (returned, dropped) = oneshot::channel();
+        let owner = std::thread::spawn(move || {
+            let _ = returned.send(stream.stop());
+        });
+        let stop = tokio::time::timeout(Duration::from_secs(1), dropped).await;
+        if stop.is_err() {
+            let _ = release.send(());
+        }
+        let stop = stop.expect("camera stop held the delivery lock").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(4), stop).await;
+        let notice = tokio::time::timeout(Duration::from_secs(1), notice).await;
+        let _ = release.send(());
+        owner.join().unwrap();
+        assert!(matches!(
+            result.unwrap(),
+            Err(crate::share::CaptureError::StopFailed(_))
+        ));
+        assert_eq!(notice.unwrap().unwrap().kind, CaptureKind::Camera);
+    }
+
+    #[tokio::test]
     async fn startup_failure_is_returned_without_a_running_capture() {
         let sink = Arc::new(Sink::default());
         let result = start(sink.clone(), |_, ready| {
@@ -423,8 +501,9 @@ mod tests {
 
     fn delivery() -> Arc<Delivery> {
         Arc::new(Delivery {
-            stopped: AtomicBool::new(false),
-            sink: Mutex::new(None),
+            life: Arc::new(Life::default()),
+            sink: Arc::new(Sink::default()),
+            ended: AtomicBool::new(false),
         })
     }
 
@@ -451,7 +530,7 @@ mod tests {
         let waiting = delivery();
         let stopped = waiting.clone();
         let thread = std::thread::spawn(move || waiting.claim("stopped-device").is_none());
-        stopped.stopped.store(true, Ordering::Release);
+        stopped.life.stop();
         assert!(thread.join().unwrap());
     }
 }

@@ -31,7 +31,12 @@ impl CameraSink for Sink {
         {
             return;
         }
-        if let Some(source) = &*self.source.lock().unwrap_or_else(PoisonError::into_inner) {
+        let source = self
+            .source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(source) = source {
             source.capture_frame(&super::sent::frame(frame.clone()));
         }
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(frame);
@@ -42,6 +47,9 @@ impl CameraSink for Sink {
                 .internal
                 .send(Internal::CameraEnded(self.generation, error));
         }
+    }
+    fn stop_failed(&self, notice: crate::share::CaptureNotice) {
+        let _ = self.internal.send(Internal::ShareStopFailed(notice));
     }
 }
 pub(super) struct OwnCamera {
@@ -120,10 +128,12 @@ impl Drop for OwnCamera {
         self.sink.ended.store(true, Ordering::Release);
         self.task.abort();
         self.stream.take();
-        self.started
+        let started = self
+            .started
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        drop(started);
     }
 }
 /// Reads the camera permission once, on a blocking thread because the Linux camera opens each

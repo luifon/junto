@@ -1462,7 +1462,10 @@ fn start(
     let engine = Engine::start(
         &inner.runtime,
         EngineOptions {
-            camera: inner.options.camera.clone(),
+            camera: capture_stop::reporting_camera(
+                inner.options.camera.clone(),
+                inner.view.clone(),
+            ),
             host: inner.options.host.clone(),
             permission: inner.options.permission.clone(),
             capture: capture_stop::reporting(inner.options.capture.clone(), inner.view.clone()),

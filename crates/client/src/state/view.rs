@@ -188,7 +188,7 @@ pub struct Known {
     /// visible (see [`AppState::dismiss_share_notice`]).
     ///
     /// [`AppState::dismiss_share_notice`]: super::AppState::dismiss_share_notice
-    pub share_notice_dismissed: Option<u64>,
+    pub share_notice_dismissed: HashSet<u64>,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
     /// only while it runs (ADR 0719).
@@ -4319,7 +4319,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     .as_ref()
                     .and_then(|call| call.share_ended.clone())
             })
-            .filter(|notice| notice.generation > known.share_notice_dismissed.unwrap_or_default()),
+            .filter(|notice| !known.share_notice_dismissed.contains(&notice.generation)),
     };
     view.call = call_strip(servers, known, view.shown());
     view.faces = people::faces(servers, &known.people).with_presence(&known.presence);

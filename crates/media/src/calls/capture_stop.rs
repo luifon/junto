@@ -91,3 +91,54 @@ impl CaptureSink for Sink {
             .send_modify(|view| view.share_stop_failed = Some(error));
     }
 }
+
+pub(super) fn reporting_camera(
+    capture: Arc<dyn crate::camera::CameraCapture>,
+    view: watch::Sender<CallsView>,
+) -> Arc<dyn crate::camera::CameraCapture> {
+    Arc::new(Camera { capture, view })
+}
+struct Camera {
+    capture: Arc<dyn crate::camera::CameraCapture>,
+    view: watch::Sender<CallsView>,
+}
+impl crate::camera::CameraCapture for Camera {
+    fn access(&self) -> crate::camera::CameraAccess {
+        self.capture.access()
+    }
+    fn request_access(&self) -> Pending<crate::camera::CameraAccess> {
+        self.capture.request_access()
+    }
+    fn devices(&self) -> Result<Vec<crate::camera::CameraDevice>, crate::camera::CameraError> {
+        self.capture.devices()
+    }
+    fn start(
+        &self,
+        device: Option<String>,
+        sink: Arc<dyn crate::camera::CameraSink>,
+    ) -> Pending<Result<CaptureStream, crate::camera::CameraError>> {
+        self.capture.start(
+            device,
+            Arc::new(CameraSink {
+                sink,
+                view: self.view.clone(),
+            }),
+        )
+    }
+}
+struct CameraSink {
+    sink: Arc<dyn crate::camera::CameraSink>,
+    view: watch::Sender<CallsView>,
+}
+impl crate::camera::CameraSink for CameraSink {
+    fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
+        self.sink.picture(buffer);
+    }
+    fn ended(&self, error: crate::camera::CameraError) {
+        self.sink.ended(error);
+    }
+    fn stop_failed(&self, notice: CaptureNotice) {
+        self.view
+            .send_modify(|view| view.share_stop_failed = Some(notice));
+    }
+}

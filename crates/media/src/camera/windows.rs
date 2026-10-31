@@ -129,12 +129,23 @@ impl CameraCapture for SystemCamera {
         Box::pin(async { access() })
     }
     fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
+        let (ready, answer) = mpsc::channel();
         std::thread::Builder::new()
             .name("camera-devices".into())
-            .spawn(|| Ok(enumerate()?.into_iter().map(|(device, _)| device).collect()))
-            .map_err(|e| CameraError::Failed(e.to_string()))?
-            .join()
-            .map_err(|_| CameraError::Failed("camera enumeration stopped".into()))?
+            .spawn(move || {
+                let _ =
+                    ready
+                        .send(enumerate().map(|devices| {
+                            devices.into_iter().map(|(device, _)| device).collect()
+                        }));
+            })
+            .map_err(|error| CameraError::Failed(error.to_string()))?;
+        answer
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|error| {
+                tracing::error!(%error, "camera enumeration did not finish");
+                CameraError::Failed(format!("camera enumeration did not finish: {error}"))
+            })?
     }
     fn start(
         &self,
@@ -216,16 +227,21 @@ impl IMFSourceReaderCallback_Impl for Callback_Impl {
     }
 }
 
-struct Source {
+struct Source<'a> {
+    delivery: &'a worker::Delivery,
     activation: IMFActivate,
     source: IMFMediaSource,
 }
-impl Drop for Source {
+impl Drop for Source<'_> {
     fn drop(&mut self) {
         // SAFETY: the control thread ends the source; callbacks own only their sender.
         unsafe {
-            let _ = self.source.Shutdown();
-            let _ = self.activation.ShutdownObject();
+            if let Err(error) = self.source.Shutdown() {
+                self.delivery.cleanup_failed(error);
+            }
+            if let Err(error) = self.activation.ShutdownObject() {
+                self.delivery.cleanup_failed(error);
+            }
         }
     }
 }
@@ -463,6 +479,7 @@ fn capture(
     };
     // SAFETY: activation is used only on this capture thread and shut down by Source.
     let source = Source {
+        delivery,
         source: unsafe { activation.ActivateObject() }.map_err(error)?,
         activation,
     };

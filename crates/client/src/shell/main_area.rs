@@ -1048,8 +1048,8 @@ impl Shell {
                 .px(u(16.0))
                 .pt(u(10.0))
                 .child(
-                    Notice::new(text::share_ended(
-                        &notice.error,
+                    Notice::new(text::capture_notice(
+                        notice,
                         view.call
                             .as_ref()
                             .map_or(junto_client_core::protocol::call::MAX_SHARES, |call| {
@@ -1063,8 +1063,9 @@ impl Shell {
                             .label(text::DISMISS)
                             .selector("dismiss-share-notice")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.dismiss_share_notice(generation, cx));
+                                this.state.update(cx, |state, cx| {
+                                    state.dismiss_share_notice(generation, cx)
+                                });
                             })),
                     ),
                 )

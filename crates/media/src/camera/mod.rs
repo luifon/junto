@@ -18,10 +18,11 @@ mod raw;
 #[cfg(any(
     test,
     all(
-        any(target_os = "windows", target_os = "linux"),
+        any(target_os = "windows", target_os = "linux", target_os = "macos"),
         any(not(feature = "test-support"), feature = "native-device-tests")
     )
 ))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod worker;
 
 #[cfg(any(
@@ -126,6 +127,7 @@ pub enum CameraError {
 pub trait CameraSink: Send + Sync + 'static {
     fn picture(&self, buffer: Arc<dyn VideoBuffer>);
     fn ended(&self, error: CameraError);
+    fn stop_failed(&self, _notice: crate::share::CaptureNotice) {}
 }
 
 /// The camera of one system. The crate calls the functions that return a future, and polls

@@ -1325,12 +1325,7 @@ impl AppState {
     /// once: the calls put the ended share away on their own threads, and until then they
     /// still state the end.
     pub fn dismiss_share_notice(&mut self, generation: u64, cx: &mut Context<Self>) {
-        self.known.share_notice_dismissed = Some(
-            self.known
-                .share_notice_dismissed
-                .unwrap_or_default()
-                .max(generation),
-        );
+        self.known.share_notice_dismissed.insert(generation);
         self.calls.forget_share_end(generation);
         self.changed(cx);
     }

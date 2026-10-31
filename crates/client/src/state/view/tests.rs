@@ -2143,10 +2143,15 @@ pub(super) mod calls {
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Starting);
         assert_eq!(panel(&view).stage, None);
         call.own_shares.clear();
-        call.share_ended = Some(junto_media::share::CaptureNotice::new(CaptureError::SourceGone));
+        call.share_ended = Some(junto_media::share::CaptureNotice::new(
+            CaptureError::SourceGone,
+        ));
         let view = derive(servers, &selected(&server, &scene, general), &in_call(call));
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Off);
-        assert_eq!(view.share_notice.as_ref().map(|notice| &notice.error), Some(&CaptureError::SourceGone));
+        assert_eq!(
+            view.share_notice.as_ref().map(|notice| &notice.error),
+            Some(&CaptureError::SourceGone)
+        );
     }
 
     /// Several shares of one person (ADR 0738): each share is a card of its own with its

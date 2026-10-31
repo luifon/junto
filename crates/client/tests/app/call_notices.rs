@@ -156,6 +156,37 @@ fn dismissing_a_drawn_cleanup_failure_does_not_hide_a_later_identical_failure(
     assert!(!window.shows("share-notice"));
 }
 
+#[gpui::test]
+fn an_older_unseen_cleanup_failure_is_not_acknowledged_by_dismissing_a_newer_one(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let older = CaptureNotice::new(CaptureError::StopFailed(
+        "the first worker did not stop".into(),
+    ));
+    let newer = CaptureNotice::new(CaptureError::StopFailed(
+        "the second worker did not stop".into(),
+    ));
+    calls.show_view_for_test(CallsView {
+        share_stop_failed: Some(newer),
+        ..CallsView::default()
+    });
+    window.settle();
+    window.click("dismiss-share-notice");
+    calls.show_view_for_test(CallsView {
+        share_stop_failed: Some(older),
+        ..CallsView::default()
+    });
+    window.settle();
+    assert!(window.shows("share-notice"));
+}
+
 /// The notices of the server open in the panel of the call of this device, in place of
 /// its tab, also in a narrow window, which draws the panel over the stage (ADR 0742).
 #[gpui::test]
