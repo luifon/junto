@@ -46,7 +46,6 @@ mod profile_cards;
 mod received;
 mod rules;
 mod sound_help;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod stopping;
 mod tones;
 mod tray;

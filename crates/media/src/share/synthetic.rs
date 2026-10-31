@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use livekit::webrtc::video_frame::I420Buffer;
@@ -87,7 +86,6 @@ struct State {
     previewed: Vec<PictureSource>,
     started: Vec<CaptureRequest>,
     live: Vec<Live>,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     stall_next_stop: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
 }
 
@@ -160,7 +158,6 @@ impl SyntheticCapture {
                 previewed: Vec::new(),
                 started: Vec::new(),
                 live: Vec::new(),
-                #[cfg(any(target_os = "linux", target_os = "windows"))]
                 stall_next_stop: None,
             })),
         }
@@ -239,7 +236,6 @@ impl SyntheticCapture {
 
     /// The requests of the captures that were started.
     /// The next capture also owns a worker that ignores stop until the test releases it.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub fn stall_next_stop(&self) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
         let (release, stalled) = std::sync::mpsc::channel();
         let (done, finished) = std::sync::mpsc::channel();
@@ -292,15 +288,12 @@ fn end(live: Live, error: &CaptureError) {
 
 struct Running {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    _workers: super::workers::Workers,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 
@@ -435,7 +428,6 @@ impl ScreenCapture for SyntheticCapture {
             let frame_rate = request.quality.frame_rate.max(1);
             let picture = request.picture;
             state.started.push(request);
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
             let stall = state.stall_next_stop.take();
             let stop = Arc::new(AtomicBool::new(false));
             state.live.push(Live {
@@ -445,9 +437,15 @@ impl ScreenCapture for SyntheticCapture {
             });
             drop(state);
             let stopped = stop.clone();
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
             let failures = sink.clone();
-            let thread = std::thread::spawn(move || {
+            let life = Arc::new(super::life::Life::default());
+            let (mut workers, result) = super::workers::Workers::new(life.clone());
+            workers.report_failures_to(failures);
+            life.on_stop({
+                let stop = stop.clone();
+                move || stop.store(true, Ordering::Release)
+            });
+            workers.spawn("generated-share", move || {
                 produce(
                     &capture,
                     &stopped,
@@ -456,29 +454,22 @@ impl ScreenCapture for SyntheticCapture {
                     frame_rate,
                     tones,
                 );
-            });
+            })?;
+            if let Some((stall, done)) = stall {
+                workers.spawn("stalled-capture", move || {
+                    let _ = stall.recv_timeout(Duration::from_secs(120));
+                    let _ = done.send(());
+                })?;
+            }
             let stream = CaptureStream::new(
                 width,
                 height,
                 Running {
                     stop,
-                    thread: Some(thread),
+                    _workers: workers,
                 },
             );
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
-            if let Some((stall, done)) = stall {
-                let (mut workers, stopped) =
-                    super::workers::Workers::new(Arc::new(super::delivery::Life::default()));
-                workers.report_failures_to(failures);
-                workers.spawn("stalled-capture", move || {
-                    let _ = stall.recv_timeout(Duration::from_secs(120));
-                    let _ = done.send(());
-                })?;
-                return Ok(
-                    CaptureStream::new(width, height, (stream, workers)).with_stop_result(stopped)
-                );
-            }
-            Ok(stream)
+            Ok(stream.with_stop_result(result))
         })
     }
 }
