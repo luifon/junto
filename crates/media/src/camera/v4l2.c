@@ -1,5 +1,6 @@
 /* The V4L2 calls of camera capture. The decisions are in v4l2.rs and linux.rs. */
 #include <errno.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <poll.h>
@@ -36,7 +37,7 @@ static int native_open(void *context, const char *path) {
     int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     return fd < 0 ? -errno : fd;
 }
-static void native_close(void *context, int fd) { (void)context; close(fd); }
+static int native_close(void *context, int fd) { (void)context; return close(fd) < 0 ? -errno : 0; }
 static int native_ioctl(void *context, int fd, unsigned long request, void *argument) {
     (void)context;
     int result;
@@ -50,7 +51,7 @@ static void *native_map(void *context, int fd, size_t length, off_t offset, int 
     *error = -errno;
     return NULL;
 }
-static void native_unmap(void *context, void *data, size_t length) { (void)context; munmap(data, length); }
+static int native_unmap(void *context, void *data, size_t length) { (void)context; return munmap(data, length) < 0 ? -errno : 0; }
 static int native_poll(void *context, int fd, int timeout) {
     (void)context;
     struct pollfd descriptor = {.fd = fd, .events = POLLIN};
@@ -66,16 +67,23 @@ static int call(struct camera *camera, unsigned long request, void *argument) {
     return camera->system->ioctl(camera->system->context, camera->fd, request, argument);
 }
 
-void junto_camera_close(struct camera *camera) {
+static void close_error(int *errors, uint32_t index, int code) {
+    if (code >= 0) return;
+    if (errors) errors[index] = code;
+    else fprintf(stderr, "V4L2 cleanup step %u failed: %s\n", index, strerror(-code));
+}
+
+void junto_camera_close(struct camera *camera, int *errors) {
     if (!camera) return;
     const struct camera_system *system = camera->system;
     if (camera->streaming) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        call(camera, VIDIOC_STREAMOFF, &type);
+        close_error(errors, 0, call(camera, VIDIOC_STREAMOFF, &type));
     }
     for (uint32_t i = 0; i < camera->count; ++i)
-        if (camera->buffers[i].data) system->unmap(system->context, camera->buffers[i].data, camera->buffers[i].length);
-    system->close(system->context, camera->fd);
+        if (camera->buffers[i].data)
+            close_error(errors, i + 1, system->unmap(system->context, camera->buffers[i].data, camera->buffers[i].length));
+    close_error(errors, MAX_BUFFERS + 1, system->close(system->context, camera->fd));
     free(camera);
 }
 
@@ -91,7 +99,7 @@ int junto_camera_open(const struct camera_system *system, const char *path, stru
     int error = call(camera, VIDIOC_QUERYCAP, &cap);
     uint32_t flags = cap.capabilities & V4L2_CAP_DEVICE_CAPS ? cap.device_caps : cap.capabilities;
     if (!error && !((flags & V4L2_CAP_VIDEO_CAPTURE) && (flags & V4L2_CAP_STREAMING))) error = -EOPNOTSUPP;
-    if (error) { junto_camera_close(camera); return error; }
+    if (error) { junto_camera_close(camera, NULL); return error; }
     *result = camera;
     return 0;
 }

@@ -12,7 +12,7 @@ use crate::share::{CaptureKind, CaptureNotice, CaptureStream};
 use livekit::webrtc::video_frame::VideoBuffer;
 
 pub(super) struct Delivery {
-    life: Arc<Life>,
+    pub(super) life: Arc<Life>,
     sink: Arc<dyn CameraSink>,
     ended: AtomicBool,
 }

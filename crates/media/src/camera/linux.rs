@@ -74,7 +74,7 @@ unsafe extern "C" {
         bytes: *mut u8,
         length: usize,
     ) -> c_int;
-    fn junto_camera_close(camera: *mut c_void);
+    fn junto_camera_close(camera: *mut c_void, errors: *mut c_int);
 }
 
 const NOT_PERMITTED: i32 = -1;
@@ -101,12 +101,29 @@ const SIZES: [(u32, u32); 3] = [(1280, 720), (640, 480), (352, 288)];
 const ENTRIES: u32 = 256;
 
 /// One open device node.
-struct Camera(*mut c_void);
+struct Camera(*mut c_void, Option<Arc<crate::share::life::Life>>);
 
 impl Drop for Camera {
     fn drop(&mut self) {
         // SAFETY: only the thread that opened the camera uses and closes it.
-        unsafe { junto_camera_close(self.0) };
+        let mut errors = [0; 34];
+        unsafe { junto_camera_close(self.0, errors.as_mut_ptr()) };
+        for (step, code) in errors.into_iter().enumerate().filter(|(_, code)| *code < 0) {
+            let operation = match step {
+                0 => "stop",
+                33 => "close",
+                _ => "unmap",
+            };
+            let failure = crate::share::CaptureError::StopFailed(format!(
+                "V4L2 {operation} step {step}: {}",
+                error(code)
+            ));
+            if let Some(life) = &self.1 {
+                life.cleanup_failed(failure);
+            } else {
+                tracing::error!(%failure, "camera cleanup failed");
+            }
+        }
     }
 }
 
@@ -116,7 +133,7 @@ impl Camera {
         let mut pointer = std::ptr::null_mut();
         // SAFETY: a terminated path and an out parameter; success transfers one camera.
         match unsafe { junto_camera_open(system.0, path.as_ptr(), &mut pointer) } {
-            0 => Ok(Self(pointer)),
+            0 => Ok(Self(pointer, None)),
             code => Err(code),
         }
     }
@@ -397,7 +414,8 @@ fn capture(
     let Some(_claim) = delivery.claim(&chosen.id) else {
         return Ok(());
     };
-    let camera = Camera::open(system, path).map_err(error)?;
+    let mut camera = Camera::open(system, path).map_err(error)?;
+    camera.1 = Some(delivery.life.clone());
     let (layout, rate) = camera.start()?;
     let mut bytes = vec![0; layout.length().ok_or(CameraError::Unsupported)?];
     let start = Instant::now();
@@ -495,6 +513,22 @@ mod tests {
         fn ended(&self, error: CameraError) {
             let _ = self.0.lock().unwrap().send(Event::Ended(error));
         }
+    }
+
+    #[tokio::test]
+    async fn native_close_errors_are_reported_after_every_cleanup_step_is_attempted() {
+        let fake = Fake::new(vec![Spec {
+            cleanup_error: 5,
+            ..Spec::default()
+        }]);
+        let (stream, _pictures) = capture_of(fake).await;
+        let result = stream.unwrap().stop().await.unwrap_err();
+        assert!(result.to_string().contains("V4L2 stop"), "{result}");
+        let record = closed(fake, 0);
+        assert_eq!(record.closed, record.opened);
+        assert!(record.stopped > 0);
+        assert_eq!(record.unmapped, record.mapped);
+        assert!(record.unmapped > 0);
     }
 
     async fn capture_of(
