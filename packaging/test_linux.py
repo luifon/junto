@@ -5,11 +5,12 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 
-from unittest import mock
+from unittest import mock, skipUnless
 
 import icons
 import linux
@@ -134,7 +135,7 @@ class LinuxPackageTests(unittest.TestCase):
                          '{"format": 1, "version": "1.2.3", "system": "linux", "package": "appimage", '
                          '"architecture": "x86_64"}\n')
 
-    @unittest.skipIf(os.name == "nt", "POSIX shell")
+    @skipUnless(sys.platform == "linux", "Linux desktop entry")
     def test_the_menu_entry_names_the_absolute_path_of_the_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
