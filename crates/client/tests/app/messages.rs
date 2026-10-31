@@ -45,6 +45,20 @@ impl Admin {
 }
 
 impl Window {
+    #[track_caller]
+    pub fn until_typing_watched(&mut self) {
+        let place = self.feed().expect("the message feed is loaded").place;
+        self.until_read(
+            "the server acknowledges the typing watch",
+            |window| {
+                let live = window.handle().live();
+                let view = live.view();
+                (view.status, view.level, live.typing_watch_ready(place))
+            },
+            |(_, _, ready)| *ready,
+        );
+    }
+
     pub fn feed(&mut self) -> Option<Feed> {
         self.view().lists()?.feed.clone()
     }

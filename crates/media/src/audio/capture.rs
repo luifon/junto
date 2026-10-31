@@ -29,6 +29,8 @@ pub struct CaptureLink {
     /// The level of what is sent.
     pub sent: LevelCell,
     speaking: AtomicBool,
+    speech_origin: std::time::Instant,
+    last_speech_micros: AtomicU64,
     dropped: AtomicU64,
     /// The frames that the thread of the device made.
     pub captured: Recent,
@@ -67,6 +69,8 @@ impl Default for CaptureLink {
             input: LevelCell::default(),
             sent: LevelCell::default(),
             speaking: AtomicBool::default(),
+            speech_origin: std::time::Instant::now(),
+            last_speech_micros: AtomicU64::new(0),
             dropped: AtomicU64::default(),
             captured: Recent::default(),
             taken: Taken::default(),
@@ -136,6 +140,10 @@ impl CaptureLink {
         self.stops_taken.fetch_max(stops, Ordering::Relaxed);
     }
 
+    pub fn last_speech(&self) -> Option<std::time::Instant> {
+        let micros = self.last_speech_micros.load(Ordering::Relaxed);
+        (micros > 0).then(|| self.speech_origin + std::time::Duration::from_micros(micros - 1))
+    }
     /// The person speaks: the level of what is sent is above the threshold, or was a
     /// moment ago (ADR 0513).
     pub fn speaking(&self) -> bool {
@@ -300,9 +308,14 @@ impl CaptureChain {
         let closures = self.link.closures();
         if self.link.is_open() && self.above_threshold(&frame) {
             let level = self.link.sent.frame(&frame);
-            self.link
-                .speaking
-                .store(self.speaking.frame(level), Ordering::Relaxed);
+            let speaking = self.speaking.frame(level);
+            self.link.speaking.store(speaking, Ordering::Relaxed);
+            if speaking {
+                self.link.last_speech_micros.store(
+                    self.link.speech_origin.elapsed().as_micros() as u64 + 1,
+                    Ordering::Relaxed,
+                );
+            }
         } else {
             frame.fill(0);
             self.link.sent.silence();
@@ -464,6 +477,7 @@ mod tests {
         let level = crate::audio::level::dbfs(&sound);
         assert!((level - -15.05).abs() < 1.0, "{level}");
         assert!(link.speaking());
+        assert!(link.last_speech().is_some());
         assert!(link.sent.read() > -20.0 && link.input.read() > -20.0);
         assert_eq!(link.dropped(), 0);
     }
@@ -482,6 +496,7 @@ mod tests {
         assert!(link.input.read() > -20.0);
         assert_eq!(link.sent.read(), SILENCE_DBFS);
         assert!(!link.speaking());
+        assert!(link.last_speech().is_none());
 
         // The gate opens between two frames: push-to-talk has no delay.
         link.set_open(true);
@@ -490,11 +505,14 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert!(frames[0].iter().any(|sample| *sample != 0));
         assert!(link.speaking());
+        let last_speech = link.last_speech();
+        assert!(last_speech.is_some());
 
         link.set_open(false);
         chain.deliver(&tone(format, 440.0, 480, 5280), format);
         assert!(drain(&mut taken)[0].iter().all(|sample| *sample == 0));
         assert!(!link.speaking());
+        assert_eq!(link.last_speech(), last_speech);
     }
 
     #[test]

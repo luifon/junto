@@ -572,6 +572,7 @@ impl Client {
     }
 
     fn disconnect(&mut self) {
+        crate::flow::machine::lock(&self.shared.typing_watching).clear();
         self.link = None;
         self.opening = None;
         self.tell_connection();
@@ -991,7 +992,9 @@ impl Client {
             return;
         }
         match message {
-            ServerMessage::TypingWatching { .. } => {}
+            ServerMessage::TypingWatching { places } => {
+                *crate::flow::machine::lock(&self.shared.typing_watching) = places;
+            }
             ServerMessage::Typing { activity } => {
                 if matches!(link.subscription, Subscription::Live { .. })
                     && link.typing_watches.contains(&activity.place)

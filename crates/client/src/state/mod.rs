@@ -14,6 +14,7 @@ mod emoji;
 mod history;
 mod typing;
 pub use call_keys::KeybindChange;
+pub mod afk;
 mod call_sounds;
 pub mod contacts;
 mod conversations;
@@ -454,6 +455,7 @@ impl gpui::EventEmitter<OpenAccount> for AppState {}
 type CallWindowClosing = Box<dyn FnOnce(&mut gpui::App)>;
 
 pub struct AppState {
+    afk: afk::AfkState,
     talking_windows: HashSet<gpui::EntityId>,
     /// The source of the system holds the key of push to talk (ADR 0776).
     talking_globally: bool,
@@ -875,8 +877,11 @@ impl AppState {
         let mut levels = calls.levels();
         let follow_levels = cx.spawn(async move |this, cx| {
             while levels.changed().await.is_ok() {
-                let shown = shown_levels(&levels.borrow_and_update());
+                let read = levels.borrow_and_update().clone();
+                let shown = shown_levels(&read);
+                let last_speech = read.last_microphone_speech;
                 let told = update_once("levels", &this, cx, |this, cx| {
+                    this.afk_speech(last_speech);
                     if this.known.media.levels != shown {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
@@ -1011,6 +1016,7 @@ impl AppState {
             junto_client_core::saved_exports::SavedExports::default()
         });
         let mut state = Self {
+            afk: afk::AfkState::default(),
             talking_windows: HashSet::new(),
             talking_globally: false,
             global_keys: junto_client_core::global_keys::GlobalKeys::none(),
@@ -1291,6 +1297,7 @@ impl AppState {
             self.calls.dismiss_closed();
         }
         self.known.media.calls = view;
+        self.afk_changed(cx);
         self.known.share_notice_dismissed &= share_ended(&self.shown_calls());
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
@@ -1485,7 +1492,7 @@ impl AppState {
                 recording: call
                     .and_then(|call| call.recording.as_ref())
                     .map(|recording| (recording.id, recording.stop.is_some())),
-                moved_here: model
+                moved_here: self.afk_notice() || matches!(calls.outcome.as_ref(), Some(junto_media::calls::Outcome::Moved { target }) if calls.call.as_ref().is_some_and(|call| call.target == *target)) || model
                     .moves
                     .iter()
                     .any(|held| held.account_id == own && held.to == place),
@@ -2121,6 +2128,7 @@ impl AppState {
             // The state was replaced: every message can have changed meanwhile, and the
             // state holds every change of the settings that the server took.
             Notice::Reloaded { .. } => {
+                self.afk_reloaded(server_id, cx);
                 self.heard_typing(server_id, None, cx);
                 self.reloaded(server_id, cx);
                 return;
@@ -2217,6 +2225,7 @@ impl AppState {
             }
             _ => {}
         }
+        self.afk_event(server_id, event.as_ref(), cx);
         self.tell_event(server_id, event, cx);
         if let Event::PermissionsChanged { workspace_id } = event.as_ref() {
             self.search_after_permission_change(server_id, cx);

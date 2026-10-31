@@ -170,8 +170,19 @@ fn group_typing_tracks_multiple_current_members_and_withdraws_departed_sources(
             choice: PresenceChoice::DoNotDisturb,
         }))
         .unwrap();
+    reader.until_typing_watched();
+    writer.until_typing_watched();
+    third.until_typing_watched();
     writer.type_into("composer-input", "writer draft");
     third.type_into("composer-input", "third draft");
+    assert_eq!(
+        writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "writer draft"
+    );
+    assert_eq!(
+        third.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "third draft"
+    );
     reader.until("two current group members are named", |window| {
         window.shows_named(format!("typing-person:{writer_id}"))
             && window.shows_named(format!("typing-person:{third_id}"))

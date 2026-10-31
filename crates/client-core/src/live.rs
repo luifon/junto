@@ -207,6 +207,7 @@ pub(crate) enum Command {
 /// What the stream client of one server and its readers share.
 pub(crate) struct Shared {
     pub(crate) presence: std::sync::atomic::AtomicBool,
+    pub(crate) typing_watching: Mutex<Vec<junto_protocol::typing::TypingPlace>>,
     view: watch::Sender<LiveView>,
     notices: broadcast::Sender<Notice>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
@@ -222,6 +223,7 @@ impl Shared {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             presence: std::sync::atomic::AtomicBool::new(false),
+            typing_watching: Mutex::default(),
             view: watch::Sender::new(LiveView::default()),
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
@@ -242,6 +244,7 @@ impl Shared {
 
     /// The stream client of the server has ended.
     pub(crate) fn detach(&self) {
+        lock(&self.typing_watching).clear();
         *lock(&self.commands) = None;
         self.show(LiveView::default());
     }
@@ -274,6 +277,14 @@ pub struct LiveServer {
 }
 
 impl LiveServer {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn typing_watch_ready(&self, place: PlaceId) -> bool {
+        let view = self.view();
+        view.status == StreamStatus::Live
+            && view.level == Some(Level::Full)
+            && lock(&self.shared.typing_watching).contains(&place.typing_place())
+    }
+
     /// Opts a reader into ephemeral presence invalidations; off for non-UI clients.
     pub fn presence_notifications(&self, enabled: bool) {
         if self

@@ -237,7 +237,13 @@ fn a_typing_person_opens_its_profile_without_changing_the_draft(cx: &mut TestApp
             choice: PresenceChoice::DoNotDisturb,
         }))
         .unwrap();
+    reader.until_typing_watched();
+    writer.until_typing_watched();
     writer.type_into("composer-input", "an unsent plan");
+    assert_eq!(
+        writer.in_shell(|shell, _, cx| shell.composer_text(junto_client::shell::Pane::Main, cx)),
+        "an unsent plan"
+    );
     reader.until("the other reader sees activity", |window| {
         window.shows("typing-indicator")
     });

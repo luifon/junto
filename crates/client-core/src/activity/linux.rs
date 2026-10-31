@@ -35,7 +35,7 @@ impl Reader {
             x11: None,
         }
     }
-    pub(super) fn read(&mut self) -> Option<bool> {
+    pub(super) fn read(&mut self) -> Option<std::time::Duration> {
         if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
             if self.x11.is_none() {
                 self.x11 = connect(self.runtime.as_ref()?);
@@ -49,17 +49,14 @@ impl Reader {
                 if let Ok(cookie) = connection.screensaver_query_info(*root)
                     && let Ok(reply) = cookie.reply()
                 {
-                    return Some(
-                        Duration::from_millis(u64::from(reply.ms_since_user_input))
-                            >= super::IDLE_AFTER,
-                    );
+                    return Some(Duration::from_millis(u64::from(reply.ms_since_user_input)));
                 }
             }
             self.x11 = None;
         }
         self.gnome()
     }
-    fn gnome(&mut self) -> Option<bool> {
+    fn gnome(&mut self) -> Option<std::time::Duration> {
         let runtime = self.runtime.as_ref()?;
         let cached = self.bus.clone();
         let answer = runtime.block_on(async {
@@ -84,8 +81,7 @@ impl Reader {
         match answer {
             Ok(Ok((connection, milliseconds))) => {
                 self.bus = Some(connection);
-                (milliseconds != u64::MAX)
-                    .then(|| Duration::from_millis(milliseconds) >= super::IDLE_AFTER)
+                (milliseconds != u64::MAX).then(|| Duration::from_millis(milliseconds))
             }
             _ => {
                 self.bus = None;

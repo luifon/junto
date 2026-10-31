@@ -23,7 +23,7 @@ Sounds:
   | Mention | a new notice of a mention, a direct message or a missed call | 659 70, pause 20, 880 110 |
   | CallJoined | the person enters a call (the server lists the person) | glide 330→494 110, pause 20, 659 90 |
   | CallLeft | the person is no longer in the call | 440 70, pause 20, glide 392→262 140 |
-  | Moved | a moderator moves the person into another voice channel | glide 392→523 90, pause 30, glide 392→523 90 |
+  | Moved | a moderator or the AFK rule moves the person into another voice channel | glide 392→523 90, pause 30, glide 392→523 90 |
   | ConnectionLost | the media connection of the call goes from connected to reconnecting | 330 120, pause 60, 330 120 |
   | PersonJoined | another person enters the call | glide 392→587 150 |
   | PersonLeft | another person leaves the call | glide 587→392 150 |
