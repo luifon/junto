@@ -2537,3 +2537,83 @@ async fn share_packets(viewer: &Person, microphone: &str) -> (u64, u64) {
     }
     packets
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn a_saved_mute_is_present_before_an_existing_share_is_discovered() {
+    limited(async {
+        use junto_client_core::voice::ShareSound;
+        use junto_media::engine::{Controls, Engine, EngineOptions, MediaJoin, Watching};
+        use std::sync::Arc;
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, owner) = Room::new("Saved share sound", &ann, "Ann").await;
+        let peer = room.member(&owner, &ben, "Ben").await;
+        let ann_id = account(&owner);
+        let share = ShareId::of(ann_id, 0);
+        let quiet = ShareSound {
+            volume: 65,
+            muted: true,
+        };
+        ann.enter(room.target).await;
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing().await;
+        let answer = peer.api().join_channel_call(room.voice).await.unwrap();
+        let engine = Engine::start(
+            &tokio::runtime::Handle::current(),
+            EngineOptions {
+                camera: Arc::new(ben.camera.clone()),
+                host: Arc::new(ben.host.clone()),
+                permission: Arc::new(ben.permission.clone()),
+                capture: Arc::new(ben.capture.clone()),
+            },
+            MediaJoin {
+                url: answer.media_url,
+                token: answer.token,
+                shares: answer.shares.unwrap_or(1),
+            },
+            crate::scene::plain_voice(),
+            Controls::default(),
+            Default::default(),
+            Watching {
+                sounds: [(ann_id, quiet)].into(),
+                ..Watching::default()
+            },
+        );
+        let mut state = engine.state();
+        tokio::time::timeout(
+            PATIENCE,
+            state.wait_for(|state| state.share_sounds.contains_key(&share)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        // Deliberately withhold the runtime update until discovery has finished.
+        assert_eq!(state.borrow().share_sounds[&share], quiet);
+        engine.set_share_sound_default(ann_id, quiet);
+        let mut pictures = engine.main_picture();
+        tokio::time::timeout(PATIENCE, pictures.wait_for(|picture| picture.is_some()))
+            .await
+            .unwrap()
+            .unwrap();
+        ben.until_silent_tone(SYSTEM.0).await;
+        engine.close().await;
+        peer.api().leave_call_as(&answer.identity).await.unwrap();
+
+        ben.calls
+            .set_share_sound_default(room.target.server_id, ann_id, quiet);
+        ben.enter(room.target).await;
+        ben.until_shown(share, RED, BLUE).await;
+        assert_eq!(ben.calls.view().call.unwrap().share_sounds[&share], quiet);
+        ben.until_silent_tone(SYSTEM.0).await;
+        ben.calls.set_share_sound(
+            share,
+            ShareSound {
+                muted: false,
+                ..quiet
+            },
+        );
+        ben.until_heard_tone(SYSTEM.0).await;
+    })
+    .await;
+}

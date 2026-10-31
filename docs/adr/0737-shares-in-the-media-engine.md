@@ -97,3 +97,10 @@ desired flag is already set: a publication can arrive during replacement of the 
 so its earlier request can belong to the session that ended. The media-server restart test
 checks restored sound in both directions. A shared picture gate rejects delivery under each picture-channel
 lock before stopped pictures are cleared, including a frame already being converted.
+
+Saved per-person sound defaults are passed to the engine at construction, before its task
+connects or discovers publications. The first slot of an existing sharer therefore uses
+the saved mute and volume. Later default changes continue to seed future slots; settings
+of an existing slot remain independent. The media live test with an already sharing
+person withholds the runtime default update until discovery and checks the initial mute,
+then checks the saved setting through the call factory and actual mute/unmute playback.

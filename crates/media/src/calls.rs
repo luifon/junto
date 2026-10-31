@@ -1559,13 +1559,14 @@ fn start(
         Watching {
             choice: None,
             volume: shared.share_volume.unwrap_or(1.0),
+            sounds: shared
+                .share_sound_defaults
+                .iter()
+                .filter(|((server, _), _)| *server == target.server_id)
+                .map(|((_, account), sound)| (*account, *sound))
+                .collect(),
         },
     );
-    for ((server, account), sound) in &shared.share_sound_defaults {
-        if *server == target.server_id {
-            engine.set_share_sound_default(*account, *sound);
-        }
-    }
     if let Some(views) = &shared.camera_views {
         engine.set_camera_views(views.clone());
     }
