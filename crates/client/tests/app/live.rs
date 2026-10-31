@@ -826,6 +826,35 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
         "the window plays the share of the administrator",
         |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
     );
+    window.click("share-mute-header");
+    window.until(
+        "the received share is muted without losing its picture",
+        |window| {
+            window.shows("share-picture")
+                && stage(window).is_some_and(|stage| stage.shares[0].sound_setting.muted)
+                && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+        },
+    );
+    window.tab_to("share-mute-header");
+    window.press("enter");
+    window.until("the share is audible again", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    detached.click("share-mute-header");
+    detached.until("the detached share is muted", |window| {
+        window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+    detached.tab_to("share-mute-header");
+    detached.press("space");
+    detached.until("the detached share is audible again", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    detached.click("return-call");
+    drop(detached);
+    window.until("the call returns", |window| window.shows("share-header"));
+
     // The person picks the own share: the sound of the other share stops.
     window.click("share-thumbnail:own:0");
     window.until("the own share is watched", |window| {

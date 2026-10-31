@@ -815,6 +815,11 @@ pub const YOUR_VIEW: &str = "Your view";
 pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
 pub const HIDE_WITHOUT_VIDEO_HELP: &str = "Hides the tiles of people whose camera is off. Only \
      your window changes. They are still in the call and listed under Members.";
+pub const MUTE_SHARE: &str = "Mute share";
+pub const UNMUTE_SHARE: &str = "Unmute share";
+pub const SHARE_MUTED: &str = "Muted";
+pub const SHARE_SOUND_TITLE: &str = "Share sound";
+pub const SHARE_VOLUME_ONE: &str = "Share volume";
 pub const SHARE_VOLUME: &str = "Volume of the share you are watching";
 pub const SHARE_VOLUME_HELP: &str = "At 0 % you see the share without its sound.";
 
@@ -3813,6 +3818,7 @@ mod tests {
             number: None,
             sound: Some(ShareAudio::System),
             sound_held: false,
+            sound_setting: Default::default(),
             size: Some((1920, 1200)),
             frame_rate: Some(30),
             watched: true,

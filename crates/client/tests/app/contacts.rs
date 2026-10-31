@@ -593,6 +593,7 @@ fn the_direct_part_shrinks_and_keeps_the_call_controls_in_the_window_of_the_leas
             own_shares: std::collections::BTreeMap::new(),
             share_ended: None,
             shares: Vec::new(),
+            share_sounds: Default::default(),
             watched: None,
             withheld: Default::default(),
         },

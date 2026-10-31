@@ -13,7 +13,7 @@ use crate::global_keys::{Key, KeyCombo};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 6;
+pub const VOICE_FORMAT_VERSION: u32 = 7;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -37,6 +37,7 @@ const VOICE: Versioned = Versioned {
         settings_of_call_sounds,
         settings_of_sound_kinds,
         settings_of_individual_sounds,
+        settings_of_share_sounds,
     ],
     limit: 512 * 1024,
 };
@@ -147,6 +148,15 @@ fn settings_of_individual_sounds(
         expanded.extend(names.iter().map(|name| serde_json::Value::from(*name)));
     }
     *off = expanded;
+    Ok(value)
+}
+
+fn settings_of_share_sounds(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?
+        .entry("share_sounds")
+        .or_insert(serde_json::json!({}));
     Ok(value)
 }
 
@@ -296,6 +306,31 @@ impl TalkKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareSound {
+    pub volume: u16,
+    pub muted: bool,
+}
+
+impl Default for ShareSound {
+    fn default() -> Self {
+        Self {
+            volume: VOLUME_DEFAULT_PERCENT,
+            muted: false,
+        }
+    }
+}
+
+impl ShareSound {
+    pub fn gain(self) -> f32 {
+        if self.muted {
+            0.0
+        } else {
+            f32::from(self.volume.min(VOLUME_MAX_PERCENT)) / 100.0
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSettings {
     pub camera_device: Option<String>,
@@ -310,6 +345,7 @@ pub struct VoiceSettings {
     /// The volume in percent that the person set for an account of a server, from 0 to
     /// 200. An account without an entry has 100.
     pub volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
+    pub share_sounds: BTreeMap<ServerId, BTreeMap<AccountId, ShareSound>>,
     pub share_resolution: ShareResolution,
     /// The pictures per second of a share, one of [`SHARE_FRAME_RATES`].
     pub share_frame_rate: u32,
@@ -343,6 +379,7 @@ impl Default for VoiceSettings {
             input_mode: InputMode::default(),
             talk_key: TalkKey::default(),
             volumes: BTreeMap::new(),
+            share_sounds: BTreeMap::new(),
             share_resolution: ShareResolution::default(),
             share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
             share_volume: VOLUME_DEFAULT_PERCENT,
@@ -354,6 +391,25 @@ impl Default for VoiceSettings {
 }
 
 impl VoiceSettings {
+    pub fn share_sound(&self, server: ServerId, account: AccountId) -> ShareSound {
+        self.share_sounds
+            .get(&server)
+            .and_then(|accounts| accounts.get(&account))
+            .copied()
+            .unwrap_or(ShareSound {
+                volume: self.share_volume,
+                muted: false,
+            })
+    }
+
+    pub fn set_share_sound(&mut self, server: ServerId, account: AccountId, mut sound: ShareSound) {
+        sound.volume = sound.volume.min(VOLUME_MAX_PERCENT);
+        self.share_sounds
+            .entry(server)
+            .or_default()
+            .insert(account, sound);
+    }
+
     pub fn volume(&self, server_id: ServerId, account_id: AccountId) -> u16 {
         self.volumes
             .get(&server_id)
@@ -400,6 +456,15 @@ impl VoiceSettings {
             });
         }
         self.volumes.retain(|_, accounts| !accounts.is_empty());
+        let mut kept = 0;
+        for accounts in self.share_sounds.values_mut() {
+            accounts.retain(|_, sound| {
+                sound.volume = sound.volume.min(VOLUME_MAX_PERCENT);
+                kept += 1;
+                kept <= VOLUMES_STORED
+            });
+        }
+        self.share_sounds.retain(|_, accounts| !accounts.is_empty());
         if !SHARE_FRAME_RATES.contains(&self.share_frame_rate) {
             self.share_frame_rate = SHARE_FRAME_RATE_DEFAULT;
         }
@@ -427,6 +492,8 @@ struct VoiceFile {
     talk_key: TalkKey,
     #[serde(default)]
     volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
+    #[serde(default)]
+    share_sounds: BTreeMap<ServerId, BTreeMap<AccountId, ShareSound>>,
     share_resolution: ShareResolution,
     share_frame_rate: u32,
     share_volume: u16,
@@ -461,6 +528,7 @@ impl VoiceStore {
             input_mode: file.input_mode,
             talk_key: file.talk_key,
             volumes: file.volumes,
+            share_sounds: file.share_sounds,
             share_resolution: file.share_resolution,
             share_frame_rate: file.share_frame_rate,
             share_volume: file.share_volume,
@@ -501,6 +569,7 @@ impl VoiceStore {
                 input_mode: settings.input_mode,
                 talk_key: settings.talk_key,
                 volumes: settings.volumes.clone(),
+                share_sounds: settings.share_sounds.clone(),
                 share_resolution: settings.share_resolution,
                 share_frame_rate: settings.share_frame_rate,
                 share_volume: settings.share_volume,
@@ -518,6 +587,66 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn the_old_shared_volume_seeds_people_without_a_saved_share_sound() {
+        let (_directory, data, store) = store();
+        store.update(|_| {}).unwrap();
+        let file = data.root().join(VOICE_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        value["format_version"] = 6.into();
+        value["share_volume"] = 40.into();
+        value.as_object_mut().unwrap().remove("share_sounds");
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            store
+                .load()
+                .unwrap()
+                .share_sound(ServerId::generate(), AccountId::generate()),
+            ShareSound {
+                volume: 40,
+                muted: false
+            }
+        );
+    }
+
+    #[test]
+    fn share_sound_is_saved_per_person_and_server_without_changing_voice_volume() {
+        let (_directory, _data, store) = store();
+        let (server, other_server) = (ServerId::generate(), ServerId::generate());
+        let (account, other_account) = (AccountId::generate(), AccountId::generate());
+        let muted = ShareSound {
+            volume: 65,
+            muted: true,
+        };
+        store
+            .update(|voice| {
+                voice.set_volume(server, account, 140);
+                voice.set_share_sound(server, account, muted);
+            })
+            .unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.share_sound(server, account), muted);
+        assert_eq!(
+            saved.share_sound(server, other_account),
+            ShareSound::default()
+        );
+        assert_eq!(
+            saved.share_sound(other_server, account),
+            ShareSound::default()
+        );
+        assert_eq!(saved.volume(server, account), 140);
+        assert_eq!(muted.gain(), 0.0);
+        assert_eq!(
+            ShareSound {
+                muted: false,
+                ..muted
+            }
+            .gain(),
+            0.65
+        );
+    }
 
     fn store() -> (tempfile::TempDir, DataDir, VoiceStore) {
         let directory = tempfile::tempdir().unwrap();
@@ -553,7 +682,10 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 6"), "{text}");
+        assert!(
+            text.contains(&format!("\"format_version\": {VOICE_FORMAT_VERSION}")),
+            "{text}"
+        );
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -610,11 +742,12 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":7,"later":true}"#;
-        fs::write(&file, newer).unwrap();
+        let newer = serde_json::json!({"format_version": VOICE_FORMAT_VERSION + 1, "later": true})
+            .to_string();
+        fs::write(&file, &newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 7, .. })
+            Err(StorageError::NewerFormat { found, .. }) if found == VOICE_FORMAT_VERSION + 1
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -670,7 +803,10 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 6"), "{text}");
+        assert!(
+            text.contains(&format!("\"format_version\": {VOICE_FORMAT_VERSION}")),
+            "{text}"
+        );
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 

@@ -239,6 +239,25 @@ pub fn watched(choice: Option<ShareId>, own: &[u8], others: &[ShareId]) -> Optio
     }
 }
 
+fn remember_share_sounds(
+    held: &mut HashMap<ShareId, junto_client_core::voice::ShareSound>,
+    defaults: &HashMap<AccountId, junto_client_core::voice::ShareSound>,
+    fallback: f32,
+    shares: &[ShareId],
+) {
+    for share in shares {
+        let default = match share.person {
+            Person::Of(account) => defaults.get(&account).copied(),
+            Person::Own => None,
+        }
+        .unwrap_or(junto_client_core::voice::ShareSound {
+            volume: (fallback * 100.0).round() as u16,
+            muted: false,
+        });
+        held.entry(*share).or_insert(default);
+    }
+}
+
 /// The channels to an interface.
 #[derive(Clone)]
 pub(super) struct Pictures {
@@ -692,6 +711,12 @@ impl Actor {
             .filter(|(_, share)| share.stream.is_some())
             .map(|(slot, _)| *slot)
             .collect();
+        remember_share_sounds(
+            &mut self.share_sounds,
+            &self.share_sound_defaults,
+            self.share_volume,
+            &others,
+        );
         let now = watched(self.watch_choice, &own, &others);
         let view = View {
             watched: now,
@@ -715,7 +740,9 @@ impl Actor {
         }
         let own_shares = self.share_states();
         let share_ended = self.share_ended.clone();
+        let share_sounds = self.share_sounds.clone();
         self.change(|state| {
+            state.share_sounds = share_sounds;
             state.own_shares = own_shares;
             state.share_ended = share_ended;
             state.shares = shares;
@@ -742,9 +769,15 @@ impl Actor {
     fn sync_volumes(&self, watched: Option<ShareId>) {
         for sound in self.remote_sounds.values() {
             let is_watched = watched == Some(sound.share);
-            sound
-                .source
-                .set_gain(if is_watched { self.share_volume } else { 0.0 });
+            sound.source.set_gain(if is_watched {
+                self.share_sounds
+                    .get(&sound.share)
+                    .copied()
+                    .unwrap_or_default()
+                    .gain()
+            } else {
+                0.0
+            });
         }
     }
 
@@ -761,8 +794,27 @@ impl Actor {
         }
     }
 
+    pub(super) fn set_share_sound(
+        &mut self,
+        share: ShareId,
+        mut sound: junto_client_core::voice::ShareSound,
+    ) {
+        sound.volume = sound
+            .volume
+            .min(junto_client_core::voice::VOLUME_MAX_PERCENT);
+        self.share_sounds.insert(share, sound);
+        self.tell_shares();
+        self.sync_volumes(self.view.borrow().watched);
+    }
+
     pub(super) fn set_share_volume(&mut self, gain: f32) {
-        self.share_volume = gain.clamp(0.0, MAX_GAIN);
+        if let Some(share) = self.view.borrow().watched {
+            let sound = self.share_sounds.entry(share).or_default();
+            sound.volume = (gain.clamp(0.0, MAX_GAIN) * 100.0).round() as u16;
+        } else {
+            self.share_volume = gain.clamp(0.0, MAX_GAIN);
+        }
+        self.tell_shares();
         self.sync_volumes(self.view.borrow().watched);
     }
 
@@ -1480,6 +1532,69 @@ mod tests {
             Some(ShareId::own(0))
         );
         assert_eq!(watched(Some(ShareId::own(0)), &[], &[ben_1]), Some(ben_1));
+    }
+
+    #[test]
+    fn a_share_keeps_its_own_sound_while_new_slots_take_the_saved_sound_of_the_person() {
+        use junto_client_core::voice::ShareSound;
+        let (ann, ben) = (AccountId::generate(), AccountId::generate());
+        let (first, second, other) = (
+            ShareId::of(ann, 0),
+            ShareId::of(ann, 1),
+            ShareId::of(ben, 0),
+        );
+        let mut held = HashMap::new();
+        let mut defaults = HashMap::from([(
+            ann,
+            ShareSound {
+                volume: 65,
+                muted: true,
+            },
+        )]);
+        remember_share_sounds(&mut held, &defaults, 0.8, &[first, second, other]);
+        assert_eq!(held[&first], defaults[&ann]);
+        assert_eq!(
+            held[&other],
+            ShareSound {
+                volume: 80,
+                muted: false
+            }
+        );
+        held.insert(
+            first,
+            ShareSound {
+                volume: 120,
+                muted: false,
+            },
+        );
+        defaults.insert(
+            ann,
+            ShareSound {
+                volume: 45,
+                muted: false,
+            },
+        );
+        remember_share_sounds(
+            &mut held,
+            &defaults,
+            1.0,
+            &[first, second, ShareId::of(ann, 2)],
+        );
+        assert_eq!(
+            held[&first],
+            ShareSound {
+                volume: 120,
+                muted: false
+            }
+        );
+        assert_eq!(
+            held[&second],
+            ShareSound {
+                volume: 65,
+                muted: true
+            }
+        );
+        assert_eq!(held[&ShareId::of(ann, 2)], defaults[&ann]);
     }
 
     #[test]

@@ -202,6 +202,7 @@ pub struct EngineState {
     /// The shares of the other people, in the order in which they were seen.
     pub shares: Vec<SeenShare>,
     /// The share whose picture and sound the person gets now.
+    pub share_sounds: HashMap<ShareId, junto_client_core::voice::ShareSound>,
     pub watched: Option<ShareId>,
 }
 
@@ -271,6 +272,8 @@ enum Command {
     ForgetShareEnd,
     Watch(Option<ShareId>),
     ShareVolume(f32),
+    ShareSound(ShareId, junto_client_core::voice::ShareSound),
+    ShareSoundDefault(AccountId, junto_client_core::voice::ShareSound),
     ViewSize(u32, u32),
     CameraViews(HashMap<Person, (u32, u32)>),
     /// Makes the call library connect anew and publish its tracks again, as it does by
@@ -450,6 +453,7 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             shares: Vec::new(),
+            share_sounds: HashMap::new(),
             watched: None,
         });
         let pictures = Pictures {
@@ -529,6 +533,8 @@ impl Engine {
             share_order: 0,
             watch_choice: watching.choice,
             share_volume: watching.volume.clamp(0.0, MAX_GAIN),
+            share_sounds: HashMap::new(),
+            share_sound_defaults: HashMap::new(),
             view_size: DEFAULT_VIEW,
             view: watch::Sender::new(View {
                 watched: None,
@@ -601,6 +607,20 @@ impl Engine {
     /// The volume of the sound of the watched share: 1.0 is 100 %.
     pub fn set_share_volume(&self, gain: f32) {
         let _ = self.commands.send(Command::ShareVolume(gain));
+    }
+
+    pub fn set_share_sound(&self, share: ShareId, sound: junto_client_core::voice::ShareSound) {
+        let _ = self.commands.send(Command::ShareSound(share, sound));
+    }
+
+    pub fn set_share_sound_default(
+        &self,
+        account: AccountId,
+        sound: junto_client_core::voice::ShareSound,
+    ) {
+        let _ = self
+            .commands
+            .send(Command::ShareSoundDefault(account, sound));
     }
 
     /// The size in pixels inside which the interface draws the camera of each person.
@@ -830,6 +850,8 @@ struct Actor {
     share_order: u64,
     watch_choice: Option<ShareId>,
     share_volume: f32,
+    share_sounds: HashMap<ShareId, junto_client_core::voice::ShareSound>,
+    share_sound_defaults: HashMap<AccountId, junto_client_core::voice::ShareSound>,
     /// The size in pixels inside which the interface draws the watched share.
     view_size: (u32, u32),
     view: watch::Sender<View>,
@@ -1076,6 +1098,10 @@ impl Actor {
             Command::ForgetShareEnd => self.forget_share_end(),
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
+            Command::ShareSound(share, sound) => self.set_share_sound(share, sound),
+            Command::ShareSoundDefault(account, sound) => {
+                self.share_sound_defaults.insert(account, sound);
+            }
             Command::ViewSize(width, height) => self.set_view_size(width, height),
             Command::CameraViews(views) => self.set_camera_views(views),
             #[cfg(feature = "test-support")]

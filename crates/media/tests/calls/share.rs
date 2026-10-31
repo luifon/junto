@@ -805,6 +805,39 @@ async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched(
         assert_eq!(picture.frame.source, (800, 600));
         ben.until_heard_tone(PLAYER.0).await;
         ben.until_silent_tone(SYSTEM.0).await;
+        let quiet = junto_client_core::voice::ShareSound {
+            volume: 65,
+            muted: true,
+        };
+        ben.calls.set_share_sound(window_of_ann, quiet);
+        ben.until_silent_tone(PLAYER.0).await;
+        ann.capture
+            .set_source_colours(PictureSource::Window(11), BLUE, RED);
+        ben.until_shown(window_of_ann, BLUE, RED).await;
+        ben.calls.watch_share(screen_of_ann);
+        ben.until_heard_tone(SYSTEM.0).await;
+        assert_eq!(
+            ben.calls.view().call.unwrap().share_sounds[&screen_of_ann].volume,
+            100
+        );
+        ann.capture
+            .set_source_colours(PictureSource::Window(11), GREEN, YELLOW);
+        ben.calls.watch_share(window_of_ann);
+        ben.until_shown(window_of_ann, GREEN, YELLOW).await;
+        ben.until_silent_tone(PLAYER.0).await;
+        assert_eq!(
+            ben.calls.view().call.unwrap().share_sounds[&window_of_ann],
+            quiet
+        );
+        ben.calls.set_share_sound(
+            window_of_ann,
+            junto_client_core::voice::ShareSound {
+                muted: false,
+                ..quiet
+            },
+        );
+        ben.until_heard_tone(PLAYER.0).await;
+
         // And back to the screen.
         ben.calls.watch_share(screen_of_ann);
         ben.until_shown(screen_of_ann, RED, BLUE).await;

@@ -19,7 +19,7 @@ fn share_sound_volume(open: &OpenAccountMenu) -> bool {
     matches!(
         &open.source,
         Some(AccountSource::CallOccupant {
-            surface: super::account_menus::CallSurface::Share { watched: true, .. },
+            surface: super::account_menus::CallSurface::Share { .. },
             ..
         })
     )
@@ -51,12 +51,21 @@ impl Shell {
         let panel = self.view.as_ref()?.lists()?.call.as_ref()?;
         if share_sound_volume(open) {
             let stage = panel.stage.as_ref()?;
+            let Some(AccountSource::CallOccupant {
+                surface: super::account_menus::CallSurface::Share { id, .. },
+                ..
+            }) = &open.source
+            else {
+                return None;
+            };
             return stage
-                .watched()
+                .shares
+                .iter()
+                .find(|share| share.id == *id)
                 .filter(|share| {
                     share.sound != Some(junto_client_core::protocol::call::ShareAudio::None)
                 })
-                .map(|_| stage.volume);
+                .map(|share| share.sound_setting.volume);
         }
         panel
             .people
@@ -87,9 +96,15 @@ impl Shell {
             let account = context.people[0].account_id;
             this.state.update(cx, |state, cx| {
                 if share_sound_volume(&context) {
-                    state.set_share_volume(percent, cx);
-                    if release {
-                        state.store_share_volume(cx);
+                    if let Some(AccountSource::CallOccupant {
+                        surface: super::account_menus::CallSurface::Share { id, .. },
+                        ..
+                    }) = &context.source
+                    {
+                        state.set_share_sound_volume(*id, percent, cx);
+                        if release {
+                            state.store_share_sound(*id, cx);
+                        }
                     }
                 } else {
                     state.set_volume(context.owner.entry.server_id, account, percent, cx);
@@ -122,12 +137,12 @@ impl Shell {
         let theme = theme(cx);
         let name = &open.people[0].name;
         let label = if share_sound_volume(open) {
-            text::SHARE_VOLUME.to_owned()
+            text::SHARE_VOLUME_ONE.to_owned()
         } else {
             text::your_volume_for(name)
         };
         let accessible = if share_sound_volume(open) {
-            text::SHARE_VOLUME.to_owned()
+            text::SHARE_VOLUME_ONE.to_owned()
         } else {
             text::volume_for(name)
         };
@@ -167,6 +182,7 @@ enum CallMenuAction {
     Pin(bool),
     Leave,
     WatchShare(junto_media::engine::ShareId),
+    MuteShare(junto_media::engine::ShareId),
     StopShare(u8),
     Participant(ParticipantAction),
 }
@@ -262,6 +278,19 @@ impl Shell {
                 action: CallMenuAction::WatchShare(*id),
                 disabled: share.watched,
                 detail: None,
+            });
+        }
+        if *account_id != open.owner.account_id {
+            items.push(CallControl {
+                id: "call-menu-mute-share",
+                label: if share.sound_setting.muted {
+                    text::UNMUTE_SHARE
+                } else {
+                    text::MUTE_SHARE
+                },
+                action: CallMenuAction::MuteShare(*id),
+                disabled: false,
+                detail: Some(format!("{}%", share.sound_setting.volume)),
             });
         }
         if *account_id == open.owner.account_id {
@@ -447,6 +476,7 @@ impl Shell {
                             }
                             CallMenuAction::Leave => state.leave_call(cx),
                             CallMenuAction::WatchShare(id) => state.watch_share(*id),
+                            CallMenuAction::MuteShare(id) => state.toggle_share_sound(*id, cx),
                             CallMenuAction::StopShare(slot) => state.stop_share(Some(*slot)),
                             CallMenuAction::Participant(action) => {
                                 if let Some((room, account)) = participant {

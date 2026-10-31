@@ -32,6 +32,18 @@ use crate::ui::{
     tooltip,
 };
 
+fn share_action_button(button: Button) -> AnyElement {
+    div()
+        .flex_none()
+        .on_key_down(|event, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+            }
+        })
+        .child(button)
+        .into_any_element()
+}
+
 /// The kinds of sound that a share can have (ADR 0502).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundKind {
@@ -1456,6 +1468,54 @@ impl Shell {
             .into_any_element()
     }
 
+    pub(super) fn share_mute_button(
+        &self,
+        share: &ShareCard,
+        selector: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = share.id;
+        let muted = share.sound_setting.muted;
+        let level = format!("{}%", share.sound_setting.volume);
+        let label = if muted {
+            format!("{} · {level}", text::SHARE_MUTED)
+        } else {
+            level
+        };
+        let button = Button::new(format!("{selector}:{id:?}"))
+            .icon(if muted {
+                Icon::PhonesOff
+            } else {
+                Icon::Speaker
+            })
+            .label(label)
+            .accessible_label(format!(
+                "{} at {}%",
+                if muted {
+                    text::UNMUTE_SHARE
+                } else {
+                    text::MUTE_SHARE
+                },
+                share.sound_setting.volume
+            ))
+            .selector(selector)
+            .tooltip(format!(
+                "{} · {}%",
+                if muted {
+                    text::SHARE_SOUND_OFF_FOR_YOU
+                } else {
+                    text::SHARE_SOUND_TITLE
+                },
+                share.sound_setting.volume
+            ))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.state
+                    .update(cx, |state, cx| state.toggle_share_sound(id, cx));
+            }));
+        share_action_button(button)
+    }
+
     /// The stage of a call with a share: the bar of the shares when there are several, the
     /// line about the watched one, its picture, and the strip of the people.
     pub(crate) fn render_share_stage(
@@ -1627,6 +1687,9 @@ impl Shell {
                                 }
                             }),
                     )
+                    .when(id.person != Person::Own, |card| {
+                        card.child(self.share_mute_button(share, "share-mute-tile", cx))
+                    })
                     .map(|frame| self.call_share_frame(frame, share, false, cx))
             });
             div()
@@ -1655,141 +1718,146 @@ impl Shell {
                 .children(cards)
         });
 
-        let header = watched.map(|share| {
-            let own = share.id.person == Person::Own;
-            let name: SharedString = share
-                .name
-                .clone()
-                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
-                .into();
-            // The sentence about the share, with its strong part.
-            let (line, strong) = if several {
-                let title = title_of(share);
-                let line = text::watching_share(&title);
-                let range = line.len() - title.len()..line.len();
-                (line, range)
-            } else if own {
-                (text::YOU_ARE_SHARING.to_owned(), 0..3)
-            } else {
-                (text::is_sharing(&name), 0..name.len())
-            };
-            let muted = !own && stage.volume == 0 && share.sound != Some(ShareAudio::None);
-            let sound: Option<(SharedString, bool)> = if share.sound_held {
-                Some((text::SHARE_SOUND_HELD.into(), false))
-            } else if muted {
-                Some((text::SHARE_SOUND_OFF_FOR_YOU.into(), false))
-            } else if several && !own {
-                text::watched_sound(share.sound).map(|heard| {
-                    (
-                        format!("{heard} {}", text::SOUND_FOLLOWS).into(),
-                        share.sound != Some(ShareAudio::None),
-                    )
-                })
-            } else {
-                text::share_sound(share.sound)
-                    .map(|sound| (sound.into(), share.sound != Some(ShareAudio::None)))
-            };
-            let measure = text::share_measure(
-                if several { None } else { share.kind },
-                share.size,
-                share.frame_rate,
-            );
-            div()
-                .id("share-header")
-                .role(Role::Status)
-                .aria_label(line.clone())
-                .debug_selector(|| "share-header".to_owned())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(8.0))
-                .h(u(34.0))
-                .px(u(12.0))
-                .overflow_hidden()
-                .bg(Hsla::from(colors.basalt_2))
-                .border_b_1()
-                .border_color(Hsla::from(colors.basalt_rule))
-                .typeface(theme.types.control, theme)
-                .text_size(u(13.5))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .ink(colors.bone)
-                .whitespace_nowrap()
-                .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
-                .child(div().flex_none().child(super::people::person_element(
-                    &faces,
-                    share.account_id,
-                    &name,
-                    "share-owner",
-                    StyledText::new(line).with_highlights([(
-                        strong,
-                        gpui::HighlightStyle {
-                            font_weight: Some(gpui::FontWeight::BOLD),
-                            color:
-                                faces.color(share.account_id).map(|color| {
-                                    crate::theme::role_ink(color, colors.basalt_2).into()
-                                }),
-                            ..gpui::HighlightStyle::default()
-                        },
-                    )]),
-                )))
-                .when_some(sound, |header, (sentence, heard)| {
-                    let ink = if heard {
-                        colors.olive_bright
-                    } else {
-                        colors.bone_2
-                    };
-                    header.child(
+        let header =
+            watched.map(|share| {
+                let own = share.id.person == Person::Own;
+                let name: SharedString = share
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                    .into();
+                // The sentence about the share, with its strong part.
+                let (line, strong) = if several {
+                    let title = title_of(share);
+                    let line = text::watching_share(&title);
+                    let range = line.len() - title.len()..line.len();
+                    (line, range)
+                } else if own {
+                    (text::YOU_ARE_SHARING.to_owned(), 0..3)
+                } else {
+                    (text::is_sharing(&name), 0..name.len())
+                };
+                let muted = !own && (share.sound_setting.muted || share.sound_setting.volume == 0);
+                let sound: Option<(SharedString, bool)> = if share.sound_held {
+                    Some((text::SHARE_SOUND_HELD.into(), false))
+                } else if muted {
+                    Some((text::SHARE_SOUND_OFF_FOR_YOU.into(), false))
+                } else if several && !own {
+                    text::watched_sound(share.sound).map(|heard| {
+                        (
+                            format!("{heard} {}", text::SOUND_FOLLOWS).into(),
+                            share.sound != Some(ShareAudio::None),
+                        )
+                    })
+                } else {
+                    text::share_sound(share.sound)
+                        .map(|sound| (sound.into(), share.sound != Some(ShareAudio::None)))
+                };
+                let measure = text::share_measure(
+                    if several { None } else { share.kind },
+                    share.size,
+                    share.frame_rate,
+                );
+                div()
+                    .id("share-header")
+                    .role(Role::Status)
+                    .aria_label(line.clone())
+                    .debug_selector(|| "share-header".to_owned())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(8.0))
+                    .h(u(34.0))
+                    .px(u(12.0))
+                    .overflow_hidden()
+                    .bg(Hsla::from(colors.basalt_2))
+                    .border_b_1()
+                    .border_color(Hsla::from(colors.basalt_rule))
+                    .typeface(theme.types.control, theme)
+                    .text_size(u(13.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .ink(colors.bone)
+                    .whitespace_nowrap()
+                    .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
+                    .child(div().min_w_0().flex_1().truncate().child(
+                        super::people::person_element(
+                            &faces,
+                            share.account_id,
+                            &name,
+                            "share-owner",
+                            StyledText::new(line).with_highlights([(
+                                strong,
+                                gpui::HighlightStyle {
+                                    font_weight: Some(gpui::FontWeight::BOLD),
+                                    color: faces.color(share.account_id).map(|color| {
+                                        crate::theme::role_ink(color, colors.basalt_2).into()
+                                    }),
+                                    ..gpui::HighlightStyle::default()
+                                },
+                            )]),
+                        ),
+                    ))
+                    .when_some(sound, |header, (sentence, heard)| {
+                        let ink = if heard {
+                            colors.olive_bright
+                        } else {
+                            colors.bone_2
+                        };
+                        header.child(
+                            div()
+                                .id("share-sound")
+                                .debug_selector(|| "share-sound".to_owned())
+                                .flex()
+                                .min_w_0()
+                                .items_center()
+                                .gap(u(5.0))
+                                .ink(ink)
+                                .child(icon(Icon::Speaker, 14.0, ink))
+                                .child(div().min_w_0().truncate().child(sentence)),
+                        )
+                    })
+                    // The people who watch the share of this device (ADR 0502).
+                    .when(own && !share.viewers.is_empty(), |header| {
+                        let names: Vec<String> = share
+                            .viewers
+                            .iter()
+                            .map(|(_, name)| {
+                                name.clone()
+                                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                            })
+                            .collect();
+                        let named: SharedString = text::share_viewer_names(&names).into();
+                        header.child(
+                            div()
+                                .id("share-viewers")
+                                .debug_selector(|| "share-viewers".to_owned())
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(u(5.0))
+                                .aria_label(named.clone())
+                                .tooltip(crate::ui::tooltip(named))
+                                .ink(colors.bone_2)
+                                .child(icon(Icon::People, 14.0, colors.bone_2))
+                                .child(crate::ui::paint_text(
+                                    text::share_viewers(names.len()).into(),
+                                    None,
+                                )),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
                         div()
-                            .id("share-sound")
-                            .debug_selector(|| "share-sound".to_owned())
-                            .flex()
-                            .min_w_0()
-                            .items_center()
-                            .gap(u(5.0))
-                            .ink(ink)
-                            .child(icon(Icon::Speaker, 14.0, ink))
-                            .child(div().min_w_0().truncate().child(sentence)),
-                    )
-                })
-                // The people who watch the share of this device (ADR 0502).
-                .when(own && !share.viewers.is_empty(), |header| {
-                    let names: Vec<String> = share
-                        .viewers
-                        .iter()
-                        .map(|(_, name)| {
-                            name.clone()
-                                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
-                        })
-                        .collect();
-                    let named: SharedString = text::share_viewer_names(&names).into();
-                    header.child(
-                        div()
-                            .id("share-viewers")
-                            .debug_selector(|| "share-viewers".to_owned())
-                            .flex()
                             .flex_none()
-                            .items_center()
-                            .gap(u(5.0))
-                            .aria_label(named.clone())
-                            .tooltip(crate::ui::tooltip(named))
+                            .typeface(theme.types.small, theme)
                             .ink(colors.bone_2)
-                            .child(icon(Icon::People, 14.0, colors.bone_2))
-                            .child(crate::ui::paint_text(
-                                text::share_viewers(names.len()).into(),
-                                None,
-                            )),
+                            .child(measure),
                     )
-                })
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .flex_none()
-                        .typeface(theme.types.small, theme)
-                        .ink(colors.bone_2)
-                        .child(measure),
-                )
-                .map(|header| self.call_share_frame(header, share, true, cx))
-        });
+                    .when(!own, |header| {
+                        header.child(self.share_mute_button(share, "share-mute-header", cx))
+                    })
+                    .map(|header| self.call_share_frame(header, share, true, cx))
+            });
 
         let shown = watched.and_then(|share| {
             self.pictures
@@ -2085,6 +2153,7 @@ mod tests {
                 own_shares: std::collections::BTreeMap::new(),
                 share_ended: None,
                 shares: Vec::new(),
+                share_sounds: Default::default(),
                 watched: None,
                 withheld: Default::default(),
             }),

@@ -802,7 +802,9 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {
             stored.contains("\"share_resolution\": \"p720\"")
                 && stored.contains("\"share_frame_rate\": 15")
-                && stored.contains("\"share_volume\": 0")
+                && serde_json::from_str::<serde_json::Value>(&stored).is_ok_and(|stored| {
+                    stored["share_sounds"][admin.handle.id().to_string()][other.to_string()]["volume"] == 0
+                })
         })
     });
 

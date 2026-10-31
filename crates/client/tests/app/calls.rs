@@ -407,6 +407,7 @@ pub(crate) fn connected_call(window: &mut Window, channel: &str) -> junto_media:
         own_shares: std::collections::BTreeMap::new(),
         share_ended: None,
         shares: Vec::new(),
+        share_sounds: Default::default(),
         watched: None,
         withheld: Default::default(),
     }

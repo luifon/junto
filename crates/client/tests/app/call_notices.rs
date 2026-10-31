@@ -43,6 +43,7 @@ fn call_with_share(window: &mut Window, channel: &str, ended: Option<CaptureErro
         own_shares: std::collections::BTreeMap::new(),
         share_ended: ended,
         shares: Vec::new(),
+        share_sounds: Default::default(),
         watched: None,
         withheld: Default::default(),
     }
@@ -624,4 +625,38 @@ fn a_press_on_a_card_answers_its_own_invitation_when_another_arrives(cx: &mut Te
     // The drawn card stayed in its place; the new one follows it.
     let join = selector(format!("invitation-accept:{}", first.id));
     assert_eq!(bounds_of(&mut window, join).center(), place);
+}
+
+#[gpui::test]
+fn a_received_share_has_a_keyboard_reachable_sound_control(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = call_with_share(&mut window, "Daily", None);
+    let account_id = crate::support::logged_in(&admin.handle);
+    call.shares.push(junto_media::engine::SeenShare {
+        account_id,
+        slot: 0,
+        kind: Some(junto_media::share::ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((1280, 720)),
+    });
+    call.watched = Some(junto_media::engine::ShareId::of(account_id, 0));
+    give_calls(&mut window, call);
+    assert!(window.shows("share-mute-header"));
+    let members = if window.shows("open-call-members") {
+        "open-call-members"
+    } else {
+        "call-tab-members"
+    };
+    window.click(members);
+    assert!(window.shows("member-share-sound"));
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    assert!(detached.shows("share-mute-header"));
+    detached.click("open-call-members");
+    assert!(detached.shows("member-share-sound"));
 }

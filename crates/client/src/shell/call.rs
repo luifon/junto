@@ -1117,6 +1117,29 @@ impl Shell {
                 .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
                 .into_any_element()
         });
+        let share_controls: Vec<_> = panel
+            .stage
+            .as_ref()
+            .into_iter()
+            .flat_map(|stage| &stage.shares)
+            .filter(|share| share.id.person != junto_media::engine::Person::Own)
+            .map(|share| {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(u(14.0))
+                    .py(u(4.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(text::share_title(share, false)),
+                    )
+                    .child(self.share_mute_button(share, "member-share-sound", cx))
+                    .into_any_element()
+            })
+            .collect();
         let state = self.call_members_list.clone();
         let list = div()
             .id("call-members")
@@ -1155,6 +1178,16 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .child(
+                div()
+                    .id("member-share-sounds")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .max_h(u(140.0))
+                    .overflow_y_scroll()
+                    .children(share_controls),
+            )
             .child(list)
             .children(
                 panel
@@ -1484,7 +1517,7 @@ impl Shell {
             Some(room) => self.render_room_settings(room, theme, cx),
             None => Vec::new(),
         };
-        let share_volume = self.state.read(cx).voice().share_volume;
+        let share_volume = panel.stage.as_ref().map_or(100, |stage| stage.volume);
         let (volume_state, volume_focus) = self.share_volume_control(share_volume, window, cx);
         let volume_row = div()
             .flex_none()
@@ -1685,7 +1718,14 @@ impl Shell {
             .child(help_line(text::SHARE_SETTINGS_HELP))
             .child(SectionLabel::new(text::YOUR_VIEW))
             .child(hide_row)
-            .child(volume_row)
+            .when(
+                panel
+                    .stage
+                    .as_ref()
+                    .and_then(|stage| stage.watched())
+                    .is_some_and(|share| share.id.person != junto_media::engine::Person::Own),
+                |settings| settings.child(volume_row),
+            )
             .children(room_rows)
             .child(div().flex_none().h(u(8.0)))
             .into_any_element()
