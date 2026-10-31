@@ -420,6 +420,12 @@ fn an_invite_grants_the_chosen_workspace_and_can_be_revoked_in_the_window(cx: &m
     let unused = awaited(&mut window, "a second invite is shown", |window| {
         server_page!(window, Invites)?.made
     });
+    // The answer and the state of the server arrive in either order, and a row that the
+    // state brings after the release at "Done" waits for the next release (ADR 0730). The
+    // person puts the code away once the state holds the invite, as the other invite tests do.
+    window.until("the state holds the second invite", |window| {
+        invite_line(window, unused.invite_id).is_some()
+    });
     click_in_page(&mut window, "invite-code-done");
     click_in_page(&mut window, sel("invite-revoke", unused.invite_id));
     window.until("the invite is shown as revoked", |window| {
