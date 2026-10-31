@@ -215,7 +215,10 @@ fn a_window_that_is_not_active_shows_a_late_notice_at_once(cx: &mut TestAppConte
 /// change: each answer of a profile derived the whole view, which with 601 members and 2,001
 /// accounts held the window thread for seconds (review M8). The test platform draws a window
 /// after each round of work, so the test turns drawing off: of 50 changes, only the first
-/// after the last drawing derives the view, and the others wait for the next drawing.
+/// after the last drawing derives the view, and the others wait for the next drawing. The
+/// counts are read without running the work of the application: an event of the server that
+/// arrived while that work ran after the first count derived the view once more with drawing
+/// still on (Windows CI).
 #[gpui::test]
 fn changes_of_the_state_derive_the_view_when_the_window_draws(cx: &mut TestAppContext) {
     let world = World::new();
@@ -223,12 +226,17 @@ fn changes_of_the_state_derive_the_view_when_the_window_draws(cx: &mut TestAppCo
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
     window.settle();
-    let before = window.in_shell(|shell, _, _| shell.derivations());
+    let before = window
+        .shell
+        .read_with(&window.cx, |shell, _| shell.derivations());
     cx.skip_drawing();
     for _ in 0..50 {
         window.state.update(&mut window.cx, |_, cx| cx.notify());
     }
-    let derived = window.in_shell(|shell, _, _| shell.derivations()) - before;
+    let derived = window
+        .shell
+        .read_with(&window.cx, |shell, _| shell.derivations())
+        - before;
     assert!(
         derived <= 1,
         "50 changes without a drawing derived the view {derived} times"
