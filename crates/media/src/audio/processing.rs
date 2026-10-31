@@ -204,6 +204,59 @@ mod tests {
     }
 
     #[test]
+    fn the_sending_echo_canceller_removes_playback_with_a_known_delay() {
+        for enabled in [false, true] {
+            let processor = Processor::new(Processing {
+                echo_cancellation: enabled,
+                noise_suppression: false,
+                automatic_gain: false,
+            });
+            let mut delayed = std::collections::VecDeque::from(vec![[0i16; FRAME_SAMPLES]; 5]);
+            let mut seed = 0x1234_5678u32;
+            let (mut raw, mut sent) = (0.0_f64, 0.0_f64);
+            for index in 0..600 {
+                let mut current = [0i16; FRAME_SAMPLES];
+                let mut played = [0i16; FRAME_SAMPLES * PLAYOUT_CHANNELS];
+                for (sample, stereo) in current.iter_mut().zip(played.chunks_exact_mut(2)) {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *sample = (((seed >> 16) as i32 - 32_768) / 4) as i16;
+                    stereo.fill(*sample);
+                }
+                processor.render(&mut played);
+                let mut captured = delayed.pop_front().unwrap();
+                delayed.push_back(current);
+                for sample in &mut captured {
+                    *sample /= 2;
+                }
+                let before = dbfs(&captured);
+                let mut detection = captured;
+                processor.speech(&mut detection);
+                processor.capture(&mut captured);
+                if index >= 400 {
+                    raw += 10.0_f64.powf(f64::from(before) / 10.0);
+                    sent += 10.0_f64.powf(f64::from(dbfs(&captured)) / 10.0);
+                }
+            }
+            let change = 10.0 * (sent / raw).log10();
+            eprintln!(
+                "sending echo cancellation {enabled}, 50 ms delay, change {change:.2} dB, processing error {}",
+                processor.lock().failed
+            );
+            if enabled {
+                assert!(
+                    change < -25.0,
+                    "delayed playback remains in the sent microphone: {change:.2} dB"
+                );
+            } else {
+                assert!(
+                    change.abs() < 0.1,
+                    "disabled processing changed the sent samples: {change:.2} dB"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn frames_pass_unchanged_while_every_part_is_off() {
         let processor = Processor::new(Processing::OFF);
         let mut frame = tone(0, 440.0, 0.25);

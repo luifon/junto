@@ -242,3 +242,8 @@ the required stream-delay parameter as zero; AEC3 uses its internal delay estima
 and the host callbacks provide no device latency estimate. The virtual PipeWire
 check routes real output back into capture with sending processing off and checks echo
 rejection, preserved local input beside playback and silent frames at the closed gate.
+
+The sending echo canceller is also checked with playback copied into the microphone
+50 ms later, with noise suppression and gain control off, and with processing off as a
+control. The pinned AEC3 backend estimates this delay internally; the test measures echo
+attenuation and checks that disabled processing leaves the samples unchanged.
