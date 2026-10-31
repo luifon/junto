@@ -1099,4 +1099,48 @@ mod tests {
         waiter.join().unwrap();
         drop(private.lock().unwrap());
     }
+
+    #[test]
+    fn concurrent_first_lock_creations_keep_one_owner_and_release_it() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = crate::paths::DataDir::open(root.path().join("profile")).unwrap();
+        let mut release = Vec::new();
+        let starters: Vec<_> = (0..8)
+            .map(|_| {
+                let directory = directory.clone();
+                let (start, ready) = std::sync::mpsc::channel();
+                release.push(start);
+                std::thread::spawn(move || {
+                    ready
+                        .recv_timeout(std::time::Duration::from_secs(3))
+                        .unwrap();
+                    directory.files().try_lock_file("concurrent.lock").unwrap()
+                })
+            })
+            .collect();
+        for start in release {
+            start.send(()).unwrap();
+        }
+        let held: Vec<_> = starters
+            .into_iter()
+            .map(|start| start.join().unwrap())
+            .collect();
+        assert!(directory.root().is_dir());
+        assert_eq!(held.iter().filter(|file| file.is_some()).count(), 1);
+        assert!(
+            directory
+                .files()
+                .try_lock_file("concurrent.lock")
+                .unwrap()
+                .is_none()
+        );
+        drop(held);
+        assert!(
+            directory
+                .files()
+                .try_lock_file("concurrent.lock")
+                .unwrap()
+                .is_some()
+        );
+    }
 }

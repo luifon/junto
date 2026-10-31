@@ -116,13 +116,17 @@ impl Handle {
     }
 
     pub(super) fn open_lock(&self, name: &str) -> io::Result<File> {
-        let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        Ok(File::from(rustix::fs::openat(
+        let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let file = match rustix::fs::openat(
             &self.directory,
             name,
-            flags,
+            flags | OFlags::CREATE | OFlags::EXCL,
             file_mode(),
-        )?))
+        ) {
+            Err(Errno::EXIST) => rustix::fs::openat(&self.directory, name, flags, Mode::empty()),
+            result => result,
+        }?;
+        Ok(File::from(file))
     }
 
     pub(super) fn open_checked_lock(&self, name: &str) -> Result<File, Fault> {

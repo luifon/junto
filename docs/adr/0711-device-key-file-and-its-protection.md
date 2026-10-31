@@ -48,7 +48,7 @@ Unix (macOS and Linux):
 
 - The directories have mode 0700 and the files mode 0600, set at creation.
 - "Belongs to the user" is the owner of the opened object equal to the effective user of the process. "Nobody else" is no permission bit for the group or for others.
-- The opens use the directory descriptor and the flag that refuses a link.
+- The opens use the directory descriptor and the flag that refuses a link. Lock files use exclusive creation, then open the existing file only when creation reports that the name exists. This avoids the create-or-open path during simultaneous first starts on macOS while preserving the checked directory, file contents and permission checks.
 
 Windows:
 
