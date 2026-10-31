@@ -12,7 +12,7 @@ The repository is public. A tracked file that contains a name, a hostname, an ad
 
 Repository rules:
 
-- No personal information of any kind is in a tracked file: no names, hostnames, addresses or account identifiers.
+- No personal information of any kind is in a tracked file: no names, hostnames, addresses or account identifiers. One exception is the address of the public repository, `https://github.com/luifon/junto`, which may appear in tracked files.
 - Comments are kept to a minimum. The code should explain itself.
 - ADRs state engineering decisions and their technical reasons only.
 

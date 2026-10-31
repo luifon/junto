@@ -38,6 +38,7 @@ async fn invite_page_shows_the_server_download_and_code_without_redeeming_it() {
         "junto://invite?server=https%3A%2F%2Fchat.example.test&amp;code=ABCD-EFGH-JKMN-PQRS"
     ));
     assert!(html.contains("https://downloads.example.test/?platform=all&amp;channel=stable"));
+    assert!(!html.contains("https://github.com/luifon/junto/releases"));
     assert!(!html.contains("<script"));
     // No lookup or redemption occurs: syntactically valid unused and missing codes show the same page.
     let again = server
@@ -61,4 +62,23 @@ async fn invite_page_shows_the_server_download_and_code_without_redeeming_it() {
         assert!(reply.status.is_client_error(), "{path}");
         assert!(!reply.text().contains("<script>"));
     }
+}
+
+#[tokio::test]
+async fn invite_page_defaults_to_the_public_repository_releases() {
+    let server = TestServer::start().await;
+    let reply = server
+        .send::<Value>(
+            Method::GET,
+            "/join?code=ABCD-EFGH-JKMN-PQRS",
+            None,
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert!(reply.text().contains(
+        "<a href=\"https://github.com/luifon/junto/releases\" rel=\"noreferrer\">Download Junto</a>"
+    ));
+    assert!(!reply.text().contains("Ask the server administrator"));
 }

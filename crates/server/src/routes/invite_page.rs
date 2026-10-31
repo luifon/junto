@@ -59,10 +59,15 @@ pub(super) async fn page(
     };
     let name = escaped(&info.name);
     let address = escaped(origin.as_str());
-    let download = match app.config.client_download_url.as_ref() {
-        Some(url) => format!("<p><a href=\"{}\" rel=\"noreferrer\">Download Junto</a>, then return here to open the invite. You can also add the server and enter this code in Junto.</p>", escaped(url.as_str())),
-        None => "<p>Ask the server administrator for a Junto download. After installing, return here to open the invite, or add the server and enter this code.</p>".to_owned(),
-    };
+    let download_url = app
+        .config
+        .client_download_url
+        .as_ref()
+        .map_or("https://github.com/luifon/junto/releases", url::Url::as_str);
+    let download = format!(
+        "<p><a href=\"{}\" rel=\"noreferrer\">Download Junto</a>, then return here to open the invite. You can also add the server and enter this code in Junto.</p>",
+        escaped(download_url)
+    );
     let body = format!(
         r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Join {name} on Junto</title><style>body{{font:18px system-ui;line-height:1.6;max-width:38rem;margin:10vh auto;padding:1.5rem;background:#f5f2ec;color:#272b28}}a{{color:#255e48}}code{{overflow-wrap:anywhere}}.open{{display:inline-block;padding:.6rem 1.2rem;background:#255e48;color:white;border-radius:.4rem}}dt{{font-weight:600}}dd{{margin:0 0 1rem}}</style><main><h1>Join {name} on Junto</h1><p>You have an invitation to this server. Opening the invite lets you review the server before joining.</p><p><a class="open" href="{link}">Open Junto</a></p>{download}<dl><dt>Server</dt><dd><code>{address}</code></dd><dt>Invite code</dt><dd><code>{code}</code></dd></dl><p>The server may refuse an expired, revoked or used invite. Keep this link private.</p></main></html>"#
     );

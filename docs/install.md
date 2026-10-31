@@ -537,4 +537,4 @@ Remaining limits:
 
 ### Invite download page
 
-Set `JUNTO_CLIENT_DOWNLOAD_URL` in the server environment to the HTTPS page from which your team obtains the desktop client. Browser invite links point to `/join?code=…` on the server and offer that download page, the code and Open Junto. Without this setting the page asks the person to obtain a download from the administrator. The page does not redeem an invite; the person confirms joining inside Junto. Keep invite links private.
+Set `JUNTO_CLIENT_DOWNLOAD_URL` in the server environment to the HTTPS page from which your team obtains the desktop client. Browser invite links point to `/join?code=…` on the server and offer that download page, the code and Open Junto. Without this setting the page links to the [public repository releases](https://github.com/luifon/junto/releases). The page does not redeem an invite; the person confirms joining inside Junto. Keep invite links private.

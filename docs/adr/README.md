@@ -268,7 +268,7 @@ Status values:
 
 | Number | Title | Status | Summary |
 |---|---|---|---|
-| [0901](0901-repository-rules-and-feature-process.md) | Repository rules and the process per feature | Accepted | No personal information in tracked files, minimal comments, and AGENTS.md kept consistent with the files it names; each feature passes a fixed sequence of tests, checks and an ADR before a push. |
+| [0901](0901-repository-rules-and-feature-process.md) | Repository rules and the process per feature | Accepted | No personal information in tracked files except the public repository address, minimal comments, and AGENTS.md kept consistent with the files it names; each feature passes a fixed sequence of tests, checks and an ADR before a push. |
 | [0902](0902-testing-strategy.md) | Testing strategy | Accepted | CI on three systems, a test participant for calls and recordings, and tests of real capture on real systems. |
 | [0903](0903-step-0-and-build-order.md) | Step 0 before product code, and the build order | Accepted | Eight technical tests run before product code; seven build steps follow. |
 | [0904](0904-server-tests.md) | Server tests against PostgreSQL | Accepted | Integration tests over HTTP against a real PostgreSQL in Docker, one database per test, a replaceable clock, fixed orders for races, one table of every protected operation, and time limits that a test shortens only for the step that it examines. |

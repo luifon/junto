@@ -34,7 +34,7 @@ Outside the workspace:
 
 - `docs/adr/README.md` is the index. Numbers are grouped in ranges by area; a new record takes the next free number in the range of its area.
 - ADR 0901 states how the repository is kept:
-  - No personal information in a tracked file: no names, host names, addresses or account identifiers. Examples and test data use invented values.
+  - No personal information in a tracked file: no names, host names, addresses or account identifiers. The public repository address may appear (ADR 0901). Examples and test data use invented values.
   - Comments are kept to a minimum.
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
