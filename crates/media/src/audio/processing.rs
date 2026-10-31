@@ -217,7 +217,10 @@ mod tests {
             for index in 0..600 {
                 let mut current = [0i16; FRAME_SAMPLES];
                 let mut played = [0i16; FRAME_SAMPLES * PLAYOUT_CHANNELS];
-                for (sample, stereo) in current.iter_mut().zip(played.chunks_exact_mut(2)) {
+                for (sample, stereo) in current
+                    .iter_mut()
+                    .zip(played.as_chunks_mut::<PLAYOUT_CHANNELS>().0)
+                {
                     seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                     *sample = (((seed >> 16) as i32 - 32_768) / 4) as i16;
                     stereo.fill(*sample);

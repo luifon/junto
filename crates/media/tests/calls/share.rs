@@ -2419,6 +2419,7 @@ async fn the_final_watch_choice_follows_a_delayed_subscription_request() {
         ann.until_sharing().await;
         ben.until_shown(share, RED, BLUE).await;
         ben.until_heard_tone(SYSTEM.0).await;
+        ben.until_heard(&ann).await;
         let remote = ben
             .calls
             .sound_check()

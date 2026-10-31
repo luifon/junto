@@ -77,6 +77,11 @@ impl std::fmt::Display for SoundCheck {
             "  remote audio tracks (identity, source, subscribed, muted): {:?}",
             self.remote_tracks
         )?;
+        writeln!(
+            formatter,
+            "  remote share tracks (identity, source, desired, subscribed): {:?}",
+            self.remote_share_tracks
+        )?;
         writeln!(formatter, "  captured          {}", self.captured)?;
         writeln!(formatter, "  sent              {}", self.sent)?;
         writeln!(formatter, "  sent as silence   {}", self.sent_as_silence)?;
@@ -262,7 +267,11 @@ impl Actor {
             remote_tracks,
             remote_share_tracks,
             #[cfg(feature = "test-support")]
-            remote_participants: self.room.iter().flat_map(|room| room.remote_participants().into_values()).collect(),
+            remote_participants: self
+                .room
+                .iter()
+                .flat_map(|room| room.remote_participants().into_values())
+                .collect(),
             captured: self.link.captured.line(SPAN),
             sent: self.link.taken.sound.line(SPAN),
             sent_as_silence: self.link.taken.silence.line(SPAN),

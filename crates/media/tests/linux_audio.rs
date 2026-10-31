@@ -351,7 +351,7 @@ fn muted_speech_ignores_playback_captured_by_the_microphone_with_processing_off(
             Box::new(move |data, format| {
                 while mixer.waiting(&source) < 10 {
                     let mut block = [0i16; BLOCK_SAMPLES];
-                    for frame in block.chunks_exact_mut(2) {
+                    for frame in block.as_chunks_mut::<2>().0 {
                         let phase = std::f32::consts::TAU * 440.0 * index as f32 / 48000.0;
                         frame.fill((phase.sin() * 0.2 * f32::from(i16::MAX)) as i16);
                         index += 1;
