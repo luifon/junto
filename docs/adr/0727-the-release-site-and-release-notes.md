@@ -12,6 +12,8 @@ ADR 0704 makes the release page of the project the one source of client builds. 
 
 ## Decision
 
+For 0.1.0, release files and notes are hosted by GitHub Releases of `https://github.com/luifon/junto`. The static-site writer below remains an optional output; its `updates/` directory does not select the 0.1.0 client update source.
+
 - `packaging/site.py <releases directory> <notes directory> <new output directory> --base <address> --server-install <address>` writes the static files of the release site. The releases directory holds one directory per version, named with three decimal numbers, with every file of that release from every system as the release commands write them. Other directories, such as those of the test versions `0.1.0-test.1`, are ignored.
 - The command stops with an error on a file of a version directory that it does not know, on a link or a directory in a version directory, on a latest file, release file or archive of a target without the release file and the archive of the same version and target beside it, on a version without notes, and when the newest version lacks a first-install file, the symbols file or a latest file. The error names each file.
 - The first-install files of a version are `Junto-<version>-macos-aarch64.dmg`, `Junto-<version>-macos-aarch64.zip`, `Junto-<version>-windows-x86_64-setup.exe`, `Junto-<version>-windows-x86_64.zip`, `Junto-<version>-x86_64.AppImage`, `junto-<version>-linux-x86_64.tar.gz` and `junto_<version>_amd64.deb`. The symbols file `Junto-<version>-windows-x86_64.pdb` (ADR 0755, ADR 0757) is published with them, as another file.
@@ -40,7 +42,7 @@ The tests (`packaging/test_site.py`) build a releases directory with versions 0.
 
 ## Consequences
 
-- One static host serves the download page and the update source. The host needs no program; it must serve HTTPS at the address that the builds compiled and must not redirect, because the client follows no redirect (ADR 0724).
+- A generated site uses one static host for its download page and update source. The host needs no program; it must serve HTTPS at the address that the builds compiled and must not redirect, because the client follows no redirect (ADR 0724).
 - Changing the base address later does not move the clients that are already installed (`docs/release.md`). The site therefore keeps every earlier version, and the releases directory that the command reads must hold every published version.
 - A release without a Debian package, a setup program or a disk image cannot be the newest version of the site. A new first-install file or a new target is a change of `site.py` and of this record.
 - The command does not check the signatures or the content of a file. The release commands and the package checks of ADR 0724, ADR 0754 and ADR 0755 do that before the files reach the releases directory.

@@ -23,7 +23,7 @@ macOS stores each permission of an application together with the designated requ
 
 Updates:
 
-- The project's release page is the only source of client builds.
+- For 0.1.0, the only source of client builds and updates is the public repository's GitHub releases at `https://github.com/luifon/junto/releases`.
 - The client checks for a new version at start and periodically, shows a notice, and updates when the user clicks.
 - The download and its version information are verified against the project's signing keys.
 - The client trusts a set of keys, so that a key can be replaced.
