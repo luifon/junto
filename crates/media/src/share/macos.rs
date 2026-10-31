@@ -12,7 +12,7 @@
 //! question; the explicit native tier exercises the system calls (ADR 0913).
 
 use super::life::Life;
-use super::workers::Workers;
+use super::workers::{Workers, wait_for_start};
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -194,6 +194,7 @@ struct OutputIvars {
     sink: Arc<dyn CaptureSink>,
     /// The sink was told the end of the capture.
     ended: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
     /// The stream shows one window. When the system tells that the window is gone, the
     /// share has ended.
     one_window: bool,
@@ -244,6 +245,7 @@ define_class!(
                 "share stop",
                 || self.end_after_a_panic(),
                 || {
+                    self.ivars().closed.store(true, Ordering::Release);
                     let reason = match error.code() {
                         USER_STOPPED => CaptureError::SourceGone,
                         USER_DECLINED => CaptureError::NotAllowed,
@@ -285,10 +287,16 @@ impl Output {
         });
     }
 
-    fn new(sink: Arc<dyn CaptureSink>, ended: Arc<AtomicBool>, one_window: bool) -> Retained<Self> {
+    fn new(
+        sink: Arc<dyn CaptureSink>,
+        ended: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+        one_window: bool,
+    ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             sink,
             ended,
+            closed,
             one_window,
             samples: Mutex::new(Vec::new()),
         });
@@ -442,6 +450,8 @@ struct Stream {
     stream: Retained<SCStream>,
     output: Retained<Output>,
     kind: SCStreamOutputType,
+    pending: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
 }
 
 impl Stream {
@@ -454,7 +464,7 @@ impl Stream {
         one_window: bool,
         life: Arc<Life>,
     ) -> Result<Self, CaptureError> {
-        let output = Output::new(sink, ended, one_window);
+        let output = Output::new(sink, ended, Arc::new(AtomicBool::new(false)), one_window);
         // SAFETY: the filter and the configuration are valid objects. The stream keeps no
         // strong reference to its delegate; `Stream` holds the object for as long as the
         // stream lives.
@@ -481,11 +491,16 @@ impl Stream {
             stream,
             output,
             kind,
+            pending: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Starts the stream. The answer of the system arrives on the returned channel.
     fn start(&self) -> oneshot::Receiver<Result<(), CaptureError>> {
+        self.pending.store(true, Ordering::Release);
+        let pending = self.pending.clone();
+        let running = self.started.clone();
         let (started, result) = oneshot::channel();
         let started = Mutex::new(Some(started));
         let stream = Shared(self.stream.clone());
@@ -506,12 +521,15 @@ impl Stream {
                             error.localizedDescription().to_string(),
                         )),
                     };
+                    let succeeded = outcome.is_ok();
+                    running.store(succeeded, Ordering::Release);
+                    pending.store(false, Ordering::Release);
                     let waited_for = started
                         .lock()
                         .ok()
                         .and_then(|mut started| started.take())
                         .is_some_and(|started| started.send(outcome).is_ok());
-                    if !waited_for {
+                    if !waited_for && succeeded {
                         // Nobody waits for this start any more: the share was stopped while the
                         // system prepared the stream. A stop that was asked for before the start
                         // had completed may not have ended it, so it is asked for again.
@@ -553,7 +571,12 @@ impl Drop for Stream {
                 )));
             }
         }
-        stop_stream(&self.stream, &self.life);
+        if self.pending.load(Ordering::Acquire)
+            || (self.started.load(Ordering::Acquire)
+                && !self.output.ivars().closed.load(Ordering::Acquire))
+        {
+            stop_stream(&self.stream, &self.life);
+        }
     }
 }
 
@@ -1077,8 +1100,15 @@ impl ScreenCapture for SystemCapture {
                         if let Some(sound) = &streams.sound {
                             starting.push(sound.start());
                         }
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        let mut failure = None;
                         for started in starting {
-                            wait_for_start(started, &life)?;
+                            if let Err(error) = wait_for_start(started, deadline) {
+                                failure.get_or_insert(error);
+                            }
+                        }
+                        if let Some(error) = failure {
+                            return Err(error);
                         }
                         Ok::<_, CaptureError>((streams, size))
                     })();
@@ -1100,30 +1130,6 @@ impl ScreenCapture for SystemCapture {
             let (width, height) = answer(first).await??;
             Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
         })
-    }
-}
-
-fn wait_for_start(
-    mut started: oneshot::Receiver<Result<(), CaptureError>>,
-    life: &Life,
-) -> Result<(), CaptureError> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match started.try_recv() {
-            Ok(result) => return result,
-            Err(oneshot::error::TryRecvError::Closed) => {
-                return Err(CaptureError::Failed(
-                    "ScreenCaptureKit stopped before starting".into(),
-                ));
-            }
-            Err(oneshot::error::TryRecvError::Empty) => {}
-        }
-        if life.stopped() || Instant::now() >= deadline {
-            return Err(CaptureError::Failed(
-                "ScreenCaptureKit start was cancelled or exceeded 10 seconds".into(),
-            ));
-        }
-        std::thread::park_timeout(Duration::from_millis(10));
     }
 }
 

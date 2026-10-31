@@ -172,6 +172,30 @@ fn finish(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn wait_for_start(
+    mut started: oneshot::Receiver<Result<(), CaptureError>>,
+    deadline: Instant,
+) -> Result<(), CaptureError> {
+    loop {
+        match started.try_recv() {
+            Ok(result) => return result,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                return Err(CaptureError::Failed(
+                    "capture stopped before starting".into(),
+                ));
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(CaptureError::Failed(
+                "capture start exceeded its deadline".into(),
+            ));
+        }
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -288,6 +312,33 @@ mod tests {
     #[test]
     fn windows_capture_cleanup_does_not_hold_its_owner() {
         platform_capture_stop("windows");
+    }
+
+    #[tokio::test]
+    async fn macos_cleanup_includes_the_completion_of_pending_native_starts() {
+        let life = Arc::new(Life::default());
+        let (mut workers, result) = Workers::new(life);
+        let (start, started) = oneshot::channel();
+        let (cleaned, finished) = std::sync::mpsc::channel();
+        workers
+            .spawn("macos-pending-start", move || {
+                wait_for_start(started, Instant::now() + Duration::from_secs(10)).unwrap();
+                let _ = cleaned.send(());
+            })
+            .unwrap();
+        drop(workers);
+        let result = tokio::time::timeout(Duration::from_secs(4), result).await;
+        let premature = finished.try_recv();
+        let _ = start.send(Ok(()));
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            premature.is_err(),
+            "cleanup completed before the native start answered"
+        );
+        assert!(matches!(
+            result.unwrap().unwrap(),
+            Err(CaptureError::StopFailed(_))
+        ));
     }
 
     #[tokio::test(start_paused = true)]
