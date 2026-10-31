@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use std::os::windows::ffi::OsStrExt as _;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -225,8 +227,7 @@ fn turn_into_junction(path: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[test]
-fn a_checked_directory_cannot_be_changed_into_a_junction_while_pinned() {
-    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+fn a_checked_directory_cannot_be_redirected_by_an_in_place_junction() {
     let scratch = Scratch::new();
     let root = scratch.0.join("root");
     let outside = scratch.0.join("outside");
@@ -235,17 +236,80 @@ fn a_checked_directory_cannot_be_changed_into_a_junction_while_pinned() {
     fs::create_dir(root.join("checked")).unwrap();
     fs::write(outside.join("kept"), b"outside").unwrap();
     let held = directory(&root, &["checked".to_owned()]).unwrap();
-    let blocked = turn_into_junction(&root.join("checked"), &outside).unwrap_err();
-    assert_eq!(blocked.raw_os_error(), Some(ERROR_SHARING_VIOLATION as i32));
-    assert!(!reparse(
-        &fs::symlink_metadata(root.join("checked")).unwrap()
-    ));
-    write_new(&root, &place(&["checked", "inside"]), b"inside").unwrap();
-    assert!(!outside.join("inside").exists());
-    remove(&root, &place(&["checked", "inside"])).unwrap();
-    drop(held);
     turn_into_junction(&root.join("checked"), &outside).unwrap();
-    assert_eq!(fs::read(root.join("checked/kept")).unwrap(), b"outside");
+    assert!(reparse(&held.file.metadata().unwrap()));
+    assert!(held.names().is_err());
+    assert!(
+        held.open(
+            OsStr::new("kept"),
+            FILE_GENERIC_READ,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+            SHARING
+        )
+        .is_err()
+    );
+    assert!(open_file(&root, &place(&["checked", "kept"])).is_err());
+    assert!(write_new(&root, &place(&["checked", "injected"]), b"injected").is_err());
+    assert!(create_directory(&root, &place(&["checked", "injected-dir"])).is_err());
+    assert!(rename(&root, &place(&["checked", "kept"]), &place(&["taken"])).is_err());
+    assert!(!outside.join("injected").exists());
+    assert!(!outside.join("injected-dir").exists());
+    drop(held);
     remove(&root, &place(&["checked"])).unwrap();
     assert_eq!(fs::read(outside.join("kept")).unwrap(), b"outside");
+}
+
+#[test]
+fn relative_child_opens_cannot_follow_a_parent_changed_after_its_check() {
+    let scratch = Scratch::new();
+    let outside = scratch.0.join("outside");
+    let root = scratch.0.join("root");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(root.join("checked")).unwrap();
+    fs::write(outside.join("kept"), b"outside").unwrap();
+    write_new(&root, &place(&["moving"]), b"inside").unwrap();
+    let parent = directory(&root, &[]).unwrap();
+    let moving = parent
+        .open(OsStr::new("moving"), DELETE, FILE_OPEN, 0, SHARING)
+        .unwrap();
+    let held = directory(&root, &["checked".to_owned()]).unwrap();
+    held.validate().unwrap();
+    turn_into_junction(&root.join("checked"), &outside).unwrap();
+    assert!(
+        native::open(
+            &held.file,
+            OsStr::new("kept"),
+            FILE_GENERIC_READ,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE,
+            SHARING
+        )
+        .is_err()
+    );
+    if let Ok(mut inside) = native::open(
+        &held.file,
+        OsStr::new("injected"),
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+        SHARING,
+    ) {
+        inside.write_all(b"inside").unwrap();
+        inside.sync_all().unwrap();
+        assert!(!outside.join("injected").exists());
+        native::remove(&inside).unwrap();
+    }
+    if let Ok(names) = native::names(&held.file) {
+        assert!(!names.contains(&OsString::from("kept")));
+    }
+    let _ = native::rename(&moving, &held.file, OsStr::new("moved"), true);
+    assert!(!outside.join("moved").exists());
+    native::remove(&moving).unwrap();
+    drop(moving);
+    drop(held);
+    remove(&root, &place(&["checked"])).unwrap();
+    assert_eq!(fs::read(outside.join("kept")).unwrap(), b"outside");
+    assert!(!outside.join("injected").exists());
 }
