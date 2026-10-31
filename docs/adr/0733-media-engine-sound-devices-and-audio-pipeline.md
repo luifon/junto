@@ -244,6 +244,9 @@ the required stream-delay parameter as zero; AEC3 uses its internal delay estima
 and the host callbacks provide no device latency estimate. The virtual PipeWire
 check routes real output back into capture with sending processing off and checks echo
 rejection, preserved local input beside playback and silent frames at the closed gate.
+Its local input is syllables of changing pitch with pauses. A continuous single tone is
+not used: with playback continuing, the echo canceller lowered such a tone from about
+-40 dBFS at its onset to about -86 dBFS within half a second in seven of nine runs.
 The capture callback filters the speech copy before the sending processing and writes the
 speech level and the input level only after the cancellation and generation check of the
 bounded cleanup policy, so a retired callback that was inside the speech filter when its

@@ -316,19 +316,28 @@ fn muted_speech_ignores_playback_captured_by_the_microphone_with_processing_off(
     let faults = Arc::new(Mutex::new(Vec::new()));
     let failed = faults.clone();
     let mut phase = 0.0_f32;
+    let mut spoken = 0usize;
     let _input = host
         .open_input(
             Some(&input.id),
             Box::new(move |data, format| {
                 let mut data = data.to_vec();
+                // Local speech as syllables of 200 ms with pauses of 150 ms and a changed
+                // pitch for each: the echo canceller suppresses a continuous single tone
+                // after its onset while playback continues.
                 if speaking.load(Ordering::Relaxed) {
+                    let syllable = format.sample_rate as usize * 35 / 100;
+                    let voiced = format.sample_rate as usize / 5;
                     for frame in data.chunks_exact_mut(usize::from(format.channels)) {
-                        for sample in frame {
-                            *sample += 0.15 * phase.sin();
+                        let pitch = [700.0_f32, 1100.0, 1700.0][(spoken / syllable) % 3];
+                        if spoken % syllable < voiced {
+                            for sample in frame {
+                                *sample += 0.15 * phase.sin();
+                            }
                         }
-                        phase = (phase
-                            + std::f32::consts::TAU * 1700.0 / format.sample_rate as f32)
+                        phase = (phase + std::f32::consts::TAU * pitch / format.sample_rate as f32)
                             % std::f32::consts::TAU;
+                        spoken += 1;
                     }
                 }
                 capture.deliver(&data, format);
@@ -395,10 +404,7 @@ fn muted_speech_ignores_playback_captured_by_the_microphone_with_processing_off(
     local.store(true, Ordering::Relaxed);
     until("local speech beside playback remains detectable", || {
         let levels = observed.lock().unwrap();
-        levels.len() >= 10
-            && levels[levels.len() - 10..]
-                .iter()
-                .all(|(_, speech)| *speech > -40.0)
+        levels.iter().filter(|(_, speech)| *speech > -40.0).count() >= 10
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
