@@ -41,6 +41,13 @@ use crate::live::{Command, LiveView, LoadError, Notice, Shared, StreamFault, Str
 use crate::model::{Follow, LinesRead, Loadable, Part, ServerModel};
 use crate::version::ServerVersion;
 
+/// A place, the account that is active in it, and the end of the activity.
+type WantedTyping = (
+    junto_protocol::typing::TypingPlace,
+    junto_protocol::ids::AccountId,
+    Instant,
+);
+
 const MINUTE: Duration = Duration::from_secs(60);
 /// The most types of messages and events that a connection logs as not read.
 const MOST_UNREAD_TYPES: usize = 64;
@@ -289,6 +296,11 @@ struct Client {
     /// The revision of the messages and events that the server stated in its `hello`.
     server_events: Option<u32>,
     typing_seen: bool,
+    /// The activity in each place that this client asked to tell, until its end: an
+    /// activity asked for while the state is read again or the connection is gone does not
+    /// reach the server, and the server ends the activity of a closed connection, so a
+    /// subscription that becomes live tells each current one again.
+    typing_wanted: Vec<WantedTyping>,
     /// The types of messages and events of the server that this build does not read and that
     /// were logged.
     unread_types: std::collections::HashSet<String>,
@@ -358,6 +370,7 @@ pub(crate) async fn run(
         server_version: None,
         server_events: None,
         typing_seen: false,
+        typing_wanted: Vec::new(),
         unread_types: std::collections::HashSet::new(),
         version_changed: false,
         in_call: false,
@@ -505,6 +518,7 @@ impl Client {
         if std::mem::take(&mut self.typing_seen) {
             self.untold.push(Notice::Typing(None));
         }
+        self.typing_wanted.clear();
         self.disconnect();
         self.model = None;
         self.model_changed = true;
@@ -708,6 +722,41 @@ impl Client {
         place: crate::model::PlaceId,
         lifetime_ms: u32,
     ) {
+        let place = place.typing_place();
+        self.typing_wanted.retain(|(held, _, _)| *held != place);
+        if lifetime_ms > 0 {
+            if self.typing_wanted.len() >= junto_protocol::typing::MOST_TYPING_PLACES {
+                self.typing_wanted.remove(0);
+            }
+            let until = Instant::now() + Duration::from_millis(u64::from(lifetime_ms));
+            self.typing_wanted.push((place, account_id, until));
+        }
+        self.send_typing_frame(account_id, place, lifetime_ms);
+    }
+
+    /// Tells again each activity of this client that has not ended, when a subscription
+    /// becomes live.
+    fn send_typing_again(&mut self) {
+        let now = Instant::now();
+        self.typing_wanted.retain(|(_, _, until)| *until > now);
+        for (place, account_id, until) in self.typing_wanted.clone() {
+            let lifetime_ms = until
+                .saturating_duration_since(now)
+                .as_millis()
+                .min(u128::from(junto_protocol::typing::TYPING_LIFETIME_MS))
+                as u32;
+            if lifetime_ms > 0 {
+                self.send_typing_frame(account_id, place, lifetime_ms);
+            }
+        }
+    }
+
+    fn send_typing_frame(
+        &mut self,
+        account_id: junto_protocol::ids::AccountId,
+        place: junto_protocol::typing::TypingPlace,
+        lifetime_ms: u32,
+    ) {
         if self.server_events.is_none_or(|revision| revision < 8)
             || self.stale
             || self
@@ -725,10 +774,7 @@ impl Client {
         {
             return;
         }
-        if let Ok(text) = serde_json::to_string(&ClientMessage::Typing {
-            place: place.typing_place(),
-            lifetime_ms,
-        }) {
+        if let Ok(text) = serde_json::to_string(&ClientMessage::Typing { place, lifetime_ms }) {
             let _ = link.outgoing.try_send(text);
         }
     }
@@ -1040,6 +1086,7 @@ impl Client {
                 link.subscribed = true;
                 self.tell_connection();
                 self.fault = None;
+                self.send_typing_again();
                 if let Some(model) = &mut self.model {
                     model.lists_follow_events =
                         lists_follow_events(self.server_events) && level == Level::Full;

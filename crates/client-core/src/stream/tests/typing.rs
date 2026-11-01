@@ -90,3 +90,40 @@ async fn an_older_server_receives_no_activity_frames() {
     room.rig.off();
     assert!(room.peer.dropped().await);
 }
+
+/// An activity asked for while the state is read again does not reach the server: the
+/// subscription that follows the new state tells it, with the rest of its lifetime.
+#[tokio::test(start_paused = true)]
+async fn an_activity_asked_for_during_a_reload_is_told_when_the_subscription_is_live() {
+    let mut room = messages::room().await;
+    let snapshot = room.rig.http.hold("/snapshot");
+    let read = room.rig.http.count("/snapshot");
+    room.peer.send(&ServerMessage::AppearanceChanged {}).await;
+    soon("the snapshot is read again", async {
+        while room.rig.http.count("/snapshot") <= read {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    room.rig
+        .live
+        .typing(room.rig.scene.account_id, room.place, 8000);
+    snapshot.add_permits(1);
+    let (level, cursor) = room.peer.subscribe().await;
+    room.peer
+        .send(&ServerMessage::Subscribed { level, cursor })
+        .await;
+    let (place, lifetime_ms) = soon("the activity is told", async {
+        loop {
+            let text = room.peer.from_client.recv().await.unwrap();
+            match serde_json::from_str(&text).unwrap() {
+                ClientMessage::Typing { place, lifetime_ms } => return (place, lifetime_ms),
+                ClientMessage::TypingWatch { .. } => {}
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+    })
+    .await;
+    assert_eq!(place, room.place.typing_place());
+    assert!(lifetime_ms > 0 && lifetime_ms <= 8000, "{lifetime_ms}");
+}
