@@ -230,6 +230,13 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
     assert!(shown.contains("Not verified"), "{shown}");
     assert!(!shown.contains("Forwarded message · Ada"), "{shown}");
     assert!(!window.shows_named(format!("forward-author-profile:{}", source.id)));
+    window.until("the server stored the copied body", |window| {
+        window.messages().iter().any(|row| {
+            serde_json::to_string(&row.message.document)
+                .unwrap()
+                .contains("a protected source")
+        })
+    });
     let history = world
         .run(
             target_admin
