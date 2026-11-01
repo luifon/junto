@@ -4897,11 +4897,15 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if feed.unread > 0 {
+        // The item stays while nothing is unread, disabled, as in the menu of a notice: an
+        // unread count that arrives while the menu is open would otherwise insert it and move
+        // every item under it, also the one under the pointer (ADR 0730).
+        {
             let place = PlaceId::of_message(&row.message);
             items.push(
                 MenuItem::new("message-mark-read", text::MARK_AS_READ)
                     .selector("message-mark-read")
+                    .disabled(feed.unread == 0)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);
                         this.state

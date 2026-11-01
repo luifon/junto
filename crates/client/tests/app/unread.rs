@@ -306,3 +306,32 @@ fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppConte
             .is_some_and(|feed| feed.unread == 0)
     });
 }
+
+/// An unread count that arrives while the menu of a message is open moves no item of the
+/// menu: "Mark as read" stays in it while nothing is unread, disabled (ADR 0730). In the
+/// parallel runs of the thread tests the item came with the count of a message that had just
+/// arrived and moved "Reply in thread" under the press, so the press opened nothing.
+#[gpui::test]
+fn an_unread_count_that_arrives_while_a_message_menu_is_open_moves_no_item(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let channel = window.selected_channel();
+    window.type_into("composer-input", "my own message");
+    window.press("enter");
+    window.until_message("my own message");
+    let own = window.messages().last().unwrap().message.id;
+    assert_eq!(window.unread_of(channel), (0, 0));
+    window.right_click_message(own);
+    let before = window.cx.debug_bounds("message-thread").unwrap();
+    assert!(window.shows("message-mark-read"));
+    admin.send(&world, channel, document("a message that is not read"));
+    window.until("the channel counts the new message", |window| {
+        window.unread_of(channel) == (1, 0)
+    });
+    assert!(window.shows("message-mark-read"));
+    assert_eq!(window.cx.debug_bounds("message-thread"), Some(before));
+}
