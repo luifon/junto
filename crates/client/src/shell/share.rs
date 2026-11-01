@@ -1719,7 +1719,7 @@ impl Shell {
                     )
                     .children(cards)
             })
-            .map(|bar| bar.into_any_element())
+            .map(|bar| crate::ui::strip(bar).into_any_element())
     }
 
     /// The stage of a call with a share: the bar of the shares when there are several, the
@@ -2088,7 +2088,7 @@ impl Shell {
                     .overflow_hidden()
                     .when(!self.detached, |area| area.flex_col())
                     .child(viewport)
-                    .child(strip),
+                    .child(crate::ui::strip(strip)),
             )
             .into_any_element()
     }

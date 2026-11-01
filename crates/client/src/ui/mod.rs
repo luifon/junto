@@ -69,6 +69,7 @@ pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
 #[cfg(all(target_os = "macos", feature = "test-support"))]
 pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
+pub(crate) use placed::strip;
 pub use placed::{Placed, outside};
 #[cfg(feature = "test-support")]
 pub use placed::{record_controls, take_controls};
