@@ -109,6 +109,28 @@ fn channel_references_are_tokens_that_open_the_channel(cx: &mut TestAppContext) 
     window.until("the thread sends a channel reference", |window| {
         window.replies().contains(&"Thread #general".to_owned())
     });
+    // The count of the replies and the follow state that the reply gives arrive after the
+    // reply and change the panel above it: the press waits for them, so that the reply is
+    // where the last drawing put it.
+    window.until(
+        "the thread holds the state that its first reply gives",
+        |window| {
+            window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| {
+                    thread
+                        .root
+                        .as_ref()
+                        .is_some_and(|root| root.message.reply_count == 1)
+                        && thread
+                            .follow
+                            .as_ref()
+                            .is_some_and(|follow| follow.following)
+                })
+        },
+    );
     window.settle();
     let point = window
         .in_shell(|shell, _, _| shell.readonly_text_point("Thread #general", 9))
