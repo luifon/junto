@@ -971,6 +971,10 @@ async fn the_answer_to_a_send_is_put_into_the_timeline_only_before_its_event() {
     room.changed(42, &stored, true).await;
     rig.model_when("both events", |model| model.cursor.position == 42)
         .await;
+    // The read that the events asked for has its answer before the answer of the send.
+    room.until_sent_to(&format!("/api/v1/messages/{}", stored.id), 1)
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     gate.add_permits(1);
     let model = rig
         .model_when("the answer", |model| model.outbox.is_empty())
@@ -996,6 +1000,94 @@ async fn the_answer_to_a_send_is_put_into_the_timeline_only_before_its_event() {
         .await;
     assert_eq!(model.cursor.position, 42);
     assert_eq!(positions(&model, place), [1, 2, 3, 4]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sent_message_stays_while_the_read_that_its_event_asked_for_waits() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let epoch = rig.epoch();
+    let receipt =
+        |position| crate::api::Receipt::At(junto_protocol::events::Cursor { epoch, position });
+
+    // The event of the message arrives before the answer, and the read of its content
+    // waits. The answer holds the row: the message is never absent from both the
+    // waiting messages and the timeline.
+    let answers = rig.http.hold_answers("/messages");
+    room.chat(|chat| chat.send_receipt = receipt(41));
+    let id = rig
+        .live
+        .send_message(place, document("kept while its read waits"), None)
+        .unwrap();
+    rig.model_when("the message waits", |model| {
+        model.outbox.iter().any(|pending| pending.id == id)
+    })
+    .await;
+    soon("the send", async {
+        while room.chat(|chat| chat.posted.len()) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let stored = room.chat(|chat| chat.messages.last().cloned().unwrap());
+    assert_eq!(stored.position, 4);
+    let reads = rig.http.hold("/api/v1/messages/");
+    room.changed(41, &stored, false).await;
+    rig.model_when("the event", |model| model.cursor.position == 41)
+        .await;
+    room.until_sent_to(&format!("/api/v1/messages/{}", stored.id), 1)
+        .await;
+    answers.add_permits(1);
+    let model = rig
+        .model_when("the answer", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(positions(&model, place), [1, 2, 3, 4]);
+    reads.add_permits(64);
+    rig.model_when("the read", |model| {
+        model
+            .timeline(place)
+            .and_then(|timeline| timeline.message(stored.id))
+            .is_some_and(|held| held.document == stored.document)
+    })
+    .await;
+
+    // A deletion that the waiting read finds removes the row that the answer held.
+    let reads = rig.http.hold("/api/v1/messages/");
+    room.chat(|chat| chat.send_receipt = receipt(42));
+    let id = rig
+        .live
+        .send_message(place, document("deleted while its read waits"), None)
+        .unwrap();
+    rig.model_when("the message waits", |model| {
+        model.outbox.iter().any(|pending| pending.id == id)
+    })
+    .await;
+    soon("the send", async {
+        while room.chat(|chat| chat.posted.len()) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let deleted = room.chat(|chat| chat.messages.pop().unwrap());
+    assert_eq!(deleted.position, 5);
+    room.changed(42, &deleted, false).await;
+    room.changed(43, &deleted, true).await;
+    rig.model_when("both events", |model| model.cursor.position == 43)
+        .await;
+    room.until_sent_to(&format!("/api/v1/messages/{}", deleted.id), 1)
+        .await;
+    answers.add_permits(1);
+    let model = rig
+        .model_when("the answer", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(positions(&model, place), [1, 2, 3, 4, 5]);
+    reads.add_permits(64);
+    rig.model_when("the deletion", |model| {
+        positions(model, place) == [1, 2, 3, 4]
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(positions(&rig.model(), place), [1, 2, 3, 4]);
 }
 
 fn unconfirmed(id: u64) -> impl Fn(&ServerModel) -> bool {

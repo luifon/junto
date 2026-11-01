@@ -576,6 +576,12 @@ impl Client {
         self.start(load);
     }
 
+    /// True while a read whose content no event carries waits to start or is on its way.
+    fn message_read_waits(&self, part: Part) -> bool {
+        let load = Load::Part(part);
+        self.messages.queue.contains(&part) || self.pending.iter().any(|held| held.load == load)
+    }
+
     /// Reads the messages that the lists of the state name and that the state does not
     /// hold yet.
     pub(super) fn read_missing_named(&mut self) {
@@ -1794,13 +1800,21 @@ impl Client {
         match result {
             Ok(sent) => {
                 self.messages.sends.remove(&id);
+                let place = PlaceId::of_message(&sent.value);
+                let reading = self.message_read_waits(Part::Message(place, sent.value.id));
                 if let Some(model) = &mut self.model {
                     model.outbox.retain(|pending| pending.id != id);
                     model.note_sent(sent.value.id);
                     // The events of the message decide when the state has followed them
                     // already: a later edit or deletion is not undone by the answer
                     // (ADR 0214). An answer without a stated position is used as before.
-                    if model.followed(sent.receipt) != Followed::Yes {
+                    // An event carries no content (ADR 0408): while the read that it asked
+                    // for waits, the state does not hold the message, and the answer holds
+                    // its row until that read replaces or removes it.
+                    let held = model
+                        .timeline(place)
+                        .is_some_and(|timeline| timeline.message(sent.value.id).is_some());
+                    if model.followed(sent.receipt) != Followed::Yes || (reading && !held) {
                         model.put_message(sent.value);
                     }
                     self.model_changed = true;
