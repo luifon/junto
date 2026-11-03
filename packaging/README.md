@@ -124,7 +124,7 @@ CI runs the portable Rust release, installer and configuration tests and the Pyt
 
 ## The GitHub release
 
-`release_assets.py` collects the files of one release for its GitHub release (ADR 0727). It needs Python 3.11 or later and no build:
+`release_assets.py` collects the files of one release, or of one test build, for its GitHub release (ADR 0727). It needs Python 3.11 or later and no build:
 
 ```sh
 python3 packaging/release_assets.py 0.1.0 /private/releases/0.1.0/all /private/releases/0.1.0/assets
@@ -132,6 +132,12 @@ python3 packaging/release_assets.py 0.1.0 /private/releases/0.1.0/all /private/r
 
 - The second argument is a directory with every file of the release from every system: the first-install files `Junto-<version>-macos-aarch64.dmg`, `Junto-<version>-macos-aarch64.zip`, `Junto-<version>-windows-x86_64-setup.exe`, `Junto-<version>-windows-x86_64.zip`, `Junto-<version>-x86_64.AppImage`, `junto-<version>-linux-x86_64.tar.gz` and `junto_<version>_amd64.deb`, the symbols file `Junto-<version>-windows-x86_64.pdb`, and the latest file, release file and archive of each of the four targets. A missing or unknown file, or update files of one target that do not belong together, stop the command; the error names each file.
 - The third argument is the new output directory. It must not exist; a failure leaves no output directory. The command does not change the release directory.
-- The tag is always `v<version>`. `--title` and `--notes` set the title (default `Junto <version>`) and the notes file (default `docs/releases/<version>.md`). `--prerelease` publishes a test release as a pre-release and prints the command of its later promotion to the newest release, with `--final-title` and `--final-notes`; the promotion changes no file.
+- A release has the tag `v<version>` and the title `Junto <version>`. `--notes` sets the notes file (default `docs/releases/<version>.md`).
+- `--test <n>` collects test build `n` of the version: the first-install files and the symbols file only. The update files of the version may be in the release directory; they are left out without a check. The tag is the lightweight tag `v<version>-test.<n>` on the release commit, the title `Junto <version> test <n>`, and `--notes` is required. A test build is never edited into a release; the release of the version is collected again without `--test` and published as a new GitHub release of the tag `v<version>`.
 
-The output holds every file and `SHA256SUMS`, which lists every file except the latest files. The command prints every file with its size and the publication: `gh release create` of a draft with every file and the notes, then `gh release edit --draft=false --latest`. Keep the output directory: the freshness renewal reads it.
+```sh
+python3 packaging/release_assets.py 0.1.0 /private/releases/0.1.0/all /private/releases/0.1.0/test-4 \
+    --test 4 --notes /private/release-notes/v0.1.0-test.4.md
+```
+
+The output holds every collected file and `SHA256SUMS`, which lists every file except the latest files. The command prints every file with its size and the publication: for a release, `gh release create v<version>` of a draft with every file and the notes, then `gh release edit --draft=false --latest`; for a test build, `git tag v<version>-test.<n> <release commit>` (push the tag before the draft), `gh release create v<version>-test.<n>` of a draft, then `gh release edit --draft=false --prerelease`. Keep the output directory of a release: the freshness renewal reads it. A test build has no latest files and no freshness renewal.

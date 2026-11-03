@@ -8,6 +8,7 @@ Junto is a self-hosted application for team text chat, voice and video calls, sc
 
 - `docs/scope.md`: what the first version contains, what later versions can add, and what is not planned.
 - `README.md`: the main design points.
+- `CONTRIBUTING.md`: how a person contributes: pull request, contributor licence agreement, CI, review and merge (ADR 0907). The agreements are `docs/legal/cla-individual.md` and `docs/legal/cla-entity.md`; contributors sign them through the hosted CLA assistant, with the gist and the form of `docs/legal/cla-assistant-preface.md` and `docs/legal/cla-assistant-fields.json`.
 
 ## Crates
 
@@ -34,12 +35,13 @@ Outside the workspace:
 
 - `docs/adr/README.md` is the index. Numbers are grouped in ranges by area; a new record takes the next free number in the range of its area.
 - ADR 0901 states how the repository is kept:
-  - No personal information in a tracked file: no names, host names, addresses or account identifiers. The public repository address may appear (ADR 0901). Examples and test data use invented values.
+  - No personal information in a tracked file: no names, host names, addresses or account identifiers. The public repository address may appear, the contributor licence agreement names the company that receives the contributions, and release notes may credit contributors by their GitHub user name (ADR 0901). Examples and test data use invented values.
   - Comments are kept to a minimum.
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
-  - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
+  - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a pull request to `main`, which the maintainer merges as one merge commit after CI on its head commit and one independent review, or a push to `main` that the maintainer approves (ADR 0907).
 - ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes, scheduled tasks, registry keys and dialogs that a test must not leave behind, ADR 0916 the window tests and the start check on macOS.
+- ADR 0907 is the contribution and release policy: pull requests, the contributor licence agreement, the release cycle, version numbers, test builds and the conditions of 1.0.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
@@ -50,7 +52,7 @@ Outside the workspace:
 
 ## Release
 
-`docs/release.md` describes the release checks, client packages, server images, publication, freshness renewal and withdrawal. `packaging/README.md` gives the commands and key handling; ADR 0724, 0725, 0726, 0754 and 0755 describe the formats and packages, and ADR 0902 names the required systems.
+`docs/release.md` describes the release checks, client packages, server images, publication, freshness renewal and withdrawal. `packaging/README.md` gives the commands and key handling; ADR 0724, 0725, 0726, 0754 and 0755 describe the formats and packages, and ADR 0902 names the required systems. ADR 0907 states the release cycle, which version number changes, and the tags of test builds.
 
 ## `deploy/`
 

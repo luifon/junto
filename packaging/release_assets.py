@@ -1,4 +1,5 @@
-"""Collects the files of one release for its GitHub release and writes their checksums (ADR 0727)."""
+"""Collects the files of one release, or of one test build, for its GitHub release and writes their
+checksums (ADR 0727)."""
 import argparse
 import base64
 import hashlib
@@ -12,6 +13,7 @@ import tempfile
 
 REPOSITORY = "luifon/junto"
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+TEST_NUMBER = re.compile(r"[1-9][0-9]*")
 TARGETS = ("macos-bundle-aarch64", "linux-directory-x86_64", "linux-appimage-x86_64", "windows-directory-x86_64")
 FIRST_INSTALL = (
     "Junto-{v}-macos-aarch64.dmg",
@@ -43,10 +45,15 @@ def archive_name(version, target):
     return f"junto-{version}-{target}.junto"
 
 
+def first_install_names(version):
+    """The first-install files and the symbols file of `version`: every file of a test build."""
+    return [template.format(v=version) for template in FIRST_INSTALL] + [SYMBOLS.format(v=version)]
+
+
 def expected_names(version):
     """Every file of the release of `version`: the first-install files, the symbols file and the
     update files of each target."""
-    names = [template.format(v=version) for template in FIRST_INSTALL] + [SYMBOLS.format(v=version)]
+    names = first_install_names(version)
     for target in TARGETS:
         names += [latest_name(target), release_name(version, target), archive_name(version, target)]
     return names
@@ -97,26 +104,33 @@ def check_update_files(directory, version):
     return problems
 
 
-def read_release(directory, version):
+def read_release(directory, version, test=None):
+    """The files to publish. A release needs every file of `expected_names`. A test build (`test`
+    is its number) publishes only the first-install files and the symbols file; the update files of
+    the version may be in the directory, and they are left out without a check."""
     directory = pathlib.Path(directory)
     if VERSION.fullmatch(version) is None:
         raise AssetError(f"not a version of three numbers: {version}")
+    if test is not None and TEST_NUMBER.fullmatch(test) is None:
+        raise AssetError(f"not a test number (a whole number from 1, without leading zeros): {test}")
     if not directory.is_dir():
         raise AssetError(f"the release directory does not exist: {directory}")
-    expected = expected_names(version)
+    allowed = expected_names(version)
+    published = allowed if test is None else first_install_names(version)
     problems = []
     for path in sorted(directory.iterdir()):
         if path.is_symlink() or not path.is_file():
             problems.append(f"not a regular file: {path}")
-        elif path.name not in expected:
+        elif path.name not in allowed:
             problems.append(f"unknown file: {path}")
-    problems += [f"missing file: {directory / name}" for name in expected if not (directory / name).is_file()]
+    problems += [f"missing file: {directory / name}" for name in published if not (directory / name).is_file()]
     if problems:
         raise AssetError("\n".join(problems))
-    problems = check_update_files(directory, version)
-    if problems:
-        raise AssetError("\n".join(problems))
-    return [directory / name for name in expected]
+    if test is None:
+        problems = check_update_files(directory, version)
+        if problems:
+            raise AssetError("\n".join(problems))
+    return [directory / name for name in published]
 
 
 def copy(source, destination):
@@ -135,15 +149,15 @@ def checksums(digests):
     return "".join(f"{digests[name]}  {name}\n" for name in sorted(digests) if not name.startswith("latest-"))
 
 
-def build(directory, version, output):
-    """Writes the files of the release and SHA256SUMS into the new directory OUTPUT and returns
-    each written file with its size."""
+def build(directory, version, output, test=None):
+    """Writes the files of the release, or of the test build `test`, and SHA256SUMS into the new
+    directory OUTPUT and returns each written file with its size."""
     output = pathlib.Path(output).absolute()
     if output.exists() or output.is_symlink():
         raise AssetError(f"the output directory exists: {output}")
     if not output.parent.is_dir():
         raise AssetError(f"the parent of the output directory does not exist: {output.parent}")
-    files = read_release(directory, version)
+    files = read_release(directory, version, test)
     temporary = pathlib.Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
         digests = {path.name: copy(path, temporary / path.name) for path in files}
@@ -160,21 +174,28 @@ def quoted(text):
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def publication(output, version, title, notes, prerelease=None):
-    """The commands that publish the files as the GitHub release of the tag v<version>. A draft is
-    not served, so every file is present when the release is published. `prerelease` names the
-    title and the notes of the later promotion of a pre-release; the promotion changes no file."""
-    tag = f"v{version}"
-    lines = ["Publication (the files of a draft are not served before it is published):",
-             f"gh release create {tag} --repo {REPOSITORY} --draft --verify-tag --title {quoted(title)} "
-             f"--notes-file {notes} {output}/*",
-             f"gh release edit {tag} --repo {REPOSITORY} --draft=false "
-             + ("--prerelease" if prerelease else "--latest")]
-    if prerelease:
-        final_title, final_notes = prerelease
-        lines += ["Promotion to the newest release, when the pre-release is accepted (no file changes):",
-                  f"gh release edit {tag} --repo {REPOSITORY} --prerelease=false --latest --title {quoted(final_title)} "
-                  f"--notes-file {final_notes}"]
+def tag_and_title(version, test=None):
+    """The tag and the title of the release of `version` (v<version>, "Junto <version>"), or of its
+    test build number `test` (v<version>-test.<test>, "Junto <version> test <test>")."""
+    if test is None:
+        return f"v{version}", f"Junto {version}"
+    return f"v{version}-test.{test}", f"Junto {version} test {test}"
+
+
+def publication(output, version, notes, test=None):
+    """The commands that publish the files as a GitHub release. A draft is not served, so every
+    file is present when the release is published. A release is marked latest; a test build is a
+    pre-release, which the latest address does not serve, under a lightweight tag of its own."""
+    tag, title = tag_and_title(version, test)
+    lines = []
+    if test is not None:
+        lines += ["Tag (lightweight, on the release commit, pushed before the draft is created):",
+                  f"git tag {tag} <release commit>"]
+    lines += ["Publication (the files of a draft are not served before it is published):",
+              f"gh release create {tag} --repo {REPOSITORY} --draft --verify-tag --title {quoted(title)} "
+              f"--notes-file {notes} {output}/*",
+              f"gh release edit {tag} --repo {REPOSITORY} --draft=false "
+              + ("--latest" if test is None else "--prerelease")]
     return lines + [f"Update source of the builds (JUNTO_UPDATE_SOURCE): https://github.com/{REPOSITORY}/releases/"]
 
 
@@ -183,25 +204,24 @@ def main(arguments=None):
     parser.add_argument("version", help="the version of the release, three numbers")
     parser.add_argument("release", help="the directory with every file of the release from every system")
     parser.add_argument("output", help="the new output directory")
-    parser.add_argument("--title", help="the title of the release; Junto <version> when absent")
-    parser.add_argument("--notes", default="docs/releases/<version>.md", help="the notes file of the release")
-    parser.add_argument("--prerelease", action="store_true",
-                        help="publish a pre-release and print the command of its later promotion")
-    parser.add_argument("--final-title", help="the title after the promotion; Junto <version> when absent")
-    parser.add_argument("--final-notes", default="docs/releases/<version>.md", help="the notes after the promotion")
+    parser.add_argument("--test", metavar="NUMBER",
+                        help="collect the test build of this number: the first-install files and the symbols "
+                             "file only, published as a pre-release under v<version>-test.<NUMBER>")
+    parser.add_argument("--notes", help="the notes file; docs/releases/<version>.md for a release, "
+                                        "required for a test build")
     options = parser.parse_args(arguments)
+    if options.test is not None and options.notes is None:
+        print("release_assets.py: a test build needs --notes", file=sys.stderr)
+        return 1
     try:
-        files = build(options.release, options.version, options.output)
+        files = build(options.release, options.version, options.output, options.test)
     except (AssetError, OSError) as error:
         print(f"release_assets.py: {error}", file=sys.stderr)
         return 1
     for name, size in files:
         print(f"{size:>14,}  {name}")
-    named = lambda text: text.replace("<version>", options.version)
-    final = (options.final_title or f"Junto {options.version}", named(options.final_notes))
-    for line in publication(pathlib.Path(options.output).absolute(), options.version,
-                            options.title or f"Junto {options.version}", named(options.notes),
-                            final if options.prerelease else None):
+    notes = options.notes or f"docs/releases/{options.version}.md"
+    for line in publication(pathlib.Path(options.output).absolute(), options.version, notes, options.test):
         print(line)
     return 0
 

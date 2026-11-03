@@ -26,6 +26,7 @@ There is no release yet. The project publishes no client package and no server i
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md): the guide to the repository: where each part is, how to build and test it, and the rules for a change.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): how to contribute a change, with the contributor licence agreement.
 - [`docs/adr/`](docs/adr/README.md): the architecture decision records, with an index.
 - [`docs/scope.md`](docs/scope.md): what the first version contains, what later versions can add, and what is not planned.
 - [`docs/step-0/`](docs/step-0/README.md): the eight technical tests that ran before product code, with their results.

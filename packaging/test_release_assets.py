@@ -85,20 +85,60 @@ class AssetTests(unittest.TestCase):
         self.assertIn(f"--notes-file docs/releases/{VERSION}.md", printed)
         self.assertIn("JUNTO_UPDATE_SOURCE): https://github.com/luifon/junto/releases/", printed)
         self.assertNotIn("--prerelease", printed)
+        self.assertNotIn("-test.", printed)
+        self.assertNotIn("git tag", printed)
         self.assertEqual(sorted(path.name for path in self.release.iterdir()), sorted(names),
                          "the release directory is not changed")
 
-    def test_a_prerelease_is_published_under_the_tag_of_its_version_and_promoted_without_a_file_change(self):
-        code, printed, _ = self.collect("--prerelease", "--title", "0.4.1 test 4", "--notes", "/private/notes.md",
-                                        "--final-title", "0.4.1")
+    def test_a_test_build_holds_only_the_first_install_files_under_a_tag_and_title_of_its_own(self):
+        code, printed, _ = self.collect("--test", "4", "--notes", "/private/notes.md")
         self.assertEqual(code, 0)
-        self.assertIn(f"gh release create v{VERSION} --repo luifon/junto --draft --verify-tag --title '0.4.1 test 4' "
-                      f"--notes-file /private/notes.md ", printed)
-        self.assertIn(f"gh release edit v{VERSION} --repo luifon/junto --draft=false --prerelease\n", printed)
-        self.assertIn(f"gh release edit v{VERSION} --repo luifon/junto --prerelease=false --latest --title '0.4.1' "
-                      f"--notes-file docs/releases/{VERSION}.md", printed)
-        self.assertNotIn("--draft=false --latest", printed)
+        names = release_assets.first_install_names(VERSION)
+        self.assertEqual(len(names), 8)
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()), sorted([*names, "SHA256SUMS"]))
+        lines = (self.output / "SHA256SUMS").read_text().splitlines()
+        self.assertEqual([line.split("  ", 1)[1] for line in lines], sorted(names))
+        for line in lines:
+            digest, name = line.split("  ", 1)
+            self.assertEqual(hashlib.sha256((self.release / name).read_bytes()).hexdigest(), digest)
+        self.assertIn(f"git tag v{VERSION}-test.4 <release commit>\n", printed)
+        self.assertIn(f"gh release create v{VERSION}-test.4 --repo luifon/junto --draft --verify-tag "
+                      f"--title 'Junto {VERSION} test 4' --notes-file /private/notes.md {self.output}/*\n", printed)
+        self.assertIn(f"gh release edit v{VERSION}-test.4 --repo luifon/junto --draft=false --prerelease\n", printed)
+        self.assertNotIn("--latest", printed)
+        self.assertNotIn(f"v{VERSION} ", printed)
         self.assertEqual(release_assets.quoted("it's"), "'it'\\''s'")
+
+    def test_a_test_build_needs_only_the_first_install_files_and_its_notes(self):
+        for target in release_assets.TARGETS:
+            for name in [release_assets.latest_name(target), release_assets.release_name(VERSION, target),
+                         release_assets.archive_name(VERSION, target)]:
+                (self.release / name).unlink()
+        code, _, errors = self.collect("--test", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("a test build needs --notes", errors)
+        self.assertFalse(self.output.exists())
+        code, printed, _ = self.collect("--test", "1", "--notes", "notes.md")
+        self.assertEqual(code, 0)
+        self.assertIn(f"--title 'Junto {VERSION} test 1'", printed)
+        self.assertEqual(sorted(path.name for path in self.output.iterdir()),
+                         sorted([*release_assets.first_install_names(VERSION), "SHA256SUMS"]))
+
+    def test_a_test_build_refuses_a_wrong_number_and_a_missing_or_unknown_file(self):
+        for number in ["0", "04", "-1", "4a", " 4"]:
+            with self.subTest(number):
+                code, _, errors = self.collect("--test", number, "--notes", "notes.md")
+                self.assertEqual(code, 1)
+                self.assertIn("not a test number", errors)
+                self.assertFalse(self.output.exists())
+        dmg = self.release / f"Junto-{VERSION}-macos-aarch64.dmg"
+        dmg.unlink()
+        (self.release / "notes.txt").write_bytes(b"other")
+        code, _, errors = self.collect("--test", "4", "--notes", "notes.md")
+        self.assertEqual(code, 1)
+        self.assertRegex(errors, f"missing file: .*{dmg.name}")
+        self.assertRegex(errors, "unknown file: .*notes.txt")
+        self.assertEqual([path.name for path in self.root.iterdir()], ["release"])
 
     def test_a_missing_file_is_named(self):
         for name in [f"Junto-{VERSION}-macos-aarch64.dmg", f"Junto-{VERSION}-windows-x86_64.pdb",
