@@ -1,35 +1,34 @@
 # Contributing to Junto
 
-Every change to `main` goes through a pull request on GitHub, also a change of a maintainer. The maintainer of the project merges each pull request. [ADR 0907](docs/adr/0907-contributions-pull-requests-and-releases.md) records these rules and their reasons.
+Changes reach `main` through pull requests on GitHub, which the maintainer of the project merges. [ADR 0907](docs/adr/0907-contributions-pull-requests-and-releases.md) records these rules and their reasons.
 
 ## Steps
 
 1. Fork the repository, or create a branch if you can push to it.
 2. Make the change on a branch of its own. Follow the rules for a change below.
 3. Open a pull request against `main`.
-4. Sign the contributor licence agreement in the pull request, once (see below).
+4. Sign the contributor licence agreement through the link that CLA assistant posts on the pull request (see below).
 5. CI runs once on the head commit of the pull request, on Linux, macOS and Windows. A failed job runs again.
 6. The change gets one independent review. Answer the review with new commits on the same branch.
 7. The maintainer decides the merge and merges the pull request as one merge commit.
 
 ## Contributor licence agreement
 
-Junto accepts a contribution only after each author of its commits has signed the contributor licence agreement. The maintainer plans paid hosting and paid features, and the agreement lets the project licence a contribution under other licences than Apache-2.0, as well as under Apache-2.0.
+Junto accepts a contribution only after each author of its commits has signed the contributor licence agreement. The agreement lets the project also license a contribution under other licences than Apache-2.0.
 
-- [`docs/legal/cla-individual.md`](docs/legal/cla-individual.md) applies when you own the work that you contribute.
-- [`docs/legal/cla-entity.md`](docs/legal/cla-entity.md) applies when your employer or another legal entity owns the work. Before you sign, state in the pull request the full legal name of the entity and that you may sign for it. Your signature then signs the entity agreement for that entity.
+- [`docs/legal/cla-individual.md`](docs/legal/cla-individual.md) applies when you sign for yourself.
+- [`docs/legal/cla-entity.md`](docs/legal/cla-entity.md) applies when you sign on behalf of your employer or another legal entity that owns the work.
 
 A lawyer has not reviewed the two texts yet.
 
-To sign, post a comment on your pull request with exactly this sentence:
+You sign through CLA assistant (https://cla-assistant.io). On a new pull request it posts a comment with a link to the agreement, and the check `license/cla` of the pull request stays pending until each author of its commits has signed. Open the link, log in with your GitHub account, and fill in the form:
 
-```
-I have read the Junto contributor licence agreement and I sign it.
-```
+- For whom you sign: for yourself, or on behalf of a legal entity.
+- When you sign on behalf of a legal entity: its full legal name, and your role in it. The role must let you sign for the entity.
 
-The workflow `.github/workflows/cla.yml` records the signature in `.github/cla/signatures.json` of the branch `cla-signatures`: your GitHub user name, your GitHub user ID, the ID and the time of the comment, and the number of the pull request. One signature covers your later pull requests. Comment `recheck` to run the check again.
+Then accept the agreement. The page of the link shows both agreements; the choice in the form decides which one you sign. CLA assistant keeps the record of the signature: your GitHub user name and user ID, the version of the agreement, the time and the fields of the form. The repository holds no signature records. One signature covers your later pull requests while the text of the agreement stays the same; after a change of the text, CLA assistant asks you to sign again on your next pull request.
 
-The check reads the author of each commit. Use an email address that is linked to your GitHub account for your commits; a commit whose author is not a GitHub user cannot be signed for.
+CLA assistant reads the author of each commit. Use an email address that is linked to your GitHub account for your commits; a commit whose author is not a GitHub user cannot be signed for. The comment of CLA assistant has a link to check the signatures again.
 
 ## Work that you did not write
 

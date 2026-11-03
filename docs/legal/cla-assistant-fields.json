@@ -1,0 +1,22 @@
+{
+  "signingFor": {
+    "title": "For whom do you sign?",
+    "type": {
+      "enum": [
+        "For myself: the Junto Individual Contributor License Agreement.",
+        "On behalf of a legal entity: the Junto Entity Contributor License Agreement."
+      ]
+    },
+    "required": true
+  },
+  "entityName": {
+    "title": "Full legal name of the entity",
+    "description": "Only when you sign on behalf of a legal entity.",
+    "type": "string"
+  },
+  "signerRole": {
+    "title": "Your role in the entity",
+    "description": "Only when you sign on behalf of a legal entity. The role must let you sign for the entity.",
+    "type": "string"
+  }
+}

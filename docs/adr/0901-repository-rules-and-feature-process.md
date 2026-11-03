@@ -14,7 +14,8 @@ Repository rules:
 
 - No personal information of any kind is in a tracked file: no names, hostnames, addresses or account identifiers. The exceptions:
   - The address of the public repository, `https://github.com/luifon/junto`, may appear in tracked files.
-  - Release notes may credit contributors by their GitHub user name, and the signature records of the contributor licence agreement (`.github/cla/signatures.json` of the branch `cla-signatures`) hold the GitHub user names and user IDs of contributors (ADR 0907).
+  - The contributor licence agreement (`docs/legal/`) names the company that receives the contributions: its legal name, its trade name and its CNPJ (ADR 0907).
+  - Release notes may credit contributors by their GitHub user name. The signature records of the contributor licence agreement are held by CLA assistant (cla-assistant.io), not in the repository (ADR 0907).
 - Comments are kept to a minimum. The code should explain itself.
 - ADRs state engineering decisions and their technical reasons only.
 
@@ -25,7 +26,7 @@ Process per feature, in this order:
 3. Fixes.
 4. An ADR.
 5. A local commit.
-6. A pull request to `main`, which the maintainer merges after CI on its head commit and one independent review (ADR 0907).
+6. A pull request to `main`, which the maintainer merges after CI on its head commit and one independent review, or a push to `main` that the maintainer approves (ADR 0907).
 
 ## Consequences
 

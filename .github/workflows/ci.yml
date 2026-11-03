@@ -10,8 +10,6 @@ name: CI
 
 on:
   push:
-    # The branch of the signatures of the contributor licence agreement holds no code (ADR 0907).
-    branches-ignore: [cla-signatures]
   pull_request:
 
 permissions: {}
