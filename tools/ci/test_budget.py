@@ -138,6 +138,7 @@ class Lanes(unittest.TestCase):
             failures.touch()
 
             def decide(base, commands, environment):
+                self.commands = commands
                 if wide:
                     return budget.Budget(list(range(0, 12)), base.services, 15 * GIB, [], "test")
                 return budget.Budget(base.build, base.services, base.memory, [], "test")
@@ -174,6 +175,30 @@ class Lanes(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertRegex(output, r"=== Lanes\napp +\S+Z  \S+Z +\d+m\d\ds  passed  Window tests\n")
 
+    def test_a_lane_without_services_and_with_its_own_memory(self):
+        show = 'sh -c \'echo "$JUNTO_LINUX_INSTANCE ${JUNTO_LINUX_SERVICES-all} $JUNTO_LINUX_MEMORY $JUNTO_LINUX_CARGO_JOBS"\''
+        text = plan("lane app memory 6g", "step Window tests", show, "lane screens memory 1g without services",
+                    "step Screens", show)
+        status, _, output, _ = self.run_plan(text, wide=True)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.commands, 1, "only the lane with services counts its containers")
+        # 15 GiB less the 7 GiB of the two lanes leaves 8 GiB, an equal part for each.
+        self.assertIn("app all 10240m 1", output)
+        self.assertIn("screens none 5120m 1", output)
+        for wrong in ["lane app memory", "lane app with services", "lane app memory 6x"]:
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                lanes.parse(f"{wrong}\nstep x\ntrue\n")
+
+    def test_lanes_whose_memory_the_budget_does_not_hold_run_one_after_the_other(self):
+        show = "sh -c 'echo \"$JUNTO_LINUX_INSTANCE ${JUNTO_LINUX_CPU_SET-base} ${JUNTO_LINUX_SERVICES-all}\"'"
+        text = plan("lane app memory 10g", "step Window tests", show, "lane screens memory 6g without services",
+                    "step Screens", show)
+        status, _, output, _ = self.run_plan(text, wide=True)
+        self.assertEqual(status, 0, output)
+        self.assertIn("Lanes: app, screens, one after the other", output)
+        self.assertIn("app base all", output)
+        self.assertIn("screens base none", output)
+
     def test_without_a_budget_for_every_lane_the_lanes_run_one_after_the_other(self):
         show = "sh -c 'echo \"$JUNTO_LINUX_INSTANCE ${JUNTO_LINUX_CPU_SET-base}\"; sleep 1'"
         text = plan("lane app", "step Window tests", show, "lane api", "step API tests", show)
@@ -198,8 +223,14 @@ class Lanes(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 lanes.parse(text)
 
-    def test_the_processors_are_split_into_contiguous_groups(self):
-        self.assertEqual(lanes.split(list(range(10)), 3), [[0, 1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    def test_the_processors_are_split_into_contiguous_groups_by_share(self):
+        self.assertEqual(lanes.split(list(range(10)), [1, 1, 1]), [[0, 1, 2, 3], [4, 5, 6], [7, 8, 9]])
+        self.assertEqual([len(group) for group in lanes.split(list(range(12)), [3, 2, 1, 1])], [5, 3, 2, 2])
+        self.assertEqual(lanes.split([0, 1, 2], [5, 1, 1]), [[0], [1], [2]])
+        self.assertEqual(lanes.parse("lane app share 3\nstep x\ntrue\n")[0][0].share, 3)
+        for wrong in ["share 0", "share", "share x"]:
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                lanes.parse(f"lane app {wrong}\nstep x\ntrue\n")
 
 
 def artifact(name, kind, test=True):

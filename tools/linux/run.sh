@@ -45,7 +45,18 @@ processors=${cpu_budget%% *}
 cpu_sets=${cpu_budget#* }
 build_set=${cpu_sets%% *}
 service_set=${cpu_sets#* }
-jobs=$(python3 "$root/tools/linux/build_jobs.py" "$processors" "$memory")
+# JUNTO_LINUX_CARGO_JOBS sets the Cargo jobs of a command that runs programs that an earlier
+# command built (tools/ci/lanes.py); the memory rule of build_jobs.py is for commands that build.
+if [ -n "${JUNTO_LINUX_CARGO_JOBS:-}" ]; then
+    case "$JUNTO_LINUX_CARGO_JOBS" in *[!0-9]*|0) echo "JUNTO_LINUX_CARGO_JOBS is not a count: $JUNTO_LINUX_CARGO_JOBS" >&2; exit 2 ;; esac
+    jobs=$JUNTO_LINUX_CARGO_JOBS
+else
+    jobs=$(python3 "$root/tools/linux/build_jobs.py" "$processors" "$memory")
+fi
+# JUNTO_LINUX_SERVICES=none starts no PostgreSQL, LiveKit and control container, for a command
+# that needs none of them.
+services=${JUNTO_LINUX_SERVICES:-all}
+case "$services" in all|none) ;; *) echo "JUNTO_LINUX_SERVICES is all or none: $services" >&2; exit 2 ;; esac
 printf 'Build budget: CPUs %s, services %s, %s memory, %s Cargo jobs\n' "$build_set" "$service_set" "$memory" "$jobs"
 if [ "$(uname -s)" = Linux ]; then
     if [ "$(id -u)" -eq 0 ]; then
@@ -113,6 +124,7 @@ docker volume create "$target_volume" >/dev/null
 docker network create "$network" >/dev/null
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+if [ "$services" = all ]; then
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
     --cpuset-cpus "$service_set" --cpus "${JUNTO_LINUX_POSTGRES_CPUS:-0.75}" --memory 1536m --memory-swap 1536m \
@@ -143,6 +155,7 @@ docker run -d --user 0 --name "$proxy" --network "$network" --network-alias cont
     --mount "type=bind,src=$socket,dst=/var/run/docker.sock" \
     -e JUNTO_TEST_LIVEKIT_CONTAINER="$livekit" \
     "$image" python3 /opt/junto-linux/docker-control.py >/dev/null
+fi
 created="$build $created"
 # Docker creates a missing mount point as its own user, which is root on a Linux host.
 mkdir -p "$root/spikes/test-participant/target"
@@ -181,7 +194,7 @@ run_build docker run --name "$build" --user 0 --network "$network" --memory "$me
     -e JUNTO_TEST_LIVEKIT_API_KEY=devkey -e JUNTO_TEST_LIVEKIT_API_SECRET=secret \
     -e JUNTO_TEST_LIVEKIT_CONTAINER="$livekit" \
     -e JUNTO_TEST_WEBHOOK_ADDRESS=0.0.0.0:17890 \
-    -e JUNTO_TEST_VIRTUAL_AUDIO=1 -e TZ=UTC \
+    -e JUNTO_TEST_VIRTUAL_AUDIO=1 -e TZ=UTC -e "JUNTO_LINUX_SERVICES=$services" \
     "$image" /opt/junto-linux/run-as-user.sh "$build_uid" "$build_gid" "$@" || status=$?
 if [ "$status" -ne 0 ]; then
     docker logs "$postgres" 2>&1 | grep -E \

@@ -4,6 +4,7 @@ tools/linux-container.sh that records each command, so that the tests read which
 Linux job runs."""
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +21,12 @@ SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --fea
            "--bin junto-screens -- /tmp/junto-screens")
 LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client "
                  "--features test-support --bin junto-screens -- /tmp/junto-screens")
+
+
+def quoted(command):
+    """A command "sh -c <script>" of a lane as the job lists it when it fails."""
+    return shlex.join(["sh", "-c", command[len("sh -c "):]])
+
 
 WINDOW_LANE = "cargo test --no-fail-fast --workspace --locked --test app"
 API_LANE = "cargo test --no-fail-fast --workspace --locked --test api"
@@ -61,7 +68,7 @@ class LinuxSteps(unittest.TestCase):
         self.assertIn(SCREENS, commands)
         status, commands, output = self.run_job(fail_on="--bin junto-screens")
         self.assertEqual(status, 17)
-        self.assertIn(f"Screens without empty bands (exit 17): tools/linux-container.sh {SCREENS}",
+        self.assertIn(f"Screens without empty bands (exit 17): tools/linux-container.sh {quoted(SCREENS)}",
                       output.split("=== Failed steps", 1)[1])
 
     def test_the_linux_job_draws_every_screen_at_the_least_size_of_the_window(self):
@@ -71,7 +78,7 @@ class LinuxSteps(unittest.TestCase):
         self.assertLess(commands.index(SCREENS), commands.index(LEAST_SCREENS))
         status, commands, output = self.run_job(fail_on="JUNTO_SCREENS_SIZE=720x480")
         self.assertEqual(status, 17)
-        self.assertIn(f"Screens at the least size of the window (exit 17): tools/linux-container.sh {LEAST_SCREENS}",
+        self.assertIn(f"Screens at the least size of the window (exit 17): tools/linux-container.sh {quoted(LEAST_SCREENS)}",
                       output.split("=== Failed steps", 1)[1])
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
@@ -107,7 +114,7 @@ class LinuxSteps(unittest.TestCase):
             self.assertLess(commands.index(build), commands.index(command))
         # Every other test program: the build's own list without the two lanes of their own.
         self.assertIn("cargo_targets.py /target/junto-ci/test-programs.json app api", OTHER_LANE)
-        self.assertIn("Lanes: app, other, one after the other", output)
+        self.assertIn("Lanes: app, other, screens, least, one after the other", output)
         self.assertFalse([c for c in commands if c.startswith("cargo test") and "--workspace" in c
                           and c not in lanes and "--no-run" not in c])
 
@@ -127,7 +134,7 @@ class LinuxSteps(unittest.TestCase):
         self.assertRegex(output, r"=== Format: ended \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ after \d+m\d\ds\n")
         self.assertRegex(output, r"=== Window tests with PostgreSQL  lane app  \S+Z to \S+Z  \d+m\d\ds\n")
         table = output.split("=== Step times", 1)[1]
-        for name in ("Build the Linux image and start its services", "Tests with PostgreSQL",
+        for name in ("Build the Linux image and start its services", "Tests with PostgreSQL and the screens",
                      "The committed API documents equal the generated ones"):
             self.assertRegex(table, rf"\d+m\d\ds  {name}\n")
 

@@ -9,7 +9,7 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 fi
 "$(dirname "$0")/sound.sh"
 attempts=0
-until pg_isready -q -h postgres -U postgres && curl -fsS -o /dev/null http://livekit:7880/; do
+until [ "${JUNTO_LINUX_SERVICES:-all}" = none ] || { pg_isready -q -h postgres -U postgres && curl -fsS -o /dev/null http://livekit:7880/; }; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 120 ]; then
         echo "the database or LiveKit did not answer in 60 s" >&2

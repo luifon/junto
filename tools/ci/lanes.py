@@ -5,18 +5,22 @@
 
 The plan names lanes and their steps, one item per line:
 
-    lane <name>
+    lane <name> [share <n>] [memory <size>] [without services]
     step <name of the step>
     <command>
 
 A command is split into words as the shell splits them, without expansion. The steps of one lane
-run one after the other, in their order; every step runs also after a failed step. The lanes run
-at the same time when the budget of the step (tools/ci/budget.py) gives each lane at least
-LANE_PROCESSORS build processors and LANE_MEMORY of build memory; otherwise one after the other
-with the base budget. Each lane gets an equal part of the build processors and of the build
-memory, the service processors of the job, and its own containers and network
-(JUNTO_LINUX_INSTANCE=<lane name>) on the image that an earlier step built
-(JUNTO_LINUX_IMAGE_BUILT=1), and a lock of tools/serial.sh of its own.
+run one after the other, in their order; every step runs also after a failed step. A lane needs
+the memory that it names (LANE_MEMORY when it names none) and, unless it is "without services",
+the PostgreSQL, LiveKit and control containers of tools/linux/run.sh. The lanes run at the same
+time when the budget of the step (tools/ci/budget.py, for the lanes with services) is above the
+base budget and gives the lanes together their memory and each lane at least one build
+processor; otherwise one after the other with the base budget. At the same time, each lane gets
+a part of the build processors in proportion to its share (1 when it names none), its memory and
+an equal part of the rest of the build memory, one Cargo job (JUNTO_LINUX_CARGO_JOBS=1: the lanes run programs that an earlier
+step built), the service processors of the job, and its own containers and network
+(JUNTO_LINUX_INSTANCE=<lane name>). In both cases a lane runs on the image that an earlier step built (JUNTO_LINUX_IMAGE_BUILT=1), with
+a lock of tools/serial.sh of its own, and a lane without services sets JUNTO_LINUX_SERVICES=none.
 
 The output of each step goes to a file. After the last lane has ended, the output of each step is
 printed in the order of the plan, under a line with the step, its lane, its start and end (UTC)
@@ -36,8 +40,12 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget  # noqa: E402
 
-LANE_PROCESSORS = 2
-LANE_MEMORY = 5 * budget.GIB
+LANE_MEMORY = 4 * budget.GIB
+
+
+class Lane:
+    def __init__(self, name, memory=LANE_MEMORY, services=True, share=1):
+        self.name, self.memory, self.services, self.share = name, memory, services, share
 
 
 class Step:
@@ -56,12 +64,26 @@ def parse(text):
             continue
         word, _, rest = line.partition(" ")
         if word == "lane":
-            if not rest or not all(c.isascii() and (c.islower() or c.isdigit() or c == "-") for c in rest):
-                raise ValueError(f"line {number}: a lane name has only a-z, 0-9 and -: {rest}")
-            if rest in lanes:
-                raise ValueError(f"line {number}: the lane {rest} is named twice")
-            lane, step = rest, None
-            lanes.append(lane)
+            if not rest:
+                raise ValueError(f"line {number}: a lane needs a name")
+            name, *options = rest.split()
+            if not name or not all(c.isascii() and (c.islower() or c.isdigit() or c == "-") for c in name):
+                raise ValueError(f"line {number}: a lane name has only a-z, 0-9 and -: {name}")
+            if name in [known.name for known in lanes]:
+                raise ValueError(f"line {number}: the lane {name} is named twice")
+            declared = Lane(name)
+            while options:
+                if options[:2] == ["without", "services"]:
+                    declared.services, options = False, options[2:]
+                elif options[0] == "share" and len(options) > 1 and options[1].isascii() \
+                        and options[1].isdecimal() and int(options[1]) > 0:
+                    declared.share, options = int(options[1]), options[2:]
+                elif options[0] == "memory" and len(options) > 1:
+                    declared.memory, options = budget.size(options[1]), options[2:]
+                else:
+                    raise ValueError(f"line {number}: not an option of a lane: {' '.join(options)}")
+            lane, step = name, None
+            lanes.append(declared)
         elif word == "step":
             if lane is None or not rest:
                 raise ValueError(f"line {number}: a step needs a lane before it and a name")
@@ -76,14 +98,22 @@ def parse(text):
     return lanes, steps
 
 
-def split(cpus, parts):
-    """Splits the processors into `parts` contiguous groups of nearly equal size."""
-    size, extra = divmod(len(cpus), parts)
+def split(cpus, shares):
+    """Splits the processors into contiguous groups in proportion to the shares, each group at
+    least one processor; the processors left by rounding go to the largest remainders."""
+    total = sum(shares)
+    counts = [max(1, len(cpus) * share // total) for share in shares]
+    remainders = sorted(range(len(shares)), key=lambda i: -(len(cpus) * shares[i] % total))
+    while sum(counts) > len(cpus):
+        counts[counts.index(max(counts))] -= 1
+    index = 0
+    while sum(counts) < len(cpus):
+        counts[remainders[index % len(shares)]] += 1
+        index += 1
     groups, start = [], 0
-    for index in range(parts):
-        end = start + size + (1 if index < extra else 0)
-        groups.append(cpus[start:end])
-        start = end
+    for count in counts:
+        groups.append(cpus[start:start + count])
+        start += count
     return groups
 
 
@@ -103,15 +133,19 @@ def duration(start, end):
 def lane_environments(lanes, environment, allocation):
     """The environment of each lane: its instance, its lock, and its part of the budget."""
     result = {}
-    groups = split(allocation.build, len(lanes)) if allocation else None
+    groups = split(allocation.build, [lane.share for lane in lanes]) if allocation else None
+    rest = allocation.memory - sum(lane.memory for lane in lanes) if allocation else 0
     for index, lane in enumerate(lanes):
-        lane_environment = dict(environment, JUNTO_LINUX_INSTANCE=lane, JUNTO_LINUX_IMAGE_BUILT="1")
+        lane_environment = dict(environment, JUNTO_LINUX_INSTANCE=lane.name, JUNTO_LINUX_IMAGE_BUILT="1")
+        if not lane.services:
+            lane_environment["JUNTO_LINUX_SERVICES"] = "none"
         if "JUNTO_HEAVY_LOCK" in environment:
-            lane_environment["JUNTO_HEAVY_LOCK"] = f"{environment['JUNTO_HEAVY_LOCK']}-{lane}"
+            lane_environment["JUNTO_HEAVY_LOCK"] = f"{environment['JUNTO_HEAVY_LOCK']}-{lane.name}"
         if allocation:
-            share = budget.Budget(groups[index], allocation.services, allocation.memory // len(lanes))
+            share = budget.Budget(groups[index], allocation.services, lane.memory + rest // len(lanes))
             lane_environment = budget.environment_of(share, lane_environment)
-        result[lane] = lane_environment
+            lane_environment["JUNTO_LINUX_CARGO_JOBS"] = "1"
+        result[lane.name] = lane_environment
     return result
 
 
@@ -135,18 +169,20 @@ def run(plan, failures_file, environment, root, decide=None):
     allocation = None
     together = False
     if base is not None and len(lanes) > 1:
-        allocation = (decide or budget.decide)(base, len(lanes), environment)
+        allocation = (decide or budget.decide)(base, sum(lane.services for lane in lanes), environment)
         print(budget.describe(allocation), flush=True)
-        together = (len(allocation.build) // len(lanes) >= LANE_PROCESSORS
-                    and allocation.memory // len(lanes) >= LANE_MEMORY)
+        # The base budget runs the lanes one after the other, as the job ran them before.
+        together = (allocation.memory > base.memory and len(allocation.build) >= len(lanes)
+                    and allocation.memory >= sum(lane.memory for lane in lanes))
         if not together:
             budget.release(allocation.locks)
             allocation = None
-    print(f"Lanes: {', '.join(lanes)}, {'at the same time' if together else 'one after the other'}", flush=True)
+    names = [lane.name for lane in lanes]
+    print(f"Lanes: {', '.join(names)}, {'at the same time' if together else 'one after the other'}", flush=True)
     environments = lane_environments(lanes, environment, allocation)
     with tempfile.TemporaryDirectory(prefix="junto-ci-lanes-") as directory:
         threads = []
-        for lane in lanes:
+        for lane in names:
             lane_directory = Path(directory) / lane
             lane_directory.mkdir()
             work = threading.Thread(target=run_lane, args=([s for s in steps if s.lane == lane],

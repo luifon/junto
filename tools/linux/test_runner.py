@@ -155,6 +155,21 @@ exit 0
         result = self.run_script("current_image", extra={"JUNTO_LINUX_INSTANCE": "a b"})
         self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_a_command_without_services_starts_only_its_build_container(self):
+        result = self.run_script("current_image", memory="4g",
+                                 extra={"JUNTO_LINUX_SERVICES": "none", "JUNTO_LINUX_CARGO_JOBS": "1"})
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertNotIn("run -d ", result.commands)
+        build = next(line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build "))
+        self.assertIn(" -e JUNTO_LINUX_SERVICES=none ", build)
+        self.assertIn(" -e CARGO_BUILD_JOBS=1 ", build)
+        for name, value in [("JUNTO_LINUX_SERVICES", "some"), ("JUNTO_LINUX_CARGO_JOBS", "0"),
+                            ("JUNTO_LINUX_CARGO_JOBS", "two")]:
+            with self.subTest(name=name, value=value):
+                result = self.run_script("current_image", extra={name: value})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(name, result.stderr)
+
     def test_the_caller_can_give_both_processor_sets_as_lists(self):
         result = self.run_script("current_image", memory="14g",
                                  extra={"JUNTO_LINUX_CPU_SET": "0-1,4-5,8-11", "JUNTO_LINUX_SERVICE_CPU_SET": "12-15"})

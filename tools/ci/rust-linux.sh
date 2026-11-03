@@ -92,19 +92,26 @@ run budget tools/linux-container.sh cargo build --workspace --locked
 # camera code itself is.
 step "The client holds the camera code and not the test camera device"
 run tools/linux-container.sh sh -c 'llvm-nm-22 /target/debug/junto >/tmp/symbols && grep -q junto_camera_open /tmp/symbols && ! grep -q junto_fake_ /tmp/symbols'
-# The test programs of `cargo test --workspace`, built once. The lanes of the next step run them
-# and build nothing; the messages of the build name them for tools/ci/cargo_targets.py.
+# The test programs of `cargo test --workspace`, built once, and junto-screens. The lanes of the
+# next step run them and build nothing; the messages of the build name the test programs for
+# tools/ci/cargo_targets.py.
 step "Build the test programs"
 run budget tools/linux-container.sh sh -c 'mkdir -p /target/junto-ci && cargo test --no-fail-fast --workspace --locked --no-run --message-format=json-render-diagnostics >/target/junto-ci/test-programs.json'
+run budget tools/linux-container.sh cargo build --locked -p junto-client --features test-support --bin junto-screens
 # The test programs of `cargo test --workspace` in two lanes of about the same length: the window
 # tests, and the API tests of the server, the other test programs with the doc tests and the
 # Python unit tests. Every command has --workspace, so the features are those of the build above.
-step "Tests with PostgreSQL"
+# junto-screens draws every screen and checks that no area has an empty band, no control is past
+# an edge of the window, and each screen settles within its bound (ADR 0730, ADR 0731); it
+# measures and writes no picture, and needs no database. The second run draws every screen at
+# the least size of the window. Each run uses about one processor and 0.3 GiB (the
+# run of 2026-11-03: 19 and 15 minutes), so each has a lane of its own without services.
+step "Tests with PostgreSQL and the screens"
 lanes <<'EOF'
-lane app
+lane app share 3 memory 4g
 step Window tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app
-lane other
+lane other share 2 memory 4g
 step Server API tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test api
 step Other tests with PostgreSQL
@@ -118,14 +125,13 @@ step Packaging unit tests
 tools/linux-container.sh python3 -m unittest discover -s packaging -p "test_*.py"
 step Test service wrapper failure paths
 tools/linux-container.sh python3 tools/test_test_services.py
+lane screens memory 1g without services
+step Screens without empty bands
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+lane least memory 1g without services
+step Screens at the least size of the window
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
 EOF
-# Every screen of junto-screens: no empty band in an area, no control past an edge of the
-# window, and each screen settles within its bound (ADR 0730, ADR 0731). It measures and
-# writes no picture. The second run draws every screen at the least size of the window.
-step "Screens without empty bands"
-run budget tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
-step "Screens at the least size of the window"
-run tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
 # A panic in a task of the window thread, on the event loop of X11 and of Wayland: the client
 # continues, writes the report and states it (ADR 0757).
 step "Panics in the callbacks of the platform"
