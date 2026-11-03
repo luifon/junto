@@ -6,8 +6,14 @@
 #                                   machine and starts their jobs there, detached: the runs
 #                                   continue when this machine sleeps or the connection
 #                                   drops. Prints the run names. With jobs, only the runners
-#                                   that have them.
-#   ci.sh local <commit> [job...]   runs the macOS jobs here, through tools/serial.sh.
+#                                   that have them. Without jobs, tools/ci/changes.py selects
+#                                   from the change since the merge base with main the jobs
+#                                   that run, run only their Python unit tests, or are
+#                                   skipped; --all runs every job.
+#   ci.sh local <commit> [job...]   runs the macOS jobs here, through tools/serial.sh, with
+#                                   the same selection.
+#   ci.sh select <commit>           prints that selection: each job, run, python or skip,
+#                                   and the reason.
 #   ci.sh status <commit or run>    prints each job of a run: passed, failed, running or
 #                                   waiting, with its time, and copies the log of a failed
 #                                   job to target/ci-logs/<run>/. For a commit: each job in
@@ -71,6 +77,27 @@ local_dir=${JUNTO_CI_LOCAL_DIR:-$HOME/.cache/junto-ci}
 # Run and job names go into shell commands on the runner: letters, digits and "-" only.
 checked() {
     case "$1" in '' | *[!A-Za-z0-9-]*) echo "not a run or job name: $1" >&2; exit 2 ;; esac
+}
+# A job of a run: <name>, <name>:python or <name>:skip (tools/ci/run-jobs.sh).
+checked_job() {
+    case "$1" in *:python | *:skip) checked "${1%:*}" ;; *) checked "$1" ;; esac
+}
+
+# selection <commit>: each default job of every runner as tools/ci/changes.py selects it for the
+# change from the merge base of the commit with main (for a commit of main, from its first
+# parent): <job>, <job>:python or <job>:skip. The reasons go to the standard error. Without main
+# or a parent, every job.
+selection() {
+    base=$(git -C "$root" merge-base main "$1" 2>/dev/null) || base=""
+    if [ "$base" = "$1" ]; then base=$(git -C "$root" rev-parse --verify --quiet "$1^1") || base=""; fi
+    if [ -z "$base" ]; then
+        echo "no merge base with main: every job runs" >&2
+        echo "$linux_jobs $macos_jobs $windows_jobs"
+        return
+    fi
+    lines=$(cd "$root" && python3 tools/ci/changes.py "$base" "$1") || { echo "the selection failed: every job runs" >&2; echo "$linux_jobs $macos_jobs $windows_jobs"; return; }
+    printf '%s\n' "$lines" | awk -F '\t' -v base="$base" 'NR == 1 { printf "jobs of the change since %.12s:\n", base } { printf "  %-22s %-7s %s\n", $1, $2, $3 }' >&2
+    printf '%s\n' "$lines" | awk -F '\t' '{ printf "%s%s ", $1, ($2 == "run" ? "" : ":" $2) }'
 }
 host="" dir=""
 linux_settings() {
@@ -142,9 +169,20 @@ start() {
         # shellcheck disable=SC2046 # the lists are words
         set -- $(jobs_of "$runner")
     fi
-    for job in "$@"; do checked "$job"; done
+    for job in "$@"; do checked_job "$job"; done
     run=$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%.12s' "$commit")-$runner
-    if [ "$runner" = windows ]; then
+    if [ "$runner" = windows ] && [ -z "$(printf '%s\n' "$@" | grep -v ':skip$')" ]; then
+        # Every job is skipped: the run is recorded on the machine without a start of its task.
+        windows_settings
+        here=$windows_dir/runs/$run
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        records=""
+        for job in "$@"; do records="$records$commit	${job%:skip}	$now	$now	0	-	0	skipped
+"; done
+        windows_bash "mkdir -p '$here' && cd '$here' && echo '$commit' >commit && echo '$*' >jobs &&
+            printf '%s' '$records' >record.tsv && echo 0 >finished"
+        echo "$run"
+    elif [ "$runner" = windows ]; then
         windows_settings
         here=$windows_dir/runs/$run
         # The commit goes to the machine as a bundle with the ref refs/ci/<run>; run-jobs.sh
@@ -253,6 +291,7 @@ show() {
     shown=$jobs optional=""
     if [ "$#" -gt 0 ]; then shown=$* optional=$(optional_jobs_of "$runner"); fi
     for job in $shown; do
+        job=${job%%:*}
         # outcome: 1 when the job failed, 3 while it has not finished. The outcome of a named
         # optional job does not change the result.
         outcome="" kind=""
@@ -262,7 +301,9 @@ show() {
             status=$(printf '%s' "$line" | cut -f 6)
             seconds=$(printf '%s' "$line" | cut -f 8)
             time="$((seconds / 60))m$((seconds % 60))s"
-            if [ "$status" = 0 ]; then
+            if [ "$(printf '%s' "$line" | cut -f 9)" = skipped ]; then
+                printf '  %-22s skipped  (the change does not need it)%s\n' "$job" "$kind"
+            elif [ "$status" = 0 ]; then
                 printf '  %-22s passed   %s\n' "$job" "$time"
             else
                 outcome=1
@@ -329,7 +370,7 @@ runs_of() {
 # deciding_run <runs> <job> <every>: the latest of the runs (the output of runs_of) that has the
 # job. With <every> "yes", a run whose jobs cannot be read has the job as well.
 deciding_run() {
-    printf '%s\n' "$1" | awk -F '\t' -v job="$2" -v every="$3" '$1 != "" { n = split($2, jobs, " "); if (n == 0 && every == "yes") last = $1; for (i = 1; i <= n; i++) if (jobs[i] == job) last = $1 } END { print last }'
+    printf '%s\n' "$1" | awk -F '\t' -v job="$2" -v every="$3" '$1 != "" { n = split($2, jobs, " "); if (n == 0 && every == "yes") last = $1; for (i = 1; i <= n; i++) { sub(/:.*/, "", jobs[i]); if (jobs[i] == job) last = $1 } } END { print last }'
 }
 
 # A commit has passed CI when each job of each runner passed in the latest run of the commit on
@@ -459,12 +500,20 @@ forget() {
 run_remote() {
     commit=$1
     shift
+    if [ "$commit" = --all ]; then
+        commit=$1
+        shift
+    elif [ "$#" -eq 0 ]; then
+        full=$(commit_of "$commit") || { echo "no commit $commit" >&2; exit 2; }
+        # shellcheck disable=SC2046 # the selected jobs are words
+        set -- $(selection "$full")
+    fi
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
         if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
         for job in "$@"; do
-            case " $wanted " in *" $job "*) picked="$picked $job" ;; esac
+            case " $wanted " in *" ${job%:*} "*) picked="$picked $job" ;; esac
         done
         if [ "$#" -gt 0 ] && [ -z "$picked" ]; then continue; fi
         # shellcheck disable=SC2086 # the picked jobs are words
@@ -488,8 +537,26 @@ setup_windows() {
 case "${1:-}" in
     run) shift; [ "$#" -ge 1 ] || set -- HEAD; run_remote "$@" ;;
     setup-windows) [ "$#" -eq 1 ] || { echo "usage: $0 setup-windows" >&2; exit 2; }; setup_windows ;;
-    local) shift; [ "$#" -ge 1 ] || set -- HEAD; start macos "$@" ;;
+    local)
+        shift
+        [ "$#" -ge 1 ] || set -- HEAD
+        if [ "$1" = --all ]; then
+            shift
+            [ "$#" -ge 1 ] || set -- HEAD
+        elif [ "$#" -eq 1 ]; then
+            full=$(commit_of "$1") || { echo "no commit $1" >&2; exit 2; }
+            picked=""
+            for job in $(selection "$full"); do
+                case " $macos_jobs " in *" ${job%:*} "*) picked="$picked $job" ;; esac
+            done
+            # shellcheck disable=SC2086 # the picked jobs are words
+            set -- "$1" $picked
+        fi
+        start macos "$@" ;;
+    select) [ "$#" -eq 2 ] || { echo "usage: $0 select <commit>" >&2; exit 2; }
+        full=$(commit_of "$2") || { echo "no commit $2" >&2; exit 2; }
+        selection "$full" 2>&1 >/dev/null ;;
     status) [ "$#" -eq 2 ] || { echo "usage: $0 status <commit or run>" >&2; exit 2; }; checked "$2"; status "$2" ;;
     forget) [ "$#" -eq 2 ] || { echo "usage: $0 forget <run>" >&2; exit 2; }; checked "$2"; forget "$2" ;;
-    *) sed -n '2,28p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,34p' "$0" >&2; exit 2 ;;
 esac

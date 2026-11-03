@@ -37,7 +37,7 @@ DOC_LANE = "cargo test --no-fail-fast --workspace --locked --doc"
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
 class LinuxSteps(unittest.TestCase):
-    def run_job(self, fail_on=""):
+    def run_job(self, fail_on="", parts=""):
         """Runs the job in a copy of the files it reads; returns its exit code and the
         recorded commands."""
         with tempfile.TemporaryDirectory(prefix="junto-job-") as directory:
@@ -51,7 +51,7 @@ class LinuxSteps(unittest.TestCase):
             recorder.chmod(0o755)
             record = root / "record"
             record.touch()
-            environment = dict(os.environ, RECORD=str(record), FAIL_ON=fail_on)
+            environment = dict(os.environ, RECORD=str(record), FAIL_ON=fail_on, JUNTO_CI_PARTS=parts)
             result = subprocess.run(["sh", str(root / "tools" / "ci" / "rust-linux.sh")],
                                     env=environment, capture_output=True, text=True, timeout=60)
             return result.returncode, record.read_text().splitlines(), result.stdout + result.stderr
@@ -137,6 +137,13 @@ class LinuxSteps(unittest.TestCase):
         for name in ("Build the Linux image and start its services", "Tests with PostgreSQL and the screens",
                      "The committed API documents equal the generated ones"):
             self.assertRegex(table, rf"\d+m\d\ds  {name}\n")
+
+    def test_a_change_of_python_unit_tests_runs_only_the_python_unit_tests(self):
+        status, commands, output = self.run_job(parts="python")
+        self.assertEqual(status, 0, output)
+        self.assertEqual(commands, ["true", "python3 -m unittest discover -s tools/linux -p test_*.py",
+                                    "python3 -m unittest discover -s packaging -p test_*.py",
+                                    "python3 tools/test_test_services.py"])
 
     def test_a_failed_image_build_stops_the_linux_job(self):
         status, commands, _ = self.run_job(fail_on="true")

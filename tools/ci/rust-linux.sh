@@ -78,6 +78,16 @@ finish() {
 step "Build the Linux image and start its services"
 run tools/linux-container.sh true
 [ "$first" -eq 0 ] || finish
+# A change of Python unit tests only (tools/ci/changes.py, JUNTO_CI_PARTS=python): those tests.
+if [ "${JUNTO_CI_PARTS:-}" = python ]; then
+    step "Container runner unit tests"
+    run tools/linux-container.sh python3 -m unittest discover -s tools/linux -p "test_*.py"
+    step "Packaging unit tests"
+    run tools/linux-container.sh python3 -m unittest discover -s packaging -p "test_*.py"
+    step "Test service wrapper failure paths"
+    run tools/linux-container.sh python3 tools/test_test_services.py
+    finish
+fi
 step "Format"
 run tools/linux-container.sh cargo fmt --all --check
 step "Lint"

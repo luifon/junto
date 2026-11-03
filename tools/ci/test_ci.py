@@ -106,6 +106,22 @@ class WindowsRunner(unittest.TestCase):
                          f"'{here}/commit.bundle' rust-windows </dev/null >runner.log 2>&1\n")
         self.assertEqual(list((self.root / "tmp").iterdir()), [], "the temporary folder of the bundle stays")
 
+    def test_a_run_whose_every_job_is_skipped_is_recorded_without_a_start_on_the_machine(self):
+        result = self.ci("run", "HEAD", "rust-windows:skip")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = result.stdout.strip()
+        here = self.root / "machine" / f"C:/ci/runs/{run}"
+        self.assertEqual((here / "finished").read_text(), "0\n")
+        record = (here / "record.tsv").read_text().split("\t")
+        self.assertEqual((record[1], record[4], record[7]), ("rust-windows", "0", "skipped\n"))
+        self.assertNotIn("start-run.ps1", self.log("ssh"))
+        self.assertEqual(self.log("scp"), "")
+
+    def test_a_job_with_another_part_is_refused(self):
+        result = self.ci("run", "HEAD", "rust-windows:all")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not a run or job name", result.stderr)
+
     def test_a_commit_without_the_windows_runner_is_refused_and_leaves_no_files(self):
         added = subprocess.run(["git", "-C", str(ROOT), "log", "--diff-filter=A", "--format=%H", "--",
                                 "tools/windows/start-run.ps1"], capture_output=True, text=True).stdout.split()
@@ -440,6 +456,20 @@ class CommitStatus(unittest.TestCase):
         results = {**dict.fromkeys(DEFAULT_JOBS[runner], 0), **extra}
         return self.run_of(runner, started, list(results), results)
 
+    def test_a_skipped_job_is_shown_and_passes(self):
+        self.passed_elsewhere()
+        run = self.passing("linux")
+        record = self.directories["linux"] / "runs" / run / "record.tsv"
+        lines = record.read_text().splitlines()
+        lines[1] = lines[1].replace("\t61", "\t0") + "\tskipped"
+        record.write_text("\n".join(lines) + "\n")
+        (self.directories["linux"] / "runs" / run / "jobs").write_text(
+            "rust-linux licences:skip transcription-worker layout-page\n")
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"licences +skipped")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
     def test_a_failed_optional_job_is_shown_and_does_not_fail_the_commit(self):
         self.passing("linux", **{"rust-linux-devices": 101})
         self.passed_elsewhere()
@@ -533,3 +563,37 @@ class CommitStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Selection(unittest.TestCase):
+    """ci.sh select: the jobs of a change since the merge base with main."""
+
+    def test_the_change_of_a_branch_and_of_a_commit_of_main(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-select-") as temporary:
+            repository = Path(temporary)
+            identity = dict(os.environ, GIT_AUTHOR_NAME="Example", GIT_AUTHOR_EMAIL="ci@example.com",
+                            GIT_COMMITTER_NAME="Example", GIT_COMMITTER_EMAIL="ci@example.com")
+            git = ["git", "-C", str(repository)]
+            subprocess.run([*git, "init", "--quiet", "--initial-branch", "main"], check=True)
+            (repository / "tools/ci").mkdir(parents=True)
+            for name in ("ci.sh", "changes.py"):
+                shutil.copy(CI.parent / name, repository / "tools/ci" / name)
+            (repository / "lib.rs").write_text("fn a() {}\n")
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "one"], check=True, env=identity)
+            subprocess.run([*git, "checkout", "--quiet", "-b", "change"], check=True)
+            (repository / "notes.md").write_text("text\n")
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "two"], check=True, env=identity)
+            select = ["sh", str(repository / "tools/ci/ci.sh"), "select"]
+            branch = subprocess.run([*select, "change"], capture_output=True, text=True, env=identity)
+            self.assertEqual(branch.returncode, 0, branch.stderr)
+            self.assertRegex(branch.stdout, r"rust-linux +skip +the change does not touch it")
+            self.assertNotIn(" run ", branch.stdout)
+            # A commit of main: the change since its first parent.
+            main = subprocess.run([*select, "main"], capture_output=True, text=True, env=identity)
+            self.assertIn("every job runs", main.stdout)
+            subprocess.run([*git, "checkout", "--quiet", "main"], check=True)
+            subprocess.run([*git, "merge", "--quiet", "--no-ff", "-m", "merge", "change"], check=True, env=identity)
+            merged = subprocess.run([*select, "main"], capture_output=True, text=True, env=identity)
+            self.assertRegex(merged.stdout, r"rust-macos +skip")

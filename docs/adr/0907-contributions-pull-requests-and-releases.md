@@ -81,5 +81,4 @@ Reasons: today a client supports only the current and the previous API version (
 - The first contribution (pull request 1, in `main` as commit `e1878d60`) was merged before the agreement existed; its author signs afterwards on `https://cla-assistant.io/luifon/junto`.
 - The signature records exist only in the hosted service of SAP, which can export them as a CSV file.
 - The link of CLA assistant, the gist, the exempt accounts, the required status `license/cla`, the protection rule and the allowed merge methods are settings of GitHub and of CLA assistant, not files of this repository.
-- `docs/release.md`, ADR 0724, ADR 0727 and `packaging/release_assets.py` publish a test release as a pre-release under the tag `v<version>` and edit it into the release; the test builds of 0.1.0 used the tags `v0.1.0-test.1` to `v0.1.0-test.4`, as this record decides. The release tool and those documents do not follow this record yet.
 - A cycle of more than 21 days needs the freshness renewal of ADR 0724 between two releases.

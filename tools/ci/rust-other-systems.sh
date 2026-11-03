@@ -53,6 +53,21 @@ case "$(uname -s)" in
     *) echo "this job runs on macOS or on Windows, not on $(uname -s)" >&2; exit 2 ;;
 esac
 
+# A change of Python unit tests only (tools/ci/changes.py, JUNTO_CI_PARTS=python): those tests.
+if [ "${JUNTO_CI_PARTS:-}" = python ]; then
+    step "Packaging unit tests"
+    run python3 -m unittest discover -s packaging -p "test_*.py"
+    step "Test service wrapper failure paths"
+    run python3 tools/test_test_services.py
+    if [ "$system" = windows ]; then
+        step "Windows tool unit tests"
+        run python3 -m unittest discover -s tools/windows -p "test_*.py"
+    else
+        step "PostgreSQL for macOS"
+        run python3 tools/test_with_native_postgres.py
+    fi
+    finish
+fi
 # Code under cfg(windows) and cfg(target_os = "macos") is linted only on its own system.
 # --keep-going: the lints of every crate, also after a crate with an error.
 step "Lint"
