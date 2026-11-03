@@ -217,6 +217,13 @@ class Lanes(unittest.TestCase):
         self.assertEqual(failures, "Window tests (exit 3): sh -c 'exit 3'\nOther tests (exit 5): sh -c 'exit 5'\n")
         self.assertRegex(output, r"other +\S+Z  \S+Z +\d+m\d\ds  passed  Unit tests\n")
 
+    def test_a_command_that_cannot_start_fails_its_step(self):
+        text = plan("lane app", "step Window tests", "/nonexistent/program", "lane other", "step Other", "true")
+        status, _, output, failures = self.run_plan(text, wide=True)
+        self.assertEqual(status, 127)
+        self.assertIn("/nonexistent/program: ", output)
+        self.assertEqual(failures, "Window tests (exit 127): /nonexistent/program\n")
+
     def test_a_plan_with_an_error_is_refused(self):
         for text in ["step Window tests\ntrue\n", "lane App\nstep x\ntrue\n", "lane app\ntrue\n",
                      "lane a\nstep x\ntrue\nlane a\nstep y\ntrue\n", "lane a\n"]:

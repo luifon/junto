@@ -155,8 +155,13 @@ def run_lane(steps, environment, directory, root):
         path = Path(directory) / f"{len(list(Path(directory).iterdir())):03d}.log"
         with open(path, "wb") as output:
             for command in step.commands:
-                status = subprocess.run(command, env=environment, cwd=root, stdout=output,
-                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+                try:
+                    status = subprocess.run(command, env=environment, cwd=root, stdout=output,
+                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+                except OSError as error:
+                    output.write(f"{shlex.join(command)}: {error}\n".encode())
+                    output.flush()
+                    status = 127
                 if status != 0:
                     step.failures.append((status, shlex.join(command)))
         step.end = now()
