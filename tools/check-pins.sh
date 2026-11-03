@@ -287,7 +287,7 @@ else
 fi
 
 if [ -d .github/workflows ]; then
-    unpinned=$(grep -n 'uses:' .github/workflows/*.yml | grep -v 'uses: \./' | grep -v '@[0-9a-f]\{40\} ' || true)
+    unpinned=$(grep -n -E '(^|[[:space:]])uses:' .github/workflows/*.yml | grep -v 'uses: \./' | grep -v '@[0-9a-f]\{40\} ' || true)
     if [ -n "$unpinned" ]; then
         echo "$unpinned"
         fail "a workflow uses an action without a commit hash"

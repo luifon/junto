@@ -40,7 +40,9 @@ rotation and renewal.
    systems. CI uses synthetic media and does not establish real capture or permissions.
 4. Retain the commit, version, CI run identifiers, checks and package hashes with the
    release record. Create the release tag only after these checks. Do not reuse a version
-   whose files were already published.
+   whose files were already released. This applies to releases, not to test builds: the files
+   of each test build state the version that it will become, and testers install each test
+   build by hand (ADR 0907).
 
 ## Build the client packages
 
