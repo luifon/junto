@@ -95,10 +95,14 @@ them with `packaging/release_assets.py`, as described in
 [the GitHub release](../packaging/README.md#the-github-release) and ADR 0727. It checks the
 set of files, writes `SHA256SUMS` and prints the publication: a draft release of the tag
 `v<version>` with every file and the notes `docs/releases/<version>.md`, then its
-publication as the newest release. A test release is published under the same tag as a
-pre-release (`--prerelease`), which no client is offered, and later edited into the newest
-release without a change of its files. The files of a draft are not served, so every latest
-file becomes available with the archives that it names. Never replace or delete a file of
+publication as the newest release, titled "Junto <version>". A test build (`--test <n>`)
+has the lightweight tag `v<version>-test.<n>` on the release commit and the title
+"Junto <version> test <n>", is published as a pre-release, which no client is offered, and
+holds only the first-install files, the Windows symbols file and a `SHA256SUMS` of those
+files; its notes are given with `--notes`. A test build is never edited into a release: the
+release of the version is a new GitHub release of the tag `v<version>` with the update files.
+The files of a draft are not served, so every latest file becomes available with the
+archives that it names. Never replace or delete a file of
 an earlier release; only the freshness renewal replaces the latest files of the newest
 release. Keep the output directory as the retained files of the release. Do not upload a
 private key, keychain, signing password or test key.
