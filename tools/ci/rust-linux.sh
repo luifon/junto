@@ -119,7 +119,7 @@ run budget tools/linux-container.sh cargo build --locked -p junto-client --featu
 # part in a lane of its own without services.
 step "Tests with PostgreSQL and the screens"
 lanes <<'EOF'
-lane app share 3 memory 4g
+lane app share 4 memory 4g
 step Window tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app
 lane other share 2 memory 4g
