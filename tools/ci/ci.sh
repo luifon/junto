@@ -12,7 +12,9 @@
 #                                   waiting, with its time, and copies the log of a failed
 #                                   job to target/ci-logs/<run>/. For a commit: each job in
 #                                   the latest run of the commit that has it, and whether
-#                                   the commit passed.
+#                                   the commit passed. With JUNTO_CI_GITHUB_STATUS set to a
+#                                   repository (owner/name), a commit whose jobs all have a
+#                                   result also gets the commit status "junto-ci" there.
 #   ci.sh forget <run>              removes a run, its ref and, when no other ref keeps it,
 #                                   its commit from the runner that has it.
 #   ci.sh setup-windows             installs the pinned tools of the Windows job on the
@@ -339,7 +341,7 @@ status() {
         *-linux | *-macos | *-windows) (show "$1"); return ;;
     esac
     commit=$(commit_of "$1") || { echo "no commit or run $1" >&2; exit 2; }
-    verdict=passed
+    verdict=passed unfinished="" missing="" failures=""
     for runner in $runners; do
         listed=$(runs_of "$runner" "$commit")
         # The run that decides each job, and the jobs that each such run decides, in the order
@@ -349,6 +351,7 @@ status() {
             run=$(deciding_run "$listed" "$job" yes)
             if [ -z "$run" ]; then
                 echo "$runner: no run of $commit has $job"
+                missing=yes
                 [ "$verdict" = failed ] || verdict=incomplete
                 continue
             fi
@@ -367,15 +370,52 @@ status() {
         for run in $(printf '%s' "$shown" | cut -d ' ' -f 1 | sort -u); do
             result=0
             # shellcheck disable=SC2046 # the jobs are words
-            (show "$run" $(printf '%s' "$shown" | awk -v run="$run" '$1 == run { print $2 }')) || result=$?
+            output=$(show "$run" $(printf '%s' "$shown" | awk -v run="$run" '$1 == run { print $2 }')) || result=$?
+            printf '%s\n' "$output"
             # A run of only optional jobs decides no job.
             if ! printf '%s' "$decided" | cut -d ' ' -f 1 | grep -qx -- "$run"; then continue; fi
             if [ "$result" -eq 1 ]; then verdict=failed; fi
+            if [ "$result" -eq 3 ]; then unfinished=yes; fi
             if [ "$result" -ne 0 ] && [ "$verdict" = passed ]; then verdict=incomplete; fi
+            # The jobs that did not pass, for the commit status; a run that failed outside its
+            # jobs counts as its runner.
+            jobs=$(printf '%s\n' "$output" | awk -v runner="$runner" '!/\(optional\)/ && ($2 == "FAILED" || $2 == "ENDED" || ($2 == "not" && $3 == "run")) { printf " %s %s,", runner, $1 }')
+            if [ "$result" -eq 1 ] && [ -z "$jobs" ]; then jobs=" $runner run,"; fi
+            failures="$failures$jobs"
         done
     done
     echo "commit $commit: $verdict"
+    if [ "$verdict" = passed ] || { [ "$verdict" = failed ] && [ -z "$unfinished" ] && [ -z "$missing" ]; }; then
+        github_status "$commit" "$verdict" "$failures"
+    fi
     [ "$verdict" = passed ]
+}
+
+# github_status <commit> <passed|failed> <failed jobs>: with JUNTO_CI_GITHUB_STATUS set to a
+# repository, sets the commit status "junto-ci" of the commit there with gh: success when every
+# job passed, failure with the jobs that did not pass. Without the setting, nothing.
+github_status() {
+    repository=$(optional JUNTO_CI_GITHUB_STATUS)
+    [ -n "$repository" ] || return 0
+    case "$repository" in
+        */*/* | /* | */ | *[!A-Za-z0-9_./-]*) echo "JUNTO_CI_GITHUB_STATUS is not a repository owner/name: $repository" >&2; return 0 ;;
+        */*) ;;
+        *) echo "JUNTO_CI_GITHUB_STATUS is not a repository owner/name: $repository" >&2; return 0 ;;
+    esac
+    if [ "$2" = passed ]; then
+        state=success description="every job passed on Linux, macOS and Windows"
+    else
+        list=${3%,}
+        state=failure description="failed:${list:- the run}"
+    fi
+    # GitHub keeps at most 140 characters of a description.
+    description=$(printf '%s' "$description" | cut -c 1-140)
+    if gh api --method POST "repos/$repository/statuses/$1" -f "state=$state" -f context=junto-ci \
+        -f "description=$description" >/dev/null; then
+        echo "GitHub commit status junto-ci of $1: $state ($description)"
+    else
+        echo "the GitHub commit status of $1 could not be set" >&2
+    fi
 }
 
 forget() {
@@ -451,5 +491,5 @@ case "${1:-}" in
     local) shift; [ "$#" -ge 1 ] || set -- HEAD; start macos "$@" ;;
     status) [ "$#" -eq 2 ] || { echo "usage: $0 status <commit or run>" >&2; exit 2; }; checked "$2"; status "$2" ;;
     forget) [ "$#" -eq 2 ] || { echo "usage: $0 forget <run>" >&2; exit 2; }; checked "$2"; forget "$2" ;;
-    *) sed -n '2,26p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,28p' "$0" >&2; exit 2 ;;
 esac

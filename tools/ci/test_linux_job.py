@@ -21,6 +21,12 @@ SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --fea
 LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client "
                  "--features test-support --bin junto-screens -- /tmp/junto-screens")
 
+WINDOW_LANE = "cargo test --no-fail-fast --workspace --locked --test app"
+API_LANE = "cargo test --no-fail-fast --workspace --locked --test api"
+OTHER_LANE = ("sh -c targets=$(python3 tools/ci/cargo_targets.py /target/junto-ci/test-programs.json app api) "
+              "&& exec cargo test --no-fail-fast --workspace --locked $targets")
+DOC_LANE = "cargo test --no-fail-fast --workspace --locked --doc"
+
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
 class LinuxSteps(unittest.TestCase):
@@ -31,7 +37,8 @@ class LinuxSteps(unittest.TestCase):
             root = Path(directory)
             (root / "tools" / "ci").mkdir(parents=True)
             shutil.copy(ROOT / "tools" / "ci" / "rust-linux.sh", root / "tools" / "ci")
-            shutil.copy(ROOT / "tools" / "ci" / "pins.sh", root / "tools" / "ci")
+            for name in ("pins.sh", "budget.py", "lanes.py", "cargo_targets.py"):
+                shutil.copy(ROOT / "tools" / "ci" / name, root / "tools" / "ci")
             recorder = root / "tools" / "linux-container.sh"
             recorder.write_text(RECORDER)
             recorder.chmod(0o755)
@@ -78,7 +85,7 @@ class LinuxSteps(unittest.TestCase):
         status, commands, output = self.run_job(fail_on="cargo fmt")
         self.assertEqual(status, 17)
         self.assertIn("git diff --exit-code -- docs/api", commands)
-        self.assertIn("cargo test --no-fail-fast --workspace --locked", commands)
+        self.assertIn("cargo test --no-fail-fast --workspace --locked --test app", commands)
         failed = output.split("=== Failed steps", 1)[1]
         self.assertIn("Format (exit 17): tools/linux-container.sh cargo fmt --all --check", failed)
         self.assertNotIn("Lint", failed)
@@ -89,6 +96,40 @@ class LinuxSteps(unittest.TestCase):
         tests = [c for c in commands if "cargo test" in c]
         self.assertTrue(tests)
         self.assertTrue(all("cargo test --no-fail-fast " in c for c in tests), tests)
+
+    def test_the_test_programs_are_built_once_and_every_one_runs_in_a_lane(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        build = next(c for c in commands if "--no-run" in c and "--workspace" in c)
+        lanes = [WINDOW_LANE, API_LANE, OTHER_LANE, DOC_LANE]
+        for command in lanes:
+            self.assertEqual(commands.count(command), 1, command)
+            self.assertLess(commands.index(build), commands.index(command))
+        # Every other test program: the build's own list without the two lanes of their own.
+        self.assertIn("cargo_targets.py /target/junto-ci/test-programs.json app api", OTHER_LANE)
+        self.assertIn("Lanes: app, other, one after the other", output)
+        self.assertFalse([c for c in commands if c.startswith("cargo test") and "--workspace" in c
+                          and c not in lanes and "--no-run" not in c])
+
+    def test_a_failed_command_of_a_lane_is_listed_with_its_step(self):
+        status, commands, output = self.run_job(fail_on="--test api")
+        self.assertEqual(status, 17)
+        self.assertIn(WINDOW_LANE, commands)
+        self.assertIn(OTHER_LANE, commands)
+        failed = output.split("=== Failed steps", 1)[1]
+        self.assertIn(f"Server API tests with PostgreSQL (exit 17): tools/linux-container.sh {API_LANE}", failed)
+        self.assertNotIn("Window tests", failed)
+
+    def test_each_step_states_its_start_end_and_duration(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertRegex(output, r"=== Format  \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n")
+        self.assertRegex(output, r"=== Format: ended \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ after \d+m\d\ds\n")
+        self.assertRegex(output, r"=== Window tests with PostgreSQL  lane app  \S+Z to \S+Z  \d+m\d\ds\n")
+        table = output.split("=== Step times", 1)[1]
+        for name in ("Build the Linux image and start its services", "Tests with PostgreSQL",
+                     "The committed API documents equal the generated ones"):
+            self.assertRegex(table, rf"\d+m\d\ds  {name}\n")
 
     def test_a_failed_image_build_stops_the_linux_job(self):
         status, commands, _ = self.run_job(fail_on="true")

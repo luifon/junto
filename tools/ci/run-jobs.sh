@@ -287,6 +287,8 @@ if [ "$runner" = linux ]; then
     service_first=$((cpu_first + rust_cpus))
     if [ "$((service_first + rust_cpus))" -gt "$total_cpus" ]; then service_first=$cpu_first; fi
     export JUNTO_LINUX_SERVICE_CPU_FIRST=$service_first
+    # tools/ci/budget.py adds the processors of free worker locks on a host of 16 or more.
+    export JUNTO_CI_HOST_CPUS=$total_cpus
 fi
 linux_container() {
     JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \

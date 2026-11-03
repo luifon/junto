@@ -2,18 +2,23 @@
 # Called by linux-container.sh with the build lock held.
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
-# One prefix names every Docker resource of the runner.
+# One prefix names the image and the volumes of the runner. An instance, when set, is added to the
+# names of the containers and the network, so that commands of one prefix run at the same time,
+# each with its own database and media server, on the same image and volumes (ADR 0905).
 prefix=${JUNTO_LINUX_PREFIX:-junto-linux}
+instance=${JUNTO_LINUX_INSTANCE:-}
+case "$instance" in *[!a-z0-9-]*) echo "JUNTO_LINUX_INSTANCE has a character other than a-z, 0-9 and -: $instance" >&2; exit 2 ;; esac
+names=$prefix${instance:+-$instance}
 image=$prefix-build:1
-network=$prefix-tests
-build=$prefix-build
-postgres=$prefix-postgres
+network=$names-tests
+build=$names-build
+postgres=$names-postgres
 postgres_image=${JUNTO_TEST_POSTGRES_IMAGE:-postgres:17-alpine}
-livekit=$prefix-livekit
+livekit=$names-livekit
 # The settings of every form of the deployment that do not depend on the host (ADR 0904).
 livekit_common=$(cat "$root/deploy/livekit-common.yaml")
 livekit_image=${JUNTO_TEST_LIVEKIT_IMAGE:-livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154}
-proxy=$prefix-control
+proxy=$names-control
 cargo_volume=$prefix-cargo
 target_volume=$prefix-target
 created=""
@@ -26,9 +31,16 @@ memory=${JUNTO_LINUX_MEMORY:-6g}
 case "$wanted" in ''|*[!0-9]*|0) echo "JUNTO_LINUX_CPUS is not a count: $wanted" >&2; exit 2 ;; esac
 processors=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
 case "$processors" in ''|*[!0-9]*|0) processors=$wanted ;; esac
-first=${JUNTO_LINUX_CPU_FIRST:-0}
-service_first=${JUNTO_LINUX_SERVICE_CPU_FIRST:-$first}
-cpu_budget=$(python3 "$root/tools/linux/cpu_sets.py" "$processors" "$wanted" "$first" "$service_first")
+# JUNTO_LINUX_CPU_SET and JUNTO_LINUX_SERVICE_CPU_SET give both sets as lists, such as 0-7,8-11;
+# the CI runner selects them from the free worker locks (tools/ci/budget.py).
+if [ -n "${JUNTO_LINUX_CPU_SET:-}" ]; then
+    cpu_budget=$(python3 "$root/tools/linux/cpu_sets.py" --sets "$processors" "$JUNTO_LINUX_CPU_SET" \
+        "${JUNTO_LINUX_SERVICE_CPU_SET:-$JUNTO_LINUX_CPU_SET}")
+else
+    first=${JUNTO_LINUX_CPU_FIRST:-0}
+    service_first=${JUNTO_LINUX_SERVICE_CPU_FIRST:-$first}
+    cpu_budget=$(python3 "$root/tools/linux/cpu_sets.py" "$processors" "$wanted" "$first" "$service_first")
+fi
 processors=${cpu_budget%% *}
 cpu_sets=${cpu_budget#* }
 build_set=${cpu_sets%% *}
@@ -58,20 +70,43 @@ if docker network inspect "$network" >/dev/null 2>&1; then
     echo "network $network already exists; inspect and remove the interrupted run before retrying" >&2
     exit 1
 fi
-# The classic builder enforces the same processor and memory bounds as the command
-# container. BuildKit ignores these docker build flags. Its cache is the image layers;
-# the prefix label restricts cleanup to replaced images of this runner.
-DOCKER_BUILDKIT=0 docker build --force-rm --label "junto-linux-image=$prefix" \
-    --cpuset-cpus "$build_set" --memory "$memory" --memory-swap "$memory" \
-    --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" \
-    -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
-# The replaced images of this runner are removed by their identifiers: the daemon runs one
-# prune at a time, so `docker image prune` fails while any other prune runs on the host. An
-# image that a container still uses stays, as a prune would leave it.
-replaced=$(docker image ls -q --filter dangling=true --filter "label=junto-linux-image=$prefix")
-if [ -n "$replaced" ]; then
-    # shellcheck disable=SC2086
-    docker image rm $replaced >/dev/null || echo "some replaced images of $prefix are still in use" >&2
+# The image is built only when the key of its inputs (the files of tools/linux and the build
+# arguments) differs from the label of the existing image. The classic builder enforces the same
+# processor and memory bounds as the command container; BuildKit ignores these docker build
+# flags. Its cache is the chain of intermediate images of this prefix.
+inputs=$(python3 "$root/tools/linux/image_inputs.py" "$root/tools/linux" "BUILD_UID=$build_uid" \
+    "BUILD_GID=$build_gid" "JUNTO_LINUX_IMAGE=$prefix")
+existing=$(docker image inspect --format '{{index .Config.Labels "junto-linux-inputs"}}' "$image" 2>/dev/null || true)
+if [ "$existing" = "$inputs" ]; then
+    printf 'Image %s has the inputs %s; not built\n' "$image" "$inputs"
+elif [ "${JUNTO_LINUX_IMAGE_BUILT:-}" = 1 ]; then
+    echo "image $image does not have the inputs $inputs of this checkout, and JUNTO_LINUX_IMAGE_BUILT=1 forbids a build" >&2
+    exit 1
+else
+    DOCKER_BUILDKIT=0 docker build --force-rm --label "junto-linux-inputs=$inputs" \
+        --cpuset-cpus "$build_set" --memory "$memory" --memory-swap "$memory" \
+        --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" \
+        --build-arg "JUNTO_LINUX_IMAGE=$prefix" -t "$image" \
+        -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
+    # The images of this prefix that are not the new image or one of its parents are replaced
+    # chains. Each is removed by its identifier with --no-prune: with the containerd image store,
+    # the removal of an image with its parents also removes a parent that another image still
+    # has as its parent. `docker image prune` is not used: the daemon runs one prune at a time.
+    # An image that a container still uses stays.
+    current=$(docker image inspect --format '{{.Id}}' "$image")
+    kept=""
+    while [ -n "$current" ]; do
+        kept="$kept $current"
+        current=$(docker image inspect --format '{{.Parent}}' "$current" 2>/dev/null || true)
+    done
+    replaced=""
+    for candidate in $(docker image ls -a -q --no-trunc --filter "label=junto-linux-image=$prefix"); do
+        case " $kept " in *" $candidate "*) ;; *) replaced="$replaced $candidate" ;; esac
+    done
+    if [ -n "$replaced" ]; then
+        # shellcheck disable=SC2086
+        docker image rm --no-prune $replaced >/dev/null || echo "some replaced images of $prefix are still in use" >&2
+    fi
 fi
 docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null

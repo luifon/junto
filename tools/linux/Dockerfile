@@ -1,5 +1,11 @@
 FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730
 
+# Every image of the build, the intermediate ones included, carries the prefix of its runner
+# (tools/linux/run.sh): each prefix has its own chain, and a runner removes only replaced
+# images of its own chain (ADR 0905).
+ARG JUNTO_LINUX_IMAGE=junto-linux
+LABEL junto-linux-image=$JUNTO_LINUX_IMAGE
+
 # Every package comes from one dated snapshot of the Debian archives. A snapshot keeps every
 # version of a package; the archives themselves remove a version when an update replaces
 # it, and a build with exact versions then fails.

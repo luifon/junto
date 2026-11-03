@@ -86,8 +86,8 @@ class LinuxJob(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tools/ci").mkdir(parents=True)
-            shutil.copy(ROOT / "tools/ci/rust-linux.sh", root / "tools/ci")
-            shutil.copy(ROOT / "tools/ci/pins.sh", root / "tools/ci")
+            for name in ("rust-linux.sh", "pins.sh", "budget.py", "lanes.py", "cargo_targets.py"):
+                shutil.copy(ROOT / "tools/ci" / name, root / "tools/ci")
             recorder = root / "tools/linux-container.sh"
             recorder.write_text('#!/bin/sh\necho "$*" >>"$RECORD"\n')
             recorder.chmod(0o755)

@@ -386,6 +386,55 @@ class CommitStatus(unittest.TestCase):
         self.assertIn(f"linux: no run of {self.commit} has transcription-worker", result.stdout)
         self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
 
+    def with_gh(self):
+        """A program named gh that records its arguments; the setting names the repository."""
+        programs = self.root / "bin"
+        (programs / "gh").write_text('#!/bin/sh\nfor a; do printf "[%s]" "$a"; done >>"$FAKE_ROOT/gh.log"\necho >>"$FAKE_ROOT/gh.log"\n')
+        (programs / "gh").chmod(0o755)
+        self.environment["JUNTO_CI_GITHUB_STATUS"] = "example-owner/example-repository"
+
+    def gh(self):
+        path = self.root / "gh.log"
+        return path.read_text() if path.exists() else ""
+
+    def test_a_passed_commit_gets_a_successful_github_status_when_the_setting_names_a_repository(self):
+        self.with_gh()
+        self.passing("linux")
+        self.passed_elsewhere()
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.gh(), f"[api][--method][POST][repos/example-owner/example-repository/statuses/{self.commit}]"
+                         "[-f][state=success][-f][context=junto-ci]"
+                         "[-f][description=every job passed on Linux, macOS and Windows]\n")
+
+    def test_a_failed_commit_gets_a_failed_github_status_with_its_failed_jobs(self):
+        self.with_gh()
+        self.passing("linux", **{"licences": 1, "rust-linux-devices": 1})
+        self.run_of("macos", "20261020T100000Z", ["rust-macos", "deployment"], {"rust-macos": 0, "deployment": 101})
+        self.run_of("windows", "20261020T100000Z", ["rust-windows"], {"rust-windows": 0})
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("[-f][state=failure][-f][context=junto-ci][-f][description=failed: linux licences, macos deployment]",
+                      self.gh())
+
+    def test_no_github_status_while_a_job_has_no_result_or_without_the_setting(self):
+        self.with_gh()
+        self.passing("linux", **{"licences": 1})
+        self.run_of("windows", "20261020T100000Z", ["rust-windows"], {"rust-windows": 0})
+        result = self.status()
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+        self.assertEqual(self.gh(), "")
+        self.run_of("macos", "20261020T100000Z", ["rust-macos", "deployment"], {"rust-macos": 0, "deployment": 0})
+        del self.environment["JUNTO_CI_GITHUB_STATUS"]
+        common = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True).stdout.strip()
+        for settings in (ROOT / ".env.local", Path(common).parent / ".env.local"):
+            if settings.is_file() and "JUNTO_CI_GITHUB_STATUS=" in settings.read_text(errors="replace"):
+                self.skipTest(f"{settings} enables the commit status")
+        result = self.status()
+        self.assertIn(f"commit {self.commit}: failed", result.stdout)
+        self.assertEqual(self.gh(), "")
+
     def passing(self, runner, started="20261020T100000Z", **extra):
         """A run of the default jobs of a runner that each passed, with the extra jobs and statuses."""
         results = {**dict.fromkeys(DEFAULT_JOBS[runner], 0), **extra}
