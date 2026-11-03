@@ -115,7 +115,8 @@ run budget tools/linux-container.sh cargo build --locked -p junto-client --featu
 # an edge of the window, and each screen settles within its bound (ADR 0730, ADR 0731); it
 # measures and writes no picture, and needs no database. The second run draws every screen at
 # the least size of the window. Each run uses about one processor and 0.3 GiB (the
-# run of 2026-11-03: 19 and 15 minutes), so each has a lane of its own without services.
+# run of 2026-11-03: 19 and 15 minutes), so each runs in two parts (JUNTO_SCREENS_PART), each
+# part in a lane of its own without services.
 step "Tests with PostgreSQL and the screens"
 lanes <<'EOF'
 lane app share 3 memory 4g
@@ -135,12 +136,18 @@ step Packaging unit tests
 tools/linux-container.sh python3 -m unittest discover -s packaging -p "test_*.py"
 step Test service wrapper failure paths
 tools/linux-container.sh python3 tools/test_test_services.py
-lane screens memory 1g without services
-step Screens without empty bands
-tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
-lane least memory 1g without services
-step Screens at the least size of the window
-tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+lane screens-1 memory 1g without services
+step Screens without empty bands, part 1 of 2
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_PART=1/2 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+lane screens-2 memory 1g without services
+step Screens without empty bands, part 2 of 2
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_PART=2/2 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+lane least-1 memory 1g without services
+step Screens at the least size of the window, part 1 of 2
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 JUNTO_SCREENS_PART=1/2 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
+lane least-2 memory 1g without services
+step Screens at the least size of the window, part 2 of 2
+tools/linux-container.sh sh -c 'JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 JUNTO_SCREENS_PART=2/2 cargo run --locked -p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens'
 EOF
 # A panic in a task of the window thread, on the event loop of X11 and of Wayland: the client
 # continues, writes the report and states it (ADR 0757).

@@ -18,7 +18,8 @@
 //! when a screen does not settle (ADR 0730, ADR 0731). With `JUNTO_SCREENS_FILES=0` it writes
 //! no file and only measures. `JUNTO_SCREENS_SIZE` draws every window screen at one size, such
 //! as the least size of the window at 100 % (a screen at
-//! another interface scale gets that size at its scale).
+//! another interface scale gets that size at its scale). `JUNTO_SCREENS_PART=<k>/<n>` draws
+//! the k-th group of screens and every n-th group after it, so that n processes draw them all.
 
 // The program is a tool of the developers that writes the files of the screens that it
 // draws; the refusals of the file system in `clippy.toml` are for the application (ADR 0730).
@@ -3288,6 +3289,24 @@ fn draw_permissions(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+/// The part of `JUNTO_SCREENS_PART` (`<k>/<n>`, 1 <= k <= n) as the index of its first group
+/// and the step; without the variable, the whole list.
+fn screens_part() -> Result<(usize, usize), String> {
+    let Ok(text) = std::env::var("JUNTO_SCREENS_PART") else {
+        return Ok((0, 1));
+    };
+    let invalid = || format!("JUNTO_SCREENS_PART is <k>/<n> with 1 <= k <= n, not {text}");
+    let (part, parts) = text.split_once('/').ok_or_else(invalid)?;
+    let (part, parts): (usize, usize) = (
+        part.parse().map_err(|_| invalid())?,
+        parts.parse().map_err(|_| invalid())?,
+    );
+    if part == 0 || part > parts {
+        return Err(invalid());
+    }
+    Ok((part - 1, parts))
+}
+
 fn run(out: &Path) -> Result<(), String> {
     let mut studio = Studio::new(out.to_owned())?;
     let only = std::env::var("JUNTO_SCREENS_ONLY").ok();
@@ -3321,26 +3340,38 @@ fn run(out: &Path) -> Result<(), String> {
         Some("permissions") => draw_permissions(&mut studio),
         Some("calls") => draw_calls(&mut studio),
         Some("sounds") => draw_sound_settings(&mut studio),
-        _ => draw_all(&mut studio)
-            .and_then(|()| draw_calls(&mut studio))
-            .and_then(|()| draw_shares(&mut studio))
-            .and_then(|()| draw_rules(&mut studio))
-            .and_then(|()| direct::draw(&mut studio))
-            .and_then(|()| messages::draw(&mut studio))
-            .and_then(|()| threads::draw(&mut studio))
-            .and_then(|()| discovery::draw(&mut studio))
-            .and_then(|()| recorded::draw(&mut studio))
-            .and_then(|()| admin::draw(&mut studio))
-            .and_then(|()| people::draw(&mut studio))
-            .and_then(|()| profiles::draw(&mut studio))
-            .and_then(|()| profiles::draw_share(&mut studio))
-            .and_then(|()| rule_pages::draw(&mut studio))
-            .and_then(|()| roles::draw(&mut studio))
-            .and_then(|()| account::draw(&mut studio))
-            .and_then(|()| book::draw(&mut studio))
-            .and_then(|()| logo::draw(&mut studio))
-            .and_then(|()| permissions::draw(&mut studio))
-            .and_then(|()| draw_components(&mut studio)),
+        _ => {
+            let groups: [fn(&mut Studio) -> Result<(), String>; 20] = [
+                draw_all,
+                draw_calls,
+                draw_shares,
+                draw_rules,
+                direct::draw,
+                messages::draw,
+                threads::draw,
+                discovery::draw,
+                recorded::draw,
+                admin::draw,
+                people::draw,
+                profiles::draw,
+                profiles::draw_share,
+                rule_pages::draw,
+                roles::draw,
+                account::draw,
+                book::draw,
+                logo::draw,
+                permissions::draw,
+                draw_components,
+            ];
+            // JUNTO_SCREENS_PART=<k>/<n> draws the k-th group of this list and every n-th
+            // group after it, so that n processes together draw every screen (ADR 0905).
+            let (part, parts) = screens_part()?;
+            groups
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| index % parts == part)
+                .try_for_each(|(_, group)| group(&mut studio))
+        }
     };
     let scratch = studio.scratch.clone();
     let bands = std::mem::take(&mut studio.bands);

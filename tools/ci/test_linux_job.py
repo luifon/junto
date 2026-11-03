@@ -17,10 +17,10 @@ case "$*" in *"$FAIL_ON"*) [ -z "$FAIL_ON" ] || exit 17 ;; esac
 exit 0
 """
 DEVICE_TESTS = "cargo test --no-fail-fast --locked -p junto-media --test linux_audio --test tls_trust -- --ignored"
-SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 cargo run --locked -p junto-client --features test-support "
-           "--bin junto-screens -- /tmp/junto-screens")
-LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 cargo run --locked -p junto-client "
-                 "--features test-support --bin junto-screens -- /tmp/junto-screens")
+SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_PART=1/2 cargo run --locked -p junto-client --features "
+           "test-support --bin junto-screens -- /tmp/junto-screens")
+LEAST_SCREENS = ("sh -c JUNTO_SCREENS_FILES=0 JUNTO_SCREENS_SIZE=720x480 JUNTO_SCREENS_PART=1/2 cargo run --locked "
+                 "-p junto-client --features test-support --bin junto-screens -- /tmp/junto-screens")
 
 
 def quoted(command):
@@ -68,7 +68,7 @@ class LinuxSteps(unittest.TestCase):
         self.assertIn(SCREENS, commands)
         status, commands, output = self.run_job(fail_on="--bin junto-screens")
         self.assertEqual(status, 17)
-        self.assertIn(f"Screens without empty bands (exit 17): tools/linux-container.sh {quoted(SCREENS)}",
+        self.assertIn(f"Screens without empty bands, part 1 of 2 (exit 17): tools/linux-container.sh {quoted(SCREENS)}",
                       output.split("=== Failed steps", 1)[1])
 
     def test_the_linux_job_draws_every_screen_at_the_least_size_of_the_window(self):
@@ -78,7 +78,7 @@ class LinuxSteps(unittest.TestCase):
         self.assertLess(commands.index(SCREENS), commands.index(LEAST_SCREENS))
         status, commands, output = self.run_job(fail_on="JUNTO_SCREENS_SIZE=720x480")
         self.assertEqual(status, 17)
-        self.assertIn(f"Screens at the least size of the window (exit 17): tools/linux-container.sh {quoted(LEAST_SCREENS)}",
+        self.assertIn(f"Screens at the least size of the window, part 1 of 2 (exit 17): tools/linux-container.sh {quoted(LEAST_SCREENS)}",
                       output.split("=== Failed steps", 1)[1])
 
     def test_a_failed_test_of_sound_devices_fails_the_linux_job(self):
@@ -114,9 +114,17 @@ class LinuxSteps(unittest.TestCase):
             self.assertLess(commands.index(build), commands.index(command))
         # Every other test program: the build's own list without the two lanes of their own.
         self.assertIn("cargo_targets.py /target/junto-ci/test-programs.json app api", OTHER_LANE)
-        self.assertIn("Lanes: app, other, screens, least, one after the other", output)
+        self.assertIn("Lanes: app, other, screens-1, screens-2, least-1, least-2, one after the other", output)
         self.assertFalse([c for c in commands if c.startswith("cargo test") and "--workspace" in c
                           and c not in lanes and "--no-run" not in c])
+
+    def test_every_run_of_the_screens_is_drawn_in_all_of_its_parts(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        for screens in (SCREENS, LEAST_SCREENS):
+            for part in ("1/2", "2/2"):
+                self.assertEqual(commands.count(screens.replace("JUNTO_SCREENS_PART=1/2", f"JUNTO_SCREENS_PART={part}")), 1)
+        self.assertFalse([c for c in commands if "--bin junto-screens --" in c and "JUNTO_SCREENS_PART=" not in c])
 
     def test_a_failed_command_of_a_lane_is_listed_with_its_step(self):
         status, commands, output = self.run_job(fail_on="--test api")
