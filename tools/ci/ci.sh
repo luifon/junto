@@ -555,7 +555,7 @@ case "${1:-}" in
         start macos "$@" ;;
     select) [ "$#" -eq 2 ] || { echo "usage: $0 select <commit>" >&2; exit 2; }
         full=$(commit_of "$2") || { echo "no commit $2" >&2; exit 2; }
-        selection "$full" 2>&1 >/dev/null ;;
+        { selection "$full" >/dev/null; } 2>&1 ;;
     status) [ "$#" -eq 2 ] || { echo "usage: $0 status <commit or run>" >&2; exit 2; }; checked "$2"; status "$2" ;;
     forget) [ "$#" -eq 2 ] || { echo "usage: $0 forget <run>" >&2; exit 2; }; checked "$2"; forget "$2" ;;
     *) sed -n '2,34p' "$0" >&2; exit 2 ;;
