@@ -7,7 +7,7 @@ Changes reach `main` through pull requests on GitHub, which the maintainer of th
 1. Fork the repository, or create a branch if you can push to it.
 2. Make the change on a branch of its own. Follow the rules for a change below.
 3. Open a pull request against `main`.
-4. Sign the contributor licence agreement through the link that CLA assistant posts on the pull request (see below).
+4. Sign the contributor licence agreement through the link that CLA assistant posts on the pull request (see below). `license/cla` is a required check of `main`: a pull request cannot be merged until every author of its commits has signed.
 5. CI runs once on the head commit of the pull request, on Linux, macOS and Windows. A failed job runs again.
 6. The change gets one independent review. Answer the review with new commits on the same branch.
 7. The maintainer decides the merge and merges the pull request as one merge commit.
