@@ -3289,6 +3289,9 @@ fn draw_permissions(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
+/// One group of screens of the whole list.
+type DrawGroup = fn(&mut Studio) -> Result<(), String>;
+
 /// The part of `JUNTO_SCREENS_PART` (`<k>/<n>`, 1 <= k <= n) as the index of its first group
 /// and the step; without the variable, the whole list.
 fn screens_part() -> Result<(usize, usize), String> {
@@ -3341,7 +3344,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("calls") => draw_calls(&mut studio),
         Some("sounds") => draw_sound_settings(&mut studio),
         _ => {
-            let groups: [fn(&mut Studio) -> Result<(), String>; 20] = [
+            let groups: [DrawGroup; 20] = [
                 draw_all,
                 draw_calls,
                 draw_shares,
