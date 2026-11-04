@@ -238,17 +238,23 @@ pub enum Deleted {
 }
 
 impl TestDatabase {
-    /// Creates a database. The value exists from the moment the database exists, so a
-    /// failure of a later step deletes it.
-    async fn create(measured: bool) -> Arc<Self> {
+    /// Creates a database: a copy of the migrated template ([`migrated_template`]) for a test
+    /// server, and an empty one for a test that migrates a database itself. The value exists
+    /// from the moment the database exists, so a failure of a later step deletes it.
+    async fn create(measured: bool, migrated: bool) -> Arc<Self> {
         let admin = admin_options();
         let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
+        let template = if migrated {
+            format!(" template {}", migrated_template(&admin))
+        } else {
+            String::new()
+        };
         let mut connection = admin.connect().await.unwrap();
         // The statement statistics of the database server hold a fixed number of entries
         // for all databases together. Only the database of a test that reads them records.
         for statement in [
             "set pg_stat_statements.track = 'none'".to_owned(),
-            format!("create database {name}"),
+            format!("create database {name}{template}"),
         ] {
             sqlx::query(sqlx::AssertSqlSafe(statement))
                 .execute(&mut connection)
@@ -293,6 +299,104 @@ impl Drop for TestDatabase {
     }
 }
 
+/// The template of the databases of test servers: an empty database with the migrations of
+/// this version applied, as the start of a server applies them (`Database::migrate`).
+/// PostgreSQL copies it for each test (`create database ... template`), so a test does not
+/// apply every migration again; each test keeps a database of its own. Its name holds a hash
+/// of the versions and checksums of the migrations, so a changed migration gets another
+/// template. Each test process builds it at most once: under an advisory lock of the
+/// database server, so that two processes do not build it together, as
+/// `<name>_building`, renamed when the migrations have run, so that a template that a
+/// stopped process left half built is never copied.
+fn migrated_template(admin: &PgConnectOptions) -> String {
+    static TEMPLATE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TEMPLATE
+        .get_or_init(|| {
+            let admin = admin.clone();
+            // The caller runs on the runtime of its test; the work runs on a runtime of its
+            // own, as the deletion of a database does.
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(build_template(admin))
+            })
+            .join()
+            .unwrap()
+        })
+        .clone()
+}
+
+const TEMPLATE_LOCK: i64 = 0x4a55_4e54_4f00_7470;
+
+async fn build_template(admin: PgConnectOptions) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for migration in junto_server::bootstrap::MIGRATIONS.iter() {
+        let version = migration.version.to_le_bytes();
+        for byte in version.iter().chain(migration.checksum.iter()) {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let name = format!("junto_test_template_{hash:016x}");
+    let building = format!("{name}_building");
+    let mut connection = admin.connect().await.unwrap();
+    for statement in [
+        "set pg_stat_statements.track = 'none'".to_owned(),
+        format!("select pg_advisory_lock({TEMPLATE_LOCK})"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let exists: bool =
+        sqlx::query_scalar("select exists(select 1 from pg_database where datname = $1)")
+            .bind(&name)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    if !exists {
+        for statement in [
+            format!("drop database if exists {building} with (force)"),
+            format!("create database {building}"),
+            format!("alter database {building} set pg_stat_statements.track = 'none'"),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        let mut template = admin.clone().database(&building).connect().await.unwrap();
+        for limit in [
+            "set statement_timeout = 0",
+            "set lock_timeout = 0",
+            "set idle_in_transaction_session_timeout = 0",
+        ] {
+            sqlx::query(limit).execute(&mut template).await.unwrap();
+        }
+        junto_server::bootstrap::MIGRATIONS
+            .run(&mut template)
+            .await
+            .unwrap();
+        template.close().await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "alter database {building} rename to {name}"
+        )))
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "select pg_advisory_unlock({TEMPLATE_LOCK})"
+    )))
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    connection.close().await.unwrap();
+    name
+}
+
 /// A database of a test that no server process uses: for a test that migrates a database
 /// itself. It is deleted when it is dropped.
 pub struct EmptyDatabase {
@@ -301,7 +405,7 @@ pub struct EmptyDatabase {
 }
 
 pub async fn empty_database() -> EmptyDatabase {
-    let kept = TestDatabase::create(false).await;
+    let kept = TestDatabase::create(false, false).await;
     EmptyDatabase {
         options: kept.options(),
         _kept: kept,
@@ -718,7 +822,7 @@ impl TestServer {
     }
 
     async fn start_as(configure: impl FnOnce(&mut Config), setup: Setup) -> Self {
-        let kept = TestDatabase::create(setup.measured).await;
+        let kept = TestDatabase::create(setup.measured, true).await;
         let mut config = test_config();
         if matches!(setup.media, Media::Fake(_)) {
             config.recorder = Some(recorder_settings());

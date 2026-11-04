@@ -519,3 +519,46 @@ class CheckoutFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Selection(unittest.TestCase):
+    """Jobs that tools/ci/changes.py skips or reduces to their Python unit tests."""
+
+    def test_a_run_of_skipped_jobs_records_them_and_takes_no_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "serial-ran"
+            source = repository_with(root, SERIAL.format(check=""))
+            directory = str(root / "ci")
+            environment = prepared(directory, dict(os.environ, SERIAL_RECORD=str(marker),
+                                                   RUN_CHECKOUT=str(root / "ci" / "checkout")))
+            result = subprocess.run(["sh", RUNNER, directory, "sample-run", "linux", str(source),
+                                     "rust-linux:skip", "licences:skip"],
+                                    env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            here = root / "ci" / "runs" / "sample-run"
+            lines = [line.split("\t") for line in (here / "record.tsv").read_text().splitlines()]
+            self.assertEqual([(line[1], line[4], line[7]) for line in lines],
+                             [("rust-linux", "0", "skipped"), ("licences", "0", "skipped")])
+            self.assertEqual((here / "finished").read_text(), "0\n")
+            self.assertFalse(marker.exists(), "the run took the lock")
+            self.assertFalse((root / "ci" / "checkout").exists())
+
+    def test_a_skipped_job_beside_a_job_that_runs_and_the_part_of_a_job(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            probe = root / "parts"
+            script = '#!/bin/sh\nprintf "%s" "$JUNTO_CI_PARTS" > "$PARTS_PROBE"\n'
+            source = repository_with(root, SERIAL.format(check=""), {"tools/ci/rust-linux.sh": script})
+            directory = str(root / "ci")
+            environment = prepared(directory, dict(os.environ, PARTS_PROBE=str(probe),
+                                                   RUN_CHECKOUT=str(root / "ci" / "checkout")))
+            result = subprocess.run(["sh", RUNNER, directory, "sample-run", "linux", str(source),
+                                     "licences:skip", "rust-linux:python"],
+                                    env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(probe.read_text(), "python")
+            lines = [line.split("\t") for line in (root / "ci/runs/sample-run/record.tsv").read_text().splitlines()]
+            self.assertEqual([(line[1], line[4]) for line in lines], [("licences", "0"), ("rust-linux", "0")])
+            self.assertEqual(lines[0][7], "skipped")
+            self.assertEqual(len(lines[1]), 7)

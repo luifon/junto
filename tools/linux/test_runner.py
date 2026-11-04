@@ -4,8 +4,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import image_inputs  # noqa: E402
 
 TOOLS = Path(__file__).resolve().parent.parent
 SERIAL = Path(os.environ.get("JUNTO_SERIAL_UNDER_TEST", TOOLS / "serial.sh"))
@@ -13,7 +17,8 @@ COMMON = TOOLS.parent / "deploy/livekit-common.yaml"
 
 
 class RunnerFailures(unittest.TestCase):
-    def run_script(self, scenario, launcher=False, memory="6g", processors="4", cpu_first=None, service_first=None):
+    def run_script(self, scenario, launcher=False, memory="6g", processors="4", cpu_first=None, service_first=None,
+                   extra=None):
         with tempfile.TemporaryDirectory(prefix="junto-linux-runner-", dir="/tmp") as directory:
             root = Path(directory)
             tools = root / "checkout/tools"
@@ -23,6 +28,8 @@ class RunnerFailures(unittest.TestCase):
             shutil.copy(SERIAL, tools / "serial.sh")
             shutil.copy(TOOLS / "linux/build_jobs.py", tools / "linux/build_jobs.py")
             shutil.copy(TOOLS / "linux/cpu_sets.py", tools / "linux/cpu_sets.py")
+            shutil.copy(TOOLS / "linux/image_inputs.py", tools / "linux/image_inputs.py")
+            shutil.copy(TOOLS / "linux/Dockerfile", tools / "linux/Dockerfile")
             (root / "checkout/deploy").mkdir()
             shutil.copy(COMMON, root / "checkout/deploy/livekit-common.yaml")
             docker = root / "docker"
@@ -36,8 +43,14 @@ case "$*" in
     "network create "*) [ "$SCENARIO" != stale_network ]; exit $? ;;
     "cp "*) exit 1 ;;
     "image prune "*) echo "Error response from daemon: a prune operation is already running" >&2; exit 1 ;;
-    "image ls "*) [ "$SCENARIO" = replaced_image ] && echo 0123456789ab; exit 0 ;;
-    "run --name junto-linux-build "*)
+    "image inspect --format {{index "*)
+        [ "$SCENARIO" = current_image ] || exit 1
+        echo "$IMAGE_INPUTS"; exit 0 ;;
+    "image inspect --format {{.Id}} "*) echo sha256:new; exit 0 ;;
+    "image inspect --format {{.Parent}} sha256:new") echo sha256:parent; exit 0 ;;
+    "image inspect --format {{.Parent}} "*) echo; exit 0 ;;
+    "image ls "*) [ "$SCENARIO" = replaced_image ] && echo sha256:old sha256:new sha256:parent sha256:older; exit 0 ;;
+    "run --name "*)
         if [ -d "$CHECKOUT/spikes/test-participant/target" ]; then echo present >> "$COMMAND_LOG.participant"; fi
         exit 37 ;;
 esac
@@ -70,6 +83,14 @@ exit 0
             if service_first is not None:
                 environment["JUNTO_LINUX_SERVICE_CPU_FIRST"] = service_first
             environment.pop("JUNTO_LINUX_PREFIX", None)
+            for name in ("JUNTO_LINUX_INSTANCE", "JUNTO_LINUX_IMAGE_BUILT", "JUNTO_LINUX_CPU_SET",
+                         "JUNTO_LINUX_SERVICE_CPU_SET"):
+                environment.pop(name, None)
+            environment["IMAGE_INPUTS"] = image_inputs.key(tools / "linux", [
+                "BUILD_UID=1000" if scenario in ("root", "macos") else "BUILD_UID=12345",
+                "BUILD_GID=1000" if scenario in ("root", "macos") else "BUILD_GID=23456",
+                "JUNTO_LINUX_IMAGE=junto-linux"])
+            environment.update(extra or {})
             environment.pop("JUNTO_LINUX_POSTGRES_CPUS", None)
             environment.pop("JUNTO_LINUX_BUILDER", None)
             if scenario == "limited_builder":
@@ -90,13 +111,77 @@ exit 0
         self.assertEqual(result.returncode, 37, result.stderr)
 
     def test_a_replaced_image_is_removed_without_a_prune_of_the_daemon(self):
-        # The daemon refuses a prune while another one runs on the host.
+        # The daemon refuses a prune while another one runs on the host. Only the images of this
+        # prefix that are not the new image or one of its parents go, each without its parents:
+        # with the containerd image store a removal with parents also removes a parent that
+        # another image still has.
         result = self.run_script("replaced_image")
         self.assertEqual(result.returncode, 37, result.stderr)
-        self.assertIn("image ls -q --filter dangling=true --filter label=junto-linux-image=junto-linux\n",
-                      result.commands)
-        self.assertIn("image rm 0123456789ab\n", result.commands)
+        self.assertIn("image ls -a -q --no-trunc --filter label=junto-linux-image=junto-linux\n", result.commands)
+        self.assertIn("image rm --no-prune sha256:old sha256:older\n", result.commands)
         self.assertNotIn("image prune", result.commands)
+
+    def test_an_image_with_the_inputs_of_the_checkout_is_not_built_again(self):
+        result = self.run_script("current_image")
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertFalse([line for line in result.commands.splitlines() if line.startswith("build ")])
+        self.assertNotIn("image rm", result.commands)
+        self.assertIn("not built", result.stdout)
+
+    def test_an_image_with_other_inputs_is_built_with_the_key_and_the_prefix_of_its_chain(self):
+        result = self.run_script("ownership")
+        self.assertEqual(result.returncode, 37, result.stderr)
+        image = next(line for line in result.commands.splitlines() if line.startswith("build "))
+        self.assertIn(" --label junto-linux-inputs=", image)
+        self.assertIn(" --build-arg JUNTO_LINUX_IMAGE=junto-linux ", image)
+
+    def test_a_command_that_must_not_build_fails_when_the_image_has_other_inputs(self):
+        result = self.run_script("ownership", extra={"JUNTO_LINUX_IMAGE_BUILT": "1"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("forbids a build", result.stderr)
+        self.assertFalse([line for line in result.commands.splitlines() if line.startswith(("run ", "build "))])
+        result = self.run_script("current_image", extra={"JUNTO_LINUX_IMAGE_BUILT": "1"})
+        self.assertEqual(result.returncode, 37, result.stderr)
+
+    def test_an_instance_names_the_containers_and_shares_the_image_and_volumes(self):
+        result = self.run_script("current_image", extra={"JUNTO_LINUX_INSTANCE": "api"})
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertIn("network create junto-linux-api-tests", result.commands)
+        for name in ("postgres", "livekit"):
+            self.assertIn(f"run -d --name junto-linux-api-{name} ", result.commands)
+        build = next(line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-api-build "))
+        self.assertIn("src=junto-linux-target,dst=/target", build)
+        self.assertIn(" junto-linux-build:1 ", build)
+        result = self.run_script("current_image", extra={"JUNTO_LINUX_INSTANCE": "a b"})
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_a_command_without_services_starts_only_its_build_container(self):
+        result = self.run_script("current_image", memory="4g",
+                                 extra={"JUNTO_LINUX_SERVICES": "none", "JUNTO_LINUX_CARGO_JOBS": "1"})
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertNotIn("run -d ", result.commands)
+        build = next(line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build "))
+        self.assertIn(" -e JUNTO_LINUX_SERVICES=none ", build)
+        self.assertIn(" -e CARGO_BUILD_JOBS=1 ", build)
+        for name, value in [("JUNTO_LINUX_SERVICES", "some"), ("JUNTO_LINUX_CARGO_JOBS", "0"),
+                            ("JUNTO_LINUX_CARGO_JOBS", "two")]:
+            with self.subTest(name=name, value=value):
+                result = self.run_script("current_image", extra={name: value})
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(name, result.stderr)
+
+    def test_the_caller_can_give_both_processor_sets_as_lists(self):
+        result = self.run_script("current_image", memory="14g",
+                                 extra={"JUNTO_LINUX_CPU_SET": "0-1,4-5,8-11", "JUNTO_LINUX_SERVICE_CPU_SET": "12-15"})
+        self.assertEqual(result.returncode, 37, result.stderr)
+        build = next(line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build "))
+        self.assertIn(" --cpuset-cpus 0-1,4-5,8-11 ", build)
+        self.assertIn(" -e CARGO_BUILD_JOBS=4 ", build)
+        postgres = next(line for line in result.commands.splitlines() if line.startswith("run -d --name junto-linux-postgres "))
+        self.assertIn(" --cpuset-cpus 12-15 ", postgres)
+        result = self.run_script("current_image", extra={"JUNTO_LINUX_CPU_SET": "8-16"})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("CPU", result.stderr)
 
     def test_a_leftover_network_has_an_actionable_error(self):
         result = self.run_script("stale_network")

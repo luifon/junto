@@ -7,14 +7,28 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/ci/pins.sh
 
-# Each step states its start in UTC, so that the log gives the time of each step. Every step
-# runs also after a failed step, and every test program runs also after a failed one
-# (--no-fail-fast), so that one run shows every failure of the commit; the job ends with the
-# list of the failed commands and the exit status of the first (ADR 0905).
+# Each step states its start and its end in UTC and its duration, and the job ends with the table
+# of the steps. Every step runs also after a failed step, and every test program runs also after
+# a failed one (--no-fail-fast), so that one run shows every failure of the commit; the job ends
+# with the list of the failed commands and the exit status of the first (ADR 0905).
 current=""
 failed=""
 first=0
-step() { current=$1; printf '\n=== %s  %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+began=0
+times=""
+ended() {
+    [ -n "$current" ] || return 0
+    local seconds=$(($(date +%s) - began))
+    printf '=== %s: ended %s after %dm%02ds\n' "$current" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" $((seconds / 60)) $((seconds % 60))
+    times="$times
+$(printf '%5dm%02ds  %s' $((seconds / 60)) $((seconds % 60)) "$current")"
+}
+step() {
+    ended
+    current=$1
+    began=$(date +%s)
+    printf '\n=== %s  %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
 run() {
     local status
     "$@" || {
@@ -25,6 +39,8 @@ $current (exit $status): $*"
     }
 }
 finish() {
+    ended
+    printf '\n=== Step times%s\n' "$times"
     if [ "$first" -ne 0 ]; then
         printf '\n=== Failed steps%s\n' "$failed"
         exit "$first"
@@ -37,6 +53,21 @@ case "$(uname -s)" in
     *) echo "this job runs on macOS or on Windows, not on $(uname -s)" >&2; exit 2 ;;
 esac
 
+# A change of Python unit tests only (tools/ci/changes.py, JUNTO_CI_PARTS=python): those tests.
+if [ "${JUNTO_CI_PARTS:-}" = python ]; then
+    step "Packaging unit tests"
+    run python3 -m unittest discover -s packaging -p "test_*.py"
+    step "Test service wrapper failure paths"
+    run python3 tools/test_test_services.py
+    if [ "$system" = windows ]; then
+        step "Windows tool unit tests"
+        run python3 -m unittest discover -s tools/windows -p "test_*.py"
+    else
+        step "PostgreSQL for macOS"
+        run python3 tools/test_with_native_postgres.py
+    fi
+    finish
+fi
 # Code under cfg(windows) and cfg(target_os = "macos") is linted only on its own system.
 # --keep-going: the lints of every crate, also after a crate with an error.
 step "Lint"

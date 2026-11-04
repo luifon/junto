@@ -271,6 +271,27 @@ class Local(Fixture):
             self.assertFalse((self.directory / "cargo-target").exists(), phase)
             self.assertIn(f"{phase}: cache cargo-target: {61 * GIB} KiB, above its cap", result.stdout)
 
+    def test_a_target_above_its_cap_first_loses_its_incremental_directories(self):
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        target = self.directory / "cargo-target"
+        sparse(target / "debug" / "deps", 40 * GIB)
+        sparse(target / "debug" / "incremental" / "junto_server-1", 15 * GIB)
+        sparse(target / "x86_64-pc-windows-msvc" / "debug" / "incremental" / "junto-2", 6 * GIB)
+        stamped(target, self.directory / "checkout")
+        result = self.caches("windows", "after")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"cache cargo-target: {61 * GIB} KiB, above its cap of {60 * GIB} KiB; without the incremental "
+                      f"compilation directories {40 * GIB} KiB", result.stdout)
+        self.assertTrue((target / "debug" / "deps" / "data").exists())
+        self.assertFalse((target / "debug" / "incremental").exists())
+        self.assertFalse((target / "x86_64-pc-windows-msvc" / "debug" / "incremental").exists())
+        # Still above the cap without them: the target is emptied.
+        sparse(target / "debug" / "deps", 61 * GIB)
+        sparse(target / "debug" / "incremental" / "junto_server-1", 2 * GIB)
+        result = self.caches("windows", "after")
+        self.assertRegex(result.stdout, r"cache cargo-target: \d+ KiB, above its cap of \d+ KiB; emptied")
+        self.assertFalse(target.exists())
+
     def test_a_cache_within_its_cap_stays_and_the_run_is_recorded(self):
         self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         sparse(self.directory / "cargo-target", 59 * GIB)
@@ -432,6 +453,18 @@ class Linux(Fixture):
         self.assertIn("volume inspect junto-ci-cargo", self.log())
         self.assertNotIn("cache junto-ci-cargo:", result.stdout, "a volume that does not exist")
         self.assertIn(f"cache junto-ci-uv: {3 * GIB} KiB of {4 * GIB} KiB", result.stdout)
+
+    def test_the_incremental_directories_of_the_target_volume_are_removed_in_a_container(self):
+        target = self.root / "volumes" / "junto-ci-target"
+        sparse(target / "debug" / "deps", 50 * GIB)
+        sparse(target / "debug" / "incremental" / "junto_client-1", 15 * GIB)
+        stamped(target, "/src")
+        result = self.caches("linux", "after")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("without the incremental compilation directories", result.stdout)
+        self.assertTrue((target / "debug" / "deps" / "data").exists())
+        self.assertFalse((target / "debug" / "incremental").exists())
+        self.assertIn("--name junto-ci-cache-trim ", self.log())
 
     def test_the_caches_are_emptied_when_a_run_without_them_fits_and_the_run_with_them_does_not(self):
         sparse(self.root / "volumes" / "junto-ci-target", 30 * GIB)

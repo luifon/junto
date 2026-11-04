@@ -23,6 +23,9 @@ Before a run:
    the run-jobs.sh of an older commit with a checkout of its own, wrote such output: Cargo would
    keep it, compiled from other files and naming another checkout.
 2. A cache above its size cap is emptied: Cargo and BuildKit keep the output of earlier builds.
+   The target cache first loses its directories of incremental compilation (incremental below
+   each profile directory), which Cargo builds again for the changed crates of the workspace
+   only; it is emptied when it is still above its cap.
 3. The free space that the run will use is estimated from the use of the last RECORDS runs of
    the machine that started in the same state (with the target cache, or without it), recorded
    in <directory>/cache-history.tsv: the drop of the free space during the run, and at least the
@@ -77,6 +80,8 @@ EXAMINED = "cache-examined"
 # machine (tools/ci/run-jobs.sh). A change of it empties the target caches once.
 RUNNER = 2
 STAMP = ".junto-ci-runner"
+# The incremental directories of a target: <profile>/incremental and <triple>/<profile>/incremental.
+INCREMENTAL_DEPTH = 3
 BUILDER = "junto-ci-deployment"
 LIMITS = {
     "JUNTO_CI_TARGET_CAP_GIB": 60,
@@ -229,6 +234,10 @@ class Linux:
     def empty(self, name):
         self.container("empty", name, ["find", "/cache", "-mindepth", "1", "-delete"])
 
+    def trim(self, name):
+        self.container("trim", name, ["sh", "-c", f"find /cache -mindepth 2 -maxdepth {INCREMENTAL_DEPTH} "
+                                      "-type d -name incremental -prune -exec rm -rf {} +"])
+
     def foreign(self, stamp):
         """Why the target volume holds output of another runner, or None."""
         output = self.container("stamp", self.target, ["sh", "-c", f"cat /cache/{STAMP} 2>/dev/null || true; echo '~'; "
@@ -303,7 +312,17 @@ class Local:
             program(["docker", "buildx", "prune", "--builder", BUILDER, "--all", "--force"],
                     f"the removal of the cache of the builder {BUILDER}")
             return
-        path = str(self.directory / name)
+        self.remove(self.directory / name)
+
+    def trim(self, name):
+        target = self.directory / name
+        for depth in range(2, INCREMENTAL_DEPTH + 1):
+            for incremental in target.glob("/".join(["*"] * (depth - 1) + ["incremental"])):
+                if incremental.is_dir() and not incremental.is_symlink():
+                    self.remove(incremental)
+
+    def remove(self, path):
+        path = str(path)
         if os.name == "nt":
             path = "\\\\?\\" + os.path.abspath(path)
 
@@ -472,6 +491,12 @@ def check(directory, runner, phase, run):
                 size = 0
                 remaining.append((name, size))
                 continue
+        if size > cap and name == machine.target:
+            machine.trim(name)
+            trimmed = machine.size(name) or 0
+            log(phase, f"cache {name}: {size} KiB, above its cap of {cap} KiB; without the incremental "
+                       f"compilation directories {trimmed} KiB")
+            size = trimmed
         if size > cap:
             machine.empty(name)
             log(phase, f"cache {machine.describe(name)}: {size} KiB, above its cap of {cap} KiB; emptied")

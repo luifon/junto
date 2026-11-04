@@ -35,7 +35,7 @@ DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
 class JobSteps(unittest.TestCase):
-    def run_job(self, system, fail_on=""):
+    def run_job(self, system, fail_on="", parts=""):
         """Runs the job in a copy of the files it reads; returns its exit code, the recorded
         commands and its output."""
         temporary = Path(tempfile.mkdtemp(prefix="junto-job-"))
@@ -61,6 +61,7 @@ class JobSteps(unittest.TestCase):
             "RECORD": str(record),
             "FAIL_ON": fail_on,
             "CARGO_TARGET_DIR": str(temporary / "target"),
+            "JUNTO_CI_PARTS": parts,
         }
         result = subprocess.run(["bash", str(root / "tools" / "ci" / "rust-other-systems.sh")], env=environment,
                                 capture_output=True, text=True, timeout=120)
@@ -70,6 +71,15 @@ class JobSteps(unittest.TestCase):
         without = [c for c in commands if c.startswith(WINDOW_TESTS)]
         with_database = [c for c in commands if c.startswith(f"{DATABASE[system]} {WINDOW_TESTS}")]
         return without, with_database
+
+    def test_a_change_of_python_unit_tests_runs_only_the_python_unit_tests(self):
+        for system, own in [("macos", "python3 tools/test_with_native_postgres.py"),
+                            ("windows", 'python3 -m unittest discover -s tools/windows -p test_*.py')]:
+            with self.subTest(system=system):
+                status, commands, output = self.run_job(system, parts="python")
+                self.assertEqual(status, 0, output)
+                self.assertEqual(commands, ['python3 -m unittest discover -s packaging -p test_*.py',
+                                            "python3 tools/test_test_services.py", own])
 
     def test_macos_runs_the_window_tests_with_postgresql_and_leaves_out_only_the_live_tests(self):
         status, commands, output = self.run_job("macos")

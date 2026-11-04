@@ -5,6 +5,9 @@
 #
 #   run-jobs.sh <directory> <run> <runner> <repository> <job>...
 #
+# A job is <name>, <name>:python (only the Python unit tests of a Rust job) or <name>:skip (not
+# run; recorded as skipped), as tools/ci/ci.sh selects them with tools/ci/changes.py.
+#
 # <directory> is the CI directory of this machine, <run> the name of the run, <runner>
 # "linux", "macos" or "windows", <repository> a Git repository or a Git bundle file with the
 # ref refs/ci/<run>. On Windows <directory> is a path such as C:/junto-ci, and the script runs
@@ -14,7 +17,7 @@
 #   commit, jobs      the commit and the jobs of the run, written first
 #   current           the job that runs and its start, while it runs
 #   record.tsv        one line per finished job: commit, job, start, end (UTC), exit
-#                     status, log file, seconds
+#                     status, log file, seconds, and "skipped" for a skipped job
 #   logs/<job>.log    the output of the job
 #   finished          the exit status of the run (0: every job passed), written last
 #
@@ -90,6 +93,17 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         rm "$objects/objects/info/alternates"
     fi
     git -C "$objects" rev-parse "refs/ci/$run" >"$here/commit"
+    # A run whose every job is skipped records them and waits for no lock.
+    skipped_only=yes
+    for entry in "$@"; do case "$entry" in *:skip) ;; *) skipped_only="" ;; esac; done
+    if [ -n "$skipped_only" ]; then
+        for entry in "$@"; do
+            printf '%s\t%s\t%s\t%s\t0\t-\t0\tskipped\n' "$(cat "$here/commit")" "${entry%%:*}" \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$here/record.tsv"
+        done
+        echo 0 >"$here/finished"
+        exit 0
+    fi
     # The lock programs and this script of the commit under test, which take the lock and run
     # the locked part.
     for file in tools/serial.sh tools/windows/lock.py tools/ci/run-jobs.sh; do
@@ -287,6 +301,8 @@ if [ "$runner" = linux ]; then
     service_first=$((cpu_first + rust_cpus))
     if [ "$((service_first + rust_cpus))" -gt "$total_cpus" ]; then service_first=$cpu_first; fi
     export JUNTO_LINUX_SERVICE_CPU_FIRST=$service_first
+    # tools/ci/budget.py adds the processors of free worker locks on a host of 16 or more.
+    export JUNTO_CI_HOST_CPUS=$total_cpus
 fi
 linux_container() {
     JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
@@ -378,14 +394,20 @@ caches_check before
 shell=$(command -v sh)
 if [ "$runner" = windows ]; then shell=$(cygpath -w "$shell"); fi
 failed=0
-for name in "$@"; do
+for entry in "$@"; do
+    name=${entry%%:*} part=""
+    case "$entry" in *:*) part=${entry#*:} ;; esac
     start=$(now)
+    if [ "$part" = skip ]; then
+        printf '%s\t%s\t%s\t%s\t0\t-\t0\tskipped\n' "$commit" "$name" "$start" "$start" >>"$here/record.tsv"
+        continue
+    fi
     began=$(date +%s)
     printf '%s\t%s\n' "$name" "$start" >"$here/current"
     # The job runs in the background in a group of its own, so that a signal to this script
     # ends it and every process that it started. It does not see the terminal of the runner.
     group=junto-ci-$run-$name
-    JUNTO_CI_JOB=$name python3 "$checkout/tools/ci/group.py" "$group" \
+    JUNTO_CI_JOB=$name JUNTO_CI_PARTS=$part python3 "$checkout/tools/ci/group.py" "$group" \
         "$shell" "$0" "$directory" "$run" "$runner" "$repository" "$name" </dev/null >"$here/logs/$name.log" 2>&1 &
     pid=$!
     status=0
