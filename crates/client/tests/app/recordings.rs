@@ -723,6 +723,24 @@ fn recorded_scene(
 }
 
 /// The page of the recordings that the open administration shows.
+/// The number of reads of the list of recordings that the page started.
+fn reads(window: &mut Window) -> u64 {
+    window
+        .state
+        .read_with(&window.cx, |state, _| state.recordings_reads().0)
+}
+
+/// Moves the clock of the window by the least time between two reads of the list (ADR 0784)
+/// when a read that an event caused waits for it, and not otherwise.
+fn pass_waiting_reload(window: &mut Window) {
+    let waits = window
+        .state
+        .read_with(&window.cx, |state, _| state.recordings_reads().1);
+    if waits {
+        window.cx.executor().advance_clock(Duration::from_secs(1));
+    }
+}
+
 fn recordings_page(
     window: &mut Window,
 ) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
@@ -761,14 +779,16 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
     // Each event of the recording reads the list again, at most once in a second: the row
     // can be ready while the read of a later event is on its way. The page is loaded when
     // the last read has ended.
+    let before = reads(&mut window);
     window.until("the page lists the finished recording", |window| {
-        window.cx.executor().advance_clock(Duration::from_secs(1));
+        pass_waiting_reload(window);
         recordings_page(window).is_some_and(|page| {
             page.state == RecordingsRead::Loaded
                 && page.rows.len() == 1
                 && page.rows[0].state == RecordingState::Ready
         })
     });
+    assert!(reads(&mut window) > before, "no read followed the events");
     let page = recordings_page(&mut window).unwrap();
     assert_eq!(page.state, RecordingsRead::Loaded);
     let row = &page.rows[0];
@@ -792,13 +812,19 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
         end_ms: 120,
         text: "The plan for the week.".to_owned(),
     };
+    // Without an event the page reads nothing, also when its clock moves.
+    let before = reads(&mut window);
+    window.cx.executor().advance_clock(Duration::from_secs(5));
+    window.settle();
+    assert_eq!(reads(&mut window), before);
     world.run(server.transcribe(first, std::slice::from_ref(&line)));
     // A read that an event causes starts at the earliest one second after the read before
-    // (ADR 0784). The clock of the test platform moves only when the test moves it.
+    // (ADR 0784). The clock of the test platform moves only when the test moves it, and the
+    // test moves it only while such a read waits.
     window.until_read(
         "the row tells the transcript",
         |window| {
-            window.cx.executor().advance_clock(Duration::from_secs(1));
+            pass_waiting_reload(window);
             recordings_page(window).map(|page| {
                 page.rows
                     .iter()
@@ -812,10 +838,15 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
         },
     );
 
+    assert!(
+        reads(&mut window) > before,
+        "no read followed the event of the transcript"
+    );
+
     // A second recording comes first: the newest first.
     let second = world.run(server.record(voice, &[&admin.handle, &luca]));
     window.until("the page lists both recordings", |window| {
-        window.cx.executor().advance_clock(Duration::from_secs(1));
+        pass_waiting_reload(window);
         recordings_page(window).is_some_and(|page| {
             page.rows.iter().map(|row| row.id).collect::<Vec<_>>() == [second, first]
                 && page.rows[0].state == RecordingState::Ready
