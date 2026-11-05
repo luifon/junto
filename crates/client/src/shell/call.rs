@@ -50,12 +50,23 @@ pub enum CallTab {
     Settings,
 }
 
-/// The kind of a sound device.
+/// The kind of a device of a call: a camera, or a sound input or output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
     Camera,
     Input,
     Output,
+}
+
+impl DeviceKind {
+    /// The icon of a device of this kind in a list of devices.
+    pub(crate) fn icon(self) -> Icon {
+        match self {
+            Self::Camera => Icon::Camera,
+            Self::Input => Icon::Microphone,
+            Self::Output => Icon::Phones,
+        }
+    }
 }
 
 /// The volume control of one person: its value, its keyboard focus, and the subscription
@@ -1781,11 +1792,7 @@ impl Shell {
                             .icon(if choice.selected {
                                 Icon::Check
                             } else {
-                                match kind {
-                                    DeviceKind::Camera => Icon::Camera,
-                                    DeviceKind::Input => Icon::Microphone,
-                                    DeviceKind::Output => Icon::Phones,
-                                }
+                                kind.icon()
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let id = id.clone();

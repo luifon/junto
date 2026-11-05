@@ -71,6 +71,12 @@ the check and its previews; a stale Join action is refused. A real join cancels 
 before the call takes the devices, and a camera preview never enables the call camera. While
 already in a call, the check states that the running call's settings control its devices.
 
+In every list of devices, in a call and in the device check, the selected device has a check
+mark and every other choice has the icon of its kind of device: a camera for a camera, a
+microphone for an input and headphones for an output (`DeviceKind::icon`). Test:
+`device_checks::each_device_list_of_the_voice_settings_has_the_icon_of_its_kind` in the window
+tests.
+
 Each person can pin one participant, including themselves, to their own person stage from the
 tile or member menu. A pin overrides speaker focus and the grid, including for an avatar without
 video and when other audio-only tiles are hidden. It follows the account rather than a tile's

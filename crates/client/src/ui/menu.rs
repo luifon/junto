@@ -399,7 +399,7 @@ pub struct MenuItem {
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
     disabled: bool,
-    selector: Option<&'static str>,
+    selector: Option<SharedString>,
     on_click: Option<ClickHandler>,
 }
 
@@ -462,8 +462,8 @@ impl MenuItem {
         self
     }
 
-    pub fn selector(mut self, selector: &'static str) -> Self {
-        self.selector = Some(selector);
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
         self
     }
 
@@ -505,8 +505,8 @@ impl RenderOnce for MenuItem {
             .id(self.id)
             .role(Role::MenuItem)
             .aria_label(self.title.clone())
-            .when_some(self.selector, |item, selector| {
-                item.debug_selector(|| selector.to_owned())
+            .when_some(self.selector.clone(), |item, selector| {
+                item.debug_selector(|| selector.to_string())
             })
             .flex()
             .flex_none()
@@ -530,7 +530,15 @@ impl RenderOnce for MenuItem {
                     })
             })
             .when_some(self.icon, |item, shown| {
-                item.child(div().mt(u(2.0)).child(icon(shown, 15.0, colors.ink_2)))
+                let selector = self.selector.clone();
+                item.child(
+                    div()
+                        .mt(u(2.0))
+                        .when_some(selector, |mark, selector| {
+                            mark.debug_selector(move || format!("{selector}-icon-{shown:?}"))
+                        })
+                        .child(icon(shown, 15.0, colors.ink_2)),
+                )
             })
             .when_some(self.swatch, |item, colour| {
                 item.child(
