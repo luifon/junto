@@ -31,12 +31,13 @@ class Running(unittest.TestCase):
         self.assertIn("Quit Junto", message)
         self.assertEqual(calls[0], [running.LSAPPINFO, "find", "bundleid=org.junto.app"])
 
-    def test_a_display_name_with_spaces_is_one_application(self):
-        listed = 'ASN:0x0-0x1d01d-"Junto Test":\nASN:0x0-0x2e02e-"Junto":\n'
+    def test_two_applications_of_one_output_are_each_read(self):
+        # `lsappinfo find` writes a space of a display name as an underscore.
+        listed = 'ASN:0x0-0x1d01d-"Junto_Test":\nASN:0x0-0x2e02e-"Junto":\n'
         run, calls = lsappinfo(listed, {
-            'ASN:0x0-0x1d01d-"Junto Test":': '"pid"=1\n', 'ASN:0x0-0x2e02e-"Junto":': '"pid"=2\n'})
+            'ASN:0x0-0x1d01d-"Junto_Test":': '"pid"=1\n', 'ASN:0x0-0x2e02e-"Junto":': '"pid"=2\n'})
         self.assertEqual(running.running(run=run, system=lambda: "Darwin"), ['"pid"=1', '"pid"=2'])
-        self.assertEqual([call[-1] for call in calls[1:]], ['ASN:0x0-0x1d01d-"Junto Test":', 'ASN:0x0-0x2e02e-"Junto":'])
+        self.assertEqual([call[-1] for call in calls[1:]], ['ASN:0x0-0x1d01d-"Junto_Test":', 'ASN:0x0-0x2e02e-"Junto":'])
 
     def test_no_application_of_the_identifier_lets_the_check_run(self):
         run, calls = lsappinfo("", {})

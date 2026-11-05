@@ -13,7 +13,7 @@ import subprocess
 IDENTIFIER = "org.junto.app"
 LSAPPINFO = "/usr/bin/lsappinfo"
 # One application in the output of `lsappinfo find`: `ASN:0x0-0x1c01c-"Finder":`, its display
-# name in quotes, which can hold spaces, or without a name.
+# name in quotes with an underscore for each space, or without a name.
 ASN = re.compile(r'ASN:0x[0-9a-fA-F]+-0x[0-9a-fA-F]+(?:-"(?:[^"\\]|\\.)*")?:')
 
 
