@@ -995,6 +995,16 @@ fn a_watched_share_is_drawn_inside_its_stage(
     size: (u32, u32),
     window_size: gpui::Size<gpui::Pixels>,
 ) -> gpui::Bounds<gpui::Pixels> {
+    let (_directory, mut window) = watch_own_share(cx, size, window_size);
+    watched_share_fits(&mut window, size, "the watched share")
+}
+
+/// A window of `window_size` that watches the own share, with pictures of `size`.
+fn watch_own_share(
+    cx: &mut TestAppContext,
+    size: (u32, u32),
+    window_size: gpui::Size<gpui::Pixels>,
+) -> (tempfile::TempDir, Window) {
     use std::sync::Arc;
 
     use junto_client_core::protocol::call::ShareAudio;
@@ -1006,7 +1016,7 @@ fn a_watched_share_is_drawn_inside_its_stage(
     let world = World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
-    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     window.simulate(|cx| cx.simulate_resize(window_size));
     voice_channel(&world, &admin, &mut window, "Daily");
     window.click_channel("Daily");
@@ -1033,15 +1043,90 @@ fn a_watched_share_is_drawn_inside_its_stage(
         frame: Arc::new(VideoPicture::new(&pixels, false, size).unwrap()),
     }));
     window.until_pictures_taken();
+    (directory, window)
+}
+
+/// Draws the window once and checks that it paints the watched share, with pictures of
+/// `size`, inside the picture area, and the area inside the stage. Returns the area.
+#[track_caller]
+fn watched_share_fits(
+    window: &mut Window,
+    size: (u32, u32),
+    place: &str,
+) -> gpui::Bounds<gpui::Pixels> {
     let painted = window.painted_pictures();
     let area = window.cx.debug_bounds("share-picture").unwrap();
     let viewport = window.cx.debug_bounds("share-viewport").unwrap();
     assert!(
         inside(area, viewport),
-        "the picture area {area:?} passes the edge of the stage {viewport:?}"
+        "{place}: the picture area {area:?} passes the edge of the stage {viewport:?}"
     );
-    assert_fitted(&painted, size, area, "the watched share");
+    assert_fitted(&painted, size, area, place);
     area
+}
+
+/// CD-26: a viewer on an ultrawide monitor changes the size of the window while a share of a
+/// screen of 3440 × 1440 (21:9) is watched, in the main window and in the call window in full
+/// screen. After each change the first drawing paints the picture inside the stage, with its
+/// proportions, as large as the stage allows.
+#[gpui::test]
+fn a_very_wide_share_fits_the_stage_at_each_size_of_the_window(cx: &mut TestAppContext) {
+    let size = (3440, 1440);
+    let (_directory, mut window) =
+        watch_own_share(cx, size, gpui::size(gpui::px(1600.0), gpui::px(900.0)));
+    watched_share_fits(&mut window, size, "1600 × 900");
+    for (width, height) in [
+        (3440.0, 1400.0),
+        (1000.0, 800.0),
+        (2560.0, 700.0),
+        (800.0, 1000.0),
+        (5120.0, 1440.0),
+        (1280.0, 720.0),
+    ] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(&mut window, size, &format!("{width} × {height}"));
+    }
+    // The call window in full screen on the ultrawide monitor, then smaller again.
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    watched_share_fits(&mut detached, size, "the call window");
+    detached.click("call-fullscreen");
+    for (width, height) in [
+        (3440.0, 1440.0),
+        (1200.0, 800.0),
+        (3440.0, 1440.0),
+        (640.0, 900.0),
+    ] {
+        detached.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(
+            &mut detached,
+            size,
+            &format!("the call window at {width} × {height}"),
+        );
+    }
+}
+
+/// CD-26: a 16:9 share in a stage that is much wider than high (a window across an ultrawide
+/// monitor) is drawn at the height of the stage, inside it, at each change of the size.
+#[gpui::test]
+fn a_16_9_share_fits_a_very_wide_stage(cx: &mut TestAppContext) {
+    let size = (1920, 1080);
+    let (_directory, mut window) =
+        watch_own_share(cx, size, gpui::size(gpui::px(3440.0), gpui::px(900.0)));
+    let area = watched_share_fits(&mut window, size, "3440 × 900");
+    assert!(
+        f32::from(area.size.width) > 2.0 * f32::from(area.size.height),
+        "the stage {area:?} is not very wide"
+    );
+    for (width, height) in [
+        (5120.0, 900.0),
+        (3440.0, 600.0),
+        (2560.0, 1080.0),
+        (5120.0, 1440.0),
+    ] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(&mut window, size, &format!("{width} × {height}"));
+    }
 }
 
 /// CD-26: a portrait share in a stage that is wider than the picture is drawn at the height
