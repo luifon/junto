@@ -1550,7 +1550,9 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
 }
 
 /// CD-33: the stage and the channel list of a call of 601 people build the tiles and the rows
-/// in view only, and a scroll of each brings the last people into view (ADR 0735).
+/// in view only, and a scroll of each brings the last people into view (ADR 0735). The window
+/// holds the profiles of the people, so it reads none: each answer of a read costs a frame
+/// (open item CD8), and 601 reads took longer than the limit of a wait on two processors.
 #[gpui::test]
 fn a_call_of_many_people_draws_the_tiles_and_the_rows_in_view(cx: &mut TestAppContext) {
     use junto_client_core::protocol::ids::AccountId;
@@ -1567,6 +1569,18 @@ fn a_call_of_many_people_draws_the_tiles_and_the_rows_in_view(cx: &mut TestAppCo
         .chain((1..601).map(|_| AccountId::generate()))
         .collect();
     let call = connected_call(&mut window, "Daily");
+    let server_id = admin.handle.id();
+    let profiles = people
+        .iter()
+        .enumerate()
+        .map(|(seat, account)| (*account, format!("Person {seat}"), None))
+        .collect();
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.show_people_fixture(server_id, profiles, cx)
+        })
+    });
     show_call_with_people(&mut window, &world, call, &people);
     let tile = |account: &AccountId| crate::harness::selector(format!("call-tile:{account}"));
     let drawn = |window: &mut Window| {
