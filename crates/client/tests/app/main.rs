@@ -49,6 +49,7 @@ mod copying;
 mod data_directory;
 mod departures;
 mod device_checks;
+mod direct_collapse;
 mod drafts;
 mod emoji_completion;
 mod event_alerts;

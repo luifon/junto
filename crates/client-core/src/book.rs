@@ -46,7 +46,8 @@ fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
 }
 
 /// Version 10 keeps the favourites of each account and workspace and drops the named
-/// personal sections of version 9 (ADR 0775).
+/// personal sections of version 9. It also adds the collapsed direct messages of each
+/// account, initially none (ADR 0775).
 fn without_personal_sections(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
     let places = value
         .get_mut("arrangement")

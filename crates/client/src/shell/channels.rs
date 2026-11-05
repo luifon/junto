@@ -1134,28 +1134,68 @@ impl Shell {
             .filter(|direct| direct.unread.any() && !direct.mute.is_on())
             .map(|direct| direct.unread.messages.max(direct.unread.mentions))
             .sum();
+        // Collapsed, the group keeps the open conversation and its heading shows what the
+        // other conversations hold unread, as a collapsed category does (ADR 0775).
+        let collapsed = lists.directs_collapsed;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
+        let header = CategoryHeader::new(text::DIRECT_MESSAGES)
+            .menu_id(format!("directs-menu:{owner:?}"))
+            .action(crate::ui::RowAction::new(
+                text::NEW_DIRECT,
+                cx.listener(move |this, _, window, cx| this.open_new_direct(server_id, window, cx)),
+            ))
+            .when_some(owner, |header, owner| {
+                header.toggle(
+                    collapsed,
+                    crate::ui::RowAction::new(
+                        if collapsed {
+                            text::EXPAND_DIRECTS
+                        } else {
+                            text::COLLAPSE_DIRECTS
+                        },
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.collapse_directs(owner, !collapsed, cx)
+                            })
+                        }),
+                    ),
+                )
+            });
+        let header = if collapsed {
+            header.unread("directs-unread", hidden_directs_sign(&lists.directs))
+        } else {
+            header.count((waiting > 0).then(|| text::unread_count(waiting).into()))
+        };
         let mut rows = vec![
             div()
                 .debug_selector(|| "directs-heading".to_owned())
-                .child(
-                    CategoryHeader::new(text::DIRECT_MESSAGES)
-                        .count((waiting > 0).then(|| text::unread_count(waiting).into())),
-                )
+                .child(header)
                 .into_any_element(),
         ];
         // A new conversation, with an account that the server lists for the person
         // (ADR 0307). It stands before the conversations, so that a conversation that
-        // arrives does not move it.
-        rows.push(
-            ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
-                .selector("new-direct")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_new_direct(server_id, window, cx);
-                }))
-                .into_any_element(),
-        );
+        // arrives does not move it. Collapsed, the menu of the heading holds it.
+        if !collapsed {
+            rows.push(
+                ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
+                    .selector("new-direct")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_new_direct(server_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         let mut conversations: Vec<AnyElement> = Vec::new();
-        for (index, direct) in lists.directs.iter().enumerate() {
+        for (index, direct) in lists
+            .directs
+            .iter()
+            .enumerate()
+            .filter(|(_, direct)| !collapsed || direct.selected)
+        {
             let conversation_id = direct.id;
             let name: SharedString = direct
                 .name
@@ -1213,6 +1253,9 @@ impl Shell {
                     .children(menu)
                     .into_any_element(),
             );
+        }
+        if conversations.is_empty() && collapsed {
+            return rows;
         }
         if conversations.is_empty() {
             conversations.push(
@@ -1454,6 +1497,23 @@ pub(crate) fn name_seed(name: &str) -> u128 {
     name.bytes().fold(0x6a75_6e74_6f00_u128, |seed, byte| {
         seed.rotate_left(8) ^ u128::from(byte)
     })
+}
+
+/// What the conversations that a collapsed group of direct messages hides hold unread: the
+/// conversations that are not open and not muted.
+fn hidden_directs_sign(directs: &[crate::state::view::DirectRow]) -> Option<crate::ui::UnreadSign> {
+    let hidden = directs
+        .iter()
+        .filter(|direct| !direct.selected && direct.unread.any() && !direct.mute.is_on())
+        .fold(crate::state::view::Unread::default(), |held, direct| {
+            crate::state::view::Unread {
+                messages: held.messages.saturating_add(direct.unread.messages),
+                mentions: held.mentions.saturating_add(direct.unread.mentions),
+                sign: true,
+                muted: false,
+            }
+        });
+    direct_sign(hidden)
 }
 
 /// The sign of a channel, a workspace or a server that holds what the person has not read.

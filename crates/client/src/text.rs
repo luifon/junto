@@ -3450,6 +3450,8 @@ pub const STOP_SHARING: &str = "Stop sharing";
 
 pub const COLLAPSE_CATEGORY: &str = "Collapse category";
 pub const EXPAND_CATEGORY: &str = "Expand category";
+pub const COLLAPSE_DIRECTS: &str = "Collapse direct messages";
+pub const EXPAND_DIRECTS: &str = "Expand direct messages";
 pub const CHANNEL_TOPIC: &str = "Topic";
 pub const EDIT_TOPIC: &str = "Edit topic";
 pub const COPY_TOPIC: &str = "Copy topic";

@@ -1246,6 +1246,8 @@ pub struct ServerLists {
     pub workspace: Option<WorkspaceView>,
     /// The direct conversations of the server.
     pub directs: Vec<DirectRow>,
+    /// The group of the direct conversations is collapsed for the account (ADR 0775).
+    pub directs_collapsed: bool,
     /// The direct conversation that the main area shows in place of a channel.
     pub conversation: Option<DirectRow>,
     /// Why the server did not open a direct conversation, with the account asked for.
@@ -2862,6 +2864,9 @@ fn server_lists(
             .filter(|_| selection.notices != Some(server_id)),
         workspace: shown,
         directs,
+        directs_collapsed: known
+            .arrangement
+            .directs_collapsed(server_id, model.account.id),
         conversation,
         conversation_refused: known
             .conversation_refused
