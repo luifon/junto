@@ -38,7 +38,7 @@ The picker:
 The stand-in of an emoji that is Broken:
 
 - Its short code between colons (`:brazil:`), or its name between colons when it has no short code, with the colon of the name of a skin tone written as a comma (`:thumbs up, medium skin tone:`). It is drawn in the colour of secondary text, so that it differs from text that a person typed.
-- It replaces the emoji in the text, the link text and the inline code of a message, the quoted line above a reply, the line "Replying to" above the composer, the sign, the tooltip and the accessible label of a reaction, and the text of a search result and of a notice, whose marked matches follow the replacement.
+- It replaces the emoji in the text, the link text and the inline code of a message, the quoted line above a reply, the line "Replying to" above the composer, the sign, the tooltip and the accessible label of a reaction, and the text of a search result and of a notice, whose marked matches follow the replacement. In the text of a message the stand-in has a tooltip with the name of the emoji and the sentence that the fonts of the system do not draw it; over a stand-in in the text of a link the tooltip is the address of the link (test: `shell::feed::tests::the_stand_in_of_an_emoji_has_a_tooltip_with_its_name`).
 - The full form of an emoji of the table is replaced, and a sequence of several code points that lacks some of its selectors is replaced as the emoji of the table. A single sign such as © without the selector of the emoji form is text and stays as it is.
 - The message that the server holds and the emoji that a reaction sends are not changed: another device with a newer font draws the emoji.
 

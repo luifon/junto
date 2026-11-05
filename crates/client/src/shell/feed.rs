@@ -502,6 +502,8 @@ struct Rich {
     spoilers: Vec<(Range<usize>, Vec<usize>)>,
     copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
+    /// The stand-ins of the emoji that the fonts do not draw, with the tooltip of each.
+    stand_ins: Vec<(Range<usize>, String)>,
 }
 
 impl Rich {
@@ -545,6 +547,7 @@ impl Rich {
             spoilers: Vec::new(),
             copy_targets: Vec::new(),
             replacements: Vec::new(),
+            stand_ins: Vec::new(),
         };
         rich.append(content, names, style, revealed, &[]);
         rich
@@ -804,6 +807,14 @@ impl Rich {
             .stand_ins()
             .map(|range| start + range.start..start + range.end)
             .collect();
+        self.stand_ins
+            .extend(shown.replacements().filter_map(|(from, to)| {
+                let emoji = emojis::get(&text[from])?;
+                Some((
+                    start + to.start..start + to.end,
+                    text::emoji_stand_in(emoji.name()),
+                ))
+            }));
         self.text.push_str(&shown.text);
         stand_ins
     }
@@ -961,6 +972,31 @@ enum TextTarget {
     Spoiler(Vec<usize>),
 }
 
+/// The tooltip of the place `index` of a rich text: its target, or else the stand-in of an
+/// emoji that the fonts do not draw. The address of a link is shown also over a stand-in in
+/// its text.
+fn hover_label(
+    targets: &[(Range<usize>, TextTarget)],
+    stand_ins: &[(Range<usize>, String)],
+    index: usize,
+) -> Option<String> {
+    let target = targets
+        .iter()
+        .find(|(range, _)| range.contains(&index))
+        .map(|(_, target)| match target {
+            TextTarget::Link(link) => link.to_string(),
+            TextTarget::Profile(_, label) => label.clone(),
+            TextTarget::Channel(_) => text::CHANNEL_REFERENCE.to_owned(),
+            TextTarget::Spoiler(_) => text::REVEAL_SPOILER.to_owned(),
+        });
+    target.or_else(|| {
+        stand_ins
+            .iter()
+            .find(|(range, _)| range.contains(&index))
+            .map(|(_, label)| label.clone())
+    })
+}
+
 fn focused_highlights(
     length: usize,
     highlights: &[(Range<usize>, HighlightStyle)],
@@ -1009,6 +1045,7 @@ impl RenderOnce for RichElement {
             spoilers,
             copy_targets,
             replacements,
+            stand_ins,
         } = self.rich;
         let wrapper_id: gpui::ElementId = ("profile-text", self.id).into();
         let mut unique = std::collections::HashSet::new();
@@ -1076,7 +1113,7 @@ impl RenderOnce for RichElement {
             )
             .collect();
         targets.sort_by_key(|(range, _)| range.start);
-        if targets.is_empty() {
+        if targets.is_empty() && stand_ins.is_empty() {
             return menus.wrap(crate::selectable::SelectableText::rich(
                 styled,
                 copy_targets,
@@ -1113,18 +1150,7 @@ impl RenderOnce for RichElement {
                 }
             })
             .tooltip(move |index, window, cx| {
-                hover
-                    .iter()
-                    .find(|(range, _)| range.contains(&index))
-                    .map(|(_, target)| {
-                        let label = match target {
-                            TextTarget::Link(link) => link.to_string(),
-                            TextTarget::Profile(_, label) => label.clone(),
-                            TextTarget::Channel(_) => text::CHANNEL_REFERENCE.to_owned(),
-                            TextTarget::Spoiler(_) => text::REVEAL_SPOILER.to_owned(),
-                        };
-                        tooltip(label)(window, cx)
-                    })
+                hover_label(&hover, &stand_ins, index).map(|label| tooltip(label)(window, cx))
             });
         let text = crate::selectable::SelectableText::rich(text, copy_targets, replacements);
         let Some((focus, selected)) = focus_state else {
@@ -5253,6 +5279,7 @@ fn system_line(
                                 spoilers: Vec::new(),
                                 copy_targets: Vec::new(),
                                 replacements,
+                                stand_ins: Vec::new(),
                             }
                             .element(0, None, None, None, None),
                         ),
@@ -5551,6 +5578,42 @@ mod tests {
             .map(|(range, _)| &rich.text[range.clone()])
             .collect();
         assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
+    }
+
+    /// The stand-in of an emoji in the text of a message has the name of the emoji as its
+    /// tooltip; over the stand-in in the text of a link the tooltip is the address.
+    #[test]
+    fn the_stand_in_of_an_emoji_has_a_tooltip_with_its_name() {
+        let theme = Theme::stone();
+        let brazil = "\u{1f1e7}\u{1f1f7}";
+        let drawings = Drawings::given([(brazil, crate::emoji::Drawing::Broken)].into());
+        let content = [
+            Inline::Text {
+                text: format!("Hello {brazil} and"),
+                marks: Vec::new(),
+            },
+            Inline::Link {
+                text: format!(" {brazil}"),
+                url: "https://example.com/a".to_owned(),
+            },
+        ];
+        let rich = Rich::of(&content, &Names::default(), &theme, &drawings);
+        let name = text::emoji_stand_in(emojis::get(brazil).unwrap().name());
+        assert!(name.starts_with("flag: Brazil."), "{name}");
+        let first = rich.text.find(":brazil:").unwrap();
+        let second = rich.text.rfind(":brazil:").unwrap();
+        let targets: Vec<_> = (rich.links.iter())
+            .map(|(range, link)| (range.clone(), TextTarget::Link(link.clone())))
+            .collect();
+        assert_eq!(
+            hover_label(&targets, &rich.stand_ins, first + 3),
+            Some(name)
+        );
+        assert_eq!(hover_label(&targets, &rich.stand_ins, 2), None);
+        assert_eq!(
+            hover_label(&targets, &rich.stand_ins, second + 3),
+            Some("https://example.com/a".to_owned())
+        );
     }
     #[test]
     fn account_mentions_show_status_with_ordered_utf8_highlights() {

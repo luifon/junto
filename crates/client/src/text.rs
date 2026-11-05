@@ -1982,6 +1982,11 @@ pub const FIND_EMOJI: &str = "Find an emoji";
 pub const NO_EMOJI_FOUND: &str = "No emoji has this name.";
 pub const EMOJI_FOUND: &str = "Found";
 pub const NO_EMOJI_FONT: &str = "This system has no font that draws emoji.";
+
+/// The tooltip of the stand-in of an emoji that the fonts do not draw (ADR 0758).
+pub fn emoji_stand_in(name: &str) -> String {
+    format!("{name}. The fonts of this system do not draw this emoji.")
+}
 pub const MENTION_SOMEONE: &str = "Mention a person or a role";
 pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
 pub const REMOVE_FILE: &str = "Remove this file";
