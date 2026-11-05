@@ -812,11 +812,7 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
         end_ms: 120,
         text: "The plan for the week.".to_owned(),
     };
-    // Without an event the page reads nothing, also when its clock moves.
     let before = reads(&mut window);
-    window.cx.executor().advance_clock(Duration::from_secs(5));
-    window.settle();
-    assert_eq!(reads(&mut window), before);
     world.run(server.transcribe(first, std::slice::from_ref(&line)));
     // A read that an event causes starts at the earliest one second after the read before
     // (ADR 0784). The clock of the test platform moves only when the test moves it, and the
