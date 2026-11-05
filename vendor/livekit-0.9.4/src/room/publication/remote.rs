@@ -1,5 +1,6 @@
 // Copyright 2025 LiveKit, Inc.
-// Modified: reuse the receiver after an explicit unsubscribe and subscribe.
+// Modified: reuse the receiver after an explicit unsubscribe and subscribe, and keep the native
+// track enabled while the publication is disabled.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,6 +49,8 @@ struct RemoteEvents {
 struct RemoteInfo {
     subscribed: bool,
     allowed: bool,
+    // Modified: the enabled state that was sent to the media server (`set_enabled`).
+    disabled: bool,
 }
 
 struct RemoteInner {
@@ -81,7 +84,11 @@ impl RemoteTrackPublication {
         Self {
             inner: super::new_inner(info, track.map(Into::into)),
             remote: Arc::new(RemoteInner {
-                info: RwLock::new(RemoteInfo { subscribed: auto_subscribe, allowed: true }),
+                info: RwLock::new(RemoteInfo {
+                    subscribed: auto_subscribe,
+                    allowed: true,
+                    disabled: false,
+                }),
                 events: Default::default(),
                 stopped_track: Mutex::default(),
             }),
@@ -110,6 +117,8 @@ impl RemoteTrackPublication {
         );
 
         if let Some(track) = track {
+            // Modified: a new subscription starts enabled at the media server.
+            self.remote.info.write().disabled = false;
             if let Some(subscribed) = self.remote.events.subscribed.lock().as_ref() {
                 subscribed(self.clone(), track);
             }
@@ -292,14 +301,13 @@ impl RemoteTrackPublication {
         }
     }
 
+    // Modified: the state is kept in the publication and sent to the media server, and the
+    // native track stays enabled. A disabled native video track gives a black frame to its
+    // sinks for each frame that still arrives before the server stops sending, and the last
+    // of them was shown when the track was enabled again.
     pub fn set_enabled(&self, enabled: bool) {
         if self.is_subscribed() && enabled != self.is_enabled() {
-            let track = self.track().unwrap();
-            if self.is_enabled() {
-                track.disable();
-            } else {
-                track.enable();
-            }
+            self.remote.info.write().disabled = !enabled;
 
             // Request to send an update to the SFU
             if let Some(enabled_status_changed) =
@@ -360,8 +368,9 @@ impl RemoteTrackPublication {
         self.remote.info.read().allowed
     }
 
+    // Modified: the state that `set_enabled` sent, not the state of the native track.
     pub fn is_enabled(&self) -> bool {
-        self.track().is_some_and(|x| x.is_enabled())
+        self.is_subscribed() && !self.remote.info.read().disabled
     }
 
     pub fn sid(&self) -> TrackSid {

@@ -58,7 +58,7 @@ pub use share::{
 };
 use share::{MAX_SLOTS, OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 #[cfg(feature = "test-support")]
-pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
+pub use statistics::{CameraCheck, CameraPublication, HeldEngine, RemoteCameraCheck};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;

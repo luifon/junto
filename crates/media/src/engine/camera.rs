@@ -501,6 +501,23 @@ impl Actor {
             });
         }
     }
+    #[cfg(feature = "test-support")]
+    pub(super) fn remote_camera_checks(&self) -> Vec<super::statistics::RemoteCameraCheck> {
+        let mut checks: Vec<_> = self
+            .remote_cameras
+            .values()
+            .map(|camera| super::statistics::RemoteCameraCheck {
+                account: camera.account,
+                enabled: camera.publication.is_enabled(),
+                track_enabled: camera
+                    .publication
+                    .track()
+                    .is_some_and(|track| track.is_enabled()),
+            })
+            .collect();
+        checks.sort_by_key(|check| check.account);
+        checks
+    }
     pub(super) fn draw_cameras(&mut self) {
         let size = if self.remote_cameras.len() > 1 {
             (640, 360)

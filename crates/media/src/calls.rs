@@ -386,6 +386,8 @@ enum SessionCommand {
     #[cfg(feature = "test-support")]
     SoundCheck(crate::engine::statistics::SoundReply),
     #[cfg(feature = "test-support")]
+    CameraCheck(crate::engine::statistics::CameraReply),
+    #[cfg(feature = "test-support")]
     HoldEngine(oneshot::Sender<(oneshot::Receiver<()>, crate::engine::HeldEngine)>),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
@@ -1130,6 +1132,17 @@ impl Calls {
     {
         let (reply, check) = oneshot::channel();
         self.inner.tell(SessionCommand::SoundCheck(reply));
+        async move { check.await.ok() }
+    }
+
+    /// What the engine of the call of this device knows of the cameras now, for a live test.
+    /// Nothing when this device has no call.
+    #[cfg(feature = "test-support")]
+    pub fn camera_check(
+        &self,
+    ) -> impl Future<Output = Option<crate::engine::CameraCheck>> + Send + 'static + use<> {
+        let (reply, check) = oneshot::channel();
+        self.inner.tell(SessionCommand::CameraCheck(reply));
         async move { check.await.ok() }
     }
 
@@ -3076,6 +3089,8 @@ impl Session {
             SessionCommand::Statistics(reply) => self.engine.statistics(reply),
             #[cfg(feature = "test-support")]
             SessionCommand::SoundCheck(reply) => self.engine.sound_check(reply),
+            #[cfg(feature = "test-support")]
+            SessionCommand::CameraCheck(reply) => self.engine.camera_check_to(reply),
             #[cfg(feature = "test-support")]
             SessionCommand::HoldEngine(reply) => {
                 let _ = reply.send(self.engine.hold());
