@@ -154,11 +154,13 @@ pub async fn permissions_changed(
             role_id,
         },
     };
-    if !first_in_change(connection, &audience, workspace_id).await? {
-        return Ok(());
+    // The notice is recorded once per change; the rooms are marked at every call, because a
+    // notice that the change recorded before, such as the one of a new order of categories,
+    // can have marked none (ADR 0509).
+    if first_in_change(connection, &audience, workspace_id).await? {
+        let event = Event::PermissionsChanged { workspace_id };
+        record(&mut *connection, now, &audience, &event).await?;
     }
-    let event = Event::PermissionsChanged { workspace_id };
-    record(&mut *connection, now, &audience, &event).await?;
     crate::calls::store::mark_after_permission_change(connection, workspace_id).await
 }
 

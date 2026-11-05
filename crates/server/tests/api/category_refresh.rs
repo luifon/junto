@@ -232,3 +232,45 @@ async fn one_request_of_several_moves_between_categories_sends_one_refresh() {
         .count();
     assert_eq!(moved, 3, "{events:?}");
 }
+
+/// One structure request changes the order of the categories and then moves a voice channel
+/// with a running call into a category whose rules deny "connect" to a person in the call.
+/// The refresh of the workspace is recorded once, and the room of the call is still marked,
+/// so the next check of the marked rooms removes that person (ADR 0509).
+#[tokio::test]
+async fn a_move_after_a_new_order_of_categories_in_one_request_marks_the_room_of_the_call() {
+    let scene = crate::calls_support::Scene::start().await;
+    let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
+    let workspace = scene.workspace_id;
+    let first = server.category(owner, workspace, "First", 0).await;
+    let denied = server.category(owner, workspace, "Denied", 1).await;
+    let connect = 1i64 << 24;
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,$4)")
+        .bind(denied.id).bind(ann.account_id).bind(workspace).bind(connect).execute(&server.db).await.unwrap();
+    let seat = server.enter_call(ann, scene.voice.id).await;
+    assert_eq!(server.fake().identities(&seat.room).len(), 1);
+    // A full check finds nothing to remove and states that the media server answers.
+    server.check().await;
+    let revision = server.structure(owner).await.revision;
+    server
+        .change_structure(
+            owner,
+            &revision,
+            json!([
+                { "change": "update_category", "id": first.id, "position": 1 },
+                { "change": "update_channel", "id": scene.voice.id, "category": denied.id },
+            ]),
+        )
+        .await
+        .ok::<serde_json::Value>(StatusCode::OK);
+    assert_eq!(
+        junto_server::calls::admission::check_marked(&server.state)
+            .await
+            .unwrap(),
+        junto_server::calls::admission::Outcome::Checked {
+            removed: 1,
+            updated: 0
+        }
+    );
+    assert!(server.fake().identities(&seat.room).is_empty());
+}
