@@ -43,25 +43,6 @@ fn a_person_keeps_favourite_channels_above_the_server_categories_after_restart(
     });
 }
 
-fn section(
-    window: &mut crate::harness::Window,
-    name: &str,
-) -> Option<junto_client::state::view::ChannelSection> {
-    window.view().workspace()?.sections.iter().find(|section| matches!(&section.title, junto_client::state::view::SectionTitle::Personal(held) if held == name)).cloned()
-}
-
-fn section_id(
-    window: &mut crate::harness::Window,
-    name: &str,
-) -> junto_client_core::arrangement::channels::SectionId {
-    let Some(junto_client_core::arrangement::channels::Location::Section(id)) =
-        section(window, name).unwrap().personal
-    else {
-        panic!("a named section has its identifier");
-    };
-    id
-}
-
 fn drag(window: &mut crate::harness::Window, from: &'static str, to: &'static str) {
     use gpui::{Modifiers, MouseButton, point, px};
     window.settle();
@@ -82,10 +63,20 @@ fn drag(window: &mut crate::harness::Window, from: &'static str, to: &'static st
     window.run_tasks();
 }
 
+fn favourites(
+    window: &mut crate::harness::Window,
+) -> Option<junto_client::state::view::ChannelSection> {
+    window
+        .view()
+        .workspace()?
+        .sections
+        .iter()
+        .find(|section| section.title == junto_client::state::view::SectionTitle::Favourites)
+        .cloned()
+}
+
 #[gpui::test]
-fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
-    cx: &mut TestAppContext,
-) {
+fn favourites_are_ordered_collapsed_marked_read_and_return_their_channels(cx: &mut TestAppContext) {
     use crate::harness::selector;
     use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
     let world = World::new();
@@ -111,34 +102,27 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
     window.until("the voice channel is listed", |window| {
         window.shows_channel("call-room")
     });
-    window.right_click_named(format!("channel-row:{first}"));
-    window.click("channel-new-section");
-    window.type_into("personal-section-name", "Projects");
-    window.press("enter");
-    window.until("the channel is in its new section", |window| {
-        section(window, "Projects")
-            .is_some_and(|section| section.rows.iter().any(|row| row.id == first))
-    });
-    let id = section_id(&mut window, "Projects");
-    let head = selector(format!("personal-section-header:{id}"));
-    window.right_click_named(format!("channel-row:{second}"));
-    window.click(selector(format!("channel-section:{id}")));
-    window.until("both channels belong to the section", |window| {
-        section(window, "Projects").is_some_and(|section| section.rows.len() == 2)
+    let head = "personal-favourites-header";
+    for channel in [first, second] {
+        window.right_click_named(format!("channel-row:{channel}"));
+        assert!(!window.shows("channel-new-section"));
+        window.click("channel-favourite");
+    }
+    window.until("both channels are favourites", |window| {
+        favourites(window).is_some_and(|section| section.rows.len() == 2)
     });
     window.right_click_named(format!("channel-row:{second}"));
     window.click("channel-personal-up");
-    window.until("manual channel order changes", |window| {
-        section(window, "Projects").is_some_and(|section| section.rows[0].id == second)
+    window.until("the order of the favourites changes", |window| {
+        favourites(window).is_some_and(|section| section.rows[0].id == second)
     });
     drag(
         &mut window,
         selector(format!("channel-row:{}", voice.id)),
         head,
     );
-    window.until("a voice channel is dragged into the section", |window| {
-        section(window, "Projects")
-            .is_some_and(|section| section.rows.iter().any(|row| row.id == voice.id))
+    window.until("a voice channel is dragged into the favourites", |window| {
+        favourites(window).is_some_and(|section| section.rows.iter().any(|row| row.id == voice.id))
     });
     drag(
         &mut window,
@@ -146,24 +130,8 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
         "personal-return-target",
     );
     window.until("a drag returns to the server grouping", |window| {
-        section(window, "Projects")
-            .is_some_and(|section| !section.rows.iter().any(|row| row.id == voice.id))
+        favourites(window).is_some_and(|section| !section.rows.iter().any(|row| row.id == voice.id))
     });
-    window.right_click_named(head.to_owned());
-    window.click("context-action:Rename section");
-    window.click("personal-section-name");
-    window.press("secondary-a backspace");
-    window.click("personal-section-save");
-    assert!(window.shows("personal-section-dialog"));
-    window.type_into("personal-section-name", "Roadmap");
-    window.click("personal-section-save");
-    window.until("the section is renamed", |window| {
-        section(window, "Roadmap").is_some()
-    });
-    assert!(
-        !section(&mut window, "Roadmap").unwrap().collapsed,
-        "renaming must preserve expansion"
-    );
     assert_eq!(
         window.selected_channel(),
         original,
@@ -175,11 +143,11 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
             && !window.shows(selector(format!("channel-row:{second}")))
     });
     window.press("space");
-    window.until("Space expands the focused personal header", |window| {
+    window.until("Space expands the focused favourites header", |window| {
         window.shows(selector(format!("channel-row:{first}")))
     });
     window.press("enter");
-    window.until("Enter collapses the focused personal header", |window| {
+    window.until("Enter collapses the focused favourites header", |window| {
         !window.shows(selector(format!("channel-row:{first}")))
     });
     let root = admin.send(
@@ -187,16 +155,16 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
         second,
         crate::notices::mention("A plan for ", window.own_account()),
     );
-    let unread = selector(format!("personal-unread:{id}"));
+    let unread = "personal-favourites-unread";
     window.until("hidden unread activity is counted", |window| {
         window.shows(unread)
     });
     window.close();
     let mut again = open(cx, directory.path());
     again.until_ready();
-    assert!(section(&mut again, "Roadmap").unwrap().collapsed);
+    assert!(favourites(&mut again).unwrap().collapsed);
     assert_eq!(
-        section(&mut again, "Roadmap")
+        favourites(&mut again)
             .unwrap()
             .rows
             .iter()
@@ -205,6 +173,14 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
         [second, first]
     );
     again.right_click_named(head.to_owned());
+    for gone in [
+        "Rename section",
+        "Remove section",
+        "Move section up",
+        "New section",
+    ] {
+        assert!(!again.shows(selector(format!("context-action:{gone}"))));
+    }
     again.click("context-action:Mark as read");
     again.until("hidden messages are marked read", |window| {
         !window.shows(unread)
@@ -223,39 +199,12 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
         !window.shows(unread)
     });
     again.click(head);
-    again.click(selector(format!("channel-row:{first}")));
-    again.until("the personal channel is selected", |window| {
-        window.selected_channel() == first
-    });
-    again.click(head);
-    assert!(again.shows(selector(format!("channel-row:{first}"))));
-    assert!(!again.shows(selector(format!("channel-row:{second}"))));
-    again.click("new-personal-section");
-    again.type_into("personal-section-name", "Reference");
-    again.click("personal-section-save");
-    again.until("the empty named section is listed", |window| {
-        section(window, "Reference").is_some()
-    });
-    let other = section_id(&mut again, "Reference");
-    again.click(selector(format!("personal-section-header:{other}")));
-    again.press("menu");
-    again.click("context-action:Move section up");
-    again.until("personal sections have their own order", |window| {
-        window.view().workspace().unwrap().sections[0].personal
-            == Some(junto_client_core::arrangement::channels::Location::Section(
-                other,
-            ))
-    });
-    again.press("menu");
-    again.click("context-action:Copy name");
-    assert_eq!(
-        again.cx.read_from_clipboard().unwrap().text().unwrap(),
-        "Reference"
-    );
-    again.right_click_named(head.to_owned());
-    again.click("context-action:Remove section");
-    again.until("removing a section returns its channels", |window| {
-        section(window, "Roadmap").is_none()
+    for channel in [first, second] {
+        again.right_click_named(format!("channel-row:{channel}"));
+        again.click("channel-favourite");
+    }
+    again.until("removing the favourites returns their channels", |window| {
+        favourites(window).is_none()
             && window.shows(selector(format!("channel-row:{first}")))
             && window.shows(selector(format!("channel-row:{second}")))
     });
@@ -272,7 +221,100 @@ fn personal_sections_name_order_collapse_mark_read_and_return_their_channels(
 }
 
 #[gpui::test]
-fn a_hidden_channel_cannot_remain_in_favourites_or_an_open_section_dialog(cx: &mut TestAppContext) {
+fn new_category_at_the_end_of_the_list_creates_a_server_category_only_for_a_person_who_may(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let workspace = window.view().workspace().unwrap().id;
+    window.click("channel-list-new-category");
+    window.until("the form of a new category is open", |window| {
+        window.shows("category-name")
+    });
+    window.in_shell(|shell, window, cx| shell.type_admin_name("Meetings", window, cx));
+    window.click("admin-form-send");
+    window.until("the server holds the category", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.sections.iter().any(|section| {
+                section.title
+                    == junto_client::state::view::SectionTitle::Category("Meetings".to_owned())
+            })
+        })
+    });
+    assert!(
+        world
+            .run(owner.api().channels(workspace))
+            .unwrap()
+            .categories
+            .iter()
+            .any(|category| category.name == "Meetings")
+    );
+    let code = crate::admin_pages::invite(&world, &owner, Vec::new());
+    let (_member_directory, mut member_window) = crate::harness::named(cx, "Rin");
+    member_window.find_server(&server.address());
+    member_window.join_with_code(code.expose());
+    member_window.until_ready();
+    assert!(
+        !member_window
+            .view()
+            .workspace()
+            .unwrap()
+            .may_create_category
+    );
+    assert!(!member_window.shows("channel-list-new-category"));
+}
+
+#[gpui::test]
+fn the_named_sections_of_a_saved_book_go_and_their_channels_return_to_the_server_grouping(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let workspace = window.view().workspace().unwrap().id;
+    let favourite = admin.text_channel(&world, &mut window, "planning");
+    let placed = admin.text_channel(&world, &mut window, "meetings");
+    window.right_click_named(format!("channel-row:{favourite}"));
+    window.click("channel-favourite");
+    window.until("the channel is a favourite", |window| {
+        window.shows("personal-favourites-header")
+    });
+    let account = window.own_account();
+    window.close();
+    let path = directory.path().join("junto").join("servers.json");
+    let mut book: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    book["format_version"] = serde_json::json!(9);
+    let layout = &mut book["arrangement"]["servers"][0]["channel_layouts"][account.to_string()]
+        [workspace.to_string()];
+    layout["sections"] = serde_json::json!([{
+        "id": "0191a0f0-0000-7000-8000-000000000005",
+        "name": "Meetings",
+        "collapsed": true,
+        "channels": [placed],
+    }]);
+    std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
+    let mut again = open(cx, directory.path());
+    again.until_ready();
+    let sections = again.view().workspace().unwrap().sections.clone();
+    assert_eq!(
+        sections
+            .iter()
+            .filter(|section| section.personal.is_some())
+            .map(|section| section.rows.iter().map(|row| row.id).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        [vec![favourite]]
+    );
+    assert!(sections.iter().any(
+        |section| section.personal.is_none() && section.rows.iter().any(|row| row.id == placed)
+    ));
+    assert!(again.shows(crate::harness::selector(format!("channel-row:{placed}"))));
+}
+
+#[gpui::test]
+fn a_hidden_channel_cannot_remain_in_favourites(cx: &mut TestAppContext) {
     use junto_client_core::protocol::WorkspacePermission;
     use junto_client_core::protocol::structure::{RuleSubject, SetChannelOverride};
     let world = World::new();
@@ -285,9 +327,6 @@ fn a_hidden_channel_cannot_remain_in_favourites_or_an_open_section_dialog(cx: &m
     window.until("the channel is a favourite", |window| {
         window.shows("personal-favourites-header")
     });
-    window.right_click_named(format!("channel-row:{channel}"));
-    window.click("channel-new-section");
-    window.type_into("personal-section-name", "Private");
     let subject = RuleSubject::Person {
         account_id: window.own_account(),
     };
@@ -302,12 +341,8 @@ fn a_hidden_channel_cannot_remain_in_favourites_or_an_open_section_dialog(cx: &m
         ))
         .unwrap();
     window.until(
-        "permission loss closes the source dialog and hides the row",
-        |window| {
-            !window.shows("personal-section-dialog")
-                && !window.shows_channel("planning")
-                && !window.shows("personal-favourites-header")
-        },
+        "permission loss hides the row and its favourites",
+        |window| !window.shows_channel("planning") && !window.shows("personal-favourites-header"),
     );
     world
         .run(admin.handle.api().set_channel_rule(

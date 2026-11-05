@@ -499,8 +499,7 @@ impl AppState {
                 let channel = match &change {
                     layout::channels::Change::Place { channel, .. }
                     | layout::channels::Change::MoveChannel { channel, .. } => Some(*channel),
-                    layout::channels::Change::Create { channel, .. } => *channel,
-                    _ => None,
+                    layout::channels::Change::Collapse { .. } => None,
                 };
                 if channel.is_some_and(|id| shown.channel(id).is_none()) {
                     return None;

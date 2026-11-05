@@ -148,7 +148,6 @@ pub(crate) enum Layer {
     GroupChoice(ServerId),
     /// The dialog that names a group.
     RenameGroup(junto_client_core::arrangement::GroupId),
-    PersonalSection(personal::SectionDialog),
     VoiceStatus(voice_status::Editor),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
@@ -604,18 +603,6 @@ impl Shell {
                 |this: &mut Self, event, window, cx| match event {
                     FieldEvent::Submitted => this.save_voice_status(false, window, cx),
                     FieldEvent::Changed => this.voice_status_changed(cx),
-                },
-            ),
-            Field::observe(
-                &arrange.section_name,
-                window,
-                cx,
-                |this: &mut Self, event, window, cx| match event {
-                    FieldEvent::Submitted => this.save_personal_section(window, cx),
-                    FieldEvent::Changed => {
-                        this.arrange.section_invalid = false;
-                        cx.notify();
-                    }
                 },
             ),
             cx.on_release(move |this: &mut Self, cx| {
@@ -2173,7 +2160,6 @@ impl Shell {
                 .lists()
                 .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
             // The group, the server or the workspace of the menu is no longer listed.
-            Layer::PersonalSection(dialog) => !self.personal_dialog_current(*dialog, cx),
             Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
                 !view.groups.iter().any(|row| row.id == *group)
             }
@@ -2325,7 +2311,6 @@ impl Shell {
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
             Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
-            Layer::PersonalSection(dialog) => self.render_personal_section(*dialog, cx),
             Layer::VoiceStatus(_) => self.render_voice_status(cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)

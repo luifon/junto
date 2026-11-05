@@ -71,6 +71,7 @@ mod typing;
 mod voice_status;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
+mod favourites;
 #[path = "../rehearsal/growth.rs"]
 mod growth;
 mod growth_tests;
@@ -93,7 +94,6 @@ mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
-mod personal_sections;
 mod pictures;
 mod presence;
 mod profile_cards;

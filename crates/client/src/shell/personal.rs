@@ -1,27 +1,13 @@
-use gpui::{
-    AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window,
-    div,
-};
+use gpui::{AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, Styled};
 use junto_client_core::Owner;
-use junto_client_core::arrangement::channels::{Change, Layout, Location, SectionId};
+use junto_client_core::arrangement::channels::{Change, Layout, Location};
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
 
-use super::{Layer, Shell};
+use super::Shell;
 use crate::state::view::ChannelSection;
 use crate::text;
 use crate::theme::theme;
-use crate::ui::{
-    Button, ButtonKind, CategoryHeader, Dialog, Field, MenuItem, Notice, RowAction, UnreadSign,
-    dialog_footer,
-};
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SectionDialog {
-    pub owner: Owner,
-    pub workspace: WorkspaceId,
-    pub id: Option<SectionId>,
-    pub channel: Option<ChannelId>,
-}
+use crate::ui::{CategoryHeader, MenuItem, RowAction, UnreadSign};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ChannelDrag {
@@ -76,26 +62,6 @@ impl Shell {
             && view.workspace().is_some_and(|shown| shown.id == workspace)
     }
 
-    pub(super) fn personal_dialog_current(&self, dialog: SectionDialog, cx: &App) -> bool {
-        self.personal_source_current(dialog.owner, dialog.workspace, cx)
-            && dialog.id.is_none_or(|id| {
-                self.personal_layout(dialog.owner, dialog.workspace, cx)
-                    .sections
-                    .iter()
-                    .any(|section| section.id == id)
-            })
-            && dialog.channel.is_none_or(|channel| {
-                self.personal_channel_current(
-                    ChannelDrag {
-                        owner: dialog.owner,
-                        workspace: dialog.workspace,
-                        channel,
-                    },
-                    cx,
-                )
-            })
-    }
-
     fn personal_layout(&self, owner: Owner, workspace: WorkspaceId, cx: &App) -> Layout {
         self.state
             .read(cx)
@@ -133,111 +99,6 @@ impl Shell {
                 state.arrange_channels(owner, workspace, change, cx)
             });
         }
-    }
-
-    pub(super) fn open_personal_section(
-        &mut self,
-        dialog: SectionDialog,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.personal_source_current(dialog.owner, dialog.workspace, cx)
-            || dialog.channel.is_some_and(|channel| {
-                !self.personal_channel_current(
-                    ChannelDrag {
-                        owner: dialog.owner,
-                        workspace: dialog.workspace,
-                        channel,
-                    },
-                    cx,
-                )
-            })
-        {
-            return;
-        }
-        let name = match dialog.id {
-            Some(id) => {
-                let layout = self.personal_layout(dialog.owner, dialog.workspace, cx);
-                let Some(section) = layout.sections.iter().find(|section| section.id == id) else {
-                    return;
-                };
-                section.name.clone()
-            }
-            None => String::new(),
-        };
-        self.arrange.section_invalid = false;
-        self.arrange
-            .section_name
-            .update(cx, |state, cx| state.set_value(name, window, cx));
-        self.open_layer(Layer::PersonalSection(dialog), window, cx);
-        self.focus_field(&self.arrange.section_name.clone(), window, cx);
-    }
-
-    pub(super) fn save_personal_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Layer::PersonalSection(dialog) = self.layer else {
-            return;
-        };
-        if !self.personal_dialog_current(dialog, cx) {
-            return;
-        }
-        let name = self.arrange.section_name.read(cx).value().trim().to_owned();
-        if !junto_client_core::arrangement::channels::valid_name(&name) {
-            self.arrange.section_invalid = true;
-            cx.notify();
-            return;
-        }
-        let change = match dialog.id {
-            Some(id) => Change::Rename { id, name },
-            None => Change::Create {
-                id: SectionId::generate(),
-                name,
-                channel: dialog.channel,
-            },
-        };
-        self.change_personal(dialog.owner, dialog.workspace, change, cx);
-        self.close_layer(window, cx);
-    }
-
-    pub(super) fn render_personal_section(
-        &mut self,
-        dialog: SectionDialog,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        Dialog::new(
-            if dialog.id.is_some() {
-                text::RENAME_SECTION
-            } else {
-                text::NEW_SECTION
-            },
-            self.layer_focus(),
-        )
-        .selector("personal-section-dialog")
-        .on_close(Self::handler(cx, |this, window, cx| {
-            this.close_layer(window, cx)
-        }))
-        .child(
-            Field::new(&self.arrange.section_name, text::SECTION_NAME)
-                .selector("personal-section-name"),
-        )
-        .children(
-            self.arrange
-                .section_invalid
-                .then(|| Notice::error(text::SECTION_NAME_INVALID)),
-        )
-        .child(dialog_footer([
-            Button::new("section-cancel")
-                .label(text::CANCEL)
-                .selector("personal-section-cancel")
-                .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
-                .into_any_element(),
-            Button::new("section-save")
-                .kind(ButtonKind::Primary)
-                .label(text::SAVE)
-                .selector("personal-section-save")
-                .on_click(cx.listener(|this, _, window, cx| this.save_personal_section(window, cx)))
-                .into_any_element(),
-        ]))
-        .into_any_element()
     }
 
     pub(super) fn personal_channel_items(
@@ -281,63 +142,6 @@ impl Shell {
             }))
             .into_any_element(),
         ];
-        for (index, section) in layout.sections.iter().enumerate() {
-            let id = section.id;
-            let selector = format!("channel-section:{id}");
-            items.push(
-                div()
-                    .debug_selector(move || selector.clone())
-                    .child(
-                        MenuItem::new(
-                            ("channel-section", index),
-                            format!("{} {}", text::MOVE_TO_SECTION, section.name),
-                        )
-                        .disabled(location == Location::Section(id))
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                if !this.personal_channel_current(source, cx) {
-                                    return;
-                                }
-                                this.close_layer(window, cx);
-                                this.change_personal(
-                                    source.owner,
-                                    source.workspace,
-                                    Change::Place {
-                                        channel: source.channel,
-                                        to: Location::Section(id),
-                                        before: None,
-                                    },
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
-                    .into_any_element(),
-            );
-        }
-        if matches!(location, Location::Section(_)) {
-            items.push(
-                MenuItem::new("channel-section-remove", text::RETURN_TO_CHANNEL_LIST)
-                    .selector("channel-section-remove")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !this.personal_channel_current(source, cx) {
-                            return;
-                        }
-                        this.close_layer(window, cx);
-                        this.change_personal(
-                            source.owner,
-                            source.workspace,
-                            Change::Place {
-                                channel: source.channel,
-                                to: Location::Default,
-                                before: None,
-                            },
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-            );
-        }
         if let Some(channels) = layout.channels(location) {
             let position = channels
                 .iter()
@@ -374,23 +178,6 @@ impl Shell {
                 );
             }
         }
-        items.push(
-            MenuItem::new("channel-new-section", text::NEW_SECTION)
-                .selector("channel-new-section")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_personal_section(
-                        SectionDialog {
-                            owner: source.owner,
-                            workspace: source.workspace,
-                            id: None,
-                            channel: Some(source.channel),
-                        },
-                        window,
-                        cx,
-                    );
-                }))
-                .into_any_element(),
-        );
         items
     }
 
@@ -402,16 +189,11 @@ impl Shell {
         section: &ChannelSection,
         cx: &mut Context<Self>,
     ) -> CategoryHeader {
-        let Some(location) = section.personal else {
+        if section.personal != Some(Location::Favourites) {
             return header;
-        };
+        }
         let collapsed = section.collapsed;
-        let unread_id = match location {
-            Location::Favourites => "personal-favourites-unread".to_owned(),
-            Location::Section(id) => format!("personal-unread:{id}"),
-            Location::Default => return header,
-        };
-        let mut header = header
+        header
             .toggle(
                 collapsed,
                 RowAction::new(
@@ -425,7 +207,6 @@ impl Shell {
                             owner,
                             workspace,
                             Change::Collapse {
-                                location,
                                 collapsed: !collapsed,
                             },
                             cx,
@@ -434,57 +215,9 @@ impl Shell {
                 ),
             )
             .unread(
-                unread_id,
+                "personal-favourites-unread",
                 collapsed.then(|| collapsed_unread(section)).flatten(),
-            );
-        if let Location::Section(id) = location {
-            header = header
-                .action(RowAction::new(
-                    text::RENAME_SECTION,
-                    cx.listener(move |this, _, window, cx| {
-                        this.open_personal_section(
-                            SectionDialog {
-                                owner,
-                                workspace,
-                                id: Some(id),
-                                channel: None,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-                ))
-                .action(RowAction::new(
-                    text::REMOVE_SECTION,
-                    cx.listener(move |this, _, _, cx| {
-                        this.change_personal(owner, workspace, Change::Remove(id), cx)
-                    }),
-                ));
-            let layout = self.personal_layout(owner, workspace, cx);
-            let position = layout
-                .sections
-                .iter()
-                .position(|section| section.id == id)
-                .unwrap_or(0);
-            for (up, label) in [
-                (true, text::MOVE_SECTION_UP),
-                (false, text::MOVE_SECTION_DOWN),
-            ] {
-                let mut action = RowAction::new(
-                    label,
-                    cx.listener(move |this, _, _, cx| {
-                        this.change_personal(owner, workspace, Change::MoveSection { id, up }, cx)
-                    }),
-                );
-                action.disabled = if up {
-                    position == 0
-                } else {
-                    position + 1 >= layout.sections.len()
-                };
-                header = header.action(action);
-            }
-        }
-        header
+            )
     }
 
     pub(super) fn personal_drop(

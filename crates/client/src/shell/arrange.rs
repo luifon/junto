@@ -45,8 +45,6 @@ pub(crate) struct ArrangeUi {
     drop: Option<BookDrop>,
     /// The name of the group of the open rename dialog.
     group_name: Entity<InputState>,
-    pub(super) section_name: Entity<InputState>,
-    pub(super) section_invalid: bool,
 }
 
 impl ArrangeUi {
@@ -54,8 +52,6 @@ impl ArrangeUi {
         Self {
             drop: None,
             group_name: Field::state(txt::GROUP_NAME_FIELD, window, cx),
-            section_name: Field::state(text::SECTION_NAME, window, cx),
-            section_invalid: false,
         }
     }
 }

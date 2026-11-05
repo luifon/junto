@@ -12,14 +12,22 @@ use crate::arrangement::{ArrangeError, Arrangement, Change};
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 9;
+pub const BOOK_FORMAT_VERSION: u32 = 10;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
     migrations: &[
-        unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        unchanged,
+        without_personal_sections,
     ],
     limit: 4 * 1024 * 1024,
 };
@@ -34,6 +42,27 @@ const BOOK: Versioned = Versioned {
 /// client that it cannot read the file, so that it does not drop the field or the entry
 /// when it writes the book.
 fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    Ok(value)
+}
+
+/// Version 10 keeps the favourites of each account and workspace and drops the named
+/// personal sections of version 9 (ADR 0775).
+fn without_personal_sections(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let places = value
+        .get_mut("arrangement")
+        .and_then(|arrangement| arrangement.get_mut("servers"))
+        .and_then(serde_json::Value::as_array_mut);
+    for place in places.into_iter().flatten() {
+        let Some(place) = place.as_object_mut() else {
+            continue;
+        };
+        if let Some(layouts) = place.get_mut("channel_layouts") {
+            crate::arrangement::channels::without_sections(layouts);
+            if layouts.as_object().is_some_and(serde_json::Map::is_empty) {
+                place.remove("channel_layouts");
+            }
+        }
+    }
     Ok(value)
 }
 
@@ -1446,6 +1475,67 @@ mod tests {
         );
         assert!(serde_json::from_str::<EventCursor>("\"\"").is_err());
     }
+    #[test]
+    fn a_book_of_version_9_keeps_the_favourites_and_drops_the_named_sections() {
+        use junto_protocol::ids::{ChannelId, WorkspaceId};
+        let (_directory, data_dir, book) = book();
+        let entry = book
+            .add(entry("https://studio.example.test", "Studio"))
+            .unwrap();
+        let (account, workspace, other, favourite, placed) = (
+            AccountId::generate(),
+            WorkspaceId::generate(),
+            WorkspaceId::generate(),
+            ChannelId::generate(),
+            ChannelId::generate(),
+        );
+        let section = serde_json::json!({
+            "id": "0191a0f0-0000-7000-8000-000000000005",
+            "name": "Meetings",
+            "collapsed": false,
+            "channels": [placed],
+        });
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        stored["format_version"] = serde_json::json!(9);
+        stored["arrangement"] = serde_json::json!({"servers": [{
+            "server_id": entry.server_id,
+            "channel_layouts": {account.to_string(): {
+                workspace.to_string(): {"favourites": [favourite], "sections": [section]},
+                other.to_string(): {"sections": [section]},
+            }},
+        }]});
+        fs::write(data_dir.book_file(), serde_json::to_vec(&stored).unwrap()).unwrap();
+        let arrangement = book.arrangement().unwrap();
+        let layout = arrangement
+            .channels(entry.server_id, account, workspace)
+            .unwrap();
+        assert_eq!(layout.favourites, [favourite]);
+        assert_eq!(
+            layout.location(placed),
+            crate::arrangement::channels::Location::Default
+        );
+        assert!(
+            arrangement
+                .channels(entry.server_id, account, other)
+                .is_none()
+        );
+        book.arrange(Change::CollapseWorkspaces {
+            server: entry.server_id,
+            collapsed: true,
+        })
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(written["format_version"], BOOK_FORMAT_VERSION);
+        assert_eq!(
+            written["arrangement"]["servers"][0]["channel_layouts"],
+            serde_json::json!({account.to_string(): {
+                workspace.to_string(): {"favourites": [favourite], "favourites_collapsed": false},
+            }})
+        );
+    }
+
     #[test]
     fn personal_channels_survive_restart_and_a_version_8_book_has_none() {
         use crate::arrangement::channels::{Change as PersonalChange, Location};

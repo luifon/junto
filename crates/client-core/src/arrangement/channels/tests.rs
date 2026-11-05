@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn channels_have_one_personal_place_and_moves_preserve_manual_order() {
+fn favourites_are_placed_ordered_collapsed_and_round_trip_as_data() {
     let mut layout = Layout::default();
     let (first, second, third) = (
         ChannelId::generate(),
@@ -24,24 +24,14 @@ fn channels_have_one_personal_place_and_moves_preserve_manual_order() {
         })
         .unwrap();
     assert_eq!(layout.favourites, [first, third, second]);
-    let section = SectionId::generate();
-    layout
-        .apply(Change::Create {
-            id: section,
-            name: " Projects ".to_owned(),
-            channel: Some(first),
-        })
-        .unwrap();
-    assert_eq!(layout.location(first), Location::Section(section));
-    assert_eq!(layout.favourites, [third, second]);
     layout
         .apply(Change::Place {
             channel: second,
-            to: Location::Section(section),
+            to: Location::Favourites,
             before: Some(first),
         })
         .unwrap();
-    assert_eq!(layout.sections[0].channels, [second, first]);
+    assert_eq!(layout.favourites, [second, first, third]);
     layout
         .apply(Change::Place {
             channel: second,
@@ -50,50 +40,9 @@ fn channels_have_one_personal_place_and_moves_preserve_manual_order() {
         })
         .unwrap();
     assert_eq!(layout.location(second), Location::Default);
-    layout.apply(Change::Remove(section)).unwrap();
-    assert_eq!(layout.location(first), Location::Default);
-}
-
-#[test]
-fn sections_are_named_ordered_collapsed_and_round_trip_as_data() {
-    let mut layout = Layout::default();
-    let (first, second) = (SectionId::generate(), SectionId::generate());
-    for (id, name) in [(first, "Planning"), (second, "Research")] {
-        layout
-            .apply(Change::Create {
-                id,
-                name: name.to_owned(),
-                channel: None,
-            })
-            .unwrap();
-    }
-    layout
-        .apply(Change::Rename {
-            id: first,
-            name: "Roadmap".to_owned(),
-        })
-        .unwrap();
-    layout
-        .apply(Change::MoveSection {
-            id: second,
-            up: true,
-        })
-        .unwrap();
-    layout
-        .apply(Change::Collapse {
-            location: Location::Section(first),
-            collapsed: true,
-        })
-        .unwrap();
-    layout
-        .apply(Change::Collapse {
-            location: Location::Favourites,
-            collapsed: true,
-        })
-        .unwrap();
-    assert_eq!(layout.sections[0].id, second);
-    assert_eq!(layout.sections[1].name, "Roadmap");
-    assert!(layout.sections[1].collapsed);
+    assert_eq!(layout.location(first), Location::Favourites);
+    layout.apply(Change::Collapse { collapsed: true }).unwrap();
+    assert!(layout.favourites_collapsed);
     assert_eq!(
         serde_json::from_str::<Layout>(&serde_json::to_string(&layout).unwrap()).unwrap(),
         layout
@@ -111,30 +60,21 @@ fn invalid_or_excessive_changes_are_atomic_and_stored_data_is_checked() {
             before: None,
         })
         .unwrap();
-    for name in [
-        String::new(),
-        "x".repeat(LONGEST_NAME + 1),
-        "a\0b".to_owned(),
-    ] {
-        let before = layout.clone();
-        assert_eq!(
-            layout.apply(Change::Create {
-                id: SectionId::generate(),
-                name,
-                channel: Some(channel)
-            }),
-            Err(Error::InvalidName)
-        );
-        assert_eq!(layout, before);
-    }
     let before = layout.clone();
     assert_eq!(
         layout.apply(Change::Place {
-            channel,
-            to: Location::Section(SectionId::generate()),
-            before: None
+            channel: ChannelId::generate(),
+            to: Location::Favourites,
+            before: Some(ChannelId::generate()),
         }),
-        Err(Error::NoSection)
+        Err(Error::NoChannel)
+    );
+    assert_eq!(
+        layout.apply(Change::MoveChannel {
+            channel: ChannelId::generate(),
+            up: true,
+        }),
+        Err(Error::NoChannel)
     );
     assert_eq!(layout, before);
     layout.favourites.push(channel);
@@ -150,24 +90,36 @@ fn invalid_or_excessive_changes_are_atomic_and_stored_data_is_checked() {
         Err(Error::Limit)
     );
     assert_eq!(layout, before);
-    layout.favourites.clear();
-    for _ in 0..MOST_SECTIONS {
-        layout
-            .apply(Change::Create {
-                id: SectionId::generate(),
-                name: "Section".to_owned(),
-                channel: None,
-            })
-            .unwrap();
-    }
-    let before = layout.clone();
-    assert_eq!(
-        layout.apply(Change::Create {
-            id: SectionId::generate(),
-            name: "Excess".to_owned(),
-            channel: None
-        }),
-        Err(Error::Limit)
+}
+
+#[test]
+fn the_named_sections_of_version_9_go_and_a_layout_of_only_sections_goes_with_them() {
+    let (account, other, workspace, kept, favourite, placed) = (
+        "0191a0f0-0000-7000-8000-000000000001",
+        "0191a0f0-0000-7000-8000-000000000002",
+        "0191a0f0-0000-7000-8000-000000000003",
+        "0191a0f0-0000-7000-8000-000000000004",
+        ChannelId::generate(),
+        ChannelId::generate(),
     );
-    assert_eq!(layout, before);
+    let section = serde_json::json!({
+        "id": "0191a0f0-0000-7000-8000-000000000005",
+        "name": "Projects",
+        "collapsed": true,
+        "channels": [placed],
+    });
+    let mut layouts = serde_json::json!({
+        account: {
+            workspace: {"favourites": [favourite], "favourites_collapsed": true, "sections": [section]},
+            kept: {"sections": [section]},
+        },
+        other: {workspace: {"sections": [section]}},
+    });
+    without_sections(&mut layouts);
+    assert_eq!(
+        layouts,
+        serde_json::json!({
+            account: {workspace: {"favourites": [favourite], "favourites_collapsed": true}},
+        })
+    );
 }
