@@ -909,7 +909,7 @@ def check_downloads(scene: Scene, recording_id: str, composite: dict[str, Any], 
         "PUT", f"/api/v1/workspaces/{scene.workspace_id}/members/{outsider.account_id}/roles/{role['id']}", expect=(200, 204)
     )
     scene.owner.call(
-        "PUT", f"/api/v1/channels/{scene.channel_id}/overrides/{role['id']}", {"allow": [], "deny": ["view_channel"]}, expect=(200, 204)
+        "PUT", f"/api/v1/channels/{scene.channel_id}/rules/roles/{role['id']}", {"allow": [], "deny": ["view_channel"]}, expect=(200, 204)
     )
     after_file = outsider.call("GET", audio_path)
     after_recording = outsider.call("GET", f"/api/v1/recordings/{recording_id}")
