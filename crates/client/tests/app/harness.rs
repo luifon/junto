@@ -501,6 +501,13 @@ impl Window {
         });
     }
 
+    /// Activates accessibility for the window, as the platform does when a screen reader
+    /// connects (ADR 0702). Returns `false` when the window gave no accessibility callbacks.
+    pub fn activate_accessibility(&mut self) -> bool {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation()
+    }
+
     /// Draws every window again and returns the call pictures that they painted (ADR 0774).
     pub fn painted_pictures(&mut self) -> Vec<junto_client::ui::PaintedPicture> {
         let record = junto_client::ui::record_painted_pictures();
@@ -1528,6 +1535,33 @@ pub fn native_frame(cx: &mut VisualTestContext, nested: bool) {
     } else {
         request();
     }
+}
+
+/// Types text into the window, through its platform input handler when no binding takes a
+/// key, as the keyboard does.
+pub fn type_text(cx: &mut VisualTestContext, text: &str) {
+    cx.simulate_input(text);
+}
+
+/// Presses the left button at `from` and moves the pointer to `to` with the button held,
+/// through the input callback of the test window: a drag of the element at `from` starts.
+pub fn drag(
+    cx: &mut VisualTestContext,
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+) {
+    use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent};
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: from,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.simulate_event(MouseMoveEvent {
+        position: to,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test

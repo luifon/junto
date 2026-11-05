@@ -10,9 +10,8 @@ use crate::harness::{World, member};
 /// The nodes of the accessibility tree of the last frame of the window, after accessibility
 /// was activated and the window drew again.
 fn tree(window: &mut crate::harness::Window) -> serde_json::Value {
-    let handle = window.cx.update(|window, _| window.window_handle());
     assert!(
-        window.cx.cx.test_window(handle).simulate_a11y_activation(),
+        window.activate_accessibility(),
         "the window gave no accessibility callbacks"
     );
     window.cx.update(|window, _| window.refresh());

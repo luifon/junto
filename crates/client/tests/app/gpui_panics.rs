@@ -12,7 +12,8 @@ use gpui::{
 };
 
 use crate::harness::{
-    dispatch_from_the_window, draw_from_a_task, native_frame, open_view, pad, press_pad,
+    dispatch_from_the_window, drag, draw_from_a_task, native_frame, open_view, pad, press_pad,
+    type_text,
 };
 
 gpui::actions!(gpui_panics, [Probe]);
@@ -531,13 +532,13 @@ fn a_draw_that_panics_in_prepaint_or_paint_is_followed_by_a_whole_draw(cx: &mut 
 #[gpui::test]
 fn typing_reaches_the_input_handler_after_a_draw_that_panicked(cx: &mut TestAppContext) {
     let (mut cx, phased, typed) = phased_view(cx);
-    cx.simulate_input("a");
+    type_text(&mut cx, "a");
     assert_eq!(*typed.borrow(), "a", "typing before the panic");
     let before = junto_client::panics::panics_on_this_thread();
     phased.armed.set(Some(Phase::Paint));
     draw_from_a_task(&mut cx);
     assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
-    cx.simulate_input("b");
+    type_text(&mut cx, "b");
     assert_eq!(*typed.borrow(), "ab", "typing after the failed draw");
 }
 
@@ -597,23 +598,17 @@ impl gpui::Render for DragSource {
 /// draws each of them again.
 #[gpui::test]
 fn the_dragged_view_and_the_prompt_return_after_a_panic_in_their_prepaint(cx: &mut TestAppContext) {
-    use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent, point, px};
+    use gpui::{point, px};
 
     let phased = Phased::default();
     let source = phased.clone();
     let mut window = open_view(cx, move |_, _| DragSource { phased: source });
     draw_from_a_task(&mut window);
-    window.simulate_event(MouseDownEvent {
-        button: MouseButton::Left,
-        position: point(px(5.0), px(5.0)),
-        click_count: 1,
-        ..Default::default()
-    });
-    window.simulate_event(MouseMoveEvent {
-        position: point(px(60.0), px(60.0)),
-        pressed_button: Some(MouseButton::Left),
-        ..Default::default()
-    });
+    drag(
+        &mut window,
+        point(px(5.0), px(5.0)),
+        point(px(60.0), px(60.0)),
+    );
     draw_from_a_task(&mut window);
     assert!(
         window.update(|_, cx| cx.has_active_drag()),
