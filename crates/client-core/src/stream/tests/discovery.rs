@@ -689,6 +689,57 @@ async fn the_summary_of_a_direct_conversation_is_read_when_its_mute_ends() {
     assert_eq!(rig.http.count(&read), 1);
 }
 
+/// A group conversation is muted in its own notification settings, with an end: its
+/// summary is read again when the mute ends, as for a channel (ADR 0722).
+#[tokio::test(start_paused = true)]
+async fn the_summary_of_a_group_conversation_is_read_when_its_mute_ends() {
+    let mut rig = rig();
+    let own = rig.scene.account_id;
+    let conversation = junto_protocol::ids::ConversationId::generate();
+    let until = time::OffsetDateTime::now_utc() + time::Duration::minutes(10);
+    rig.set_snapshot(40, |snapshot| {
+        snapshot
+            .group_conversations
+            .push(junto_protocol::message::GroupConversation {
+                id: conversation,
+                name: "Planning".to_owned(),
+                account_ids: vec![own, junto_protocol::ids::AccountId::generate()],
+            });
+        snapshot
+            .messages
+            .push(junto_protocol::message::MessageState {
+                read_revision: 0,
+                place: junto_protocol::message::MessagePlace::Group {
+                    conversation_id: conversation,
+                },
+                last_read: 0,
+                latest: 3,
+                unread: 3,
+                mentions: 0,
+                unread_sign: true,
+                notification_mentions: 0,
+                muted: true,
+            });
+        snapshot.notification_settings.push(
+            junto_protocol::discovery::ScopedNotificationSettings {
+                scope_id: conversation.as_uuid(),
+                settings: junto_protocol::discovery::NotificationSettings {
+                    mute: true,
+                    muted_until: Some(until),
+                    ..Default::default()
+                },
+            },
+        );
+    });
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let _served = rig.served().await;
+    let read = format!("/conversations/{conversation}/messages/read");
+    tokio::time::sleep(Duration::from_secs(9 * 60)).await;
+    assert_eq!(rig.http.count(&read), 0);
+    tokio::time::sleep(Duration::from_secs(2 * 60)).await;
+    assert_eq!(rig.http.count(&read), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_page_around_a_position_replaces_what_is_loaded_and_is_the_anchor_of_a_reload() {
     let mut room = room().await;

@@ -8,7 +8,7 @@ use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::invite::ApproveJoinRequest;
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, UpdateChannel};
 
-use crate::harness::{World, member, named, open};
+use crate::harness::{Window, World, member, named, open};
 use crate::support::FaultProxy;
 
 #[gpui::test]
@@ -540,14 +540,27 @@ fn the_panel_of_a_server_of_another_api_version_checks_again_and_removes(cx: &mu
         Some(ServerStatus::Incompatible(_))
     ));
 
+    // The check runs from the press until its answer is applied: the panel is read after
+    // that end, which only the answer brings.
+    let server_id = window.view().servers[0].id;
+    let running = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .client()
+                .server(server_id)
+                .and_then(|server| server.access().in_progress)
+        })
+    };
     let asked = proxy.seen("/api/server").len();
     window.click("check-server");
-    window.until("the server is asked again", |_| {
-        proxy.seen("/api/server").len() > asked
+    window.until("the check has asked the server again and ended", |window| {
+        proxy.seen("/api/server").len() > asked && running(window).is_none()
     });
-    window.until("the panel stays", |window| {
-        window.shows("incompatible") && window.shows("check-server")
-    });
+    assert!(matches!(
+        window.status(),
+        Some(ServerStatus::Incompatible(_))
+    ));
+    assert!(window.shows("incompatible") && window.shows("check-server"));
 
     window.click("remove-server");
     window.click("confirm");
