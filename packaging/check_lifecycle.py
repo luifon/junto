@@ -400,6 +400,9 @@ def verify_signature(application):
 
 
 def check(parent, system, files, *, signing=None):
+    if system == "macos":
+        from running import refuse_when_running
+        refuse_when_running()
     root = parent / FOLDER
     root.mkdir()
     built = versions((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
