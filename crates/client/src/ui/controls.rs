@@ -542,7 +542,7 @@ impl RenderOnce for Tab {
 }
 
 /// A row of tabs with the role of a tab list (ADR 0738). The Tab key enters the row at the
-/// open tab, and leaves it to the next control after the row. Left and Right move the focus
+/// open tab, and leaves it from any tab to the next control after the row. Left and Right move the focus
 /// to the tab before and after the focused one, round the row; Home and End to the first and
 /// the last. Enter, Space and a press open the focused tab, through the press of each tab.
 #[derive(IntoElement)]
@@ -586,10 +586,16 @@ impl RenderOnce for TabRow {
             .iter()
             .map(|tab| super::reveal::inner_handle(&self.id, &tab.id, window, cx))
             .collect();
-        // One tab of the row is in the order of the Tab key: the open one.
+        // One tab of the row is in the order of the Tab key: the focused one while the focus
+        // is in the row, so that Tab and Shift+Tab leave the row from any tab, and the open
+        // one otherwise, so that the Tab key enters the row there.
         let open = self.tabs.iter().position(|tab| tab.on).unwrap_or(0);
+        let stop = focus
+            .iter()
+            .position(|handle| handle.is_focused(window))
+            .unwrap_or(open);
         for (index, handle) in focus.iter().enumerate() {
-            let _ = handle.clone().tab_stop(index == open);
+            let _ = handle.clone().tab_stop(index == stop);
         }
         let keys = focus.clone();
         div()

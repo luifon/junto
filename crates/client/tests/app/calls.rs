@@ -1272,10 +1272,18 @@ fn the_tabs_of_the_share_dialog_are_opened_by_the_keyboard_and_the_pointer(
     assert!(focused_on(&mut window, "share-tab-screen"));
     window.press("end");
     assert!(focused_on(&mut window, "share-tab-application"));
-    // Tab leaves the row: the closed tabs are not in the order of the Tab key.
+    // The closed tabs are not in the order of the Tab key: from the first tab, which is
+    // closed, Tab leaves the row past the other closed tab and the open one, and Shift+Tab
+    // from the list returns to the open tab.
+    window.press("home");
+    assert!(focused_on(&mut window, "share-tab-screen"));
     window.press("tab");
     assert!(!focused_on(&mut window, "share-tab-screen"));
     assert!(!focused_on(&mut window, "share-tab-window"));
+    assert!(!focused_on(&mut window, "share-tab-application"));
+    window.press("shift-tab");
+    assert!(focused_on(&mut window, "share-tab-application"));
+    window.press("tab");
     assert!(!focused_on(&mut window, "share-tab-application"));
 
     // The pointer, and a choice that another tab ends. The rows of a fixture call are
