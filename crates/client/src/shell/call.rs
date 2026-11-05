@@ -1133,10 +1133,10 @@ impl Shell {
         // The list lays out only the rows in view: a call in a workspace of hundreds of
         // members lists all of them outside the call (open item CD8). Each workspace has a
         // list of its own, so another one does not open at the scroll position of the last.
+        // A list of another server, account or workspace keeps only its scroll position; the
+        // list of a server whose account changed, and of a workspace that the server does not
+        // list any more, goes.
         let state = self.state.read(cx);
-        self.call_members.retain(|(server, account, _), _| {
-            state.owner(*server).map(|owner| owner.account_id) == Some(*account)
-        });
         let scope = server_id
             .zip(view.person.account_id)
             .map(|(server, account)| {
@@ -1145,6 +1145,24 @@ impl Shell {
                     account,
                     panel.channel().and(view.workspace().map(|shown| shown.id)),
                 )
+            });
+        self.call_members
+            .retain(|(server, account, workspace), list| {
+                let held = state
+                    .server(*server)
+                    .filter(|held| held.owner().map(|owner| owner.account_id) == Some(*account));
+                let listed = held.is_some_and(|held| {
+                    workspace.is_none_or(|workspace| {
+                        held.live()
+                            .view()
+                            .model
+                            .is_some_and(|model| model.workspace(workspace).is_some())
+                    })
+                });
+                if Some((*server, *account, *workspace)) != scope {
+                    list.rows = None;
+                }
+                listed
             });
         let list = match scope {
             Some(scope) => self
