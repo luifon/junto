@@ -1842,12 +1842,16 @@ async fn the_end_of_a_call_waits_for_the_work_of_a_move_within_its_limit() {
                 view.call.is_none()
             })
             .await;
-        let waited = tokio::time::timeout(Duration::from_millis(200), &mut ended).await;
-        assert!(
-            waited.is_err(),
-            "the end did not wait for the work of the move"
-        );
+        // The work that closes its connection holds the end until the test lets it close,
+        // far within its limit. The work that does not end holds the end until its limit:
+        // the time is checked after the end, because a window of the test inside a limit of
+        // 500 ms is passed by a host under load.
         if closes {
+            let waited = tokio::time::timeout(Duration::from_millis(200), &mut ended).await;
+            assert!(
+                waited.is_err(),
+                "the end did not wait for the work of the move"
+            );
             close.send(()).unwrap();
         }
         let identity = tokio::time::timeout(Duration::from_secs(20), ended)

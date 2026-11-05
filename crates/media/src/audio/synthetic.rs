@@ -60,6 +60,8 @@ struct State {
     input_fault: Option<AudioError>,
     played: VecDeque<f32>,
     played_format: Option<Format>,
+    /// The sink keeps everything that is played, not only the last seconds.
+    played_whole: bool,
     /// Reports a failure of the open input stream, as a disconnected device does.
     input_failed: Option<Failed>,
     output_failed: Option<Failed>,
@@ -94,6 +96,7 @@ impl SyntheticHost {
                 input_fault: None,
                 played: VecDeque::new(),
                 played_format: None,
+                played_whole: false,
                 input_failed: None,
                 output_failed: None,
                 input_stall: None,
@@ -234,9 +237,20 @@ impl SyntheticHost {
         self.lock().opened_outputs.clone()
     }
 
-    /// Forgets what was played so far.
+    /// Forgets what was played so far. From now on the sink keeps the last seconds only.
     pub fn clear_played(&self) {
-        self.lock().played.clear();
+        let mut state = self.lock();
+        state.played.clear();
+        state.played_whole = false;
+    }
+
+    /// Forgets what was played so far, and from now on keeps everything that is played until
+    /// the next [`SyntheticHost::clear_played`]. A test that examines all the sound of a
+    /// step does not depend on how long the step took.
+    pub fn record_played(&self) {
+        let mut state = self.lock();
+        state.played.clear();
+        state.played_whole = true;
     }
 
     /// The left channel of what was played in the last `duration`, with its rate. Empty
@@ -246,7 +260,8 @@ impl SyntheticHost {
     }
 
     /// The left channel of everything that was played since the last clear, or since the
-    /// output was opened, with its rate. The sink keeps the last seconds only.
+    /// output was opened, with its rate. The sink keeps the last seconds only, unless
+    /// [`SyntheticHost::record_played`] asked for everything.
     pub fn played_since_clear(&self) -> (Vec<f32>, u32) {
         let state = self.lock();
         let Some(format) = state.played_format else {
@@ -435,8 +450,10 @@ impl AudioHost for SyntheticHost {
             fill(&mut buffer, format);
             let mut state = shared.lock().unwrap_or_else(PoisonError::into_inner);
             state.played.extend(buffer.iter().copied());
-            let surplus = state.played.len().saturating_sub(kept);
-            state.played.drain(..surplus);
+            if !state.played_whole {
+                let surplus = state.played.len().saturating_sub(kept);
+                state.played.drain(..surplus);
+            }
         });
         let stop = ticker.stop.clone();
         let stream =

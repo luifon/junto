@@ -36,6 +36,9 @@ struct LinkState {
     held: Option<Held>,
     /// The bytes of the media server that wait for [`SignalProxy::pass_answers`].
     answers: Option<Vec<u8>>,
+    /// The media server ended the connection while its answers waited: the end reaches
+    /// the client after them.
+    server_ended: bool,
 }
 
 /// What a client wrote to a held connection.
@@ -236,10 +239,17 @@ impl SignalProxy {
             // The connection to the client is taken first: an answer that arrives meanwhile
             // waits for it and follows the ones that waited.
             let mut to_client = link.to_client.lock().await;
-            let Some(answers) = link.state.lock().unwrap().answers.take() else {
+            let (answers, ended) = {
+                let mut state = link.state.lock().unwrap();
+                (state.answers.take(), state.server_ended)
+            };
+            let Some(answers) = answers else {
                 continue;
             };
             let _ = to_client.write_all(&answers).await;
+            if ended {
+                let _ = to_client.shutdown().await;
+            }
         }
     }
 
@@ -406,7 +416,8 @@ async fn downward(mut from_server: OwnedReadHalf, link: Arc<Link>) {
     // The end of a connection whose answers wait reaches the client after them, when the
     // test passes them.
     let ends = {
-        let state = link.state.lock().unwrap();
+        let mut state = link.state.lock().unwrap();
+        state.server_ended = true;
         state.held.is_none() && state.answers.is_none()
     };
     if ends {
@@ -425,6 +436,49 @@ async fn the_proxy_reaches_a_media_server_named_by_its_host_name() {
     let mut received = [0; 7];
     upstream.read_exact(&mut received).await.unwrap();
     assert_eq!(&received, b"upgrade");
+}
+
+/// The media server ends a connection while its answers wait: the client receives the
+/// answers and then the end, when the test passes them.
+#[tokio::test]
+async fn the_end_of_a_connection_whose_answers_wait_follows_the_answers() {
+    let server = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    let proxy = SignalProxy::start_at(&format!("ws://127.0.0.1:{port}")).await;
+    proxy.hold_answers();
+    let mut client = TcpStream::connect(proxy.address).await.unwrap();
+    let (mut upstream, _) = server.accept().await.unwrap();
+    upstream.write_all(b"answer").await.unwrap();
+    drop(upstream);
+    let ended = || {
+        proxy
+            .shared
+            .lock()
+            .unwrap()
+            .links
+            .first()
+            .is_some_and(|link| link.state.lock().unwrap().server_ended)
+    };
+    while !ended() {
+        tokio::task::yield_now().await;
+    }
+    let mut first = [0; 1];
+    let early = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        client.read(&mut first),
+    );
+    assert!(early.await.is_err(), "an answer passed while answers wait");
+
+    proxy.pass_answers().await;
+    let mut received = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.read_to_end(&mut received),
+    )
+    .await
+    .expect("the end of the connection did not reach the client")
+    .unwrap();
+    assert_eq!(received, b"answer");
 }
 
 /// A connection that is not held passes any number of bytes, and the proxy keeps at most

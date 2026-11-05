@@ -808,6 +808,7 @@ fn enter_call(
             .arg("publish")
             .args(["--url", &join.media_url, "--token", join.token.expose()])
             .args(arguments)
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

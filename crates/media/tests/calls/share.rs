@@ -1933,8 +1933,7 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
         })
         .await;
         ben.calls.leave().await;
-        ben.host.clear_played();
-        let cleared = tokio::time::Instant::now();
+        ben.host.record_played();
         let mut views = ben.calls.watch();
         let joining = ben.calls.join(room.target);
         let first = tokio::time::timeout(PATIENCE, views.wait_for(|view| view.call.is_some()))
@@ -1958,13 +1957,11 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
             })
             .await;
         assert_eq!(view.call.unwrap().microphone, MicrophoneState::Closed);
-        // Two seconds of the call: the tone of Ann is in none of the sound that was played
-        // since the join, from its first sample.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Ben receives the sound of Ann, and the tone of Ann is in none of the sound that
+        // was played since the join, from its first sample.
+        ben.until_receiving(&ann).await;
         let (played, rate) = ben.host.played_since_clear();
-        assert!(played.len() > rate as usize, "{}", played.len());
-        // The sink keeps the last 12 seconds: everything since the join is examined.
-        assert!(cleared.elapsed() < Duration::from_secs(10));
+        assert!(!played.is_empty());
         for part in played.chunks(rate as usize / 4) {
             let heard = junto_media::audio::synthetic::tone_level(part, rate, ann.hz);
             assert!(heard < ABSENT_DBFS, "{heard}");

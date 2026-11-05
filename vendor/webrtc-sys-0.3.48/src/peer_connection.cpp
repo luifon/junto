@@ -324,33 +324,8 @@ std::unique_ptr<SessionDescription> PeerConnection::current_remote_description()
   });
 }
 
-std::unique_ptr<SessionDescription> PeerConnection::pending_local_description() const {
-  // Modified: read and copied on the signaling thread.
-  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
-    return peer_connection_->pending_local_description();
-  });
-}
-
-std::unique_ptr<SessionDescription> PeerConnection::pending_remote_description() const {
-  // Modified: read and copied on the signaling thread.
-  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
-    return peer_connection_->pending_remote_description();
-  });
-}
-
-std::unique_ptr<SessionDescription> PeerConnection::local_description() const {
-  // Modified: read and copied on the signaling thread.
-  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
-    return peer_connection_->local_description();
-  });
-}
-
-std::unique_ptr<SessionDescription> PeerConnection::remote_description() const {
-  // Modified: read and copied on the signaling thread.
-  return copy_on_signaling_thread(rtc_runtime_->signaling_thread(), [&] {
-    return peer_connection_->remote_description();
-  });
-}
+// Modified: the getters of the pending, local and remote descriptions are removed. The
+// bridge declares none of them, so no Rust code reached them.
 
 PeerConnectionState PeerConnection::connection_state() const {
   return static_cast<PeerConnectionState>(
