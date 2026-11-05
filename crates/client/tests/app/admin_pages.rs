@@ -1706,6 +1706,75 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
     });
 }
 
+/// A change of what the reader may see, while the audit log is shown, empties the page and
+/// reads it again: an entry about a channel that the reader no longer sees leaves the page
+/// (`audit_after_permission_change`, ADR 0748).
+#[gpui::test]
+fn the_shown_audit_log_is_read_again_when_the_permissions_of_its_reader_change(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let default = default_workspace(&world, &admin.handle);
+    grant_workspace(
+        &world,
+        &admin.handle,
+        default,
+        luca,
+        WorkspacePermission::ViewAuditEntries,
+    );
+    let channel = text_channel(&world, &admin.handle, default, "secret-plans");
+    let names_channel = |page: &junto_client::state::admin::view::records::AuditPage| {
+        page.rows
+            .iter()
+            .any(|row| row.sentence.contains("secret-plans"))
+    };
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-audit", |window| {
+        server_page!(window, AuditLog).is_some()
+    });
+    awaited(
+        &mut window,
+        "the log of the workspace names the channel",
+        |window| {
+            server_page!(window, AuditLog).filter(|page| {
+                page.scope == Some(AuditScope::Workspace(default))
+                    && page.state == AuditRead::Loaded
+                    && names_channel(page)
+            })
+        },
+    );
+
+    let hidden = junto_client_core::protocol::structure::SetChannelOverride {
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::ViewChannel],
+    };
+    world
+        .run(api.set_channel_rule(
+            channel,
+            junto_client_core::protocol::structure::RuleSubject::Person { account_id: luca },
+            &hidden,
+        ))
+        .unwrap();
+    awaited(
+        &mut window,
+        "the log is read again without the hidden channel",
+        |window| {
+            server_page!(window, AuditLog).filter(|page| {
+                page.scope == Some(AuditScope::Workspace(default))
+                    && page.state == AuditRead::Loaded
+                    && page.loaded > 0
+                    && !names_channel(page)
+            })
+        },
+    );
+}
+
 #[gpui::test]
 fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     cx: &mut TestAppContext,

@@ -186,6 +186,69 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
     );
 }
 
+/// The files of a directory whose names start with `start`.
+fn files_named(directory: &std::path::Path, start: &str) -> Vec<String> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(start))
+        .collect()
+}
+
+/// A save of an export does not outlive its server: the server is removed while the file
+/// arrives, and the save writes no further byte, gives its file no name and leaves no part
+/// of it (`end_stale_export_saves`, ADR 0761).
+#[gpui::test]
+fn a_save_of_an_export_ends_when_its_server_is_removed(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let server_id = owner.id();
+    let general = window.selected_channel();
+    let export = world.run(owner.api().export_channel(general)).unwrap();
+    drop(owner);
+    let downloads = downloads(&mut window);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-exports", |window| {
+        server_page!(window, Exports).is_some()
+    });
+    awaited(&mut window, "the export is ready to save", |window| {
+        export_line(window, export.id)
+            .filter(|row| row.status == ExportStatus::Ready && row.can_save)
+    });
+    proxy.hold_answer_ending("GET", &format!("/exports/{}/file", export.id));
+    click_in_page(&mut window, sel("export-save", export.id));
+    awaited(&mut window, "the save runs", |window| {
+        matches!(
+            export_line(window, export.id)?.save,
+            Some(ExportSave::Saving { .. })
+        )
+        .then_some(())
+    });
+    window.until("the part of the file is written", |_| {
+        std::fs::read_dir(downloads.path())
+            .unwrap()
+            .next()
+            .is_some()
+    });
+
+    window.state.update(&mut window.cx, |state, cx| {
+        assert!(state.remove_server(server_id, cx));
+    });
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    proxy.release_answers();
+    window.until("the save has ended and left nothing", |_| {
+        std::fs::read_dir(downloads.path())
+            .unwrap()
+            .next()
+            .is_none()
+    });
+    assert!(files_named(downloads.path(), "junto-export").is_empty());
+}
+
 /// The navigation counts a ready export until its file is saved, and a restart of the
 /// client on the same data directory does not count it again while the server still holds
 /// it (ADR 0761).
