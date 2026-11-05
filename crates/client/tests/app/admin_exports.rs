@@ -216,6 +216,11 @@ fn a_saved_export_is_not_counted_again_after_a_restart(cx: &mut TestAppContext) 
     window.until("the saved export is in the data directory", |_| {
         std::fs::read_to_string(&file).is_ok_and(|text| text.contains(&stored))
     });
+    let saved_as = export_line(&mut window, export.id).and_then(|row| row.save);
+    assert!(
+        matches!(&saved_as, Some(ExportSave::Saved(path)) if path.exists()),
+        "{saved_as:?}"
+    );
 
     window.close();
     let mut window = crate::harness::open(cx, directory.path());
@@ -236,6 +241,12 @@ fn a_saved_export_is_not_counted_again_after_a_restart(cx: &mut TestAppContext) 
         ExportState::Ready
     );
     assert_eq!(window.drawn_number("admin-nav-exports"), None);
+    // The row states where the file was saved, as before the restart.
+    assert_eq!(
+        export_line(&mut window, export.id).and_then(|row| row.save),
+        saved_as
+    );
+    assert!(window.shows_named(format!("export-saved-{}", export.id)));
 
     // A removal outside the page takes the export from the list of the server, and the
     // data directory keeps it as saved no longer.

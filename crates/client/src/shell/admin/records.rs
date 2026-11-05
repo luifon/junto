@@ -984,6 +984,13 @@ impl Shell {
                 )
                 .into_any_element(),
             ),
+            Some(ExportSave::SavedEarlier) => under.push(
+                named(
+                    format!("export-saved-{export_id}"),
+                    sentence(txt::SAVED_EARLIER, theme).py(u(4.0)),
+                )
+                .into_any_element(),
+            ),
             Some(ExportSave::Failed(reason)) => under.push(
                 div()
                     .flex_none()

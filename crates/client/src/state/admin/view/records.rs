@@ -172,6 +172,9 @@ pub enum ExportSave {
         written: u64,
     },
     Saved(PathBuf),
+    /// The file was saved before the last start of the application, and the data
+    /// directory does not hold its path (a file of format version 1, ADR 0710).
+    SavedEarlier,
     /// Why nothing was saved, as the page states it.
     Failed(String),
 }
@@ -826,7 +829,22 @@ fn export_line(
             ExportStatus::Failed(export.failure.unwrap_or(ExportFailure::Failed))
         }
     };
-    let save = admin.exports.files.get(&(server_id, export.id)).cloned();
+    // A file saved before the last start is known from the data directory (ADR 0761).
+    let save = admin
+        .exports
+        .files
+        .get(&(server_id, export.id))
+        .cloned()
+        .or_else(|| {
+            let saved = &admin.exports.saved;
+            let account_id = model.account.id;
+            saved.contains(server_id, account_id, export.id).then(|| {
+                match saved.path(server_id, account_id, export.id) {
+                    Some(path) => ExportSave::Saved(path.to_owned()),
+                    None => ExportSave::SavedEarlier,
+                }
+            })
+        });
     let saving = matches!(save, Some(ExportSave::Saving { .. }));
     ExportLine {
         id: export.id,
@@ -2607,6 +2625,46 @@ mod tests {
             txt::saved_as(&path),
             "Saved as /downloads/junto-export-general-2027-01-15.zip"
         );
+    }
+
+    /// After a restart the application holds no save of this run, and the data directory
+    /// tells which exports this device saved and where (ADR 0761).
+    #[test]
+    fn an_export_saved_before_a_restart_shows_where_its_file_is() {
+        let scene = scene();
+        let place = scene.in_general();
+        let (saved, earlier, of_other, untouched) =
+            (ready(place), ready(place), ready(place), ready(place));
+        let model = scene.model(with_exports(vec![
+            saved.clone(),
+            earlier.clone(),
+            of_other.clone(),
+            untouched.clone(),
+        ]));
+        let path = PathBuf::from("/downloads/junto-export-general-2027-01-15.zip");
+        let mut marks = junto_client_core::saved_exports::SavedExports::default();
+        marks.insert(scene.server_id, scene.own, saved.id, Some(path.clone()));
+        marks.insert(scene.server_id, scene.own, earlier.id, None);
+        marks.insert(
+            scene.server_id,
+            AccountId::generate(),
+            of_other.id,
+            Some(path.clone()),
+        );
+        let admin = AdminState {
+            exports: ExportFiles {
+                saved: marks,
+                ..ExportFiles::default()
+            },
+            ..AdminState::default()
+        };
+        let page = exports(scene.server_id, &model, &known(), &admin);
+        let rows = page.exports.loaded().unwrap();
+        assert_eq!(rows[0].save, Some(ExportSave::Saved(path)));
+        assert_eq!(rows[1].save, Some(ExportSave::SavedEarlier));
+        assert_eq!(rows[2].save, None);
+        assert_eq!(rows[3].save, None);
+        assert!(rows.iter().all(|row| row.can_save));
     }
 
     #[test]
