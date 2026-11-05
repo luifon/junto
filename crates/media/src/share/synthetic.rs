@@ -89,6 +89,30 @@ struct State {
     stall_next_stop: Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>,
 }
 
+impl State {
+    /// The width and the height of a source as it is now: a screen of the portal has
+    /// 1280 × 720.
+    fn size_of(&self, source: PictureSource) -> Option<(u32, u32)> {
+        match source {
+            PictureSource::Portal(kind) => {
+                self.sources.portal.contains(&kind).then_some((1280, 720))
+            }
+            PictureSource::Display(id) => self
+                .sources
+                .displays
+                .iter()
+                .find(|display| display.id == id)
+                .map(|display| (display.width, display.height)),
+            PictureSource::Window(id) => self
+                .sources
+                .windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(|window| (window.width, window.height)),
+        }
+    }
+}
+
 /// A capture that runs: its stop, its sink and the source that it shows.
 struct Live {
     stop: Weak<AtomicBool>,
@@ -189,6 +213,35 @@ impl SyntheticCapture {
 
     /// The colours of the left and of the right half of the pictures of one source from
     /// now on, so that two shares of one person are told apart.
+    /// Gives a screen or a window a new size, as a person who resizes a window. A capture of
+    /// it gives its next pictures at the new size.
+    pub fn resize_source(&self, source: PictureSource, width: u32, height: u32) {
+        let mut state = self.lock();
+        match source {
+            PictureSource::Display(id) => {
+                for display in state
+                    .sources
+                    .displays
+                    .iter_mut()
+                    .filter(|display| display.id == id)
+                {
+                    (display.width, display.height) = (width, height);
+                }
+            }
+            PictureSource::Window(id) => {
+                for window in state
+                    .sources
+                    .windows
+                    .iter_mut()
+                    .filter(|window| window.id == id)
+                {
+                    (window.width, window.height) = (width, height);
+                }
+            }
+            PictureSource::Portal(_) => {}
+        }
+    }
+
     pub fn set_source_colours(&self, source: PictureSource, left: Colour, right: Colour) {
         self.lock().source_colours.insert(source, (left, right));
     }
@@ -346,28 +399,11 @@ impl ScreenCapture for SyntheticCapture {
                 return Err(CaptureError::NotAllowed);
             }
             state.previewed.push(source);
-            let (size, id) = match source {
-                PictureSource::Display(id) => (
-                    state
-                        .sources
-                        .displays
-                        .iter()
-                        .find(|display| display.id == id)
-                        .map(|display| (display.width, display.height)),
-                    id,
-                ),
-                PictureSource::Window(id) => (
-                    state
-                        .sources
-                        .windows
-                        .iter()
-                        .find(|window| window.id == id)
-                        .map(|window| (window.width, window.height)),
-                    id,
-                ),
+            let id = match source {
+                PictureSource::Display(id) | PictureSource::Window(id) => id,
                 PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
             };
-            let (width, height) = size.ok_or(CaptureError::SourceGone)?;
+            let (width, height) = state.size_of(source).ok_or(CaptureError::SourceGone)?;
             let (left, right) = state.colours;
             drop(state);
             let left = (
@@ -400,24 +436,9 @@ impl ScreenCapture for SyntheticCapture {
             if let Some(error) = state.fail_next.take() {
                 return Err(error);
             }
-            let source = match request.picture {
-                PictureSource::Portal(kind) => {
-                    state.sources.portal.contains(&kind).then_some((1280, 720))
-                }
-                PictureSource::Display(id) => state
-                    .sources
-                    .displays
-                    .iter()
-                    .find(|display| display.id == id)
-                    .map(|display| (display.width, display.height)),
-                PictureSource::Window(id) => state
-                    .sources
-                    .windows
-                    .iter()
-                    .find(|window| window.id == id)
-                    .map(|window| (window.width, window.height)),
-            };
-            let (width, height) = source.ok_or(CaptureError::SourceGone)?;
+            let (width, height) = state
+                .size_of(request.picture)
+                .ok_or(CaptureError::SourceGone)?;
             let tones = match &request.sound {
                 SoundChoice::None => None,
                 SoundChoice::System => Some(state.system_tones),
@@ -428,7 +449,8 @@ impl ScreenCapture for SyntheticCapture {
                         .ok_or(CaptureError::SourceGone)?,
                 ),
             };
-            let (width, height) = request.quality.resolution.fit(width, height);
+            let resolution = request.quality.resolution;
+            let (width, height) = resolution.fit(width, height);
             let frame_rate = request.quality.frame_rate.max(1);
             let picture = request.picture;
             state.started.push(request);
@@ -454,7 +476,7 @@ impl ScreenCapture for SyntheticCapture {
                     &capture,
                     &stopped,
                     sink.as_ref(),
-                    (picture, (width, height)),
+                    (picture, resolution),
                     frame_rate,
                     tones,
                 );
@@ -481,12 +503,13 @@ impl ScreenCapture for SyntheticCapture {
 }
 
 /// Gives pictures at the frame rate and sound in blocks of 10 ms, by the clock, until the
-/// capture is stopped.
+/// capture is stopped. Each picture has the size of the source as it is then, within the
+/// resolution of the share, as a capture of the system follows the size of a window.
 fn produce(
     capture: &SyntheticCapture,
     stop: &AtomicBool,
     sink: &dyn CaptureSink,
-    (source, size): (PictureSource, (u32, u32)),
+    (source, resolution): (PictureSource, super::Resolution),
     frame_rate: u32,
     tones: Option<Tones>,
 ) {
@@ -502,13 +525,20 @@ fn produce(
         let elapsed = started.elapsed();
         let pictures_due = 1 + elapsed.as_millis() as u64 * u64::from(frame_rate) / 1000;
         if pictures < pictures_due {
-            let (colours, still) = {
+            let (colours, still, size) = {
                 let state = capture.lock();
                 let colours = state.source_colours.get(&source).copied();
-                (colours.unwrap_or(state.colours), state.still)
+                (
+                    colours.unwrap_or(state.colours),
+                    state.still,
+                    state.size_of(source),
+                )
             };
-            if pictures == 0 || !still {
-                let picture = two_colours(size.0, size.1, colours.0, colours.1);
+            if let Some((width, height)) = size
+                && (pictures == 0 || !still)
+            {
+                let (width, height) = resolution.fit(width, height);
+                let picture = two_colours(width, height, colours.0, colours.1);
                 sink.picture(Arc::new(picture));
             }
             pictures = pictures_due;

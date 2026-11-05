@@ -336,6 +336,9 @@ pub(super) struct ShareSink {
     video: Mutex<Option<NativeVideoSource>>,
     /// The last picture and when it was given to the track.
     last: Mutex<Option<(Arc<dyn VideoBuffer>, Instant)>>,
+    /// The width and the height of the last picture of the capture. The share states this
+    /// size: the pictures of a shared window follow the size of the window (ADR 0737).
+    size: Mutex<Option<(u32, u32)>>,
     arrived: Notify,
     sound: Mutex<SoundChain>,
     ended: AtomicBool,
@@ -368,6 +371,22 @@ impl ShareSink {
             .clone()
     }
 
+    fn size(&self) -> Option<(u32, u32)> {
+        *self.size.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the size of a picture of the capture, and tells the engine when it changed.
+    fn measure(&self, buffer: &dyn VideoBuffer) {
+        let size = Some((buffer.width(), buffer.height()));
+        let before = std::mem::replace(
+            &mut *self.size.lock().unwrap_or_else(PoisonError::into_inner),
+            size,
+        );
+        if before != size {
+            let _ = self.internal.send(Internal::ShareSized(self.generation));
+        }
+    }
+
     fn keep(&self, buffer: Arc<dyn VideoBuffer>) {
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some((buffer, Instant::now()));
     }
@@ -378,6 +397,7 @@ impl CaptureSink for ShareSink {
         if self.over() {
             return;
         }
+        self.measure(buffer.as_ref());
         self.send(&buffer);
         self.keep(buffer);
         self.arrived.notify_one();
@@ -693,7 +713,7 @@ impl Actor {
                             sound,
                             sound_held: sound != ShareAudio::None
                                 && !matches!(share.sound, Publication::Published(_)),
-                            size: (stream.width, stream.height),
+                            size: share.sink.size().unwrap_or((stream.width, stream.height)),
                             frame_rate: share.request.quality.frame_rate,
                         })
                     }
@@ -1107,6 +1127,7 @@ impl Actor {
             internal: self.internal.clone(),
             video: Mutex::new(None),
             last: Mutex::new(None),
+            size: Mutex::new(None),
             arrived: Notify::new(),
             sound: Mutex::new(SoundChain::new(frames)),
             ended: AtomicBool::new(false),
@@ -1635,6 +1656,13 @@ impl Actor {
     pub(super) fn share_sound_retry(&mut self, generation: u64) {
         if self.own_share_of(generation).is_some() {
             self.sync_share_sound();
+        }
+    }
+
+    /// The pictures of the capture of a share have a new size.
+    pub(super) fn share_sized(&mut self, generation: u64) {
+        if self.own_share_of(generation).is_some() {
+            self.tell_shares();
         }
     }
 

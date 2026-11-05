@@ -322,6 +322,8 @@ enum Internal {
     /// The capture of a share has answered. The share holds the answer.
     ShareStarted(u64),
     ShareEnded(u64, CaptureError),
+    /// The pictures of the capture of a share have a new size.
+    ShareSized(u64),
     ShareStopFailed(CaptureNotice),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
@@ -1233,6 +1235,7 @@ impl Actor {
             Internal::ShareStarted(generation) => self.share_started(generation),
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
+            Internal::ShareSized(generation) => self.share_sized(generation),
             Internal::ShareStopFailed(error) => {
                 self.share_ended = Some(error);
                 self.tell_shares();

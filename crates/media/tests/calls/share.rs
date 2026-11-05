@@ -1664,6 +1664,56 @@ async fn a_client_of_a_release_before_several_shares_never_receives_a_further_sh
     .await;
 }
 
+/// A shared window that changes its size is sent at its new size (ADR 0737): the viewer
+/// receives pictures of the new size, and the share of the sharer states the new size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_shared_window_that_changes_its_size_is_sent_and_stated_at_its_new_size() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let _ = &ben_at;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        ann.calls.start_share(window(SoundChoice::None));
+        assert_eq!(ann.until_sharing().await.size, (800, 600));
+        ben.until_width_stays(ann_id, 800).await;
+        for (width, height) in [(500, 600), (1000, 700)] {
+            ann.capture
+                .resize_source(PictureSource::Window(11), width, height);
+            ben.until_width_stays(ann_id, width).await;
+            let size = |view: &junto_media::calls::CallsView| {
+                view.call
+                    .as_ref()
+                    .and_then(|call| match call.own_shares.get(&0) {
+                        Some(ShareState::Running(info)) => Some(info.size),
+                        _ => None,
+                    })
+            };
+            ann.until("the share states the new size of the window", |view| {
+                size(view) == Some((width, height))
+            })
+            .await;
+            let seen = ben.calls.view().call.and_then(|call| {
+                call.shares
+                    .iter()
+                    .find(|share| share.account_id == ann_id)
+                    .and_then(|share| share.size)
+            });
+            assert_eq!(
+                seen,
+                Some((width, height)),
+                "the viewer states another size"
+            );
+        }
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_last_size_decides_drawing_bounds_while_the_share_keeps_full_resolution() {
