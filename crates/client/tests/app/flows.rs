@@ -432,6 +432,68 @@ fn a_request_that_the_server_cannot_be_told_to_withdraw_is_cancelled_on_this_dev
     );
 }
 
+/// The add-server dialog for a key that this device holds for another address offers to
+/// discard the key on this device only after the withdrawal failed, with the sentence that
+/// the server was not told; that discards the key and shows the preview (ADR 0712).
+#[gpui::test]
+fn a_key_of_another_address_is_discarded_on_this_device_when_the_server_cannot_be_told(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+
+    // A request at the address of the server, and a removal that does not wait for the
+    // server: the key of the request stays on this device.
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    window.click("close-join");
+    let server_id = window.view().servers[0].id;
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    std::thread::spawn(move || client.remove_server(server_id))
+        .join()
+        .unwrap()
+        .unwrap();
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    let key_file = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().key_file(server_id)
+    });
+    assert!(key_file.exists());
+
+    // The same server at another address, whose release has no withdrawal route.
+    proxy.answer_with(
+        "POST",
+        "/join-requests/withdrawal",
+        404,
+        br#"{"error":{"code":"not_found","message":"no such route"}}"#.to_vec(),
+    );
+    window.find_server(&proxy.address());
+    assert!(window.shows("join-key-of-other-address"));
+    assert!(!window.shows("discard-key-here"));
+    window.click("discard-key");
+    window.until("the discard fails", |window| {
+        window.shows("discard-key-here") && window.shows("server-not-told")
+    });
+    assert!(key_file.exists());
+
+    window.click("discard-key-here");
+    window.until("the preview of the server is shown", |window| {
+        window.shows("request-access") && !window.shows("join-key-of-other-address")
+    });
+    assert!(!key_file.exists());
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
 #[gpui::test]
 fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut TestAppContext) {
     let world = World::new();
