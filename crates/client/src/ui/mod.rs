@@ -67,8 +67,8 @@ pub use paint_text::{PaintedText, TextPaintRecord, record_painted_text, take_pai
 pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBox};
 pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
-#[cfg(all(target_os = "macos", feature = "test-support"))]
-pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
+#[cfg(feature = "test-support")]
+pub use picture::{PaintRecord, PaintedPicture, record_painted_pictures, take_painted_pictures};
 pub(crate) use placed::strip;
 pub use placed::{Placed, outside};
 #[cfg(feature = "test-support")]

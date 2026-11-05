@@ -920,35 +920,11 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
         "the window does not hold the watched share"
     );
     #[cfg(target_os = "macos")]
-    {
-        assert!(
-            images.is_empty(),
-            "the window holds {} images of gpui for the watched share",
-            images.len()
-        );
-        // The window draws again, and paints the pixel buffer inside the picture of the
-        // share.
-        let record = junto_client::ui::record_painted_surfaces();
-        window.cx.update(|window, _| window.refresh());
-        window.settle();
-        let painted = junto_client::ui::take_painted_surfaces();
-        drop(record);
-        let viewport = window.cx.debug_bounds("share-picture").unwrap();
-        let inside = |bounds: gpui::Bounds<gpui::Pixels>| {
-            let near = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other) >= -1.0;
-            near(bounds.left(), viewport.left())
-                && near(bounds.top(), viewport.top())
-                && near(viewport.right(), bounds.right())
-                && near(viewport.bottom(), bounds.bottom())
-                && bounds.size.width > gpui::px(0.0)
-        };
-        assert!(
-            painted
-                .iter()
-                .any(|surface| surface.size == (64, 36) && inside(surface.bounds)),
-            "no pixel buffer of the watched share was painted inside {viewport:?}: {painted:?}"
-        );
-    }
+    assert!(
+        images.is_empty(),
+        "the window holds {} images of gpui for the watched share",
+        images.len()
+    );
     #[cfg(not(target_os = "macos"))]
     {
         assert_eq!(images.len(), 1);
@@ -960,6 +936,136 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
             "the window did not draw the image of the watched share"
         );
     }
+    // The window draws again, and paints the picture inside the picture of the share.
+    let painted = window.painted_pictures();
+    let area = window.cx.debug_bounds("share-picture").unwrap();
+    assert_fitted(&painted, (64, 36), area, "the watched share");
+}
+
+/// The bounds lie inside the area, with one pixel allowed for rounding.
+fn inside(bounds: gpui::Bounds<gpui::Pixels>, area: gpui::Bounds<gpui::Pixels>) -> bool {
+    let near = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other) >= -1.0;
+    near(bounds.left(), area.left())
+        && near(bounds.top(), area.top())
+        && near(area.right(), bounds.right())
+        && near(area.bottom(), bounds.bottom())
+}
+
+/// A picture of `size` was painted inside `area` with its proportions, as large as the area
+/// allows: it reaches the two edges of the area in one direction.
+#[track_caller]
+pub(crate) fn assert_fitted(
+    painted: &[junto_client::ui::PaintedPicture],
+    size: (u32, u32),
+    area: gpui::Bounds<gpui::Pixels>,
+    place: &str,
+) {
+    let Some(picture) = painted.iter().find(|picture| picture.size == size) else {
+        panic!("no picture of {size:?} of {place} was painted: {painted:?}");
+    };
+    let bounds = picture.bounds;
+    assert!(
+        inside(bounds, area),
+        "the picture of {place} was painted at {bounds:?}, outside its area {area:?}"
+    );
+    let drawn = f32::from(bounds.size.width) / f32::from(bounds.size.height);
+    let own = size.0 as f32 / size.1 as f32;
+    assert!(
+        (drawn / own - 1.0).abs() < 0.01,
+        "the picture of {place} was painted at {bounds:?}, not in its proportions {size:?}"
+    );
+    let full = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other).abs() <= 1.0;
+    assert!(
+        full(bounds.size.width, area.size.width) || full(bounds.size.height, area.size.height),
+        "the picture of {place} was painted at {bounds:?}, smaller than its area {area:?} allows"
+    );
+}
+
+/// Shows the own share, with pictures of `size`, as the watched share of a window of
+/// `window_size`, and checks that the window paints the picture inside the picture area of
+/// the stage. Returns that area.
+fn a_watched_share_is_drawn_inside_its_stage(
+    cx: &mut TestAppContext,
+    size: (u32, u32),
+    window_size: gpui::Size<gpui::Pixels>,
+) -> gpui::Bounds<gpui::Pixels> {
+    use std::sync::Arc;
+
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_media::engine::{MainPicture, ShareId, ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(window_size));
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = connected_call(&mut window, "Daily");
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(2),
+            kind: ShareKind::Window,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size,
+            frame_rate: 30,
+        }),
+    )]);
+    call.watched = Some(ShareId::own(0));
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let pixels = two_colours(size.0, size.1, (200, 30, 30), (30, 30, 200));
+    calls.show_main_picture_for_test(Some(MainPicture {
+        share: ShareId::own(0),
+        frame: Arc::new(VideoPicture::new(&pixels, false, size).unwrap()),
+    }));
+    window.until_pictures_taken();
+    let painted = window.painted_pictures();
+    let area = window.cx.debug_bounds("share-picture").unwrap();
+    let viewport = window.cx.debug_bounds("share-viewport").unwrap();
+    assert!(
+        inside(area, viewport),
+        "the picture area {area:?} passes the edge of the stage {viewport:?}"
+    );
+    assert_fitted(&painted, size, area, "the watched share");
+    area
+}
+
+/// CD-26: a portrait share in a stage that is wider than the picture is drawn at the height
+/// of the stage, inside it, and is not enlarged to the width of the stage.
+#[gpui::test]
+fn a_portrait_share_is_drawn_inside_a_wide_stage(cx: &mut TestAppContext) {
+    let area = a_watched_share_is_drawn_inside_its_stage(
+        cx,
+        (820, 1048),
+        gpui::size(gpui::px(1600.0), gpui::px(900.0)),
+    );
+    assert!(
+        area.size.width > area.size.height,
+        "the stage {area:?} is not wide"
+    );
+}
+
+/// CD-26: a landscape share in a stage that is narrow and short, but wider in its proportions
+/// than the picture, is drawn at the height of the stage, inside it.
+#[gpui::test]
+fn a_landscape_share_is_drawn_inside_a_narrow_and_short_stage(cx: &mut TestAppContext) {
+    let area = a_watched_share_is_drawn_inside_its_stage(
+        cx,
+        (1512, 1048),
+        gpui::size(gpui::px(860.0), gpui::px(540.0)),
+    );
+    assert!(
+        f32::from(area.size.width) / f32::from(area.size.height) > 1512.0 / 1048.0,
+        "the height of the stage {area:?} does not bound the picture"
+    );
 }
 
 /// The small pictures of the shares are drawn as camera pictures are (ADR 0774): on macOS
@@ -1024,32 +1130,30 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
         .shell
         .read_with(&window.cx, |shell, _| shell.picture_images());
     #[cfg(target_os = "macos")]
-    {
-        assert!(
-            images.is_empty(),
-            "the window holds {} images of gpui for the small pictures",
-            images.len()
-        );
-        let record = junto_client::ui::record_painted_surfaces();
-        window.cx.update(|window, _| window.refresh());
-        window.settle();
-        let painted = junto_client::ui::take_painted_surfaces();
-        drop(record);
-        // The selectors of gpui live as long as the program.
-        let other_card: &'static str = format!("share-card:{other}:0").leak();
-        for card in ["share-card:own:0", other_card] {
-            let bounds = window.cx.debug_bounds(card).unwrap();
-            assert!(
-                painted
-                    .iter()
-                    .any(|surface| surface.size == (64, 36)
-                        && bounds.contains(&surface.bounds.center())),
-                "no pixel buffer of a small picture was painted inside {card} {bounds:?}: {painted:?}"
-            );
-        }
-    }
+    assert!(
+        images.is_empty(),
+        "the window holds {} images of gpui for the small pictures",
+        images.len()
+    );
     #[cfg(not(target_os = "macos"))]
     assert_eq!(images.len(), 2);
+    let painted = window.painted_pictures();
+    // The selectors of gpui live as long as the program.
+    let other_thumbnail: &'static str = format!("share-thumbnail:{other}:0").leak();
+    for thumbnail in ["share-thumbnail:own:0", other_thumbnail] {
+        // The picture lies inside the border of one pixel of the frame.
+        let area = window
+            .cx
+            .debug_bounds(thumbnail)
+            .unwrap()
+            .inset(gpui::px(1.0));
+        let near: Vec<_> = painted
+            .iter()
+            .copied()
+            .filter(|picture| area.contains(&picture.bounds.center()))
+            .collect();
+        assert_fitted(&near, (64, 36), area, thumbnail);
+    }
 }
 
 /// Sound settings that cannot be read are not replaced by an open microphone without a

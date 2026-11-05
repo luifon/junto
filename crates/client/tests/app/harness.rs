@@ -501,6 +501,16 @@ impl Window {
         });
     }
 
+    /// Draws every window again and returns the call pictures that they painted (ADR 0774).
+    pub fn painted_pictures(&mut self) -> Vec<junto_client::ui::PaintedPicture> {
+        let record = junto_client::ui::record_painted_pictures();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let painted = junto_client::ui::take_painted_pictures();
+        drop(record);
+        painted
+    }
+
     /// Runs the application until it has no work, with one frame of the display.
     #[track_caller]
     pub fn settle(&mut self) {

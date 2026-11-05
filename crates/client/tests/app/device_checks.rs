@@ -180,6 +180,30 @@ fn devices_can_be_checked_in_settings_before_a_call(cx: &mut TestAppContext) {
     assert_eq!(voice.camera_device, None);
 }
 
+/// CD-30: the camera preview of Settings → Voice is drawn inside its area, with the
+/// proportions of the camera picture, and not over the rows below it.
+#[gpui::test]
+fn the_camera_preview_is_drawn_inside_its_area(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    window.click_in_settings("preview-camera");
+    window.until("the camera picture is drawn", |window| {
+        window.shows("camera-preview-picture")
+    });
+    window.until_pictures_taken();
+    let painted = window.painted_pictures();
+    let area = window.cx.debug_bounds("camera-preview-area").unwrap();
+    assert!(
+        f32::from(area.size.width) / f32::from(area.size.height) > 640.0 / 360.0,
+        "the height of the preview area {area:?} does not bound the picture"
+    );
+    crate::calls::assert_fitted(&painted, (640, 360), area, "the camera preview");
+}
+
 #[gpui::test]
 fn refused_preview_can_retry_and_closing_settings_releases_it(cx: &mut TestAppContext) {
     let world = World::new();
