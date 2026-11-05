@@ -2056,7 +2056,7 @@ impl Shell {
                             .role(Role::Button)
                             .aria_label(text::ATTACH_FILE)
                             .aria_description(refused)
-                            .debug_selector(|| "attach-file-refused".to_owned())
+                            .debug_selector(move || pane.id("attach-file-refused").to_owned())
                             .flex()
                             .flex_none()
                             .items_center()

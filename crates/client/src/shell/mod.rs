@@ -226,6 +226,8 @@ impl Pane {
             (Self::Thread, "format-small") => "thread-format-small",
             (Self::Thread, "format-spoiler") => "thread-format-spoiler",
             (Self::Thread, "send-message") => "thread-send-message",
+            (Self::Thread, "attach-file") => "thread-attach-file",
+            (Self::Thread, "attach-file-refused") => "thread-attach-file-refused",
             (Self::Thread, "messages-state") => "thread-messages-state",
             (Self::Thread, "no-messages") => "thread-no-messages",
             (Self::Thread, "read-only-bar") => "thread-read-only-bar",
