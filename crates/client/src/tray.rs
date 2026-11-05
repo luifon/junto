@@ -59,6 +59,8 @@ pub enum Picture {
     /// A moderator or meeting mode holds the microphone closed.
     Held,
     SoundOff,
+    /// The person closed the microphone and turned the sound off.
+    MutedAndSoundOff,
 }
 
 impl Picture {
@@ -70,6 +72,7 @@ impl Picture {
             Picture::Muted => "muted",
             Picture::Held => "held",
             Picture::SoundOff => "sound-off",
+            Picture::MutedAndSoundOff => "muted-sound-off",
         }
     }
 }
@@ -152,11 +155,13 @@ pub fn entry_code(generation: u32, kind: u32) -> u32 {
 }
 
 impl TrayState {
-    /// The picture of the call state. The sound off takes precedence, then a microphone that
-    /// the server holds closed, then a microphone that the person closed.
+    /// The picture of the call state. A closed microphone with the sound off takes precedence,
+    /// then the sound off, then a microphone that the server holds closed, then a microphone
+    /// that the person closed.
     pub fn picture(&self) -> Picture {
         match &self.call {
             None => Picture::Plain,
+            Some(call) if call.deafened && call.muted => Picture::MutedAndSoundOff,
             Some(call) if call.deafened => Picture::SoundOff,
             Some(call) if call.held => Picture::Held,
             Some(call) if call.muted => Picture::Muted,
@@ -180,6 +185,7 @@ impl TrayState {
             Picture::Muted => text::IN_A_CALL_MUTED,
             Picture::Held => text::IN_A_CALL_HELD,
             Picture::SoundOff => text::IN_A_CALL_SOUND_OFF,
+            Picture::MutedAndSoundOff => text::IN_A_CALL_MUTED_SOUND_OFF,
         };
         match self.mentions {
             0 => state.to_owned(),

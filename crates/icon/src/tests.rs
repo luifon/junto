@@ -336,6 +336,7 @@ fn a_colour_tray_picture_is_a_disc_of_its_state_with_a_white_sign() {
             TrayState::Muted,
             TrayState::Held,
             TrayState::SoundOff,
+            TrayState::MutedAndSoundOff,
         ] {
             let picture = tray(state, false, TrayStyle::Colour, side).unwrap();
             let disc = hex(state.disc().unwrap());
@@ -402,6 +403,40 @@ fn a_template_tray_picture_is_its_sign_in_black_on_transparent() {
             .unwrap()
             .starts_with(PNG_SIGNATURE)
     );
+}
+
+#[test]
+fn a_closed_microphone_with_the_sound_off_is_one_crossed_headset_at_every_size() {
+    let sign = TrayState::MutedAndSoundOff.sign();
+    assert_ne!(sign, TrayState::Muted.sign());
+    assert_ne!(sign, TrayState::SoundOff.sign());
+    // The microphone arm of the headset, which the headphones alone do not have.
+    assert!(sign.contains("17 22h-5"));
+    // The one stroke across the sign, with the stroke of the other signs.
+    assert!(sign.contains("m2 2 20 20") && sign.contains("stroke-width=\"2.25\""));
+    // At the smallest side of each style the stroke across still reaches the middle of the
+    // picture, and the picture differs from the two signs that it combines.
+    let smallest = [
+        (TrayStyle::Template, MENU_BAR[0]),
+        (TrayStyle::Colour, TRAY[0]),
+    ];
+    for (style, side) in smallest {
+        let picture = tray(TrayState::MutedAndSoundOff, false, style, side).unwrap();
+        let middle = picture.pixel(side / 2, side / 2);
+        match style {
+            TrayStyle::Template => assert!(middle[3] > 128, "{side}: {middle:?}"),
+            TrayStyle::Colour => {
+                assert!(near(middle, [255, 255, 255], 60), "{side}: {middle:?}")
+            }
+        }
+        for other in [TrayState::Muted, TrayState::SoundOff] {
+            assert_ne!(
+                tray(other, false, style, side).unwrap().rgba,
+                picture.rgba,
+                "{other:?} {side}"
+            );
+        }
+    }
 }
 
 #[test]
