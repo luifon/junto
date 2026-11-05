@@ -1755,7 +1755,7 @@ def backup_while_the_job_ends(scene: Scene, recording_id: str, recorded: dict[st
     program.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
-        f"    *--verbatim-files-from*) exec python3 -B '{HOLD_OUTPUT}' 1048576 '{held}' '{go}' 900 '{real}' \"$@\" ;;\n"
+        f"    *--verbatim-files-from*) exec python3 -B '{HOLD_OUTPUT}' 1048576 '{held}' '{go}' {os.getpid()} '{real}' \"$@\" ;;\n"
         "esac\n"
         f"exec '{real}' \"$@\"\n"
     )
