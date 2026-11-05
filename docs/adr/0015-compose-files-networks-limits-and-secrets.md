@@ -106,6 +106,7 @@ Tests:
 - `deploy/tests/recorder-start.sh` runs the start script of the recorder with a stand-in for the start script of the image.
 - `deploy/tests/one-host.sh` starts the one-host form on one machine, with certificates that the entry signs itself, and sends requests through the entry to the server and to the media server.
 - `deploy/tests/two-hosts.sh` starts the two files of the two-host form on one machine as two projects with separate networks, and checks the handshake of the link, a request from the entry to the server through the link, the server's path to the API of the media server through the link, and the recorder's path to Redis.
+- `deploy/tests/link-recovery.sh` starts only the link containers of the two files, and checks that each end starts again without a handshake and sends its notices (ADR 0003).
 - `deploy/tests/recording.sh` records a call through the local form with the recorder, the layout page, the worker and test participants (ADR 0910).
 
 ## Consequences

@@ -60,7 +60,7 @@ docker run --rm --network none -v "$PWD:/repository:ro" -w /repository "$JUNTO_C
     deploy/images/server/junto-volumes deploy/images/worker/junto-worker-loop \
     deploy/images/recorder/start.sh deploy/images/link/entrypoint.sh \
     deploy/tests/compose-config.sh deploy/tests/smoke.sh deploy/tests/entry.sh \
-    deploy/tests/one-host.sh deploy/tests/two-hosts.sh deploy/tests/backup-restore.sh \
+    deploy/tests/one-host.sh deploy/tests/two-hosts.sh deploy/tests/link-recovery.sh deploy/tests/backup-restore.sh \
     deploy/tests/upgrade.sh \
     deploy/tests/recorder-start.sh deploy/tests/recording.sh deploy/tests/recording-prepare.sh \
     deploy/tests/transcribe-handover.sh deploy/tests/transcribe-handover-inside.sh
@@ -90,3 +90,5 @@ step "The one-host form starts behind the entry"
 deploy/tests/one-host.sh junto-ci-one
 step "The two-host form starts as two projects joined by the link"
 deploy/tests/two-hosts.sh junto-ci-two
+step "Each end of the link starts again without a handshake, and sends its notices"
+deploy/tests/link-recovery.sh junto-ci-link

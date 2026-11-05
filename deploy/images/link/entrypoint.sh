@@ -15,6 +15,14 @@
 #   LINK_KEEPALIVE         seconds between keepalive packets, for the end that opens it
 #   LINK_FORWARDS          forwarders separated by spaces, each
 #                          <listen address>:<listen port>=<target host>:<target port>
+#   LINK_NAME              the name of this end in log lines and notices, such as "data host"
+#   LINK_RESTART_AFTER     seconds without a handshake after which the process ends, so that
+#                          Docker starts the link again; at least 180 (ADR 0003)
+#   LINK_NOTICE_URL        optional; receives an HTTP POST with a plain text body when the
+#                          link goes down and when it is up again
+#
+# /keys/down records a link that is down across these restarts: the time the link went down,
+# the number of restarts, and whether the notice of the loss was delivered.
 set -eu
 umask 077
 
@@ -35,10 +43,19 @@ if [ -z "${LINK_PEER_PUBLIC_KEY:-}" ]; then
     echo "link: the public key of the other host is not set. Run \"link genkey\" on the other host and set ${LINK_PEER_PUBLIC_KEY_SETTING:-LINK_PEER_PUBLIC_KEY} in deploy/.env to the key that it prints." >&2
     exit 2
 fi
-for name in LINK_ADDRESS LINK_PEER_ADDRESS; do
+for name in LINK_ADDRESS LINK_PEER_ADDRESS LINK_NAME LINK_RESTART_AFTER; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || { echo "link: $name is not set" >&2; exit 2; }
 done
+# WireGuard rejects the keys of a session 180 seconds after its handshake, and renews them
+# about every 2 minutes while packets pass. A shorter bound would end a working link.
+case "$LINK_RESTART_AFTER" in
+    *[!0-9]*) echo "link: LINK_RESTART_AFTER is not a number of seconds: $LINK_RESTART_AFTER" >&2; exit 2 ;;
+esac
+if [ "$LINK_RESTART_AFTER" -lt 180 ]; then
+    echo "link: LINK_RESTART_AFTER is $LINK_RESTART_AFTER; it must be at least 180 seconds" >&2
+    exit 2
+fi
 if [ ! -s /keys/private ]; then
     echo "link: /keys/private does not exist; run the command genkey first" >&2
     exit 2
@@ -84,6 +101,37 @@ for forward in ${LINK_FORWARDS:-}; do
     forwarders="$forwarders $!"
 done
 
+notice() {
+    [ -n "${LINK_NOTICE_URL:-}" ] || return 0
+    if wget -q -T 10 -O /dev/null --header "Content-Type: text/plain" --post-data "$1" "$LINK_NOTICE_URL"; then
+        echo "link: notice delivered: $1"
+    else
+        echo "link: the notice was not delivered to LINK_NOTICE_URL: $1" >&2
+        return 1
+    fi
+}
+utc() {
+    date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC'
+}
+down_since=""
+down_restarts=0
+down_notified=1
+if [ -s /keys/down ]; then
+    read -r down_since down_restarts down_notified < /keys/down || true
+fi
+case "$down_since$down_restarts$down_notified" in
+    *[!0-9]*) down_since="" down_restarts=0 down_notified=1 ;;
+esac
+save_down() {
+    printf '%s %s %s\n' "$down_since" "$down_restarts" "$down_notified" > /keys/down.new
+    mv /keys/down.new /keys/down
+}
+down_text() {
+    echo "Junto link of the $LINK_NAME is down since $(utc "$down_since"): no WireGuard handshake with the other host for $LINK_RESTART_AFTER seconds. The link restarts every $LINK_RESTART_AFTER seconds until the other host answers."
+}
+
+started=$(date +%s)
+next_notice=$started
 # shellcheck disable=SC2086
 trap 'kill $tunnel $forwarders 2>/dev/null; exit 0' TERM INT
 while :; do
@@ -95,5 +143,41 @@ while :; do
             exit 1
         fi
     done
+    now=$(date +%s)
+    handshake=$(wg show wg0 latest-handshakes 2>/dev/null | awk '{ print $2; exit }')
+    case "$handshake" in ''|*[!0-9]*) handshake=0 ;; esac
+    if [ -n "$down_since" ] && [ "$handshake" -gt 0 ] && [ "$now" -ge "$next_notice" ]; then
+        if notice "Junto link of the $LINK_NAME is up again since $(utc "$handshake"). It was down since $(utc "$down_since"). Restarts while it was down: $down_restarts."; then
+            rm -f /keys/down
+            down_since=""
+        else
+            next_notice=$((now + 60))
+        fi
+    elif [ -n "$down_since" ] && [ "$down_notified" -eq 0 ] && [ "$now" -ge "$next_notice" ]; then
+        if notice "$(down_text)"; then
+            down_notified=1
+            save_down
+        else
+            next_notice=$((now + 60))
+        fi
+    fi
+    reference=$started
+    [ "$handshake" -le "$started" ] || reference=$handshake
+    if [ "$((now - reference))" -ge "$LINK_RESTART_AFTER" ]; then
+        echo "link: no handshake with the other host since $(utc "$reference"); the process ends so that Docker starts the link again" >&2
+        if [ -z "$down_since" ]; then
+            down_since=$now
+            down_restarts=0
+            down_notified=0
+        fi
+        down_restarts=$((down_restarts + 1))
+        if [ "$down_notified" -eq 0 ] && notice "$(down_text)"; then
+            down_notified=1
+        fi
+        save_down
+        # shellcheck disable=SC2086
+        kill $tunnel $forwarders 2>/dev/null
+        exit 1
+    fi
     sleep 1
 done
