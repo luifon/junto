@@ -693,7 +693,7 @@ pub async fn set_voice_channel_status(
         }
         let mut channel = voice.record.channel.clone();
         if channel.voice_status == status {
-            return Ok(channel);
+            return as_read(connection, &access, channel).await;
         }
         channel.voice_status.clone_from(&status);
         sqlx::query("update channels set voice_status=$2 where id=$1")
@@ -719,9 +719,22 @@ pub async fn set_voice_channel_status(
             },
         )
         .await?;
-        Ok(channel)
+        as_read(connection, &access, channel).await
     })?;
     Ok(Json(channel))
+}
+
+/// The channel with its position as the caller reads it: its place among the channels of
+/// its group that the caller sees (ADR 0304).
+async fn as_read(
+    connection: &mut PgConnection,
+    access: &Access,
+    mut channel: Channel,
+) -> ApiResult<Channel> {
+    channel.position = access
+        .channel_place(connection, channel.workspace_id, channel.id)
+        .await?;
+    Ok(channel)
 }
 
 /// Refuses a user limit outside the range of the server.
@@ -769,7 +782,7 @@ pub(crate) async fn update_call_settings_in(
         channel.hides_occupants = hides_occupants;
     }
     if channel == voice.record.channel {
-        return Ok(channel);
+        return as_read(connection, access, channel).await;
     }
     let limit = channel
         .user_limit
@@ -792,7 +805,7 @@ pub(crate) async fn update_call_settings_in(
         channel: channel.clone(),
     };
     events::publish(connection, now, &updated).await?;
-    Ok(channel)
+    as_read(connection, access, channel).await
 }
 
 /// Asks for the place of the caller in the call of a voice channel. The answer carries the

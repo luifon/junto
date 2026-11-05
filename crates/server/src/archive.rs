@@ -81,9 +81,14 @@ pub async fn view(
             .bind(record.channel.id)
             .fetch_one(connection)
             .await?;
+    let deletes_at = deletes_at(&record, notice_at, days, now);
     Ok(ArchivedChannel {
-        deletes_at: deletes_at(&record, notice_at, days, now),
-        channel: record.channel,
+        deletes_at,
+        // An archived channel is in no list, so it has no place there (ADR 0304).
+        channel: junto_protocol::structure::Channel {
+            position: 0,
+            ..record.channel
+        },
         archived_at,
     })
 }

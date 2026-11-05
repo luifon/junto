@@ -268,3 +268,123 @@ async fn a_position_is_a_place_among_the_categories_that_the_caller_sees() {
         ]
     );
 }
+
+/// The channels of a category as a person reads them: identifier and position.
+async fn channels_in(
+    server: &TestServer,
+    member: &Member,
+    workspace_id: WorkspaceId,
+    category_id: CategoryId,
+) -> Vec<(junto_protocol::ids::ChannelId, i32)> {
+    let list: ChannelList = server
+        .get(
+            member,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+        )
+        .await
+        .ok(StatusCode::OK);
+    list.channels
+        .iter()
+        .filter(|channel| channel.category_id == Some(category_id))
+        .map(|channel| (channel.id, channel.position))
+        .collect()
+}
+
+/// The position of a channel is its place among the channels of its group that the reader
+/// sees, in the lists, the events and the answers, and a request names a place in the view
+/// of the caller (ADR 0304).
+#[tokio::test]
+async fn a_member_reads_channel_positions_with_no_gap_of_a_hidden_channel() {
+    let scene = scene().await;
+    let (server, owner, reader) = (&scene.server, &scene.owner, &scene.reader);
+    let workspace_id = scene.workspace_id;
+    let category = scene.first.id;
+    let mut made = Vec::new();
+    for name in ["one", "hidden", "two"] {
+        let channel: Channel = server
+            .post(
+                owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": category}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        made.push(channel);
+    }
+    // The category holds "First" (made by the scene), "one", "hidden" and "two".
+    let first = channels_in(server, owner, workspace_id, category).await[0].0;
+    let [one, hidden, two] = <[Channel; 3]>::try_from(made).unwrap();
+    sqlx::query("update channels set permissions_synced = false where id = $1")
+        .bind(hidden.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into channel_person_overrides(channel_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,1)")
+        .bind(hidden.id).bind(reader.account_id).bind(workspace_id).execute(&server.db).await.unwrap();
+    assert_eq!(
+        channels_in(server, reader, workspace_id, category).await,
+        [(first, 0), (one.id, 1), (two.id, 2)]
+    );
+    assert_eq!(
+        channels_in(server, owner, workspace_id, category).await,
+        [(first, 0), (one.id, 1), (hidden.id, 2), (two.id, 3)]
+    );
+    let snapshot = server.snapshot(reader).await;
+    let held = snapshot
+        .workspaces
+        .iter()
+        .find(|held| held.workspace.id == workspace_id)
+        .unwrap()
+        .channels
+        .iter()
+        .find(|held| held.id == two.id)
+        .unwrap()
+        .position;
+    assert_eq!(held, 2);
+
+    // A rename reaches each reader with the place in that reader's view.
+    let mut reader_stream = server.subscribed(reader, Level::Full).await;
+    let renamed: Channel = server
+        .patch(
+            owner,
+            &format!("/api/v1/channels/{}", two.id),
+            &json!({"name": "second"}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(renamed.position, 3);
+    let events = server.traffic(reader, &mut reader_stream).await;
+    assert!(
+        events.iter().any(|(_, event)| matches!(
+            event,
+            Event::ChannelUpdated { channel } if channel.id == two.id && channel.position == 2
+        )),
+        "{events:?}"
+    );
+
+    // A manager who does not see "hidden" puts "two" at the place 1 of the view without
+    // "two": before "one". The positions route checks the place where the manager read it.
+    server
+        .grant_workspace(owner, reader, workspace_id, &[W::ManageChannel])
+        .await;
+    server
+        .patch(
+            reader,
+            &format!("/api/v1/workspaces/{workspace_id}/channels/positions"),
+            &json!({"moves": [{
+                "channel_id": two.id,
+                "from": {"category_id": category, "position": 2},
+                "to": {"category_id": category, "position": 1},
+            }]}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        channels_in(server, reader, workspace_id, category).await,
+        [(first, 0), (two.id, 1), (one.id, 2)]
+    );
+    assert_eq!(
+        channels_in(server, owner, workspace_id, category).await,
+        [(first, 0), (two.id, 1), (one.id, 2), (hidden.id, 3)]
+    );
+}

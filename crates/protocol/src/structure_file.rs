@@ -197,7 +197,9 @@ pub struct ChannelEntry {
     )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<StructureId>))]
     pub category: Option<Option<StructureId>>,
-    /// Absent: a new channel goes after the last one, an existing one keeps its position.
+    /// The place of the channel among the open channels of its category, or of the root,
+    /// counted from 0; an archived channel states none. Absent: a new channel goes after the
+    /// last one, an existing one keeps its position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

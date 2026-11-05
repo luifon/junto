@@ -97,6 +97,8 @@ pub struct Channel {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     #[cfg_attr(feature = "openapi", schema(max_length = 500))]
     pub voice_status: String,
+    /// The place of the channel among the channels of its category, or of the root, that the
+    /// reader sees in the lists, counted from 0. An archived channel has 0.
     pub position: i32,
     /// The channel setting that makes each message sent under it permanent.
     pub permanent_messages: bool,
@@ -142,12 +144,15 @@ pub struct CreateChannel {
     pub kind: ChannelKind,
     #[serde(default)]
     pub category_id: Option<CategoryId>,
-    /// Absent: after the last channel.
+    /// The place among the channels of the category, or of the root, that the caller sees,
+    /// counted from 0; a place past the last puts it after the last. Absent: after the last
+    /// channel.
     #[serde(default)]
     pub position: Option<i32>,
 }
 
-/// The category and the position of a channel.
+/// The category and the position of a channel: its place among the channels of the
+/// category, or of the root, that the caller sees, counted from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -199,6 +204,9 @@ pub struct UpdateChannel {
     )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<CategoryId>))]
     pub category_id: Option<Option<CategoryId>>,
+    /// The place among the channels of the category, or of the root, that the caller sees,
+    /// counted from 0; a place past the last puts it after the last. A channel that changes
+    /// its category without a position goes after the last channel of the new one.
     #[serde(default)]
     pub position: Option<i32>,
     #[serde(default)]

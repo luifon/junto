@@ -228,6 +228,38 @@ async fn a_channel_enters_the_root_with_what_a_channel_created_there_needs() {
         .ok(StatusCode::OK);
     assert_eq!(moved.category_id, Some(category.id));
 
+    // Deleting the category moves its channels to the root too: it needs manage channel
+    // in the workspace while the category holds a channel. An empty category of the person
+    // goes with manage channel in the category alone.
+    let category_path = format!(
+        "/api/v1/workspaces/{}/categories/{}",
+        workspace.id, category.id
+    );
+    server
+        .delete(&reader, &category_path)
+        .await
+        .error(junto_protocol::error::ErrorCode::Forbidden);
+    let empty: junto_protocol::structure::Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({"name":"Empty"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,$4,0)")
+        .bind(empty.id).bind(reader.account_id).bind(workspace.id).bind(manage).execute(&server.db).await.unwrap();
+    server
+        .delete(
+            &reader,
+            &format!(
+                "/api/v1/workspaces/{}/categories/{}",
+                workspace.id, empty.id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+
     server
         .grant_workspace(&owner, &reader, workspace.id, &[W::ManageChannel])
         .await;

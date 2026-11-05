@@ -44,6 +44,8 @@ pub const FIRST_ALREADY: &str = "It is the first one.";
 pub const MOVE_NEEDS: &str =
     "The move changes a channel in which you do not hold “manage channel”.";
 pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in this channel.";
+pub const MOVE_ROOT_NEEDS: &str =
+    "A channel without a category needs “manage channel” in the workspace.";
 pub const MOVE_TOO_MANY: &str =
     "The move changes the places of more than 200 channels, and one change takes 200 at most.";
 pub const MOVE_HERE_ALREADY: &str = "The channel is at this place already.";
@@ -275,6 +277,7 @@ pub fn unplanned(reason: Unplanned) -> &'static str {
     match reason {
         Unplanned::Nothing => MOVE_HERE_ALREADY,
         Unplanned::NotManaged => MOVE_NEEDS,
+        Unplanned::RootNotManaged => MOVE_ROOT_NEEDS,
         Unplanned::TooMany => MOVE_TOO_MANY,
         Unplanned::RefusalShown => MOVE_REFUSAL_SHOWN,
     }

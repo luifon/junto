@@ -165,10 +165,10 @@ pub async fn permissions_changed(
 }
 
 /// Records the notice that tells every person of a workspace to read its structure again,
-/// after a change of the order of its categories: the position of a category that a person
-/// reads is its place among the categories that the person sees (ADR 0304). It changes no
+/// after a change of the order of its categories or of the channels of a group: the position
+/// that a person reads is the place among what the person sees (ADR 0304). It changes no
 /// permission, so no call is marked.
-pub async fn categories_reordered(
+pub async fn structure_reordered(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     workspace_id: WorkspaceId,

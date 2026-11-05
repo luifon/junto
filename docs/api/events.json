@@ -2935,6 +2935,7 @@
             "type": "boolean"
           },
           "position": {
+            "description": "The place of the channel among the channels of its category, or of the root, that the\nreader sees in the lists, counted from 0. An archived channel has 0.",
             "format": "int32",
             "type": "integer"
           },

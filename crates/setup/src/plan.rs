@@ -11,7 +11,7 @@ use junto_protocol::WorkspacePermission;
 use junto_protocol::ids::StructureId;
 use junto_protocol::structure::ChannelKind;
 use junto_protocol::structure_file::{
-    CategoryEntry, ChannelEntry, OLDEST_STRUCTURE_FORMAT, OverrideEntry, RoleEntry,
+    CategoryEntry, ChannelEntry, Deletions, OLDEST_STRUCTURE_FORMAT, OverrideEntry, RoleEntry,
     STRUCTURE_FORMAT, StructureChange, StructureFile, WorkspaceEntry,
 };
 
@@ -31,6 +31,8 @@ pub struct Problems(pub Vec<String>);
 
 struct Planner<'a> {
     current: &'a StructureFile,
+    /// What the file deletes: the order of a group after the plan has none of it.
+    deleted: &'a Deletions,
     changes: Vec<Planned>,
     problems: Vec<String>,
     fresh: &'a mut dyn FnMut() -> StructureId,
@@ -521,6 +523,7 @@ pub fn plan(
 ) -> Result<Vec<Planned>, Problems> {
     let mut planner = Planner {
         current,
+        deleted: &file.delete,
         changes: Vec::new(),
         problems: Vec::new(),
         fresh,
@@ -759,6 +762,7 @@ fn existing_workspace(
         categories.insert(category.id);
         category_overrides(planner, category, &mut rules, &role_names);
     }
+    order_categories(planner, Some(found), entry);
     for channel in &entry.channels {
         if !references_exist(planner, channel, &categories, &role_names) {
             continue;
@@ -786,6 +790,7 @@ fn existing_workspace(
         }
         channel_rules(planner, channel, existing, &rules, &role_names);
     }
+    order_channels(planner, Some(found), entry);
     afk(
         planner,
         id,
@@ -888,12 +893,14 @@ fn new_workspace(planner: &mut Planner<'_>, places: &Places<'_>, entry: &Workspa
         categories.insert(category.id);
         category_overrides(planner, category, &mut rules, &role_names);
     }
+    order_categories(planner, None, entry);
     for channel in &entry.channels {
         if references_exist(planner, channel, &categories, &role_names) {
             create_channel(planner, id, channel);
             channel_rules(planner, channel, None, &rules, &role_names);
         }
     }
+    order_channels(planner, None, entry);
     afk(planner, id, entry.afk.as_ref(), None, entry, None);
     glossary(
         planner,
@@ -1016,9 +1023,9 @@ fn update_role(planner: &mut Planner<'_>, role: &RoleEntry, existing: &RoleEntry
     }
 }
 
-/// A position of a category is its place among the categories of its workspace, counted from
-/// 0 (ADR 0304): it is less than the number of categories that the workspace has after the
-/// plan. A position past the last would put the category last, where the server states
+/// A position of a category in the file is its place among the categories of its workspace
+/// after the plan, counted from 0, and two categories of a workspace have two places
+/// (ADR 0304). A place past the last would put the category last, where the server states
 /// another position, and every later plan would change it again.
 fn category_positions(planner: &mut Planner<'_>, file: &StructureFile) {
     for workspace in &file.workspaces {
@@ -1032,19 +1039,238 @@ fn category_positions(planner: &mut Planner<'_>, file: &StructureFile) {
             .unwrap_or_default();
         ids.extend(workspace.categories.iter().map(|category| category.id));
         ids.retain(|id| !file.delete.categories.contains(id));
-        let count = ids.len();
-        for category in &workspace.categories {
-            if let Some(position) = category.position
-                && usize::try_from(position).map_or(true, |position| position >= count)
-            {
-                planner.problem(format!(
-                    "the category {} has the position {position}; the positions of the {count} \
-                     categories of its workspace are 0 to {}",
-                    category.id,
-                    count.saturating_sub(1)
-                ));
+        let stated: Vec<(StructureId, Option<i32>)> = workspace
+            .categories
+            .iter()
+            .map(|category| (category.id, category.position))
+            .collect();
+        places_problems(
+            planner,
+            "category",
+            "categories of its workspace",
+            &stated,
+            ids.len(),
+        );
+    }
+}
+
+/// The problems of the places that a file states in one group of `count` entries.
+fn places_problems(
+    planner: &mut Planner<'_>,
+    kind: &str,
+    group: &str,
+    stated: &[(StructureId, Option<i32>)],
+    count: usize,
+) {
+    let mut taken = HashSet::new();
+    for (id, position) in stated {
+        let Some(position) = position else {
+            continue;
+        };
+        if usize::try_from(*position).map_or(true, |position| position >= count) {
+            planner.problem(format!(
+                "the {kind} {id} has the position {position}; the positions of the {count} \
+                 {group} are 0 to {}",
+                count.saturating_sub(1)
+            ));
+        } else if !taken.insert(*position) {
+            planner.problem(format!(
+                "the {kind} {id} has the position {position}, which another {kind} of the same \
+                 group has"
+            ));
+        }
+    }
+}
+
+/// The order of a group after the plan: each entry with a stated place takes it, and the
+/// others fill the remaining places in their order in `predicted`, the order that the group
+/// has after the other changes of the plan. A stated place outside the group is left out;
+/// [`places_problems`] states it.
+fn target_order(
+    predicted: &[StructureId],
+    stated: &HashMap<StructureId, usize>,
+) -> Vec<StructureId> {
+    let mut placed: Vec<Option<StructureId>> = vec![None; predicted.len()];
+    for id in predicted {
+        if let Some(&at) = stated.get(id)
+            && at < placed.len()
+            && placed[at].is_none()
+        {
+            placed[at] = Some(*id);
+        }
+    }
+    let rest: Vec<StructureId> = predicted
+        .iter()
+        .filter(|id| !placed.contains(&Some(**id)))
+        .copied()
+        .collect();
+    let mut rest = rest.into_iter();
+    placed
+        .into_iter()
+        .map(|held| held.or_else(|| rest.next()))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_else(|| predicted.to_vec())
+}
+
+/// The changes that give a group the order `target`: each entry, in the order of the target,
+/// is put at its place among the entries of the group. Putting the entry of place `k` at
+/// place `k` leaves the places before it as they are, so the group has the target order at
+/// the end, whatever its order was (ADR 0304, ADR 0212).
+fn ordered<T>(target: &[StructureId], change: impl Fn(StructureId, i32) -> T) -> Vec<(T, i32)> {
+    target
+        .iter()
+        .zip(0..)
+        .map(|(id, place)| (change(*id, place), place))
+        .collect()
+}
+
+/// The order of the categories of a workspace: when the order after the plan differs from
+/// the order of the file, every category is put at its place.
+fn order_categories(
+    planner: &mut Planner<'_>,
+    found: Option<&WorkspaceEntry>,
+    entry: &WorkspaceEntry,
+) {
+    let mut predicted: Vec<StructureId> = found
+        .map(|found| {
+            let mut held: Vec<&CategoryEntry> = found.categories.iter().collect();
+            held.sort_by_key(|category| category.position.unwrap_or(i32::MAX));
+            held.iter().map(|category| category.id).collect()
+        })
+        .unwrap_or_default();
+    predicted.retain(|id| !planner.deleted.categories.contains(id));
+    for category in &entry.categories {
+        if !predicted.contains(&category.id) {
+            predicted.push(category.id);
+        }
+    }
+    let stated: HashMap<StructureId, usize> = entry
+        .categories
+        .iter()
+        .filter_map(|category| Some((category.id, usize::try_from(category.position?).ok()?)))
+        .collect();
+    if stated.is_empty() {
+        return;
+    }
+    let target = target_order(&predicted, &stated);
+    if target == predicted {
+        return;
+    }
+    for (change, place) in ordered(&target, |id, place| StructureChange::UpdateCategory {
+        id,
+        name: None,
+        position: Some(place),
+    }) {
+        let line = format!("~ category ({}): place {place}", change_id(&change));
+        planner.add(change, line);
+    }
+}
+
+/// The order of the open channels of each group of a workspace, as for the categories. A
+/// channel that changes its group goes after the last channel of the new one, and a new
+/// channel after the last of its group, before the order is set.
+fn order_channels(
+    planner: &mut Planner<'_>,
+    found: Option<&WorkspaceEntry>,
+    entry: &WorkspaceEntry,
+) {
+    let in_file: HashMap<StructureId, &ChannelEntry> = entry
+        .channels
+        .iter()
+        .map(|channel| (channel.id, channel))
+        .collect();
+    let mut existing: Vec<&ChannelEntry> = found
+        .map(|found| {
+            found
+                .channels
+                .iter()
+                .filter(|channel| {
+                    channel.position.is_some() && !planner.deleted.channels.contains(&channel.id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    existing.sort_by_key(|channel| channel.position.unwrap_or(i32::MAX));
+    let mut groups: Vec<(Option<StructureId>, Vec<StructureId>)> = Vec::new();
+    let group_of = |groups: &mut Vec<(Option<StructureId>, Vec<StructureId>)>,
+                    group: Option<StructureId>|
+     -> usize {
+        match groups.iter().position(|(held, _)| *held == group) {
+            Some(at) => at,
+            None => {
+                groups.push((group, Vec::new()));
+                groups.len() - 1
             }
         }
+    };
+    // The channels that stay in their group keep their order.
+    for channel in &existing {
+        let before = channel.category.flatten();
+        let after = in_file
+            .get(&channel.id)
+            .map_or(before, |stated| category_after(stated, Some(channel)));
+        if after == before {
+            let at = group_of(&mut groups, before);
+            groups[at].1.push(channel.id);
+        }
+    }
+    // The channels that enter a group, and the new ones, follow in the order of the file.
+    for channel in &entry.channels {
+        let held = existing.iter().find(|held| held.id == channel.id).copied();
+        let open = held.is_some()
+            || found.is_none_or(|found| found.channels.iter().all(|other| other.id != channel.id));
+        if !open {
+            continue;
+        }
+        let before = held.and_then(|held| held.category.flatten());
+        let after = category_after(channel, held);
+        if held.is_none() || after != before {
+            let at = group_of(&mut groups, after);
+            groups[at].1.push(channel.id);
+        }
+    }
+    for (group, predicted) in &groups {
+        let stated_list: Vec<(StructureId, Option<i32>)> = predicted
+            .iter()
+            .filter_map(|id| in_file.get(id).map(|channel| (*id, channel.position)))
+            .collect();
+        let name = match group {
+            Some(category) => format!("channels of the category {category}"),
+            None => "channels without a category".to_owned(),
+        };
+        places_problems(planner, "channel", &name, &stated_list, predicted.len());
+        let stated: HashMap<StructureId, usize> = stated_list
+            .iter()
+            .filter_map(|(id, position)| Some((*id, usize::try_from((*position)?).ok()?)))
+            .collect();
+        if stated.is_empty() {
+            continue;
+        }
+        let target = target_order(predicted, &stated);
+        if target == *predicted {
+            continue;
+        }
+        for (change, place) in ordered(&target, |id, place| StructureChange::UpdateChannel {
+            id,
+            name: None,
+            topic: None,
+            category: None,
+            position: Some(place),
+            permanent_messages: None,
+        }) {
+            let line = format!("~ channel ({}): place {place}", change_id(&change));
+            planner.add(change, line);
+        }
+    }
+}
+
+/// The identifier that a change of a category or a channel names.
+fn change_id(change: &StructureChange) -> String {
+    match change {
+        StructureChange::UpdateCategory { id, .. } | StructureChange::UpdateChannel { id, .. } => {
+            id.to_string()
+        }
+        _ => String::new(),
     }
 }
 
@@ -1054,7 +1280,7 @@ fn create_category(planner: &mut Planner<'_>, workspace: StructureId, category: 
             id: category.id,
             workspace,
             name: category.name.trim().to_owned(),
-            position: category.position,
+            position: None,
         },
         format!(
             "+ category {:?} ({}): create",
@@ -1067,9 +1293,6 @@ fn create_category(planner: &mut Planner<'_>, workspace: StructureId, category: 
 fn update_category(planner: &mut Planner<'_>, category: &CategoryEntry, existing: &CategoryEntry) {
     let mut differences = Differences::default();
     let name = differences.name(&existing.name, &category.name);
-    let position = differences.value("position", existing.position, category.position, |value| {
-        value.to_string()
-    });
     if !differences.is_empty() {
         let line = format!(
             "~ category {:?} ({}): {}",
@@ -1081,7 +1304,7 @@ fn update_category(planner: &mut Planner<'_>, category: &CategoryEntry, existing
             StructureChange::UpdateCategory {
                 id: existing.id,
                 name,
-                position,
+                position: None,
             },
             line,
         );
@@ -1343,7 +1566,7 @@ fn create_channel(planner: &mut Planner<'_>, workspace: StructureId, channel: &C
             name: channel.name.trim().to_owned(),
             topic: channel.topic.as_deref().map(topic_text),
             category: channel.category.flatten(),
-            position: channel.position,
+            position: None,
         },
         format!("+ {kind} channel {:?} ({id}): create", channel.name.trim()),
     );
@@ -1408,9 +1631,6 @@ fn update_channel(
         )
         .map(str::to_owned);
     let category = differences.value("category", existing.category, channel.category, reference);
-    let position = differences.value("position", existing.position, channel.position, |value| {
-        value.to_string()
-    });
     let permanent_messages = differences.value(
         "permanent messages",
         existing.permanent_messages,
@@ -1429,7 +1649,7 @@ fn update_channel(
                 name,
                 topic,
                 category,
-                position,
+                position: None,
                 permanent_messages,
             },
             line,

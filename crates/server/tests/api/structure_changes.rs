@@ -253,11 +253,12 @@ async fn rule_21_the_revision_counts_every_change_of_the_structure_and_nothing_e
     changed(&server, &owner, &mut last, "a renamed category").await;
     let channel = server.channel(&owner, workspace.id, "plans").await;
     changed(&server, &owner, &mut last, "a new channel").await;
+    // The first place of the root, before the channels that were there.
     server
         .patch(
             &owner,
             &format!("/api/v1/channels/{}", channel.id),
-            &json!({ "position": 9 }),
+            &json!({ "position": 0 }),
         )
         .await
         .ok::<Value>(StatusCode::OK);
@@ -495,9 +496,10 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
     let plans = channel_named(main, "plans");
     assert_eq!(plans.id, text);
     assert_eq!(plans.category, Some(Some(category)));
+    // The only channel of its category is at its first place (ADR 0304).
     assert_eq!(
         (plans.position, plans.permanent_messages),
-        (Some(7), Some(true))
+        (Some(0), Some(true))
     );
     assert_eq!(plans.overrides.len(), 1);
     assert_eq!(plans.overrides[0].role, role);
@@ -1072,7 +1074,8 @@ async fn rule_26_an_entry_keeps_the_identifier_that_created_it() {
     let main = default_of(&export);
     assert_eq!(main.channels.len(), 4);
     let channel = channel_named(main, "renamed");
-    assert_eq!((channel.id, channel.position), (plans, Some(4)));
+    // The only channel of the category is at its first place (ADR 0304).
+    assert_eq!((channel.id, channel.position), (plans, Some(0)));
     assert_eq!(channel.category, Some(Some(category)));
 
     // An identifier that names an object is not given to a new entry of the same kind: the

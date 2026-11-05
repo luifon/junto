@@ -101,7 +101,7 @@
             ]
           },
           "position": {
-            "description": "Absent: a new channel goes after the last one, an existing one keeps its position.",
+            "description": "The place of the channel among the open channels of its category, or of the root,\ncounted from 0; an archived channel states none. Absent: a new channel goes after the\nlast one, an existing one keeps its position.",
             "format": "int32",
             "type": [
               "integer",

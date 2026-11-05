@@ -18259,7 +18259,8 @@
           },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The place of the channel among the channels of its category, or of the root, that the\nreader sees in the lists, counted from 0. An archived channel has 0."
           },
           "topic": {
             "type": "string",
@@ -18370,7 +18371,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: a new channel goes after the last one, an existing one keeps its position."
+            "description": "The place of the channel among the open channels of its category, or of the root,\ncounted from 0; an archived channel states none. Absent: a new channel goes after the\nlast one, an existing one keeps its position."
           },
           "synced": {
             "type": [
@@ -18473,7 +18474,7 @@
       },
       "ChannelPlace": {
         "type": "object",
-        "description": "The category and the position of a channel.",
+        "description": "The category and the position of a channel: its place among the channels of the\ncategory, or of the root, that the caller sees, counted from 0.",
         "required": [
           "position"
         ],
@@ -18738,7 +18739,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: after the last channel."
+            "description": "The place among the channels of the category, or of the root, that the caller sees,\ncounted from 0; a place past the last puts it after the last. Absent: after the last\nchannel."
           },
           "topic": {
             "type": "string",
@@ -24249,7 +24250,8 @@
               "integer",
               "null"
             ],
-            "format": "int32"
+            "format": "int32",
+            "description": "The place among the channels of the category, or of the root, that the caller sees,\ncounted from 0; a place past the last puts it after the last. A channel that changes\nits category without a position goes after the last channel of the new one."
           },
           "topic": {
             "type": [

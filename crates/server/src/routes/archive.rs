@@ -101,8 +101,15 @@ pub async fn restore_channel(
             scope: &scope,
             permission: WorkspacePermission::ManageChannel,
         })?;
+        let workspace_id = record.channel.workspace_id;
         if record.archived_at.is_none() {
-            return Ok(record.channel);
+            let position = access
+                .channel_place(connection, workspace_id, channel_id)
+                .await?;
+            return Ok(Channel {
+                position,
+                ..record.channel
+            });
         }
         sqlx::query(
             "update channels set archived_at = null, deletion_notice_at = null
@@ -123,10 +130,32 @@ pub async fn restore_channel(
             channel: record.channel.clone(),
         };
         events::publish(connection, now, &restored).await?;
-        let workspace_id = record.channel.workspace_id;
         events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel_id)
             .await?;
-        Ok(record.channel)
+        // The channel takes its place in the list again: the places of the open channels
+        // after it in its group change for each person (ADR 0304).
+        let before_others: bool = sqlx::query_scalar(
+            "select exists (select 1 from channels
+             where workspace_id = $1 and category_id is not distinct from $2 and id <> $5
+               and deleted_at is null and archived_at is null and (position, id) > ($3, $4))",
+        )
+        .bind(workspace_id)
+        .bind(record.channel.category_id)
+        .bind(record.channel.position)
+        .bind(channel_id)
+        .bind(channel_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        if before_others {
+            events::log::structure_reordered(connection, now, workspace_id).await?;
+        }
+        let position = access
+            .channel_place(connection, workspace_id, channel_id)
+            .await?;
+        Ok(Channel {
+            position,
+            ..record.channel
+        })
     })
     .map(Json)
 }

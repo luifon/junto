@@ -42,17 +42,27 @@ struct Waiting {
 }
 
 impl ChannelMoves {
-    /// The moves of the channels of one workspace that are drawn, the oldest first.
+    /// The moves of the channels of one workspace that are drawn, the oldest first. A
+    /// refused request first states the places where the page read its channels, as moves
+    /// to the same place: its checks, and the moved channels at the place they left.
     pub fn of(&self, server_id: ServerId, workspace_id: WorkspaceId) -> Vec<ChannelMove> {
         self.waiting
             .iter()
             .filter(|held| held.server_id == server_id && held.workspace_id == workspace_id)
             .flat_map(|held| {
-                let checks = held.refused.is_some().then_some(&held.checks);
-                held.moves
-                    .iter()
-                    .chain(checks.into_iter().flatten())
-                    .copied()
+                let read: Vec<ChannelMove> = if held.refused.is_some() {
+                    held.moves
+                        .iter()
+                        .map(|moved| ChannelMove {
+                            to: moved.from,
+                            ..*moved
+                        })
+                        .chain(held.checks.iter().copied())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                read.into_iter().chain(held.moves.iter().copied())
             })
             .collect()
     }
@@ -269,12 +279,13 @@ mod tests {
         );
         // While it waits, the check of "y" is not drawn: "y" is where the state has it.
         assert_eq!(moves.of(server_id, workspace_id), [moved(x, 0, 5)]);
-        // Refused, both stay where the page drew them, also over a state read again.
+        // Refused, both stay where the page drew them, also over a state read again: the
+        // places where the page read them, and then the move.
         moves.refused(number, "No longer there.".to_owned());
         moves.settle(|_, _| Some(&model));
         assert_eq!(
             moves.of(server_id, workspace_id),
-            [moved(x, 0, 5), moved(y, 5, 5)]
+            [moved(x, 0, 0), moved(y, 5, 5), moved(x, 0, 5)]
         );
         assert_eq!(
             moves.refusal(server_id, workspace_id),

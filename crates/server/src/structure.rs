@@ -177,7 +177,13 @@ pub const EXPORT_CATEGORIES: &str =
      order by c.position, c.id";
 pub const EXPORT_CHANNELS: &str =
     "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.topic, c.kind,
-            coalesce(ci.identifier, c.category_id), c.position, c.permanent_messages,
+            coalesce(ci.identifier, c.category_id),
+            case when c.archived_at is null then
+                (row_number() over (
+                    partition by c.workspace_id, c.category_id, c.archived_at is null
+                    order by c.position, c.id) - 1)::integer
+            end,
+            c.permanent_messages,
             c.user_limit, c.hides_occupants, c.category_id is not null and c.permissions_synced
      from channels c
      left join structure_identifiers i on i.kind = 'channel' and i.object_id = c.id
@@ -212,7 +218,7 @@ type ChannelRow = (
     String,
     String,
     Option<Uuid>,
-    i32,
+    Option<i32>,
     bool,
     Option<i32>,
     bool,
@@ -377,7 +383,9 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
                 topic: Some(topic),
                 kind,
                 category: Some(category.map(StructureId::from_uuid)),
-                position: Some(position),
+                // The place among the open channels of its group; an archived channel has
+                // no place and states none (ADR 0304).
+                position,
                 permanent_messages: Some(permanent),
                 user_limit: voice
                     .then(|| limit.map(db::count).transpose())

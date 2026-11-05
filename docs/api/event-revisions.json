@@ -50,5 +50,9 @@
   {
     "revision": 18,
     "sha256": "25219185aee427d634ce5033a46da5af472b030500a0aa53f48cd037a6c3cb5d"
+  },
+  {
+    "revision": 19,
+    "sha256": "1fe19b88f00544240876974ceb4fabfd7af4b09e100dd82765b500c65b96418f"
   }
 ]

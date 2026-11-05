@@ -460,6 +460,20 @@ fn decide(
                     };
                     category.position = *rank;
                 }
+                // The position of a channel is its place among the channels of its group
+                // that the recipient sees now (ADR 0304).
+                Event::ChannelCreated { channel }
+                | Event::ChannelUpdated { channel }
+                | Event::ChannelRestored { channel } => {
+                    let Some(rank) = standing
+                        .workspaces
+                        .get(&channel.workspace_id)
+                        .and_then(|workspace| workspace.channel_ranks.get(&channel.id))
+                    else {
+                        return Ok(Decision::Hidden);
+                    };
+                    channel.position = *rank;
+                }
                 _ => {}
             }
             Ok(Decision::Deliver(Box::new(Receivable {
@@ -1257,6 +1271,24 @@ impl Standing {
             } else {
                 HashMap::new()
             };
+            let channel_placed = candidates.iter().any(|candidate| {
+                matches!(
+                    &candidate.event,
+                    Some(
+                        Event::ChannelCreated { channel }
+                            | Event::ChannelUpdated { channel }
+                            | Event::ChannelRestored { channel }
+                    ) if channel.workspace_id == workspace_id
+                )
+            });
+            let channel_ranks = if channel_placed {
+                let order = access
+                    .channel_order(connection, workspace_id, &scope)
+                    .await?;
+                crate::access::channel_order::channel_ranks(&order)
+            } else {
+                HashMap::new()
+            };
             workspaces.insert(
                 workspace_id,
                 WorkspaceStanding {
@@ -1265,6 +1297,7 @@ impl Standing {
                     channels,
                     categories,
                     category_ranks,
+                    channel_ranks,
                 },
             );
         }
