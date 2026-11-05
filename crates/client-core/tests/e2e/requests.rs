@@ -81,7 +81,20 @@ async fn an_account_leaves_a_thread_follows_it_again_and_reads_every_notice_in_o
         model.followed(read.receipt) == Followed::Yes
     })
     .await;
-    assert_eq!(model.unread_notices().count(), 0);
+    // A failure states what the client held: it happened once and was not seen again in
+    // runs under load (CD-24).
+    assert_eq!(
+        model.unread_notices().count(),
+        0,
+        "the read answered {:?} until {newest}; the state at {:?} holds {:?}",
+        read.receipt,
+        model.cursor,
+        model
+            .notices
+            .iter()
+            .map(|notice| (notice.created_at, notice.read_at))
+            .collect::<Vec<_>>()
+    );
     assert!(!model.notices.is_empty());
     // Nothing is left to mark: no event, and the answer says so.
     let again = owner.api().mark_notifications_read(None).await.unwrap();
