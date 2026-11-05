@@ -314,7 +314,7 @@ impl Shell {
         let name: SharedString = group.shown_name.clone().into();
         let menu_open = matches!(self.layer, Layer::GroupMenu(open) if open == id);
         let head = div()
-            .id(("group", index))
+            .id(SharedString::from(format!("group:{}", id.as_uuid())))
             .role(Role::ListItem)
             .aria_label(label.clone())
             .aria_expanded(!collapsed)
@@ -481,7 +481,10 @@ impl Shell {
                 .into_any_element()
         };
         let tile = div()
-            .id(("group-tile", index))
+            .id(SharedString::from(format!(
+                "group-tile:{}",
+                group.id.as_uuid()
+            )))
             .role(Role::ListItem)
             .aria_label(label.clone())
             .aria_expanded(!collapsed)

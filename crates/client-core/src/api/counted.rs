@@ -8,32 +8,43 @@ use std::sync::{Arc, Mutex};
 
 use super::transport::{HttpRequest, OpenFuture, Transport, TransportFuture};
 
+/// The numbers of the requests of every client of the process: two clients of one test
+/// never give one number, so a proxy that holds a number names one request.
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+tokio::task_local! {
+    /// The number of the request that the work of the runtime makes: the request was
+    /// counted where it was asked for, on the thread of its caller.
+    pub(crate) static NUMBER: u64;
+}
+
 /// The numbers of the requests of a client that are on their way.
 #[derive(Debug, Clone, Default)]
 pub struct Requests(Arc<Inner>);
 
 #[derive(Debug, Default)]
 struct Inner {
-    next: AtomicU64,
     open: Mutex<BTreeSet<u64>>,
 }
 
 impl Requests {
-    /// The number that the next request gets.
+    /// The number that the next request of any client gets.
     pub fn next(&self) -> u64 {
-        self.0.next.load(Ordering::SeqCst)
+        NEXT.load(Ordering::SeqCst)
     }
 
-    /// How many requests with the number `from` or a later one are on their way.
-    pub fn open_since(&self, from: u64) -> usize {
+    /// The numbers of the requests of this client with the number `from` or a later one
+    /// that are on their way.
+    pub fn open_since(&self, from: u64) -> Vec<u64> {
         self.0
             .open
             .lock()
-            .map_or(0, |open| open.range(from..).count())
+            .map(|open| open.range(from..).copied().collect())
+            .unwrap_or_default()
     }
 
-    fn start(&self) -> Open {
-        let number = self.0.next.fetch_add(1, Ordering::SeqCst);
+    pub(crate) fn start(&self) -> Open {
+        let number = NEXT.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut open) = self.0.open.lock() {
             open.insert(number);
         }
@@ -41,8 +52,14 @@ impl Requests {
     }
 }
 
+impl Open {
+    pub(crate) fn number(&self) -> u64 {
+        self.1
+    }
+}
+
 /// A request on its way; it is answered when this is dropped.
-struct Open(Requests, u64);
+pub(crate) struct Open(Requests, u64);
 
 impl Drop for Open {
     fn drop(&mut self) {
@@ -69,9 +86,27 @@ impl Counted {
     }
 }
 
+impl Counted {
+    /// A request that the work of a counted request makes carries its number; any other
+    /// request, such as a read of the event stream, is counted here.
+    fn counted(&self, request: &mut HttpRequest) -> Option<Open> {
+        match NUMBER.try_with(|number| *number) {
+            Ok(number) => {
+                request.test_number = Some(number);
+                None
+            }
+            Err(_) => {
+                let open = self.requests.start();
+                request.test_number = Some(open.number());
+                Some(open)
+            }
+        }
+    }
+}
+
 impl Transport for Counted {
-    fn send(&self, request: HttpRequest) -> TransportFuture {
-        let open = self.requests.start();
+    fn send(&self, mut request: HttpRequest) -> TransportFuture {
+        let open = self.counted(&mut request);
         let sent = self.inner.send(request);
         Box::pin(async move {
             let answer = sent.await;
@@ -80,8 +115,8 @@ impl Transport for Counted {
         })
     }
 
-    fn send_part(&self, request: HttpRequest) -> TransportFuture {
-        let open = self.requests.start();
+    fn send_part(&self, mut request: HttpRequest) -> TransportFuture {
+        let open = self.counted(&mut request);
         let sent = self.inner.send_part(request);
         Box::pin(async move {
             let answer = sent.await;
@@ -90,8 +125,8 @@ impl Transport for Counted {
         })
     }
 
-    fn open(&self, request: HttpRequest, from: u64) -> OpenFuture {
-        let open = self.requests.start();
+    fn open(&self, mut request: HttpRequest, from: u64) -> OpenFuture {
+        let open = self.counted(&mut request);
         let opened = self.inner.open(request, from);
         Box::pin(async move {
             let answer = opened.await;
@@ -110,13 +145,19 @@ mod tests {
         let requests = Requests::default();
         let first = requests.start();
         let mark = requests.next();
-        assert_eq!(requests.open_since(0), 1);
-        assert_eq!(requests.open_since(mark), 0);
+        assert_eq!(requests.open_since(0), [first.number()]);
+        assert!(requests.open_since(mark).is_empty());
         let second = requests.start();
-        assert_eq!(requests.open_since(mark), 1);
+        assert_eq!(requests.open_since(mark), [second.number()]);
+        let other = Requests::default().start();
+        assert_ne!(
+            other.number(),
+            second.number(),
+            "two clients share no number"
+        );
         drop(first);
-        assert_eq!(requests.open_since(0), 1);
+        assert_eq!(requests.open_since(0), [second.number()]);
         drop(second);
-        assert_eq!(requests.open_since(0), 0);
+        assert!(requests.open_since(0).is_empty());
     }
 }

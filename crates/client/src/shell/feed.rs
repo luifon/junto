@@ -4895,6 +4895,19 @@ impl Shell {
                 MenuItem::new("message-reaction-people", text::WHO_REACTED)
                     .selector("message-reaction-people")
                     .disabled(key.is_none())
+                    // The second line is there in both states, so the item keeps its height
+                    // when the first reaction arrives.
+                    .detail(if key.is_none() {
+                        text::NO_REACTIONS_YET.to_owned()
+                    } else {
+                        text::reaction_total(
+                            row.message
+                                .reactions
+                                .iter()
+                                .map(|reaction| u64::from(reaction.count))
+                                .sum(),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(key) = &key {
                             this.close_layer(window, cx);

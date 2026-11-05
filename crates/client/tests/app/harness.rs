@@ -581,21 +581,69 @@ impl Window {
         button: gpui::MouseButton,
         count: usize,
     ) {
+        self.press_on(None, position, button, count);
+    }
+
+    /// A press at a point of the element with the name `target`. gpui delivers a press whose
+    /// element moved before the release (ADR 0757); an element that is not drawn any more
+    /// after the pointer went down has no press to end, and gpui drops the press without a
+    /// sign. The press then fails the test and names the element.
+    #[track_caller]
+    fn press_on(
+        &mut self,
+        target: Option<&'static str>,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+        count: usize,
+    ) {
         let requests = self
             .state
             .read_with(&self.cx, |state, _| state.client().requests());
         let started = requests.next();
         let (down, up) = pointer_press(position, button, count);
-        for input in [down, up] {
+        for (index, input) in [down, up].into_iter().enumerate() {
             self.holding(|this| {
                 this.cx.update(|window, cx| {
                     window.dispatch_event(input, cx);
                 });
                 this.cx.run_until_parked();
             });
+            if index == 0
+                && button == gpui::MouseButton::Left
+                && let Some(target) = target
+                && self.cx.debug_bounds(target).is_none()
+            {
+                panic!(
+                    "the press on {target} at {position:?} was dropped: {target} was not drawn \
+                     any more after the pointer went down, so gpui had no element to end the \
+                     press on"
+                );
+            }
         }
         self.until("the requests that the press started have an answer", |_| {
-            requests.open_since(started) <= crate::support::held_by_proxies()
+            let held = crate::support::held_by_proxies();
+            requests
+                .open_since(started)
+                .iter()
+                .all(|number| held.contains(number))
+        });
+        // The answer that ended the wait is applied before the press returns.
+        self.settle();
+    }
+
+    /// Waits until every request of the client that is on its way has an answer, or is held
+    /// by a `FaultProxy` of the test.
+    #[track_caller]
+    pub fn until_answered(&mut self) {
+        let requests = self
+            .state
+            .read_with(&self.cx, |state, _| state.client().requests());
+        self.until("every request has an answer", |_| {
+            let held = crate::support::held_by_proxies();
+            requests
+                .open_since(0)
+                .iter()
+                .all(|number| held.contains(number))
         });
     }
 
@@ -724,6 +772,28 @@ impl Window {
     }
 
     /// True when an element with this name is drawn now.
+    /// The nodes of the accessibility tree with this label, as JSON (`Window::debug_a11y_tree_json`
+    /// of gpui), after a frame of a window whose accessibility a screen reader activated.
+    pub fn a11y_nodes(&mut self, label: &str) -> Vec<serde_json::Value> {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
+        let Some(tree) =
+            json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        else {
+            return Vec::new();
+        };
+        tree["nodes"]
+            .as_object()
+            .into_iter()
+            .flat_map(|nodes| nodes.values())
+            .filter(|node| node["aria"]["label"] == label)
+            .cloned()
+            .collect()
+    }
+
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.settle();
         self.cx.debug_bounds(selector).is_some()
@@ -799,16 +869,18 @@ impl Window {
             eprintln!("CI_MISSING_CONTROL wanted={selector:?} viewport={viewport:?} related={bounds:?} messages={messages:?} painted={painted:?}");
             panic!("{selector} is not drawn")
         });
-        self.press_at(bounds.center(), gpui::MouseButton::Left);
+        self.press_on(Some(selector), bounds.center(), gpui::MouseButton::Left, 1);
         self.settle();
     }
 
     pub fn click_row_padding(&mut self, selector: &'static str) {
         self.settle();
         let bounds = self.cx.debug_bounds(selector).unwrap();
-        self.press_at(
+        self.press_on(
+            Some(selector),
             gpui::point(bounds.left() + gpui::px(4.0), bounds.center().y),
             gpui::MouseButton::Left,
+            1,
         );
         self.settle();
     }
@@ -829,7 +901,7 @@ impl Window {
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
         };
-        self.press_at(bounds.center(), gpui::MouseButton::Left);
+        self.press_on(Some(selector), bounds.center(), gpui::MouseButton::Left, 1);
         self.settle();
         true
     }
@@ -855,7 +927,7 @@ impl Window {
             .cx
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
-        self.press_at(bounds.center(), gpui::MouseButton::Right);
+        self.press_on(Some(name), bounds.center(), gpui::MouseButton::Right, 1);
         self.settle();
     }
 

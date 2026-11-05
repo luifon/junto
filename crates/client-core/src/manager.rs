@@ -1143,24 +1143,45 @@ impl Authority for Managed {
 
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self.server.core.runtime.run(async move {
+        // The request is counted from here, on the thread of its caller (ADR 0902).
+        #[cfg(feature = "test-support")]
+        let open = self.server.core.requests.start();
+        let work = async move {
             let exchange = |api: ApiClient, token: SecretToken, outline: Outline| async move {
                 send_with_token(&api, &token, outline).await
             };
             server.authorized(outline, account, exchange).await
-        });
-        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+        };
+        #[cfg(feature = "test-support")]
+        let work = crate::api::counted::NUMBER.scope(open.number(), work);
+        let work = self.server.core.runtime.run(work);
+        Box::pin(async move {
+            let answer = work.await.unwrap_or(Err(ApiError::Stopped));
+            #[cfg(feature = "test-support")]
+            drop(open);
+            answer
+        })
     }
 
     fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self.server.core.runtime.run(async move {
+        #[cfg(feature = "test-support")]
+        let open = self.server.core.requests.start();
+        let work = async move {
             let exchange = move |api: ApiClient, token: SecretToken, outline: Outline| async move {
                 open_with_token(&api, &token, outline, from).await
             };
             server.authorized(outline, account, exchange).await
-        });
-        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+        };
+        #[cfg(feature = "test-support")]
+        let work = crate::api::counted::NUMBER.scope(open.number(), work);
+        let work = self.server.core.runtime.run(work);
+        Box::pin(async move {
+            let answer = work.await.unwrap_or(Err(ApiError::Stopped));
+            #[cfg(feature = "test-support")]
+            drop(open);
+            answer
+        })
     }
 }
 

@@ -3382,6 +3382,15 @@ pub const VIEW_ORIGINAL: &str = "View original";
 pub const MARK_UNREAD: &str = "Mark unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
+pub const NO_REACTIONS_YET: &str = "No reactions yet";
+
+/// The second line of "Who reacted": how many reactions the message has.
+pub fn reaction_total(count: u64) -> String {
+    match count {
+        1 => "1 reaction".to_owned(),
+        count => format!("{count} reactions"),
+    }
+}
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
 pub const REACTION_PEOPLE_UNAVAILABLE: &str =
     "These reactions are unavailable, or you do not have access to this message.";
@@ -3466,8 +3475,8 @@ pub const CATEGORY_SETTINGS: &str = "Category settings";
 pub const FAVOURITES: &str = "Favourites";
 pub const ADD_FAVOURITE: &str = "Add to favourites";
 pub const REMOVE_FAVOURITE: &str = "Remove from favourites";
-pub const COLLAPSE_SECTION: &str = "Collapse section";
-pub const EXPAND_SECTION: &str = "Expand section";
+pub const COLLAPSE_FAVOURITES: &str = "Collapse favourites";
+pub const EXPAND_FAVOURITES: &str = "Expand favourites";
 pub const RETURN_TO_CHANNEL_LIST: &str = "Return to channel list";
 pub const MOVE_CHANNEL_UP: &str = "Move channel up";
 pub const MOVE_CHANNEL_DOWN: &str = "Move channel down";

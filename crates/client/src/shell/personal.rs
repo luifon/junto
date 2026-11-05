@@ -198,9 +198,9 @@ impl Shell {
                 collapsed,
                 RowAction::new(
                     if collapsed {
-                        text::EXPAND_SECTION
+                        text::EXPAND_FAVOURITES
                     } else {
-                        text::COLLAPSE_SECTION
+                        text::COLLAPSE_FAVOURITES
                     },
                     cx.listener(move |this, _, _, cx| {
                         this.change_personal(

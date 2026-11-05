@@ -1,6 +1,8 @@
 // Modified: this file differs from the published gpui-pre 0.3.8. A press whose element moved
 // away from the pointer before the release, at a redraw, is delivered when the release is
-// inside the bounds that the element had at the press.
+// inside the visible bounds that the element had at the press and nothing came in front of
+// the release point since the press.
+// An element can state that it is disabled in the accessibility tree (`aria_disabled`).
 //! Div is the central, reusable element that most GPUI trees will be built from.
 //! It functions as a container for other elements, and provides a number of
 //! useful features for laying out and styling its children as well as binding
@@ -1405,6 +1407,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    // Modified: added.
+    /// Set the disabled state for this element: a screen reader states that it does not take
+    /// an action now.
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = disabled;
+        self
+    }
+
     /// Set the toggled state for this element.
     fn aria_toggled(mut self, toggled: accesskit::Toggled) -> Self {
         self.interactivity().aria.toggled = Some(toggled);
@@ -2113,6 +2123,8 @@ pub(crate) struct AriaProperties {
     pub(crate) keyshortcuts: Option<SharedString>,
     pub(crate) selected: Option<bool>,
     pub(crate) expanded: Option<bool>,
+    // Modified: the element does not take an action now.
+    pub(crate) disabled: bool,
     pub(crate) toggled: Option<accesskit::Toggled>,
     pub(crate) numeric_value: Option<f64>,
     pub(crate) min_numeric_value: Option<f64>,
@@ -2972,7 +2984,8 @@ impl Interactivity {
                             && hitbox.is_hovered(window)
                         {
                             *pending_mouse_down.borrow_mut() = Some(event.clone());
-                            pressed_bounds.set(Some(hitbox.bounds));
+                            *pressed_bounds.borrow_mut() =
+                                Some(PressedPlace::at(&hitbox, event.position, window));
                             window.refresh();
                         }
                     }
@@ -3102,18 +3115,21 @@ impl Interactivity {
                             // Modified: a redraw between the press and the release can move
                             // the element away from the pointer, as when content above it
                             // grows; the release where the element was at the press still
-                            // ends the press on it. A release outside those bounds does not.
+                            // ends the press on it, unless something came in front of that
+                            // place (`PressedPlace::takes_release`).
                             let pressed_here = pressed_bounds
+                                .borrow_mut()
                                 .take()
-                                .is_some_and(|bounds| bounds.contains(&event.position));
+                                .is_some_and(|place| place.takes_release(event.position, window));
                             if pending_mouse_down.is_some()
                                 && (hitbox.is_hovered(window) || pressed_here)
                             {
                                 captured_mouse_down = pending_mouse_down.take();
                                 window.refresh();
                             } else if pending_mouse_down.is_some() {
-                                // Clear the pending mouse down event (without firing click handlers)
-                                // if the hitbox is not being hovered.
+                                // Modified: clear the pending mouse down event (without firing
+                                // click handlers) if the release is neither over the hitbox nor
+                                // taken by the place of the press.
                                 // This avoids dragging elements that changed their position
                                 // immediately after being clicked.
                                 // See https://github.com/zed-industries/zed/issues/24600 for more details
@@ -3565,6 +3581,10 @@ impl Interactivity {
         if let Some(expanded) = self.aria.expanded {
             node.set_expanded(expanded);
         }
+        // Modified: the disabled state.
+        if self.aria.disabled {
+            node.set_disabled();
+        }
         if let Some(toggled) = self.aria.toggled {
             node.set_toggled(toggled);
         }
@@ -3631,8 +3651,9 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<ElementHoverState>>>,
     pub(crate) hover_listener_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
-    // Modified: the bounds of the element at the pending press.
-    pub(crate) pending_mouse_down_bounds: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
+    // Modified: the visible bounds of the element at the pending press, and the hitboxes
+    // behind it at the press point.
+    pub(crate) pending_mouse_down_bounds: Option<Rc<RefCell<Option<PressedPlace>>>>,
     /// Set to the window's [`focus_generation`](crate::Window::focus_generation)
     /// when an Enter/Space keydown is received while this element is focused,
     /// recording that we are waiting for the matching keyup to fire a keyboard
@@ -3645,6 +3666,46 @@ pub struct InteractiveElementState {
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+}
+
+// Modified: added. Where a pending press landed: the visible bounds of the element and the
+// hitboxes behind it at the press point, with their visible bounds and behavior.
+#[derive(Clone, Debug)]
+pub(crate) struct PressedPlace {
+    bounds: Bounds<Pixels>,
+    behind: SmallVec<[(Bounds<Pixels>, crate::HitboxBehavior); 8]>,
+}
+
+impl PressedPlace {
+    fn at(hitbox: &Hitbox, position: Point<Pixels>, window: &Window) -> Self {
+        let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+        let mut stack = window.rendered_frame.hitboxes_at(position);
+        // The element and what lies in front of it are not behind it.
+        if let Some(own) = stack
+            .iter()
+            .position(|(held, behavior)| *held == bounds && *behavior == hitbox.behavior)
+        {
+            stack.drain(..=own);
+        }
+        Self {
+            bounds,
+            behind: stack,
+        }
+    }
+
+    /// A release at `position`, which is not over the element any more, still ends the press
+    /// on it: the position is inside the visible bounds of the element at the press, and the
+    /// hitbox in front at the position is one that lay behind the element at the press (the
+    /// list or the page that holds it), or none. A dialog cover, a menu, a card or another
+    /// control that came there since the press takes the release from it.
+    fn takes_release(&self, position: Point<Pixels>, window: &Window) -> bool {
+        self.bounds.contains(&position)
+            && window
+                .rendered_frame
+                .hitboxes_at(position)
+                .first()
+                .is_none_or(|front| self.behind.contains(front))
+    }
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.

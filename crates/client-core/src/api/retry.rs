@@ -175,6 +175,7 @@ mod tests {
 
     fn request() -> HttpRequest {
         HttpRequest {
+            test_number: None,
             method: Method::Post,
             url: "https://chat.example.test/api/v1/join".parse().unwrap(),
             bearer: None,

@@ -438,6 +438,12 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     window.right_click_message(sent.id);
     let before = window.cx.debug_bounds("message-mark-read").unwrap();
     assert!(window.shows("message-reaction-people"));
+    // A screen reader states that the item takes no action now.
+    let nodes = window.a11y_nodes(junto_client::text::WHO_REACTED);
+    assert!(
+        nodes.iter().any(|node| node["aria"]["disabled"] == true),
+        "the item is not disabled in the accessibility tree: {nodes:?}"
+    );
     window.click("message-reaction-people");
     assert!(
         window.shows("message-mark-read"),
@@ -453,6 +459,11 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
             .any(|row| row.message.id == sent.id && !row.message.reactions.is_empty())
     });
     assert_eq!(window.cx.debug_bounds("message-mark-read"), Some(before));
+    let nodes = window.a11y_nodes(junto_client::text::WHO_REACTED);
+    assert!(
+        !nodes.is_empty() && nodes.iter().all(|node| node["aria"]["disabled"].is_null()),
+        "the item is still disabled after the first reaction: {nodes:?}"
+    );
     window.click("message-reaction-people");
     let author = admin.handle.account().unwrap();
     window.until("the reactor is listed", |window| {

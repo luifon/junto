@@ -44,6 +44,7 @@ pub async fn server_info(
     policy: &RetryPolicy,
 ) -> Result<ServerInfo, ApiError> {
     let request = HttpRequest {
+        test_number: None,
         method: Method::Get,
         url: address.endpoint("/api/server"),
         bearer: None,
@@ -156,6 +157,7 @@ impl ApiClient {
                 .extend_pairs(query.iter().map(|(name, value)| (*name, value.as_str())));
         }
         let request = HttpRequest {
+            test_number: None,
             method,
             url,
             bearer: bearer.cloned(),
@@ -182,6 +184,7 @@ impl ApiClient {
                 .extend_pairs(query.iter().map(|(name, value)| (*name, value.as_str())));
         }
         let request = HttpRequest {
+            test_number: None,
             method: Method::Get,
             url,
             bearer: Some(bearer.clone()),

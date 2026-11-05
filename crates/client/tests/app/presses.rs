@@ -1,22 +1,33 @@
 //! A press whose control moves away from the pointer between the press and the release,
-//! because the window draws again with content above it that grew (ADR 0757). The view of
-//! the test uses gpui alone: a spacer above a button, whose height the test changes.
+//! because the window draws again with content that changed (ADR 0757). The view of the test
+//! uses gpui alone: a spacer and a second button above a button, a cover over it, and a
+//! clipping frame around it, which the test changes between the press and the release.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    InteractiveElement as _, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, TestAppContext,
+    InteractiveElement as _, IntoElement as _, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, StatefulInteractiveElement as _, Styled as _, TestAppContext,
     VisualTestContext, div, point, px,
 };
 
 use crate::harness::{open_view, view_input, view_redraw};
 
-struct Moving {
-    spacer: Rc<Cell<f32>>,
-    clicks: Rc<Cell<u32>>,
+#[derive(Default)]
+struct Scene {
+    spacer: Cell<f32>,
+    /// A second button above the first one.
+    above: Cell<bool>,
+    /// An element over the whole window that blocks the pointer, as a dialog cover does.
+    cover: Cell<bool>,
+    /// The height of the frame that clips the button, when it clips it.
+    clip: Cell<Option<f32>>,
+    clicks: Cell<u32>,
+    above_clicks: Cell<u32>,
 }
+
+struct Moving(Rc<Scene>);
 
 impl gpui::Render for Moving {
     fn render(
@@ -24,36 +35,53 @@ impl gpui::Render for Moving {
         _: &mut gpui::Window,
         _: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        let clicks = self.clicks.clone();
+        let scene = self.0.clone();
+        let clicked = scene.clone();
+        let button = div()
+            .id("moving-button")
+            .flex_none()
+            .w(px(100.0))
+            .h(px(30.0))
+            .on_click(move |_, _, _| clicked.clicks.set(clicked.clicks.get() + 1));
+        let button = match scene.clip.get() {
+            Some(height) => div()
+                .flex_none()
+                .h(px(height))
+                .overflow_hidden()
+                .child(button)
+                .into_any_element(),
+            None => button.into_any_element(),
+        };
+        let above = scene.above.get().then(|| {
+            let clicked = scene.clone();
+            div()
+                .id("button-above")
+                .flex_none()
+                .w(px(100.0))
+                .h(px(30.0))
+                .on_click(move |_, _, _| clicked.above_clicks.set(clicked.above_clicks.get() + 1))
+        });
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
-            .child(div().h(px(self.spacer.get())))
-            .child(
-                div()
-                    .id("moving-button")
-                    .w(px(100.0))
-                    .h(px(30.0))
-                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+            .child(div().flex_none().h(px(scene.spacer.get())))
+            .children(above)
+            .child(button)
+            .children(
+                scene
+                    .cover
+                    .get()
+                    .then(|| div().id("cover").absolute().inset_0().occlude()),
             )
     }
 }
 
-fn moving(cx: &mut TestAppContext) -> (VisualTestContext, Rc<Cell<f32>>, Rc<Cell<u32>>) {
-    let (spacer, clicks) = (Rc::new(Cell::new(0.0)), Rc::new(Cell::new(0)));
-    let view = Moving {
-        spacer: spacer.clone(),
-        clicks: clicks.clone(),
-    };
-    (open_view(cx, move |_, _| view), spacer, clicks)
-}
-
-/// The spacer grows by `by` pixels, and the window draws again, as after a change of the
-/// state that arrives during the press.
-fn grow(cx: &mut VisualTestContext, spacer: &Cell<f32>, by: f32) {
-    spacer.set(spacer.get() + by);
-    view_redraw(cx);
+fn moving(cx: &mut TestAppContext) -> (VisualTestContext, Rc<Scene>) {
+    let scene = Rc::new(Scene::default());
+    let view = Moving(scene.clone());
+    (open_view(cx, move |_, _| view), scene)
 }
 
 fn down(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
@@ -93,13 +121,14 @@ fn up(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
 fn a_press_is_delivered_when_a_redraw_moves_its_control_before_the_release(
     cx: &mut TestAppContext,
 ) {
-    let (mut cx, spacer, clicks) = moving(cx);
+    let (mut cx, scene) = moving(cx);
     let at = point(px(50.0), px(10.0));
     down(&mut cx, at);
-    grow(&mut cx, &spacer, 20.0);
+    scene.spacer.set(20.0);
+    view_redraw(&mut cx);
     up(&mut cx, at);
     assert_eq!(
-        clicks.get(),
+        scene.clicks.get(),
         1,
         "the press ends on the control that it started on"
     );
@@ -107,13 +136,142 @@ fn a_press_is_delivered_when_a_redraw_moves_its_control_before_the_release(
     // A press that is released outside both the place where the control was at the press
     // and the place where it is now is no click.
     down(&mut cx, point(px(50.0), px(30.0)));
-    grow(&mut cx, &spacer, 40.0);
+    scene.spacer.set(60.0);
+    view_redraw(&mut cx);
     up(&mut cx, point(px(50.0), px(100.0)));
-    assert_eq!(clicks.get(), 1);
+    assert_eq!(scene.clicks.get(), 1);
 
     // A press that ends where it started, on a control that did not move, is one click.
     let on = point(px(50.0), px(75.0));
     down(&mut cx, on);
     up(&mut cx, on);
-    assert_eq!(clicks.get(), 2);
+    assert_eq!(scene.clicks.get(), 2);
+}
+
+#[gpui::test]
+fn a_control_that_another_control_replaced_under_the_release_takes_no_click(
+    cx: &mut TestAppContext,
+) {
+    let (mut cx, scene) = moving(cx);
+    let at = point(px(50.0), px(15.0));
+    down(&mut cx, at);
+    // A second button comes above the pressed one: it lies under the release point now, and
+    // the pressed button is under it.
+    scene.above.set(true);
+    view_redraw(&mut cx);
+    up(&mut cx, at);
+    assert_eq!(scene.clicks.get(), 0, "the moved button took the release");
+    assert_eq!(
+        scene.above_clicks.get(),
+        0,
+        "the button under the release held no press"
+    );
+}
+
+#[gpui::test]
+fn a_control_that_a_cover_hides_before_the_release_takes_no_click(cx: &mut TestAppContext) {
+    let (mut cx, scene) = moving(cx);
+    let at = point(px(50.0), px(15.0));
+    down(&mut cx, at);
+    scene.cover.set(true);
+    view_redraw(&mut cx);
+    up(&mut cx, at);
+    assert_eq!(
+        scene.clicks.get(),
+        0,
+        "the control under the cover took the release"
+    );
+
+    // The same press without the cover is a click: the cover alone refused it.
+    scene.cover.set(false);
+    view_redraw(&mut cx);
+    down(&mut cx, at);
+    up(&mut cx, at);
+    assert_eq!(scene.clicks.get(), 1);
+}
+
+#[gpui::test]
+fn a_release_on_the_clipped_part_of_a_control_is_no_click(cx: &mut TestAppContext) {
+    let (mut cx, scene) = moving(cx);
+    // The frame shows the upper 20 of the 30 pixels of the button.
+    scene.clip.set(Some(20.0));
+    view_redraw(&mut cx);
+    down(&mut cx, point(px(50.0), px(10.0)));
+    up(&mut cx, point(px(50.0), px(25.0)));
+    assert_eq!(
+        scene.clicks.get(),
+        0,
+        "the clipped part of the button took the release"
+    );
+
+    // The button moves down while it is pressed; the release on its old place, inside the
+    // visible part, is a click.
+    down(&mut cx, point(px(50.0), px(10.0)));
+    scene.spacer.set(40.0);
+    view_redraw(&mut cx);
+    up(&mut cx, point(px(50.0), px(10.0)));
+    assert_eq!(scene.clicks.get(), 1);
+}
+
+/// A press of the harness waits for the requests that it started, also while a proxy of the
+/// test holds a request from before the press (ADR 0902): the held read of a quote does not
+/// end the wait for the read of the devices that "Try again" starts, which one `busy` answer
+/// makes last a second.
+#[gpui::test]
+fn a_press_waits_for_its_own_request_while_a_proxy_holds_an_earlier_one(cx: &mut TestAppContext) {
+    use crate::harness::{World, member};
+    use crate::messages::document;
+    use crate::support::{Fault, FaultProxy};
+    use junto_client_core::model::PlaceId;
+    use junto_client_core::protocol::message::SendMessage;
+    const DEVICES: &str = "/api/v1/account/devices";
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let channel = world.run(api.snapshot()).unwrap().snapshot.workspaces[0]
+        .channels
+        .iter()
+        .find(|channel| channel.kind == junto_client_core::protocol::structure::ChannelKind::Text)
+        .unwrap()
+        .id;
+    // The original is older than the page that the window reads first, so the window reads
+    // it for the reply.
+    let original = admin.send(&world, channel, document("the held original"));
+    for index in 0..60 {
+        admin.send(&world, channel, document(&format!("later {index}")));
+    }
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until_message("later 59");
+    proxy.hold_ending(&format!("/messages/{}", original.id));
+    world
+        .run(api.send_message(
+            PlaceId::Channel(channel),
+            &SendMessage {
+                document: document("the answer"),
+                reply_to: Some(original.id),
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until("the read of the quote waits at the proxy", |_| {
+        !crate::support::held_by_proxies().is_empty()
+    });
+    // The first read of the devices fails; "Try again" reads them with one `busy` answer.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail(DEVICES, std::iter::repeat_n(Fault::Busy, attempts));
+    window.open_account();
+    window.click("account-nav-devices");
+    window.until("the failure of the read is shown", |window| {
+        window.shows("devices-read-failed")
+    });
+    proxy.fail(DEVICES, [Fault::Busy]);
+    window.click("devices-read-again");
+    assert_eq!(
+        window.devices().len(),
+        1,
+        "the press returned before its read of the devices was answered"
+    );
+    proxy.release();
 }

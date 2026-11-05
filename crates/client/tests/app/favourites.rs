@@ -199,6 +199,19 @@ fn favourites_are_ordered_collapsed_marked_read_and_return_their_channels(cx: &m
         !window.shows(unread)
     });
     again.click(head);
+    again.until("the favourites are expanded", |window| {
+        favourites(window).is_some_and(|section| !section.collapsed)
+    });
+    again.right_click_named(head.to_owned());
+    again.click("context-action:Collapse favourites");
+    again.until("the menu collapses the favourites", |window| {
+        favourites(window).is_some_and(|section| section.collapsed)
+    });
+    again.right_click_named(head.to_owned());
+    again.click("context-action:Expand favourites");
+    again.until("the menu expands the favourites", |window| {
+        favourites(window).is_some_and(|section| !section.collapsed)
+    });
     for channel in [first, second] {
         again.right_click_named(format!("channel-row:{channel}"));
         again.click("channel-favourite");
@@ -263,6 +276,39 @@ fn new_category_at_the_end_of_the_list_creates_a_server_category_only_for_a_pers
             .may_create_category
     );
     assert!(!member_window.shows("channel-list-new-category"));
+
+    // A role that grants "manage channel" shows the button to the member, and its
+    // withdrawal takes it away, while the list is open.
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::roles::CreateWorkspaceRole;
+    let rin = member_window.own_account();
+    let role = world
+        .run(owner.api().create_workspace_role(
+            workspace,
+            &CreateWorkspaceRole {
+                color: None,
+                hoist: false,
+                name: "Arrangers".to_owned(),
+                permissions: vec![WorkspacePermission::ManageChannel],
+            },
+        ))
+        .unwrap();
+    world
+        .run(owner.api().assign_workspace_role(workspace, rin, role.id))
+        .unwrap();
+    member_window.until("the role shows the button", |window| {
+        window.shows("channel-list-new-category")
+    });
+    world
+        .run(owner.api().unassign_workspace_role(workspace, rin, role.id))
+        .unwrap();
+    member_window.until("the withdrawal takes the button away", |window| {
+        !window.shows("channel-list-new-category")
+            && window
+                .view()
+                .workspace()
+                .is_some_and(|workspace| !workspace.may_create_category)
+    });
 }
 
 #[gpui::test]

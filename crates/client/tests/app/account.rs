@@ -747,6 +747,9 @@ fn a_read_of_the_devices_that_failed_is_read_again_with_try_again(cx: &mut TestA
     ));
     assert_eq!(window.devices().len(), 2);
     assert!(window.devices().iter().all(|row| row.name != "Tablet"));
+    // A read that another event started can still be on its way: its success after the
+    // faults go would take the notice away under the press.
+    window.until_answered();
     proxy.clear_faults(devices);
     window.click("devices-read-again");
     window.until("the new name is listed", |window| {
