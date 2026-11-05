@@ -814,9 +814,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         )
         .await
         .ok(StatusCode::OK);
-    // A position is a place among the categories that the caller sees: one before the
-    // first is the first (ADR 0304).
-    assert_eq!((moved.name.as_str(), moved.position), ("Archive", 0));
+    assert_eq!((moved.name.as_str(), moved.position), ("Archive", -1));
 
     let channel: Channel = server
         .post(
@@ -827,7 +825,7 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         .await
         .ok(StatusCode::CREATED);
     assert_eq!(channel.kind, ChannelKind::Voice);
-    // The place among the channels of its category: the first (ADR 0304).
+    // A new channel goes after the last channel of its group, the empty category.
     assert_eq!(channel.position, 0);
     assert_eq!(channel.category_id, Some(category.id));
     assert!(!channel.permanent_messages);
@@ -844,14 +842,12 @@ async fn categories_and_channels_are_created_listed_and_edited() {
     assert_eq!(edited.name, "roadmap");
     assert_eq!(edited.category_id, Some(category.id));
     assert!(edited.permanent_messages);
-    // A place past the last of the category is its last place.
-    assert_eq!(edited.position, 0);
-    // Out of its category the channel goes after the last channel of the root.
     let uncategorised: Channel = server
         .patch(&owner, &path, &json!({ "category_id": null }))
         .await
         .ok(StatusCode::OK);
     assert_eq!(uncategorised.category_id, None);
+    // A channel that leaves its category goes after the last channel of the root.
     assert_eq!(uncategorised.position, 3);
 
     let list: ChannelList = server
@@ -1430,8 +1426,7 @@ async fn channels_are_moved_together_or_not_at_all() {
     let after = places().await;
     assert_eq!(after[&plans.id], (Some(category.id), 0));
     assert_eq!(after[&notes.id], (None, plans.position));
-    // "closed" stays after "notes": one channel fewer of the root is before it.
-    assert_eq!(after[&closed.id], (None, before[&closed.id].1 - 1));
+    assert_eq!(after[&closed.id], before[&closed.id]);
 }
 
 /// A page drops "x" after "b", between "b" at 10 and "c" at 20, and sends the two neighbours
@@ -1558,8 +1553,8 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         .patch(&manager, &path, &drop(3))
         .await
         .error(ErrorCode::Conflict);
-    // The owner reads "general", "voice", "AFK", "c", "x", "hidden", "b".
-    assert_eq!(place_of(x.id).await, (None, 4));
+    // The owner, who sees every channel, reads the stored positions: "x" is still at 5.
+    assert_eq!(place_of(x.id).await, (None, 5));
 
     // A request of checks only changes nothing: no audit entry and no event. The manager
     // reads "c" at 3 and "b" at 5.

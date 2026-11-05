@@ -2885,7 +2885,7 @@
             "type": "string"
           },
           "position": {
-            "description": "The place of the category among the categories that the reader sees, counted from 0.",
+            "description": "The position of the category as the reader reads it: the stored position when the\nreader sees every category of the workspace, otherwise its place among the categories\nthat the reader sees, counted from 0 (ADR 0304).",
             "format": "int32",
             "type": "integer"
           },
@@ -2935,7 +2935,7 @@
             "type": "boolean"
           },
           "position": {
-            "description": "The place of the channel among the channels of its category, or of the root, that the\nreader sees in the lists, counted from 0. An archived channel has 0.",
+            "description": "The position of the channel as the reader reads it: the stored position when the\nreader sees every channel of its category, or of the root, archived ones included;\notherwise its place among the channels of the group that the reader sees in the\nlists, counted from 0 (ADR 0304). An archived channel has 0.",
             "format": "int32",
             "type": "integer"
           },

@@ -6,13 +6,15 @@ use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId};
 use junto_protocol::structure::{
-    Category, Channel, ChannelKind, ChannelList, ChannelPermissions, CreateCategory, CreateChannel,
-    MOST_CHANNEL_MOVES, MoveChannels, UpdateCategory, UpdateChannel,
+    Category, Channel, ChannelKind, ChannelList, ChannelMove, ChannelPermissions, CreateCategory,
+    CreateChannel, MOST_CHANNEL_MOVES, MoveChannels, UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
 use crate::access::Access;
+pub(crate) use crate::access::order::Target;
+use crate::access::order::{Held, reordered};
 use crate::audit::{self, About};
 use crate::calls::Calls;
 use crate::db::StoredText;
@@ -112,13 +114,13 @@ pub(crate) async fn create_category_in(
     .bind(now)
     .execute(&mut *connection)
     .await?;
-    let position = place_category(
+    let position = order_categories(
         connection,
         access,
         now,
         (workspace_id, &scope),
         id,
-        position,
+        position.map(Target::Position),
     )
     .await?;
     let category = Category {
@@ -145,117 +147,115 @@ pub(crate) async fn create_category_in(
     Ok(category)
 }
 
-/// The order of a group of entries after `id` is placed at `rank` among the entries that
-/// the caller sees, counted from 0: before the entry that the caller sees at that place, or
-/// after the last entry that the caller sees for a larger rank. The entries that the caller
-/// does not see keep their order and stay next to the entry that the caller sees after them.
-/// `None` keeps the entry where it is. `before` holds each entry with whether the caller sees
-/// it, in the stored order (ADR 0304).
-pub(crate) fn placed_order<Id: Copy + PartialEq>(
-    before: &[(Id, bool)],
-    id: Id,
-    rank: Option<i32>,
-) -> Option<Vec<(Id, bool)>> {
-    let held = before.iter().position(|(held, _)| *held == id)?;
-    let mut after = before.to_vec();
-    if let Some(rank) = rank {
-        let placed = after.remove(held);
-        let visible: Vec<usize> = (0..after.len()).filter(|&at| after[at].1).collect();
-        let wanted = usize::try_from(rank).unwrap_or(0);
-        let at = match (visible.get(wanted), visible.last()) {
-            (Some(&next), _) => next,
-            (None, Some(&last)) => last + 1,
-            (None, None) => held,
-        };
-        after.insert(at, placed);
+/// The ids of a group in the stored order, after `changes` are applied to its positions.
+fn order_after<Id: Copy + Ord + std::hash::Hash>(
+    group: &[Held<Id>],
+    changes: &[(Id, i32)],
+) -> Vec<Id> {
+    let mut after = group.to_vec();
+    for (id, position) in changes {
+        if let Some(held) = after.iter_mut().find(|held| held.id == *id) {
+            held.position = *position;
+        }
     }
-    Some(after)
+    crate::access::order::stored_order(&mut after);
+    after.iter().map(|held| held.id).collect()
 }
 
-/// The place of `id` among the entries of `order` that the caller sees.
-fn place_in<Id: Copy + PartialEq>(order: &[(Id, bool)], id: Id) -> Option<i32> {
-    order
-        .iter()
-        .filter(|(_, visible)| *visible)
-        .position(|(held, _)| *held == id)
-        .and_then(|place| i32::try_from(place).ok())
-}
-
-/// Places a category at `rank` among the categories that the caller sees (see
-/// [`placed_order`]). The stored positions of the workspace are written again as 0, 1, 2 and
-/// so on when the order changes, and every person of the workspace then reads the structure
-/// again, because the position that a person reads is the place among the categories that
-/// the person sees (ADR 0304). Returns the place in the view of the caller.
-async fn place_category(
+/// Applies a request to the order of the categories of a workspace (ADR 0304,
+/// `access::order`): writes the stored positions that change, and, when the order changed,
+/// every person of the workspace reads the structure again, because the position that a
+/// person who does not see every category reads is a place among those that the person
+/// sees. Returns the position that the caller reads of `category_id`.
+async fn order_categories(
     connection: &mut PgConnection,
     access: &Access,
     now: OffsetDateTime,
     (workspace_id, scope): (WorkspaceId, &WorkspaceScope),
     category_id: CategoryId,
-    rank: Option<i32>,
+    target: Option<Target>,
 ) -> ApiResult<i32> {
-    let before = access
+    let group = access
         .category_order(connection, workspace_id, scope)
         .await?;
-    let after = placed_order(&before, category_id, rank).ok_or_else(ApiError::not_found)?;
-    if after != before {
-        let ids: Vec<CategoryId> = after.iter().map(|(id, _)| *id).collect();
-        sqlx::query(
-            "update categories c set position = o.position - 1
-             from unnest($1::uuid[]) with ordinality as o(id, position)
-             where c.id = o.id and c.workspace_id = $2 and c.position <> o.position - 1",
-        )
-        .bind(&ids)
-        .bind(workspace_id)
-        .execute(&mut *connection)
-        .await?;
+    let changes = match target {
+        Some(target) => reordered(&group, &[(category_id, target)]),
+        None => Vec::new(),
+    };
+    for (id, position) in &changes {
+        sqlx::query("update categories set position = $3 where id = $1 and workspace_id = $2")
+            .bind(id)
+            .bind(workspace_id)
+            .bind(position)
+            .execute(&mut *connection)
+            .await?;
+    }
+    let before: Vec<CategoryId> = group.iter().map(|held| held.id).collect();
+    if order_after(&group, &changes) != before {
         events::log::structure_reordered(connection, now, workspace_id).await?;
     }
-    place_in(&after, category_id).ok_or_else(ApiError::not_found)
+    let mut after = group;
+    for (id, position) in &changes {
+        if let Some(held) = after.iter_mut().find(|held| held.id == *id) {
+            held.position = *position;
+        }
+    }
+    crate::access::order::stored_order(&mut after);
+    crate::access::order::read_positions(&after)
+        .get(&category_id)
+        .copied()
+        .ok_or_else(ApiError::not_found)
 }
 
-/// Places a channel at `rank` among the channels of its group, its category or the root,
-/// that the caller sees in the lists (see [`placed_order`]); archived channels count as
-/// channels that the caller does not see. The stored positions of the group are written
-/// again as 0, 1, 2 and so on when its order changes, and every person of the workspace then
-/// reads the structure again (ADR 0304). Returns the place in the view of the caller.
-pub(crate) async fn place_channel(
+/// Applies the targets of a request to the order of the channels of one group, its category
+/// or the root (ADR 0304, `access::order`), as for the categories. Every channel of
+/// `targets` is in the group already; a channel that entered it is at its end.
+pub(crate) async fn order_channels(
     connection: &mut PgConnection,
     access: &Access,
     now: OffsetDateTime,
-    workspace_id: WorkspaceId,
-    channel_id: ChannelId,
-    rank: Option<i32>,
-) -> ApiResult<i32> {
+    (workspace_id, category_id): (WorkspaceId, Option<CategoryId>),
+    targets: &[(ChannelId, Target)],
+) -> ApiResult<()> {
     let scope = access.workspace(connection, workspace_id).await?;
     let order = access
         .channel_order(connection, workspace_id, &scope)
         .await?;
-    let group = order
-        .iter()
-        .find(|placed| placed.id == channel_id)
-        .map(|placed| placed.category_id)
-        .ok_or_else(ApiError::not_found)?;
-    let before: Vec<(ChannelId, bool)> = order
-        .iter()
-        .filter(|placed| placed.category_id == group)
-        .map(|placed| (placed.id, placed.listed))
-        .collect();
-    let after = placed_order(&before, channel_id, rank).ok_or_else(ApiError::not_found)?;
-    if after != before {
-        let ids: Vec<ChannelId> = after.iter().map(|(id, _)| *id).collect();
-        sqlx::query(
-            "update channels c set position = o.position - 1
-             from unnest($1::uuid[]) with ordinality as o(id, position)
-             where c.id = o.id and c.workspace_id = $2 and c.position <> o.position - 1",
-        )
-        .bind(&ids)
-        .bind(workspace_id)
-        .execute(&mut *connection)
-        .await?;
+    let group = crate::access::channel_order::group_of(&order, category_id);
+    let changes = reordered(&group, targets);
+    for (id, position) in &changes {
+        sqlx::query("update channels set position = $3 where id = $1 and workspace_id = $2")
+            .bind(id)
+            .bind(workspace_id)
+            .bind(position)
+            .execute(&mut *connection)
+            .await?;
+    }
+    let before: Vec<ChannelId> = group.iter().map(|held| held.id).collect();
+    if order_after(&group, &changes) != before {
         events::log::structure_reordered(connection, now, workspace_id).await?;
     }
-    Ok(place_in(&after, channel_id).unwrap_or(0))
+    Ok(())
+}
+
+/// True when an open channel follows `channel` in its group, whose places then change for
+/// a person who does not see every channel of the group when `channel` leaves or enters the
+/// lists (ADR 0304).
+pub(crate) async fn followed_in_group(
+    connection: &mut PgConnection,
+    channel: &Channel,
+) -> ApiResult<bool> {
+    Ok(sqlx::query_scalar(
+        "select exists (select 1 from channels
+         where workspace_id = $1 and category_id is not distinct from $2 and id <> $4
+           and deleted_at is null and archived_at is null and (position, id) > ($3, $4))",
+    )
+    .bind(channel.workspace_id)
+    .bind(channel.category_id)
+    .bind(channel.position)
+    .bind(channel.id)
+    .fetch_one(connection)
+    .await?)
 }
 
 /// The stored position after the last channel of a group that is not deleted.
@@ -299,15 +299,12 @@ pub async fn update_category(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let ids = (workspace_id, category_id);
-        update_category_in(
-            connection,
-            &access,
-            now,
-            ids,
-            new_name.as_deref(),
-            body.position,
-        )
-        .await
+        let target = match (body.place, body.position) {
+            (Some(place), _) => Some(Target::Place(place)),
+            (None, Some(position)) => Some(Target::Position(position)),
+            (None, None) => None,
+        };
+        update_category_in(connection, &access, now, ids, new_name.as_deref(), target).await
     })
     .map(Json)
 }
@@ -318,7 +315,7 @@ pub(crate) async fn update_category_in(
     now: OffsetDateTime,
     (workspace_id, category_id): (WorkspaceId, CategoryId),
     new_name: Option<&str>,
-    position: Option<i32>,
+    target: Option<Target>,
 ) -> ApiResult<Category> {
     let (_, scope) = access
         .visible_category(connection, workspace_id, category_id)
@@ -340,13 +337,13 @@ pub(crate) async fn update_category_in(
     .await?;
     let name = name.ok_or_else(ApiError::not_found)?;
     let workspace = access.workspace(connection, workspace_id).await?;
-    let position = place_category(
+    let position = order_categories(
         connection,
         access,
         now,
         (workspace_id, &workspace),
         category_id,
-        position,
+        target,
     )
     .await?;
     audit::record(
@@ -424,21 +421,33 @@ pub async fn visible_structure(
     let permissions = access.workspace_permissions(scope);
     let mut channels = Vec::new();
     let mut channel_permissions = Vec::new();
-    let seen = access
+    let records: Vec<_> = access
         .workspace_channels(connection, workspace_id, scope)
         .await?
         .into_iter()
-        .filter(|(record, channel_scope)| {
-            record.deleted_at.is_none()
-                && record.archived_at.is_none()
-                && access.allows(Request::Channel {
+        .filter(|(record, _)| record.deleted_at.is_none())
+        .collect();
+    // The position that the caller reads of each channel of the lists (ADR 0304).
+    let order: Vec<crate::access::channel_order::Placed> = records
+        .iter()
+        .map(
+            |(record, channel_scope)| crate::access::channel_order::Placed {
+                id: record.channel.id,
+                category_id: record.channel.category_id,
+                position: record.channel.position,
+                listed: access.listed(record, channel_scope),
+                viewable: access.allows(Request::Channel {
                     scope: channel_scope,
                     permission: WorkspacePermission::ViewChannel,
-                })
-        });
-    let mut next: std::collections::HashMap<Option<CategoryId>, i32> =
-        std::collections::HashMap::new();
-    for (record, channel_scope) in seen {
+                }),
+            },
+        )
+        .collect();
+    let places = crate::access::channel_order::channel_ranks(&order);
+    for (record, channel_scope) in records {
+        let Some(&position) = places.get(&record.channel.id) else {
+            continue;
+        };
         let held = access.channel_permissions(&channel_scope);
         if held != permissions {
             channel_permissions.push(ChannelPermissions {
@@ -446,30 +455,44 @@ pub async fn visible_structure(
                 permissions: held,
             });
         }
-        // The place among the channels of the group that the caller sees (ADR 0304).
-        let place = next.entry(record.channel.category_id).or_insert(0);
         channels.push(Channel {
-            position: *place,
+            position,
             ..record.channel
         });
-        *place += 1;
     }
+    let categories: Vec<(Category, bool)> = categories
+        .into_iter()
+        .map(|(category, scope)| {
+            let visible = access.category_visible(
+                &scope,
+                channels
+                    .iter()
+                    .any(|channel| channel.category_id == Some(category.id)),
+            );
+            (category, visible)
+        })
+        .collect();
+    let category_places = crate::access::order::read_positions(
+        &categories
+            .iter()
+            .map(|(category, visible)| crate::access::order::Held {
+                id: category.id,
+                position: category.position,
+                listed: *visible,
+                viewable: *visible,
+            })
+            .collect::<Vec<_>>(),
+    );
     Ok(Visible {
         list: ChannelList {
             categories: categories
                 .into_iter()
-                .filter(|(category, scope)| {
-                    access.category_visible(
-                        scope,
-                        channels
-                            .iter()
-                            .any(|channel| channel.category_id == Some(category.id)),
-                    )
-                })
-                .zip(0..)
-                .map(|((category, _), position)| Category {
-                    position,
-                    ..category
+                .filter_map(|(category, _)| {
+                    let position = *category_places.get(&category.id)?;
+                    Some(Category {
+                        position,
+                        ..category
+                    })
                 })
                 .collect(),
             channels,
@@ -636,15 +659,20 @@ pub(crate) async fn create_channel_in(
     .bind(now)
     .execute(&mut *connection)
     .await?;
-    channel.position = place_channel(
-        connection,
-        access,
-        now,
-        workspace_id,
-        channel.id,
-        new.position,
-    )
-    .await?;
+    if let Some(position) = new.position {
+        let group = (workspace_id, channel.category_id);
+        order_channels(
+            connection,
+            access,
+            now,
+            group,
+            &[(channel.id, Target::Position(position))],
+        )
+        .await?;
+    }
+    channel.position = access
+        .channel_place(connection, workspace_id, channel.id)
+        .await?;
     audit::record(
         connection,
         now,
@@ -695,6 +723,7 @@ pub async fn update_channel(
             channel_id,
             new_name.as_deref(),
             &body,
+            Order::Now,
         )
         .await
     })
@@ -760,8 +789,8 @@ pub async fn move_channels(
                 })?;
             }
             record.require_open()?;
-            // The place of a channel that the client read is its place among the channels
-            // of its group that the caller sees (ADR 0304).
+            // The position of a channel that the client read is the position that the
+            // caller reads (ADR 0304).
             if record.channel.category_id != held.from.category_id
                 || places.get(&held.channel_id) != Some(&held.from.position)
             {
@@ -770,17 +799,75 @@ pub async fn move_channels(
                 ));
             }
         }
-        for held in body.moves.iter().filter(|held| held.to != held.from) {
+        let moved: Vec<&ChannelMove> = body
+            .moves
+            .iter()
+            .filter(|held| held.to != held.from)
+            .collect();
+        // The channels change their category first, each to the end of its new group; then
+        // the order of each group is set once from the positions of the whole request, which
+        // a client of API v1 computed together (ADR 0304).
+        for held in &moved {
             let change = UpdateChannel {
                 category_id: Some(held.to.category_id),
-                position: Some(held.to.position),
                 ..UpdateChannel::default()
             };
-            update_channel_in(connection, &access, now, held.channel_id, None, &change).await?;
+            update_channel_in(
+                connection,
+                &access,
+                now,
+                held.channel_id,
+                None,
+                &change,
+                Order::Later,
+            )
+            .await?;
+        }
+        let mut groups: Vec<Option<CategoryId>> =
+            moved.iter().map(|held| held.to.category_id).collect();
+        groups.sort();
+        groups.dedup();
+        for group in groups {
+            let targets: Vec<(ChannelId, Target)> = moved
+                .iter()
+                .filter(|held| held.to.category_id == group)
+                .map(|held| {
+                    let target = held
+                        .to
+                        .place
+                        .map_or(Target::Position(held.to.position), Target::Place);
+                    (held.channel_id, target)
+                })
+                .collect();
+            order_channels(connection, &access, now, (workspace_id, group), &targets).await?;
+        }
+        for held in &moved {
+            let (record, _) = access.channel(connection, held.channel_id).await?;
+            let position = access
+                .channel_place(connection, workspace_id, held.channel_id)
+                .await?;
+            let updated = AuditEvent::ChannelUpdated {
+                name: record.channel.name.clone(),
+                topic: record.channel.topic.clone(),
+                category_id: record.channel.category_id,
+                position,
+                permanent_messages: record.channel.permanent_messages,
+            };
+            let about = About::Channel(workspace_id, held.channel_id);
+            audit::record(connection, now, Some(access.account_id), about, &updated).await?;
         }
         Ok(())
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// When a change of a channel sets its place among the channels of its group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Order {
+    /// With the change, and its audit entry with it.
+    Now,
+    /// After the other changes of the request, which records the audit entries then.
+    Later,
 }
 
 /// Changes a channel. `new_name` is the validated name of `change`.
@@ -791,6 +878,7 @@ pub(crate) async fn update_channel_in(
     channel_id: ChannelId,
     new_name: Option<&str>,
     change: &UpdateChannel,
+    order: Order,
 ) -> ApiResult<Channel> {
     let (record, scope) = access.channel(connection, channel_id).await?;
     access.require(Request::Channel {
@@ -855,21 +943,20 @@ pub(crate) async fn update_channel_in(
     if updated.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
-    channel.position = if moved_group || change.position.is_some() {
-        place_channel(
+    if let (Order::Now, Some(position)) = (order, change.position) {
+        let group = (channel.workspace_id, channel.category_id);
+        order_channels(
             connection,
             access,
             now,
-            channel.workspace_id,
-            channel_id,
-            change.position,
+            group,
+            &[(channel_id, Target::Position(position))],
         )
-        .await?
-    } else {
-        access
-            .channel_place(connection, channel.workspace_id, channel_id)
-            .await?
-    };
+        .await?;
+    }
+    channel.position = access
+        .channel_place(connection, channel.workspace_id, channel_id)
+        .await?;
     // The setting of permanent messages has an entry and a system line of its own. A
     // request that names only that setting records nothing else.
     let about = About::Channel(channel.workspace_id, channel_id);
@@ -878,7 +965,7 @@ pub(crate) async fn update_channel_in(
         && change.topic.is_none()
         && change.category_id.is_none()
         && change.position.is_none();
-    if !only_permanence {
+    if !only_permanence && order == Order::Now {
         let updated = AuditEvent::ChannelUpdated {
             name: channel.name.clone(),
             topic: channel.topic.clone(),
@@ -1008,7 +1095,12 @@ pub(crate) async fn left_lists(
     now: OffsetDateTime,
     channel: &Channel,
 ) -> ApiResult<()> {
+    // A channel of the root leaves no category; the open channels after it in the root then
+    // have other places for a person who does not see every channel of the root (ADR 0304).
     if channel.category_id.is_none() {
+        if followed_in_group(connection, channel).await? {
+            events::log::structure_reordered(connection, now, channel.workspace_id).await?;
+        }
         return Ok(());
     }
     let workspace_id = channel.workspace_id;

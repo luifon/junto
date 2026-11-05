@@ -66,12 +66,13 @@ pub async fn archive_channel(
             &AuditEvent::ChannelArchived,
         )
         .await?;
+        let stored = record.channel.clone();
         let channel = archive::view(connection, record, days, now).await?;
         let archived = Event::ChannelArchived {
             channel: channel.clone(),
         };
         events::publish(connection, now, &archived).await?;
-        super::channels::left_lists(connection, now, &channel.channel).await?;
+        super::channels::left_lists(connection, now, &stored).await?;
         Ok(channel)
     })
     .map(Json)
@@ -134,19 +135,7 @@ pub async fn restore_channel(
             .await?;
         // The channel takes its place in the list again: the places of the open channels
         // after it in its group change for each person (ADR 0304).
-        let before_others: bool = sqlx::query_scalar(
-            "select exists (select 1 from channels
-             where workspace_id = $1 and category_id is not distinct from $2 and id <> $5
-               and deleted_at is null and archived_at is null and (position, id) > ($3, $4))",
-        )
-        .bind(workspace_id)
-        .bind(record.channel.category_id)
-        .bind(record.channel.position)
-        .bind(channel_id)
-        .bind(channel_id)
-        .fetch_one(&mut *connection)
-        .await?;
-        if before_others {
+        if super::channels::followed_in_group(connection, &record.channel).await? {
             events::log::structure_reordered(connection, now, workspace_id).await?;
         }
         let position = access

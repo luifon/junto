@@ -175,6 +175,18 @@ pub struct ChannelsPage {
     pub refusal: Option<(ChannelId, String)>,
 }
 
+/// The request of a move, and where the page draws the channels that it names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Planned {
+    /// The moves that the request sends: the moved channel, from the position where the
+    /// state holds it to its place among the channels of the group (`place`), and the
+    /// channels next to that place as checks of the positions where the state holds them.
+    pub moves: Vec<ChannelMove>,
+    /// The index of each channel of the request in the order of its group that the page
+    /// draws after the move.
+    pub drawn: Vec<(ChannelId, ChannelPlace)>,
+}
+
 impl ChannelsPage {
     pub fn categories(&self) -> impl Iterator<Item = &CategoryLine> {
         self.groups
@@ -210,7 +222,7 @@ impl ChannelsPage {
         channel_id: ChannelId,
         category_id: Option<CategoryId>,
         to: usize,
-    ) -> Result<Vec<ChannelMove>, Unplanned> {
+    ) -> Result<Planned, Unplanned> {
         if self.refusal.is_some() {
             return Err(Unplanned::RefusalShown);
         }
@@ -231,31 +243,39 @@ impl ChannelsPage {
         if category_id.is_none() && line.category_id.is_some() && !self.may_manage {
             return Err(Unplanned::RootNotManaged);
         }
-        let position = i32::try_from(at).map_err(|_| Unplanned::TooMany)?;
+        let place = i32::try_from(at).map_err(|_| Unplanned::TooMany)?;
+        let shown = |position: i32| ChannelPlace {
+            category_id,
+            position,
+            place: None,
+        };
         let mut moves = vec![ChannelMove {
             channel_id,
             from: line.place,
             to: ChannelPlace {
                 category_id,
-                position,
+                position: place,
+                place: Some(place),
             },
         }];
-        let neighbours = at
-            .checked_sub(1)
-            .and_then(|before| others.get(before))
-            .into_iter()
-            .chain(others.get(at));
-        for neighbour in neighbours {
+        let mut drawn = vec![(channel_id, shown(place))];
+        let before = at.checked_sub(1).and_then(|before| others.get(before));
+        let after = others.get(at);
+        for (neighbour, shown_at) in [(before, place - 1), (after, place + 1)] {
+            let Some(neighbour) = neighbour else {
+                continue;
+            };
             moves.push(ChannelMove {
                 channel_id: neighbour.id,
                 from: neighbour.place,
                 to: neighbour.place,
             });
+            drawn.push((neighbour.id, shown(shown_at)));
         }
         if moves.len() > MOST_CHANNEL_MOVES {
             return Err(Unplanned::TooMany);
         }
-        Ok(moves)
+        Ok(Planned { moves, drawn })
     }
 
     /// True when a drop of the channel at the place `to` of the channels of `category_id`
@@ -953,9 +973,12 @@ fn channels_page(
         held.iter()
             .zip(0..)
             .map(|(held, position)| {
+                // The position that the server gave, which a request names as where the
+                // page read the channel (ADR 0304).
                 let place = ChannelPlace {
                     category_id,
-                    position,
+                    position: held.channel.position,
+                    place: None,
                 };
                 ChannelLine {
                     id: held.channel.id,

@@ -170,20 +170,13 @@ pub const EXPORT_ROLES: &str =
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = r.id
      order by r.is_everyone desc, r.id";
 pub const EXPORT_CATEGORIES: &str =
-    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name,
-            (row_number() over (partition by c.workspace_id order by c.position, c.id) - 1)::integer
+    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.position
      from categories c
      left join structure_identifiers i on i.kind = 'category' and i.object_id = c.id
      order by c.position, c.id";
 pub const EXPORT_CHANNELS: &str =
     "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.topic, c.kind,
-            coalesce(ci.identifier, c.category_id),
-            case when c.archived_at is null then
-                (row_number() over (
-                    partition by c.workspace_id, c.category_id, c.archived_at is null
-                    order by c.position, c.id) - 1)::integer
-            end,
-            c.permanent_messages,
+            coalesce(ci.identifier, c.category_id), c.position, c.permanent_messages,
             c.user_limit, c.hides_occupants, c.category_id is not null and c.permissions_synced
      from channels c
      left join structure_identifiers i on i.kind = 'channel' and i.object_id = c.id
@@ -218,7 +211,7 @@ type ChannelRow = (
     String,
     String,
     Option<Uuid>,
-    Option<i32>,
+    i32,
     bool,
     Option<i32>,
     bool,
@@ -383,9 +376,9 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
                 topic: Some(topic),
                 kind,
                 category: Some(category.map(StructureId::from_uuid)),
-                // The place among the open channels of its group; an archived channel has
-                // no place and states none (ADR 0304).
-                position,
+                // The stored position: the administrator who exports sees every channel
+                // (ADR 0304).
+                position: Some(position),
                 permanent_messages: Some(permanent),
                 user_limit: voice
                     .then(|| limit.map(db::count).transpose())
@@ -768,7 +761,8 @@ async fn apply_one(
             let name = optional_name(name.as_deref())?;
             let ids = (workspace_id, CategoryId::from_uuid(category_id));
             let name = name.as_deref();
-            channels::update_category_in(connection, access, now, ids, name, *position).await?;
+            let target = position.map(channels::Target::Position);
+            channels::update_category_in(connection, access, now, ids, name, target).await?;
             Ok(())
         }
         StructureChange::CreateChannel {
@@ -827,7 +821,9 @@ async fn apply_one(
             };
             let channel_id = ChannelId::from_uuid(channel_id);
             let name = name.as_deref();
-            channels::update_channel_in(connection, access, now, channel_id, name, &update).await?;
+            let order = channels::Order::Now;
+            channels::update_channel_in(connection, access, now, channel_id, name, &update, order)
+                .await?;
             Ok(())
         }
         StructureChange::UpdateCallSettings {

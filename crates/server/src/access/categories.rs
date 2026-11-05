@@ -1,3 +1,4 @@
+use super::order::Held;
 use super::{Access, role_scope, stored_override};
 use crate::error::{ApiError, ApiResult};
 use junto_authz::{ChannelScope, Request, WorkspacePermission, WorkspaceScope};
@@ -46,20 +47,27 @@ impl Access {
             .await
     }
 
-    /// Every category of a workspace in its stored order, with whether the caller sees it.
-    /// The position of a category that a person reads is its place among the categories
-    /// that the person sees, so that a gap does not tell how many are hidden (ADR 0304).
+    /// Every category of a workspace in its stored order, with whether the caller sees it
+    /// (ADR 0304, `access::order`).
     pub async fn category_order(
         &self,
         connection: &mut PgConnection,
         workspace_id: WorkspaceId,
         workspace: &WorkspaceScope,
-    ) -> ApiResult<Vec<(CategoryId, bool)>> {
+    ) -> ApiResult<Vec<Held<CategoryId>>> {
         Ok(self
             .categories_and_children(connection, workspace_id, workspace, None)
             .await?
             .into_iter()
-            .map(|(category, scope, child)| (category.id, self.category_visible(&scope, child)))
+            .map(|(category, scope, child)| {
+                let visible = self.category_visible(&scope, child);
+                Held {
+                    id: category.id,
+                    position: category.position,
+                    listed: visible,
+                    viewable: visible,
+                }
+            })
             .collect())
     }
 
@@ -148,12 +156,7 @@ impl Access {
     }
 }
 
-/// The place of each category among the visible ones of `order`.
-pub fn ranks(order: &[(CategoryId, bool)]) -> HashMap<CategoryId, i32> {
-    order
-        .iter()
-        .filter(|(_, visible)| *visible)
-        .zip(0..)
-        .map(|((id, _), rank)| (*id, rank))
-        .collect()
+/// The position that the person reads of each category that the person sees.
+pub fn ranks(order: &[Held<CategoryId>]) -> HashMap<CategoryId, i32> {
+    super::order::read_positions(order)
 }

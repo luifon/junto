@@ -18030,7 +18030,7 @@
           "position": {
             "type": "integer",
             "format": "int32",
-            "description": "The place of the category among the categories that the reader sees, counted from 0."
+            "description": "The position of the category as the reader reads it: the stored position when the\nreader sees every category of the workspace, otherwise its place among the categories\nthat the reader sees, counted from 0 (ADR 0304)."
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -18063,7 +18063,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The place of the category among the categories of its workspace, counted from 0.\nAbsent: a new category goes after the last one, an existing one keeps its position."
+            "description": "The stored position: the categories of a workspace are in the order of position and\nthen identifier (ADR 0304). Absent: a new category goes after the last one, an\nexisting one keeps its position."
           }
         },
         "additionalProperties": false
@@ -18260,7 +18260,7 @@
           "position": {
             "type": "integer",
             "format": "int32",
-            "description": "The place of the channel among the channels of its category, or of the root, that the\nreader sees in the lists, counted from 0. An archived channel has 0."
+            "description": "The position of the channel as the reader reads it: the stored position when the\nreader sees every channel of its category, or of the root, archived ones included;\notherwise its place among the channels of the group that the reader sees in the\nlists, counted from 0 (ADR 0304). An archived channel has 0."
           },
           "topic": {
             "type": "string",
@@ -18371,7 +18371,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The place of the channel among the open channels of its category, or of the root,\ncounted from 0; an archived channel states none. Absent: a new channel goes after the\nlast one, an existing one keeps its position."
+            "description": "The stored position: the channels of a category, or of the root, are in the order of\nposition and then identifier (ADR 0304); an archived channel states none. Absent: a\nnew channel goes after the last one, an existing one keeps its position."
           },
           "synced": {
             "type": [
@@ -18474,7 +18474,7 @@
       },
       "ChannelPlace": {
         "type": "object",
-        "description": "The category and the position of a channel: its place among the channels of the\ncategory, or of the root, that the caller sees, counted from 0.",
+        "description": "The category and the position of a channel, as the caller reads positions (ADR 0304).",
         "required": [
           "position"
         ],
@@ -18490,9 +18490,18 @@
               }
             ]
           },
+          "place": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Only in `to`: the place among the channels of the group that the caller sees after\nthe change, counted from 0; a place past the last puts it after the last. It replaces\n`position` (ADR 0206)."
+          },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Where the client read the channel; in `to`, a position in the caller's view of the\ngroup: the channels that the caller sees are ordered by position and then identifier\nwith the new values of the request."
           }
         },
         "additionalProperties": false
@@ -18691,7 +18700,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The place among the categories that the caller sees, counted from 0; a place past the\nlast puts it after the last. Absent: after the last category."
+            "description": "A position in the caller's view, as the caller reads positions: the categories that\nthe caller sees are ordered by position and then identifier with this value (ADR 0304).\nAbsent: after the last category."
           }
         }
       },
@@ -18739,7 +18748,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The place among the channels of the category, or of the root, that the caller sees,\ncounted from 0; a place past the last puts it after the last. Absent: after the last\nchannel."
+            "description": "A position in the caller's view of the category, or of the root, as the caller reads\npositions: the channels that the caller sees are ordered by position and then\nidentifier with this value (ADR 0304). Absent: after the last channel."
           },
           "topic": {
             "type": "string",
@@ -24209,13 +24218,21 @@
               "null"
             ]
           },
+          "place": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The place among the categories that the caller sees after the change, counted from 0;\na place past the last puts it after the last. It replaces `position` (ADR 0206)."
+          },
           "position": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int32",
-            "description": "The place among the categories that the caller sees, counted from 0; a place past the\nlast puts it after the last."
+            "description": "A position in the caller's view, as the caller reads positions: the categories that\nthe caller sees are ordered by position and then identifier with this value (ADR 0304)."
           }
         }
       },
@@ -24251,7 +24268,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The place among the channels of the category, or of the root, that the caller sees,\ncounted from 0; a place past the last puts it after the last. A channel that changes\nits category without a position goes after the last channel of the new one."
+            "description": "A position in the caller's view of the category, or of the root, as the caller reads\npositions: the channels that the caller sees are ordered by position and then\nidentifier with this value (ADR 0304). A channel that changes its category without a\nposition goes after the last channel of the new one."
           },
           "topic": {
             "type": [

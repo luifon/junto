@@ -184,7 +184,9 @@ async fn a_transaction_that_commits_later_gets_the_later_position() {
     let path = format!("/api/v1/workspaces/{}/categories", workspace.id);
 
     server.gate().arm(0);
-    let held_body = json!({ "name": "started first", "position": 1 });
+    // No position: a category put before another one would change the order and record a
+    // refresh of the workspace before its own event (ADR 0304).
+    let held_body = json!({ "name": "started first" });
     let held = server.post(&owner, &path, &held_body);
     tokio::pin!(held);
     drive_until(&mut held, server.gate().arrived()).await;

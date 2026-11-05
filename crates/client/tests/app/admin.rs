@@ -1062,12 +1062,13 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
                 .is_some_and(|page| page.channel(x).is_some_and(|line| line.moves_down.is_ok()))
     });
 
-    // Another administrator moves "last" to the top; the window does not know it yet.
-    // "Down" puts "x" between "next" and "last" as the page read them, and checks both: the
-    // server refuses the move, because "last" is no longer where the page read it.
+    // Another administrator moves "last" to the top, before the position 0 of "general";
+    // the window does not know it yet. "Down" puts "x" between "next" and "last" as the page
+    // read them, and checks both: the server refuses the move, because "last" is no longer
+    // where the page read it.
     proxy.hold_events();
     let moved = UpdateChannel {
-        position: Some(0),
+        position: Some(-1),
         ..UpdateChannel::default()
     };
     world
@@ -1109,7 +1110,7 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
         Err(junto_client::state::admin::view::Unplanned::RefusalShown)
     );
     let server_now = server_places(&world, &owner, default);
-    assert_eq!(server_now[&last], (None, 0));
+    assert_eq!(server_now[&last], (None, -1));
     assert_eq!(bounds(&mut window), pressed);
     // Close shows the order of the state that was read again, with the events still held.
     crate::admin_pages::click_in_page(&mut window, "channel-move-refused-dismiss");

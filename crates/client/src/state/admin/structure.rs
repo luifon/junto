@@ -10,10 +10,11 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ChannelKind, ChannelMove, CreateCategory, CreateChannel, MoveChannels,
-    UpdateCategory, UpdateChannel,
+    ArchivePeriod, ChannelKind, CreateCategory, CreateChannel, MoveChannels, UpdateCategory,
+    UpdateChannel,
 };
 
+use super::view::Planned;
 use super::{AskKind, Made};
 use crate::state::AppState;
 use crate::state::receipts::Awaited;
@@ -107,6 +108,7 @@ impl AppState {
         let change = UpdateCategory {
             name: Some(name),
             position: None,
+            place: None,
         };
         self.admin_ask(
             server_id,
@@ -158,7 +160,8 @@ impl AppState {
         };
         let change = UpdateCategory {
             name: None,
-            position: Some(position),
+            position: None,
+            place: Some(position),
         };
         self.admin_ask(
             server_id,
@@ -254,19 +257,24 @@ impl AppState {
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        moves: Vec<ChannelMove>,
+        planned: Planned,
         cx: &mut Context<Self>,
     ) {
-        if moves.is_empty() {
+        if planned.moves.is_empty() {
             return;
         }
         // The page shows the moves from now until the state holds them, or until the
         // server refuses them (ADR 0730).
-        let number = self
-            .admin
-            .channel_moves
-            .begin(server_id, workspace_id, channel_id, &moves);
-        let moves = MoveChannels { moves };
+        let number = self.admin.channel_moves.begin(
+            server_id,
+            workspace_id,
+            channel_id,
+            &planned.moves,
+            planned.drawn,
+        );
+        let moves = MoveChannels {
+            moves: planned.moves,
+        };
         let what = AskKind::MoveChannels(channel_id);
         let (told, outcome) = futures_channel::oneshot::channel();
         self.admin_ask(

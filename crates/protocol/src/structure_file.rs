@@ -167,8 +167,9 @@ pub struct RoleEntry {
 pub struct CategoryEntry {
     pub id: StructureId,
     pub name: String,
-    /// The place of the category among the categories of its workspace, counted from 0.
-    /// Absent: a new category goes after the last one, an existing one keeps its position.
+    /// The stored position: the categories of a workspace are in the order of position and
+    /// then identifier (ADR 0304). Absent: a new category goes after the last one, an
+    /// existing one keeps its position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
     /// The role overrides of the category, which its synced channels take. An override of a
@@ -197,9 +198,9 @@ pub struct ChannelEntry {
     )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<StructureId>))]
     pub category: Option<Option<StructureId>>,
-    /// The place of the channel among the open channels of its category, or of the root,
-    /// counted from 0; an archived channel states none. Absent: a new channel goes after the
-    /// last one, an existing one keeps its position.
+    /// The stored position: the channels of a category, or of the root, are in the order of
+    /// position and then identifier (ADR 0304); an archived channel states none. Absent: a
+    /// new channel goes after the last one, an existing one keeps its position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -42,7 +42,7 @@
             "type": "array"
           },
           "position": {
-            "description": "The place of the category among the categories of its workspace, counted from 0.\nAbsent: a new category goes after the last one, an existing one keeps its position.",
+            "description": "The stored position: the categories of a workspace are in the order of position and\nthen identifier (ADR 0304). Absent: a new category goes after the last one, an\nexisting one keeps its position.",
             "format": "int32",
             "type": [
               "integer",
@@ -101,7 +101,7 @@
             ]
           },
           "position": {
-            "description": "The place of the channel among the open channels of its category, or of the root,\ncounted from 0; an archived channel states none. Absent: a new channel goes after the\nlast one, an existing one keeps its position.",
+            "description": "The stored position: the channels of a category, or of the root, are in the order of\nposition and then identifier (ADR 0304); an archived channel states none. Absent: a\nnew channel goes after the last one, an existing one keeps its position.",
             "format": "int32",
             "type": [
               "integer",

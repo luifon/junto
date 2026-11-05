@@ -924,10 +924,9 @@ async fn a_synced_channel_that_moves_takes_the_rules_of_its_new_category() {
         .patch(
             &manager,
             &format!("/api/v1/workspaces/{}/channels/positions", place.workspace),
-            // "other" is the only channel of its category now: its place there is 0.
             &json!({"moves": [{
                 "channel_id": other.id,
-                "from": {"category_id": first.id, "position": 0},
+                "from": {"category_id": first.id, "position": other.position},
                 "to": {"category_id": null, "position": other.position},
             }]}),
         )

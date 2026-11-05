@@ -1007,3 +1007,129 @@ async fn afk_import_of_a_new_workspace_keeps_one_designated_channel_without_a_du
     assert_eq!(workspace.afk.as_ref().unwrap().channel.to_string(), id(502));
     assert_eq!(workspace.afk.as_ref().unwrap().idle_minutes, 60);
 }
+
+/// The ids of the categories and of the root channels of the default workspace, in the
+/// stored order, which the owner, who sees every entry, reads.
+async fn stored_order(
+    server: &TestServer,
+    owner: &Member,
+    workspace_id: junto_protocol::ids::WorkspaceId,
+) -> (Vec<String>, Vec<String>) {
+    let list: junto_protocol::structure::ChannelList = server
+        .get(
+            owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let mut categories: Vec<_> = list
+        .categories
+        .iter()
+        .map(|category| (category.position, category.id.to_string()))
+        .collect();
+    categories.sort();
+    let mut root: Vec<_> = list
+        .channels
+        .iter()
+        .filter(|channel| channel.category_id.is_none())
+        .map(|channel| (channel.position, channel.id.to_string()))
+        .collect();
+    root.sort();
+    (
+        categories.into_iter().map(|(_, id)| id).collect(),
+        root.into_iter().map(|(_, id)| id).collect(),
+    )
+}
+
+/// A file that rotates and then reverses the order of four categories and of the channels
+/// of the root, with an archived channel in the root and a channel that enters the root
+/// from a category, is applied to exactly that order through the server (ADR 0212,
+/// ADR 0304). The tool sends the changed positions of the file one by one, as the tool of
+/// release 0.1.0 does, and the server stores each as given for the administrator.
+#[tokio::test]
+async fn a_file_orders_the_categories_and_the_root_channels_exactly() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let mut categories = Vec::new();
+    for name in ["One", "Two", "Three", "Four"] {
+        categories.push(server.category(&owner, workspace_id, name, 0).await);
+    }
+    for name in ["a", "b", "archived", "c"] {
+        server.channel(&owner, workspace_id, name).await;
+    }
+    let mover: junto_protocol::structure::Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "mover", "kind": "text", "category_id": categories[0].id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let export: StructureExport = server
+        .get(&owner, "/api/v1/structure")
+        .await
+        .ok(StatusCode::OK);
+    let archived = export.structure.workspaces[0]
+        .channels
+        .iter()
+        .find(|channel| channel.name == "archived")
+        .unwrap()
+        .id;
+    let _: Value = server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{archived}/archive"),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+
+    let (categories_now, root_now) = stored_order(&server, &owner, workspace_id).await;
+    let rotated = |ids: &[String]| {
+        let mut ids = ids.to_vec();
+        ids.rotate_left(1);
+        ids
+    };
+    let reversed = |ids: &[String]| ids.iter().rev().cloned().collect::<Vec<_>>();
+    // The mover enters the root at its second place.
+    let mut root_rotated = rotated(&root_now);
+    root_rotated.insert(1, mover.id.to_string());
+    let root_reversed = reversed(&root_rotated);
+    for (wanted_categories, wanted_root) in [
+        (rotated(&categories_now), root_rotated),
+        (reversed(&rotated(&categories_now)), root_reversed),
+    ] {
+        let export: StructureExport = server
+            .get(&owner, "/api/v1/structure")
+            .await
+            .ok(StatusCode::OK);
+        let mut file = serde_json::to_value(&export.structure).unwrap();
+        let workspace = &mut file["workspaces"][0];
+        for category in workspace["categories"].as_array_mut().unwrap() {
+            let id = category["id"].as_str().unwrap().to_owned();
+            let at = wanted_categories
+                .iter()
+                .position(|held| *held == id)
+                .unwrap();
+            category["position"] = json!(at);
+        }
+        for channel in workspace["channels"].as_array_mut().unwrap() {
+            let id = channel["id"].as_str().unwrap().to_owned();
+            if let Some(at) = wanted_root.iter().position(|held| *held == id) {
+                channel["position"] = json!(at);
+                channel["category"] = Value::Null;
+                // A channel without a category is synced with none.
+                channel.as_object_mut().unwrap().remove("synced");
+            }
+        }
+        let path = write(&scratch, "order.json", &file);
+        tool(&server, &token, &["apply", &path]).await.succeeded();
+        assert_eq!(
+            stored_order(&server, &owner, workspace_id).await,
+            (wanted_categories, wanted_root)
+        );
+    }
+}

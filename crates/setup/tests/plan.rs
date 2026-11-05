@@ -36,7 +36,7 @@ fn server() -> StructureFile {
                 { "id": id(30), "name": "general", "kind": "text", "category": id(20),
                   "position": 0, "permanent_messages": false, "overrides": [] },
                 { "id": id(31), "name": "hall", "kind": "voice", "category": null,
-                  "position": 0, "permanent_messages": false, "user_limit": null,
+                  "position": 1, "permanent_messages": false, "user_limit": null,
                   "hides_occupants": false,
                   "overrides": [{ "role": id(11), "allow": ["mute_members"], "deny": [] }] },
             ],
@@ -150,7 +150,7 @@ fn only_the_fields_that_differ_are_sent() {
                            "permissions": ["create_invites", "ban_members"] }],
         "workspaces": [{ "id": id(1), "name": "Main",
             "roles": [{ "id": id(11), "name": "Helpers", "permissions": [] }],
-            "categories": [{ "id": id(20), "name": "Projects", "position": 0 }],
+            "categories": [{ "id": id(20), "name": "Projects", "position": 4 }],
             "channels": [
                 { "id": id(30), "name": "general", "kind": "text", "category": null,
                   "position": 0, "permanent_messages": true },
@@ -166,46 +166,13 @@ fn only_the_fields_that_differ_are_sent() {
             json!({ "change": "update_server_role", "id": id(90),
                     "permissions": ["create_invites", "ban_members"] }),
             json!({ "change": "update_workspace_role", "id": id(11), "permissions": [] }),
+            json!({ "change": "update_category", "id": id(20), "position": 4 }),
             json!({ "change": "update_channel", "id": id(30), "category": null,
                     "permanent_messages": true }),
             json!({ "change": "update_call_settings", "id": id(31), "user_limit": 12 }),
             json!({ "change": "set_channel_override", "channel": id(31), "role": id(11),
                     "allow": ["mute_members"], "deny": ["record_calls"] }),
-            json!({ "change": "update_channel", "id": id(30), "position": 0 }),
-            json!({ "change": "update_channel", "id": id(31), "position": 1 }),
         ]
-    );
-}
-
-/// A position of a category is its place among the categories of its workspace after the
-/// plan, counted from 0 (ADR 0304): a position past the last is refused, because the server
-/// would put the category last and every later plan would change it again.
-#[test]
-fn a_category_position_is_a_place_among_the_categories_of_its_workspace() {
-    let current = server();
-    let moved = json!({
-        "format": 1,
-        "workspaces": [{ "id": id(1), "name": "Main",
-            "categories": [
-                { "id": id(20), "name": "Projects", "position": 1 },
-                { "id": id(21), "name": "Archive", "position": 0 },
-            ] }],
-    });
-    let planned = changes(&file(moved.clone()), &current);
-    assert!(
-        planned.contains(&json!({ "change": "update_category", "id": id(20), "position": 1 })),
-        "{planned:?}"
-    );
-    let mut past = moved;
-    past["workspaces"][0]["categories"][0]["position"] = json!(2);
-    let found = problems(past, &current);
-    assert!(
-        found.contains(&format!(
-            "the category {} has the position 2; the positions of the 2 categories of its \
-             workspace are 0 to 1",
-            id(20)
-        )),
-        "{found}"
     );
 }
 
@@ -227,7 +194,7 @@ fn rule_51_every_change_names_only_entries_that_exist_before_it() {
                   { "id": id(13), "name": "all", "everyone": true, "permissions": ["view_channel"] },
                   { "id": id(14), "name": "Leads", "permissions": ["manage_channel"] },
               ],
-              "categories": [{ "id": id(22), "name": "Rooms", "position": 0 }],
+              "categories": [{ "id": id(22), "name": "Rooms", "position": 2 }],
               "channels": [{ "id": id(33), "name": "room", "kind": "voice", "category": id(22),
                              "user_limit": 5, "hides_occupants": true,
                              "overrides": [{ "role": id(13), "deny": ["view_channel"] },
@@ -438,7 +405,7 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
 fn a_plan_is_the_same_for_the_same_documents() {
     let current = server();
     let mut desired = current.clone();
-    desired.workspaces[0].channels[1].name = "lobby".to_owned();
+    desired.workspaces[0].channels[1].position = Some(9);
     let first = planned(&desired, &current);
     assert_eq!(first, planned(&desired, &current));
     assert!(matches!(
@@ -671,7 +638,7 @@ fn synced_value() -> Value {
                   "position": 1, "permanent_messages": false, "synced": false,
                   "overrides": [{ "role": id(10), "allow": [], "deny": ["view_channel"] }] },
                 { "id": id(33), "name": "loose", "kind": "text", "category": null,
-                  "position": 0, "permanent_messages": false, "overrides": [] },
+                  "position": 2, "permanent_messages": false, "overrides": [] },
             ],
         }],
     })
@@ -1084,119 +1051,4 @@ fn channel_topics_are_kept_changed_cleared_and_sent_on_creation() {
             .any(|change| change["change"] == "create_channel"
                 && change["topic"] == "Initial purpose")
     );
-}
-
-/// Every order of a list: the permutations of its entries.
-fn permutations(entries: &[u32]) -> Vec<Vec<u32>> {
-    if entries.len() <= 1 {
-        return vec![entries.to_vec()];
-    }
-    let mut all = Vec::new();
-    for (at, first) in entries.iter().enumerate() {
-        let mut rest = entries.to_vec();
-        rest.remove(at);
-        for mut tail in permutations(&rest) {
-            tail.insert(0, *first);
-            all.push(tail);
-        }
-    }
-    all
-}
-
-/// The order after the changes as the server applies them to an administrator, who sees
-/// every entry: each change removes the entry and puts it before the entry at its place, or
-/// after the last for a larger place (ADR 0304).
-fn applied(mut order: Vec<StructureId>, changes: &[StructureChange]) -> Vec<StructureId> {
-    for change in changes {
-        let (StructureChange::UpdateCategory {
-            id,
-            position: Some(place),
-            ..
-        }
-        | StructureChange::UpdateChannel {
-            id,
-            position: Some(place),
-            ..
-        }) = change
-        else {
-            continue;
-        };
-        let Some(at) = order.iter().position(|held| held == id) else {
-            continue;
-        };
-        let moved = order.remove(at);
-        let place = usize::try_from(*place).unwrap().min(order.len());
-        order.insert(place, moved);
-    }
-    order
-}
-
-/// A structure file that orders the categories and the channels of a workspace is applied
-/// to that order, for every order of four and of five entries (ADR 0212, ADR 0304). Before,
-/// the plan sent the changed places one by one in the order of the file and the server put
-/// each at its place in the order of that moment: A, B, C, D with the target D, C, A, B
-/// became D, A, C, B.
-#[test]
-fn a_file_orders_the_categories_and_the_channels_of_a_workspace_exactly() {
-    for count in [4u32, 5] {
-        let entries: Vec<u32> = (0..count).collect();
-        let current_order: Vec<StructureId> = entries.iter().map(|at| id(20 + at)).collect();
-        let current = file(json!({
-            "format": 1,
-            "workspaces": [{
-                "id": id(1), "name": "Main", "default": true,
-                "categories": entries.iter().map(|at| json!({
-                    "id": id(20 + at), "name": format!("c{at}"), "position": at,
-                })).collect::<Vec<_>>(),
-                "channels": entries.iter().map(|at| json!({
-                    "id": id(20 + at), "name": format!("k{at}"), "kind": "text",
-                    "category": null, "position": at, "permanent_messages": false,
-                    "overrides": [],
-                })).collect::<Vec<_>>(),
-            }],
-        }));
-        for target in permutations(&entries) {
-            // The entry of the place `p` of the target is the entry `target[p]`; the file
-            // lists the entries in their current order.
-            let place_of = |entry: u32| target.iter().position(|held| *held == entry).unwrap();
-            let desired = file(json!({
-                "format": 1,
-                "workspaces": [{
-                    "id": id(1), "name": "Main",
-                    "categories": entries.iter().map(|at| json!({
-                        "id": id(20 + at), "name": format!("c{at}"), "position": place_of(*at),
-                    })).collect::<Vec<_>>(),
-                    "channels": entries.iter().map(|at| json!({
-                        "id": id(20 + at), "name": format!("k{at}"), "kind": "text",
-                        "category": null, "position": place_of(*at),
-                    })).collect::<Vec<_>>(),
-                }],
-            }));
-            let plan: Vec<StructureChange> = planned(&desired, &current)
-                .into_iter()
-                .map(|planned| planned.change)
-                .collect();
-            let wanted: Vec<StructureId> = target.iter().map(|at| id(20 + at)).collect();
-            let categories: Vec<StructureChange> = plan
-                .iter()
-                .filter(|change| matches!(change, StructureChange::UpdateCategory { .. }))
-                .cloned()
-                .collect();
-            let channels: Vec<StructureChange> = plan
-                .iter()
-                .filter(|change| matches!(change, StructureChange::UpdateChannel { .. }))
-                .cloned()
-                .collect();
-            assert_eq!(
-                applied(current_order.clone(), &categories),
-                wanted,
-                "{target:?}"
-            );
-            assert_eq!(
-                applied(current_order.clone(), &channels),
-                wanted,
-                "{target:?}"
-            );
-        }
-    }
 }

@@ -146,8 +146,10 @@ async fn a_member_reads_category_positions_with_no_gap_of_a_hidden_category() {
     );
 }
 
+/// A deleted category leaves a gap in the stored positions, which the owner, who sees every
+/// category, reads; a person who does not see every category reads places without a gap.
 #[tokio::test]
-async fn a_deleted_category_leaves_no_gap() {
+async fn a_deleted_category_leaves_no_gap_for_a_person_who_does_not_see_every_category() {
     let scene = scene().await;
     scene
         .server
@@ -156,8 +158,9 @@ async fn a_deleted_category_leaves_no_gap() {
         .empty(StatusCode::NO_CONTENT);
     assert_eq!(
         scene.listed(&scene.owner).await,
-        [(scene.hidden.id, 0), (scene.last.id, 1)]
+        [(scene.hidden.id, 1), (scene.last.id, 2)]
     );
+    assert_eq!(scene.listed(&scene.reader).await, [(scene.last.id, 0)]);
     let export: StructureExport = scene
         .server
         .get(&scene.owner, "/api/v1/structure")
@@ -169,7 +172,7 @@ async fn a_deleted_category_leaves_no_gap() {
         .iter()
         .flat_map(|workspace| workspace.categories.iter().map(|c| c.position))
         .collect();
-    assert_eq!(positions, [Some(0), Some(1)]);
+    assert_eq!(positions, [Some(1), Some(2)]);
 }
 
 #[tokio::test]
@@ -191,7 +194,7 @@ async fn a_position_is_a_place_among_the_categories_that_the_caller_sees() {
         .patch(
             &scene.reader,
             &scene.category_path(&scene.last),
-            &json!({"position": 0}),
+            &json!({"place": 0}),
         )
         .await
         .ok(StatusCode::OK);
@@ -233,7 +236,7 @@ async fn a_position_is_a_place_among_the_categories_that_the_caller_sees() {
         .patch(
             &scene.reader,
             &scene.category_path(&scene.last),
-            &json!({"position": 7}),
+            &json!({"place": 7}),
         )
         .await
         .ok(StatusCode::OK);
@@ -247,13 +250,15 @@ async fn a_position_is_a_place_among_the_categories_that_the_caller_sees() {
         ]
     );
 
-    // A new category at a place of the caller.
+    // A new category at a position of API v1 in the caller's view: 0 with First, which
+    // the identifier of First orders first. The hidden category stays at the end, where no
+    // category that the request leaves in place follows it.
     let created: Category = scene
         .server
         .post(
             &scene.reader,
             &format!("/api/v1/workspaces/{}/categories", scene.workspace_id),
-            &json!({"name": "New", "position": 1}),
+            &json!({"name": "New", "position": 0}),
         )
         .await
         .ok(StatusCode::CREATED);
@@ -374,7 +379,7 @@ async fn a_member_reads_channel_positions_with_no_gap_of_a_hidden_channel() {
             &json!({"moves": [{
                 "channel_id": two.id,
                 "from": {"category_id": category, "position": 2},
-                "to": {"category_id": category, "position": 1},
+                "to": {"category_id": category, "position": 1, "place": 1},
             }]}),
         )
         .await

@@ -55,6 +55,7 @@ mod lost_answers;
 mod maintenance;
 mod migration_identifiers;
 mod moderation;
+mod order_compat;
 mod permission_rules;
 mod permissions_migration;
 mod person_standing;

@@ -1,6 +1,7 @@
 pub mod categories;
 pub mod channel_order;
 pub(crate) mod inheritance;
+pub mod order;
 pub(crate) mod permissions;
 pub(crate) mod rules;
 pub mod visibility;

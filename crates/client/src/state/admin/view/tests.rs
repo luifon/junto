@@ -1335,6 +1335,7 @@ fn page_of_moves(
         place: ChannelPlace {
             category_id,
             position,
+            place: None,
         },
         permanent: false,
         first: false,
@@ -1386,6 +1387,12 @@ fn a_move_names_the_place_of_the_channel_and_checks_its_neighbours() {
     let at = |position| ChannelPlace {
         category_id: Some(projects),
         position,
+        place: None,
+    };
+    let to = |position| ChannelPlace {
+        category_id: Some(projects),
+        position,
+        place: Some(position),
     };
     let check = |channel_id, position| ChannelMove {
         channel_id,
@@ -1393,15 +1400,16 @@ fn a_move_names_the_place_of_the_channel_and_checks_its_neighbours() {
         to: at(position),
     };
     assert_eq!(
-        page.plan(x, Some(projects), 1).unwrap(),
+        page.plan(x, Some(projects), 1).unwrap().moves,
         [
             ChannelMove {
                 channel_id: x,
                 from: ChannelPlace {
                     category_id: None,
                     position: 0,
+                    place: None,
                 },
-                to: at(1),
+                to: to(1),
             },
             check(others[0], 0),
             check(others[1], 1),
@@ -1411,15 +1419,16 @@ fn a_move_names_the_place_of_the_channel_and_checks_its_neighbours() {
     // an end one channel is next to the place.
     assert!((0..=2).all(|to| page.takes(x, Some(projects), to)));
     assert_eq!(
-        page.plan(x, Some(projects), 2).unwrap(),
+        page.plan(x, Some(projects), 2).unwrap().moves,
         [
             ChannelMove {
                 channel_id: x,
                 from: ChannelPlace {
                     category_id: None,
                     position: 0,
+                    place: None,
                 },
-                to: at(2),
+                to: to(2),
             },
             check(others[1], 1),
         ]
@@ -1494,6 +1503,7 @@ fn a_refused_move_is_drawn_where_the_page_read_it_over_a_changed_state() {
     let at = |position| ChannelPlace {
         category_id: None,
         position,
+        place: None,
     };
     let mut admin = AdminState::default();
     let number = admin.channel_moves.begin(
@@ -1504,7 +1514,10 @@ fn a_refused_move_is_drawn_where_the_page_read_it_over_a_changed_state() {
             ChannelMove {
                 channel_id: general,
                 from: at(0),
-                to: at(1),
+                to: ChannelPlace {
+                    place: Some(1),
+                    ..at(1)
+                },
             },
             ChannelMove {
                 channel_id: daily,
@@ -1517,6 +1530,7 @@ fn a_refused_move_is_drawn_where_the_page_read_it_over_a_changed_state() {
                 to: at(2),
             },
         ],
+        vec![(general, at(1)), (daily, at(0)), (third.id, at(2))],
     );
     assert_eq!(order(&scene, &admin), [daily, general, third.id]);
 
