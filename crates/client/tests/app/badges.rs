@@ -707,3 +707,86 @@ fn the_buttons_of_the_panel_in_a_narrow_window_draw_the_counts_of_their_tabs(
         Some("2")
     );
 }
+
+/// Each workspace has a member list of its own in the panel of a call: the list of a call in
+/// another workspace opens at its top, not at the scroll position of the list before it
+/// (ADR 0730).
+#[gpui::test]
+fn the_member_list_of_a_call_in_another_workspace_opens_at_its_top(cx: &mut TestAppContext) {
+    use crate::admin_pages::sel;
+    use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let first = window.view().workspace().unwrap().id;
+    let second = world
+        .run(owner.api().create_workspace("Second".to_owned()))
+        .unwrap()
+        .id;
+    for (workspace, name) in [(first, "Daily"), (second, "Weekly")] {
+        world
+            .run(owner.api().create_channel(
+                workspace,
+                &CreateChannel {
+                    topic: String::new(),
+                    name: name.to_owned(),
+                    kind: ChannelKind::Voice,
+                    category_id: None,
+                    position: None,
+                },
+            ))
+            .unwrap();
+    }
+    let own = window.own_account();
+    let own_row = selector(format!("call-member:{own}"));
+    let open_members = |window: &mut Window, channel: &str| {
+        window.until("the voice channel is listed", |window| {
+            window.shows_channel(channel)
+        });
+        window.click_channel(channel);
+        let call = connected_call(window, channel);
+        let base = world
+            .run(window.handle().api().snapshot())
+            .unwrap()
+            .snapshot;
+        // The server states the call with its people before this device is in it, so the
+        // panel opens with every row.
+        let stated = Stated {
+            raised: 40,
+            ..Stated::default()
+        };
+        let raised = state_call(window, &base, &call, CallId::generate(), stated);
+        give_calls(window, call.clone());
+        window.until("the panel of the call is drawn", |window| {
+            window.shows("call-tab-members")
+        });
+        if !window.shows("call-members") {
+            window.click("call-tab-members");
+        }
+        raised
+    };
+    let raised = open_members(&mut window, "Daily");
+    window.until("the list opens at its top", |window| window.shows(own_row));
+    window.wheel_to(
+        "call-members",
+        selector(format!("call-member:{}", raised[raised.len() - 1])),
+    );
+    assert!(!window.shows(own_row));
+    if window.shows("expand-server-book") {
+        window.click("expand-server-book");
+    }
+    let row = sel("workspace-row", second.as_uuid().as_u128());
+    window.until("the workspace row is drawn", |window| window.shows(row));
+    window.click(row);
+    window.until("the second workspace is shown", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|shown| shown.id == second)
+    });
+    open_members(&mut window, "Weekly");
+    window.until(
+        "the list of the other workspace opens at its top",
+        |window| window.shows(own_row),
+    );
+}

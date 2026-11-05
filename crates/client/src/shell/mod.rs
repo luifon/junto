@@ -417,10 +417,10 @@ pub struct Shell {
     /// rows that it holds.
     pub(crate) members_list: gpui::ListState,
     pub(crate) member_rows: Option<std::rc::Rc<Vec<crate::state::view::MemberRow>>>,
-    /// The member list of the panel of a call, which lays out only the rows in view, and
-    /// the people that it lists.
-    pub(crate) call_members_list: gpui::ListState,
-    pub(crate) call_member_rows: Option<call::CallMemberRows>,
+    /// The member lists of the panel of a call, one for each server, account and workspace
+    /// (and one for the direct calls of an account), so that each keeps its own scroll
+    /// position (ADR 0735).
+    pub(crate) call_members: HashMap<call::CallMembersScope, call::CallMembersList>,
     pub(crate) call_settings_scroll: ScrollHandle,
 
     // The fields of the layers.
@@ -922,8 +922,7 @@ impl Shell {
             directs_scroll: ScrollHandle::new(),
             members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
             member_rows: None,
-            call_members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
-            call_member_rows: None,
+            call_members: HashMap::new(),
             call_settings_scroll: ScrollHandle::new(),
             name,
             name_error: None,
