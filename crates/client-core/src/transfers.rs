@@ -37,8 +37,9 @@ const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_secs(30);
 /// The longest name of a file that the server accepts, in characters.
 const LONGEST_NAME: usize = 200;
-/// The largest file that the server marks as a picture (ADR 0408).
-pub const PICTURE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// The largest file that the server marks as a picture: a still PNG or JPEG that a client
+/// decodes reduced (ADR 0408).
+pub const PICTURE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// The longest time of the read of one picture, with its tries. A server that sends a
 /// picture slower than this holds none of the reads of the window for longer. A picture
 /// of the largest size arrives in this time at 55 KiB in a second.

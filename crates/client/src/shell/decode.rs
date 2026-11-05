@@ -1,7 +1,10 @@
 //! The decoding of a picture of a message (ADR 0740): a still picture, or the frames of a
 //! GIF, an animated WebP or an animated PNG, reduced to the size at which the window draws
 //! it, with a bound on the bytes of its frames and on the memory of the decodings that run
-//! at one time.
+//! at one time. A still JPEG of sequential coding and a still PNG without interlacing are
+//! decoded at that size without the whole picture in memory: the JPEG decoder reduces the
+//! picture by 1/2, 1/4 or 1/8 while it decodes it, and the rows of the PNG are reduced as
+//! they are read.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -9,12 +12,18 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use gpui::RenderImage;
+use image::metadata::Orientation;
 use image::{AnimationDecoder, Delay, Frame, ImageDecoder, RgbaImage};
 use junto_client_core::protocol::message::Attachment;
 
-/// The most pixels of a still picture, 128 MiB as RGBA, and of the canvas of an animation,
-/// 16 MiB as RGBA, and the most frames: the bounds of the server (ADR 0408).
+/// The most pixels of a still picture that is decoded whole, 128 MiB as RGBA, and of the
+/// canvas of an animation, 16 MiB as RGBA, and the most frames: the bounds of the server
+/// (ADR 0408).
 pub(crate) const MOST_PICTURE_PIXELS: u64 = 33_554_432;
+/// The most pixels and the longest side of a still JPEG or PNG picture, which is decoded at
+/// the size at which the window draws it (ADR 0408).
+pub(crate) const MOST_REDUCED_PIXELS: u64 = 268_435_456;
+pub(crate) const LONGEST_SIDE: u32 = 16_384;
 pub(crate) const MOST_FRAME_PIXELS: u64 = 4_194_304;
 pub(crate) const MOST_FRAMES: u32 = 2_048;
 /// The most bytes of the frames of one animation in a message list, and in the viewer.
@@ -32,6 +41,9 @@ pub(crate) struct Stated {
     pub width: u32,
     pub height: u32,
     pub frames: u32,
+    /// A still JPEG or PNG picture: its decoding can reduce it without the whole picture in
+    /// memory, when the file allows it.
+    pub reducible: bool,
 }
 
 impl Stated {
@@ -47,15 +59,24 @@ impl Stated {
         let (width, height) = attachment.width.zip(attachment.height)?;
         let pixels = u64::from(width) * u64::from(height);
         let frames = attachment.frames.unwrap_or(1);
+        let reducible =
+            frames == 1 && matches!(attachment.media_type.as_str(), "image/png" | "image/jpeg");
+        let most = if reducible {
+            MOST_REDUCED_PIXELS
+        } else {
+            MOST_PICTURE_PIXELS
+        };
         let within = width >= 1
             && height >= 1
-            && pixels <= MOST_PICTURE_PIXELS
+            && width.max(height) <= LONGEST_SIDE
+            && pixels <= most
             && (frames == 1
                 || ((2..=MOST_FRAMES).contains(&frames) && pixels <= MOST_FRAME_PIXELS));
         within.then_some(Self {
             width,
             height,
             frames,
+            reducible,
         })
     }
 
@@ -112,6 +133,11 @@ pub(crate) fn plan(stated: Stated, fit: Option<(u32, u32)>, budget: u64) -> Plan
             .min(1.0)
     });
     let mut size = if scale < 1.0 { scaled(own, scale) } else { own };
+    // A reduced picture is not drawn larger than a picture that is decoded whole.
+    let pixels = u64::from(size.0) * u64::from(size.1);
+    if pixels > MOST_PICTURE_PIXELS {
+        size = scaled_down(size, (MOST_PICTURE_PIXELS as f64 / pixels as f64).sqrt());
+    }
     let frames = u64::from(stated.frames.max(1));
     let bytes = |(width, height): (u32, u32)| u64::from(width) * u64::from(height) * 4;
     if frames > 1 && bytes(size) * frames > budget {
@@ -135,15 +161,27 @@ pub(crate) fn plan(stated: Stated, fit: Option<(u32, u32)>, budget: u64) -> Plan
 
 /// The bytes that a decoding of a file of `bytes` with this plan holds at most: the file,
 /// the picture or one canvas of an animation at its own size (the decoder holds about three
-/// canvases), and the reduced copy.
+/// canvases), and the reduced copy. A picture above [`MOST_PICTURE_PIXELS`] is decoded only
+/// reduced, within [`reduced_working_bytes`].
 pub(crate) fn decoding_bytes(bytes: u64, stated: Stated, plan: Plan) -> u64 {
     let canvas = stated.pixels() * 4;
     let working = if stated.frames > 1 {
         canvas * 3
+    } else if stated.pixels() > MOST_PICTURE_PIXELS {
+        reduced_working_bytes(stated, plan)
     } else {
         canvas
     };
     bytes + working + plan.bytes(stated)
+}
+
+/// The bytes that a reduced decoding holds besides the file and the result. A JPEG decoder
+/// reduces by a power of two to at most twice the planned size on each side, and holds the
+/// planes of the colours and the decoded pixels at that size (24 bytes for each planned
+/// pixel); the rows of a PNG hold one row of the file and the sums of one planned row.
+fn reduced_working_bytes(stated: Stated, plan: Plan) -> u64 {
+    let planned = u64::from(plan.width) * u64::from(plan.height);
+    planned * 24 + u64::from(stated.width.max(stated.height)) * 40 + 1024 * 1024
 }
 
 /// The bytes that the frames of an image hold.
@@ -162,7 +200,7 @@ fn into_frame(mut picture: RgbaImage, delay: Delay) -> Frame {
     Frame::from_parts(picture, 0, 0, delay)
 }
 
-fn reduced(picture: &RgbaImage, plan: Plan) -> RgbaImage {
+fn reduced_frame(picture: &RgbaImage, plan: Plan) -> RgbaImage {
     if picture.dimensions() == (plan.width, plan.height) {
         picture.clone()
     } else {
@@ -187,6 +225,14 @@ fn limits(stated: Stated, allocation: u64) -> image::Limits {
 pub(crate) fn decode(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Arc<RenderImage>> {
     let frames = if stated.frames > 1 {
         frames(bytes, stated, plan)?
+    } else if let Some(picture) = stated
+        .reducible
+        .then(|| reduced(bytes, stated, plan))
+        .flatten()
+    {
+        vec![into_frame(picture, Delay::from_numer_denom_ms(0, 1))]
+    } else if stated.pixels() > MOST_PICTURE_PIXELS {
+        return None;
     } else {
         use image::ImageDecoder as _;
         let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -225,6 +271,213 @@ pub(crate) fn decode(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Arc<Ren
         )]
     };
     Some(Arc::new(RenderImage::new(frames)))
+}
+
+/// A turn of a quarter or three quarters exchanges the width and the height.
+fn turns_a_quarter(orientation: Orientation) -> bool {
+    matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    )
+}
+
+/// The size at which the file is decoded for a plan: the planned size, with the width and
+/// the height exchanged when the picture is turned by a quarter.
+fn in_file(plan: Plan, orientation: Orientation) -> (u32, u32) {
+    if turns_a_quarter(orientation) {
+        (plan.height, plan.width)
+    } else {
+        (plan.width, plan.height)
+    }
+}
+
+/// The file states a size within the stated size in one of its orientations.
+fn within_stated((width, height): (u32, u32), stated: Stated) -> bool {
+    let side = stated.width.max(stated.height);
+    width >= 1
+        && height >= 1
+        && width.max(height) <= side
+        && u64::from(width) * u64::from(height) <= stated.pixels()
+}
+
+/// A still JPEG or PNG picture decoded at the planned size without the whole picture in
+/// memory, turned by its orientation. `None` for another file, a JPEG of progressive or
+/// lossless coding or with CMYK or 16-bit samples, an interlaced PNG, and a file that
+/// does not decode: a picture within [`MOST_PICTURE_PIXELS`] is then decoded whole.
+fn reduced(bytes: &[u8], stated: Stated, plan: Plan) -> Option<RgbaImage> {
+    let limit = usize::try_from(reduced_working_bytes(stated, plan)).ok()?;
+    let picture = match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Jpeg => reduced_jpeg(bytes, stated, plan, limit)?,
+        image::ImageFormat::Png => reduced_png(bytes, stated, plan, limit)?,
+        _ => return None,
+    };
+    Some(picture)
+}
+
+fn reduced_jpeg(bytes: &[u8], stated: Stated, plan: Plan, limit: usize) -> Option<RgbaImage> {
+    use image::ImageDecoder as _;
+    let orientation = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes))
+        .ok()?
+        .orientation()
+        .unwrap_or(Orientation::NoTransforms);
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_max_decoding_buffer_size(limit);
+    decoder.read_info().ok()?;
+    let info = decoder.info()?;
+    if info.coding_process != jpeg_decoder::CodingProcess::DctSequential
+        || !matches!(
+            info.pixel_format,
+            jpeg_decoder::PixelFormat::L8 | jpeg_decoder::PixelFormat::RGB24
+        )
+        || !within_stated((u32::from(info.width), u32::from(info.height)), stated)
+    {
+        return None;
+    }
+    let wanted = in_file(plan, orientation);
+    let (width, height) = decoder
+        .scale(u16::try_from(wanted.0).ok()?, u16::try_from(wanted.1).ok()?)
+        .ok()?;
+    // The decoder is a library that a crafted file could make panic; a panic leaves no
+    // state behind, as the decoder is dropped with it.
+    let pixels = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decoder.decode()))
+        .ok()?
+        .ok()?;
+    let (width, height) = (u32::from(width), u32::from(height));
+    let decoded = match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => {
+            image::DynamicImage::ImageLuma8(image::GrayImage::from_raw(width, height, pixels)?)
+        }
+        _ => image::DynamicImage::ImageRgb8(image::RgbImage::from_raw(width, height, pixels)?),
+    };
+    let mut fitted = if (width, height) == wanted {
+        decoded
+    } else {
+        decoded.thumbnail_exact(wanted.0, wanted.1)
+    };
+    fitted.apply_orientation(orientation);
+    Some(fitted.into_rgba8())
+}
+
+fn reduced_png(bytes: &[u8], stated: Stated, plan: Plan, limit: usize) -> Option<RgbaImage> {
+    let mut decoder =
+        png::Decoder::new_with_limits(std::io::Cursor::new(bytes), png::Limits { bytes: limit });
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let info = reader.info();
+    let size = (info.width, info.height);
+    if info.interlaced || info.animation_control.is_some() || !within_stated(size, stated) {
+        return None;
+    }
+    let orientation = info
+        .exif_metadata
+        .as_deref()
+        .and_then(Orientation::from_exif_chunk)
+        .unwrap_or(Orientation::NoTransforms);
+    let (color, _) = reader.output_color_type();
+    let channels = color.samples();
+    let wanted = in_file(plan, orientation);
+    let mut rows = Reducer::new(size, wanted);
+    let mut rgba = vec![0u8; size.0 as usize * 4];
+    while let Ok(Some(row)) = reader.next_row() {
+        let data = row.data();
+        for (pixel, out) in data.chunks_exact(channels).zip(rgba.as_chunks_mut::<4>().0) {
+            let [r, g, b, a] = match (color, pixel) {
+                (png::ColorType::Grayscale, [l]) => [*l, *l, *l, 255],
+                (png::ColorType::GrayscaleAlpha, [l, a]) => [*l, *l, *l, *a],
+                (png::ColorType::Rgb, [r, g, b]) => [*r, *g, *b, 255],
+                (png::ColorType::Rgba, [r, g, b, a]) => [*r, *g, *b, *a],
+                _ => return None,
+            };
+            out.copy_from_slice(&[r, g, b, a]);
+        }
+        rows.add(&rgba);
+    }
+    let mut fitted = image::DynamicImage::ImageRgba8(rows.finish()?);
+    fitted.apply_orientation(orientation);
+    Some(fitted.into_rgba8())
+}
+
+/// Reduces rows of RGBA pixels to a smaller size as they come: each pixel of the result is
+/// the mean of the pixels of the file that fall in it, weighted by their alpha, so that a
+/// transparent pixel does not darken its neighbours.
+struct Reducer {
+    from: (u32, u32),
+    to: (u32, u32),
+    /// The planned column of each column of the file.
+    columns: Vec<u32>,
+    /// The sums of the planned row that the rows of the file fill now: red, green and blue
+    /// times alpha, alpha, and the count of pixels.
+    sums: Vec<[u64; 5]>,
+    row: u32,
+    at: u32,
+    made: Vec<u8>,
+}
+
+impl Reducer {
+    fn new(from: (u32, u32), to: (u32, u32)) -> Self {
+        let to = (to.0.clamp(1, from.0), to.1.clamp(1, from.1));
+        Self {
+            from,
+            to,
+            columns: (0..from.0)
+                .map(|x| (u64::from(x) * u64::from(to.0) / u64::from(from.0)) as u32)
+                .collect(),
+            sums: vec![[0; 5]; to.0 as usize],
+            row: 0,
+            at: 0,
+            made: Vec::with_capacity(to.0 as usize * to.1 as usize * 4),
+        }
+    }
+
+    fn add(&mut self, row: &[u8]) {
+        if self.at >= self.from.1 {
+            return;
+        }
+        let planned = (u64::from(self.at) * u64::from(self.to.1) / u64::from(self.from.1)) as u32;
+        while self.row < planned {
+            self.flush();
+        }
+        for (pixel, column) in row.as_chunks::<4>().0.iter().zip(&self.columns) {
+            let alpha = u64::from(pixel[3]);
+            let sum = &mut self.sums[*column as usize];
+            sum[0] += u64::from(pixel[0]) * alpha;
+            sum[1] += u64::from(pixel[1]) * alpha;
+            sum[2] += u64::from(pixel[2]) * alpha;
+            sum[3] += alpha;
+            sum[4] += 1;
+        }
+        self.at += 1;
+    }
+
+    fn flush(&mut self) {
+        for sum in &mut self.sums {
+            let count = sum[4].max(1);
+            let alpha = sum[3];
+            let colour = |value: u64| value.checked_div(alpha).unwrap_or(0) as u8;
+            self.made.extend_from_slice(&[
+                colour(sum[0]),
+                colour(sum[1]),
+                colour(sum[2]),
+                (alpha / count) as u8,
+            ]);
+            *sum = [0; 5];
+        }
+        self.row += 1;
+    }
+
+    /// The reduced picture, when every row of the file came.
+    fn finish(mut self) -> Option<RgbaImage> {
+        if self.at != self.from.1 {
+            return None;
+        }
+        while self.row < self.to.1 {
+            self.flush();
+        }
+        RgbaImage::from_raw(self.to.0, self.to.1, self.made)
+    }
 }
 
 fn frames(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Vec<Frame>> {
@@ -269,7 +522,7 @@ fn frames(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Vec<Frame>> {
             if canvas.width() > stated.width || canvas.height() > stated.height {
                 return None;
             }
-            kept.push((reduced(canvas, plan), delay));
+            kept.push((reduced_frame(canvas, plan), delay));
         } else if let Some((_, last)) = kept.last_mut() {
             *last = last.saturating_add(delay);
         }
@@ -282,6 +535,29 @@ fn frames(bytes: &[u8], stated: Stated, plan: Plan) -> Option<Vec<Frame>> {
             .map(|(picture, delay)| into_frame(picture, Delay::from_saturating_duration(delay)))
             .collect(),
     )
+}
+
+/// Decodes a still picture of a message to fit `fit` as the window does, and gives the
+/// size of the result (test support, for the measurement of its memory). With `reduce`
+/// false the picture is decoded whole and then reduced, as the client did before ADR 0408
+/// allowed reduced decodings.
+#[cfg(feature = "test-support")]
+pub fn decode_still(
+    bytes: &[u8],
+    media_type: &str,
+    (width, height): (u32, u32),
+    fit: (u32, u32),
+    reduce: bool,
+) -> Option<(u32, u32)> {
+    let stated = Stated {
+        width,
+        height,
+        frames: 1,
+        reducible: reduce && matches!(media_type, "image/png" | "image/jpeg"),
+    };
+    let decoded = decode(bytes, stated, plan(stated, Some(fit), VIEWER_FRAME_BYTES))?;
+    let size = decoded.size(0);
+    Some((size.width.0 as u32, size.height.0 as u32))
 }
 
 /// The memory of the decodings that run (see [`MOST_DECODING_BYTES`]). The decodings that
@@ -404,6 +680,7 @@ pub(crate) mod tests {
             width,
             height,
             frames,
+            reducible: false,
         }
     }
 
@@ -646,6 +923,154 @@ pub(crate) mod tests {
         assert!(red > 150, "the right is red: {red}");
     }
 
+    fn reducible(stated: Stated) -> Stated {
+        Stated {
+            reducible: true,
+            ..stated
+        }
+    }
+
+    /// The red, green, blue and yellow quarters of a picture.
+    fn quarters(width: u32, height: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            match (x < width / 2, y < height / 2) {
+                (true, true) => image::Rgba([220, 30, 30, 255]),
+                (false, true) => image::Rgba([30, 200, 30, 255]),
+                (true, false) => image::Rgba([30, 30, 220, 255]),
+                (false, false) => image::Rgba([230, 220, 30, 255]),
+            }
+        })
+    }
+
+    fn encoded(picture: image::DynamicImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        picture
+            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+            .unwrap();
+        bytes
+    }
+
+    fn near(got: [u8; 3], expected: [u8; 3]) -> bool {
+        got.iter()
+            .zip(expected)
+            .all(|(got, expected)| got.abs_diff(expected) <= 24)
+    }
+
+    /// A JPEG of sequential coding and a PNG without interlacing are decoded reduced, at
+    /// the planned size, with the colours of their quarters.
+    #[test]
+    fn a_jpeg_and_a_png_are_decoded_reduced_at_the_planned_size() {
+        let picture = quarters(1600, 1200);
+        for (format, bytes) in [
+            (
+                "JPEG",
+                encoded(
+                    image::DynamicImage::ImageRgb8(
+                        image::DynamicImage::ImageRgba8(picture.clone()).into_rgb8(),
+                    ),
+                    image::ImageFormat::Jpeg,
+                ),
+            ),
+            (
+                "PNG",
+                encoded(
+                    image::DynamicImage::ImageRgba8(picture.clone()),
+                    image::ImageFormat::Png,
+                ),
+            ),
+        ] {
+            let stated = reducible(stated(1600, 1200, 1));
+            let planned = plan(stated, Some((200, 150)), LIST_FRAME_BYTES);
+            let reduced_picture = reduced(&bytes, stated, planned)
+                .unwrap_or_else(|| panic!("the {format} is decoded reduced"));
+            assert_eq!(reduced_picture.dimensions(), (200, 150), "{format}");
+            let image = decode(&bytes, stated, planned).unwrap();
+            assert_eq!(sizes(&image), vec![(200, 150)], "{format}");
+            for ((x, y), expected) in [
+                ((50, 37), [220, 30, 30]),
+                ((150, 37), [30, 200, 30]),
+                ((50, 112), [30, 30, 220]),
+                ((150, 112), [230, 220, 30]),
+            ] {
+                let got = colour_at(&image, x, y);
+                assert!(near(got, expected), "{format} at {x} {y}: {got:?}");
+            }
+        }
+    }
+
+    /// The rows of a PNG are reduced with their alpha: a transparent part stays transparent
+    /// and does not darken the colour of the pixels beside it.
+    #[test]
+    fn a_reduced_png_keeps_transparent_parts_without_darkening_their_edge() {
+        let picture = image::RgbaImage::from_fn(300, 100, |x, _| {
+            if x < 155 {
+                image::Rgba([220, 30, 30, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let bytes = encoded(
+            image::DynamicImage::ImageRgba8(picture),
+            image::ImageFormat::Png,
+        );
+        let stated = reducible(stated(300, 100, 1));
+        // 300 to 40 columns: column 20 holds the file columns 150 to 157, red to 154.
+        let reduced_picture = reduced(
+            &bytes,
+            stated,
+            plan(stated, Some((40, 40)), LIST_FRAME_BYTES),
+        )
+        .unwrap();
+        assert_eq!(reduced_picture.dimensions(), (40, 13));
+        let edge = reduced_picture.get_pixel(20, 6).0;
+        assert_eq!(
+            &edge[..3],
+            &[220, 30, 30],
+            "the edge keeps its colour: {edge:?}"
+        );
+        assert!(
+            edge[3] > 0 && edge[3] < 255,
+            "the edge is part transparent: {edge:?}"
+        );
+        assert_eq!(reduced_picture.get_pixel(30, 6).0[3], 0);
+        assert_eq!(reduced_picture.get_pixel(5, 6).0, [220, 30, 30, 255]);
+    }
+
+    /// A reduced JPEG is turned by its EXIF orientation as a whole decoding is.
+    #[test]
+    fn a_reduced_photo_is_decoded_upright_by_its_exif_orientation() {
+        let portrait = reducible(stated(40, 80, 1));
+        let planned = plan(portrait, Some((20, 40)), LIST_FRAME_BYTES);
+        let bytes = turned_jpeg(80, 40, 6);
+        assert!(reduced(&bytes, portrait, planned).is_some());
+        let image = decode(&bytes, portrait, planned).unwrap();
+        assert_eq!(sizes(&image), vec![(20, 40)]);
+        let [red, _, blue] = colour_at(&image, 10, 3);
+        assert!(red > 150 && blue < 100, "the top is red: {red} {blue}");
+        let [red, _, blue] = colour_at(&image, 10, 37);
+        assert!(blue > 150 && red < 100, "the bottom is blue: {red} {blue}");
+    }
+
+    /// A photo above the bound of a whole decoding is planned within that bound, and its
+    /// decoding reserves the bytes of a reduced decoding, not of the whole picture.
+    #[test]
+    fn a_photo_above_the_whole_bound_is_planned_and_reserved_reduced() {
+        let large = reducible(stated(16_000, 12_000, 1));
+        let own = plan(large, None, VIEWER_FRAME_BYTES);
+        assert!(u64::from(own.width) * u64::from(own.height) <= MOST_PICTURE_PIXELS);
+        let viewer = plan(large, Some((2400, 1300)), VIEWER_FRAME_BYTES);
+        assert_eq!((viewer.width, viewer.height), (1733, 1300));
+        let reserved = decoding_bytes(40 * 1024 * 1024, large, viewer);
+        assert!(reserved < 110 * 1024 * 1024, "{reserved}");
+        // A picture that cannot be reduced is not decoded above the whole bound.
+        let whole = stated(16_000, 12_000, 1);
+        let bytes = encoded(
+            image::DynamicImage::ImageRgba8(quarters(64, 48)),
+            image::ImageFormat::WebP,
+        );
+        assert!(decode(&bytes, whole, viewer).is_none());
+    }
+
     fn sizes(image: &RenderImage) -> Vec<(u32, u32)> {
         (0..image.frame_count())
             .map(|frame| {
@@ -834,11 +1259,20 @@ pub(crate) mod tests {
             Some(stated(498, 280, 37))
         );
         assert_eq!(
-            Stated::of(&file("image/png", 8192, 4096, None)),
+            Stated::of(&file("image/webp", 8192, 4096, None)),
             Some(stated(8192, 4096, 1))
         );
+        // A still JPEG or PNG is decoded reduced up to 16384 pixels on each side.
+        for media in ["image/png", "image/jpeg"] {
+            assert_eq!(
+                Stated::of(&file(media, 16_384, 16_384, None)),
+                Some(reducible(stated(16_384, 16_384, 1)))
+            );
+        }
         for refused in [
-            file("image/png", 8192, 4097, None),
+            file("image/webp", 8192, 4097, None),
+            file("image/png", 16_385, 8, None),
+            file("image/jpeg", 8, 16_385, None),
             file("image/gif", 2049, 2049, Some(2)),
             file("image/gif", 8, 8, Some(2049)),
             file("image/svg+xml", 8, 8, None),

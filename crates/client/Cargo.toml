@@ -29,6 +29,14 @@ required-features = ["test-support"]
 
 # The emoji as the text system of the system draws them (ADR 0758). Its own main on the
 # main thread, which the text system of macOS needs.
+# The memory and the time of the decoding of a large photo, before and after the reduced
+# decodings (ADR 0408). Its own main; it does nothing without JUNTO_TEST_DECODE_MEMORY=1.
+[[test]]
+name = "decode_memory"
+path = "tests/decode_memory/main.rs"
+harness = false
+required-features = ["test-support"]
+
 [[test]]
 name = "emoji_fonts"
 path = "tests/emoji_fonts/main.rs"
@@ -165,6 +173,8 @@ tracing-subscriber = { workspace = true }
 # converted (ADR 0730), and the signal that asks the follower of the pictures for all of
 # them.
 tokio = { workspace = true }
+jpeg-decoder = { version = "0.3", default-features = false }
+png = "0.18"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop notification service, driven on its own worker (ADR 0752).

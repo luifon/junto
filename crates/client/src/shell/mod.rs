@@ -19,6 +19,8 @@ mod contacts;
 mod context_targets;
 mod copying;
 mod decode;
+#[cfg(feature = "test-support")]
+pub use decode::decode_still;
 pub mod detached;
 mod device_checks;
 mod direct;

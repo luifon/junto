@@ -3015,6 +3015,7 @@ impl Shell {
                     width,
                     height,
                     frames: 1,
+                    reducible: false,
                 };
                 decode::decode(bytes, stated, decode::plan(stated, None, LIST_FRAME_BYTES))
             })

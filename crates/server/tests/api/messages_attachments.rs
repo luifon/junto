@@ -313,20 +313,33 @@ async fn previewed(files: &Files, bytes: &[u8]) -> (String, Option<(u32, u32)>, 
 async fn previews_refuse_files_and_pictures_above_their_bounds() {
     use junto_server::image::samples;
     let files = Files::open().await;
-    // A file of 32 MiB is read for its preview, a larger one is not.
-    let mut largest = samples::png(2, 2);
-    largest.resize(32 * 1024 * 1024, 0);
-    assert_eq!(
-        previewed(&files, &largest).await,
-        ("image/png".to_owned(), Some((2, 2)), None)
-    );
-    largest.push(0);
     let none = ("application/octet-stream".to_owned(), None, None);
-    assert_eq!(previewed(&files, &largest).await, none);
+    // A picture that a client decodes whole (a JPEG of progressive coding, an interlaced
+    // PNG) is read for its preview up to 32 MiB; a still PNG without interlacing, which a
+    // client decodes reduced, up to 64 MiB.
+    for (bytes, most, media) in [
+        (samples::jpeg_progressive(2, 2), 32, "image/jpeg"),
+        (samples::png_interlaced(2, 2), 32, "image/png"),
+        (samples::png(2, 2), 64, "image/png"),
+    ] {
+        let mut largest = bytes;
+        largest.resize(most * 1024 * 1024, 0);
+        assert_eq!(
+            previewed(&files, &largest).await,
+            (media.to_owned(), Some((2, 2)), None)
+        );
+        largest.push(0);
+        assert_eq!(previewed(&files, &largest).await, none);
+    }
     for bytes in [
-        // Above 33,554,432 pixels, and a side above 16,384 pixels.
-        samples::png(8192, 4097),
+        // Above 33,554,432 pixels for a picture that a client decodes whole: a WebP, an
+        // interlaced PNG and a JPEG of progressive coding.
+        samples::webp_lossless(8192, 4097),
+        samples::png_interlaced(8192, 4097),
+        samples::jpeg_progressive(8192, 4097),
+        // A side above 16,384 pixels.
         samples::png(16_385, 1),
+        samples::jpeg(16_385, 1),
         // A canvas above 4,194,304 pixels, more than 2,048 frames, and frames of more than
         // 1,073,741,824 pixels together.
         samples::gif(2049, 2049, 2),
@@ -340,6 +353,26 @@ async fn previews_refuse_files_and_pictures_above_their_bounds() {
     ] {
         assert_eq!(previewed(&files, &bytes).await, none);
     }
+}
+
+/// A still PNG without interlacing and a JPEG of sequential coding, which a client decodes
+/// reduced, get their size up to 16,384 pixels on each side (ADR 0408).
+#[tokio::test]
+async fn previews_state_the_size_of_a_reducible_picture_up_to_its_longest_side() {
+    use junto_server::image::samples;
+    let files = Files::open().await;
+    assert_eq!(
+        previewed(&files, &samples::png(16_384, 16_384)).await,
+        ("image/png".to_owned(), Some((16_384, 16_384)), None)
+    );
+    assert_eq!(
+        previewed(&files, &samples::jpeg(12_000, 9_000)).await,
+        ("image/jpeg".to_owned(), Some((12_000, 9_000)), None)
+    );
+    assert_eq!(
+        previewed(&files, &samples::jpeg_progressive(5712, 4284)).await,
+        ("image/jpeg".to_owned(), Some((5712, 4284)), None)
+    );
 }
 
 /// A picture larger than 1,024 pixels per side gets its size, up to 33,554,432 pixels: a
