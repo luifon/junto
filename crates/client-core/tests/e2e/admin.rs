@@ -275,6 +275,40 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
     };
     assert!(told_of(&seen, was_archived), "{seen:?}");
     assert!(reloaded(&seen), "{seen:?}");
+
+    // "unread" is the last channel of the root: its restore changes no place of another
+    // channel, so it reaches the member as its event alone, without a new read of the state.
+    let mut told = member.live().notices();
+    owner.api().restore_channel(unread.id).await.unwrap();
+    model_when(member, "the restored last channel in the list", |model| {
+        model.channel(unread.id).is_some()
+    })
+    .await;
+    let mut seen = told_until(&mut told, "the restored last channel", |notices| {
+        told_of(notices, |event| {
+            matches!(event, Event::ChannelRestored { channel }
+                if channel.id == unread.id)
+        })
+    })
+    .await;
+    seen.extend(arrived(&mut told).await);
+    assert!(!reloaded(&seen), "{seen:?}");
+    // Its archive again, as the last channel, is an event alone too.
+    let mut told = member.live().notices();
+    owner.api().archive_channel(unread.id).await.unwrap();
+    model_when(member, "the last channel archived again", |model| {
+        model.channel(unread.id).is_none()
+    })
+    .await;
+    let mut seen = told_until(&mut told, "the archived last channel", |notices| {
+        told_of(notices, |event| {
+            matches!(event, Event::ChannelArchived { channel }
+                if channel.channel.id == unread.id)
+        })
+    })
+    .await;
+    seen.extend(arrived(&mut told).await);
+    assert!(!reloaded(&seen), "{seen:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

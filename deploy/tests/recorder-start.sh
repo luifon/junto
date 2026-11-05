@@ -90,15 +90,33 @@ stopped() {
         JUNTO_RECORDER_WORK=/work/none JUNTO_RECORDER_DIR=/work/recordings JUNTO_RECORDER_IMAGE_START=/work/recorder \
         bash /deploy/images/recorder/start.sh > /work/log 2>&1 &
     pid=$!
-    until [ -e /work/up ] || ! kill -0 "$pid" 2>/dev/null; do "$real_sleep" 0.1; done
+    # Each wait for an event has a bound of 300 steps of 0.1 s: a script that never starts
+    # the recorder, never waits or never ends is stated as such and does not hold the job.
+    steps=0
+    until [ -e /work/up ] || ! kill -0 "$pid" 2>/dev/null; do
+        steps=$((steps + 1))
+        if [ "$steps" -gt 300 ]; then echo no-start >> /work/events; break; fi
+        "$real_sleep" 0.1
+    done
     kill -TERM "$pid"
     if [ "$3" = end ]; then
-        until grep -q waited /work/events || ! kill -0 "$pid" 2>/dev/null; do "$real_sleep" 0.1; done
+        steps=0
+        until grep -q waited /work/events || ! kill -0 "$pid" 2>/dev/null; do
+            steps=$((steps + 1))
+            if [ "$steps" -gt 300 ]; then echo no-wait >> /work/events; break; fi
+            "$real_sleep" 0.1
+        done
         if grep -q waited /work/events; then
             echo ended >> /work/events
             kill "$(cat /work/job)"
         fi
     fi
+    steps=0
+    while kill -0 "$pid" 2>/dev/null; do
+        steps=$((steps + 1))
+        if [ "$steps" -gt 300 ]; then echo no-end >> /work/events; kill -KILL "$pid"; break; fi
+        "$real_sleep" 0.1
+    done
     wait "$pid"
     code=$?
     echo $(cat /work/events) "$code"

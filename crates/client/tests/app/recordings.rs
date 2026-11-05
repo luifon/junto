@@ -24,7 +24,7 @@ use junto_client_core::transfers::DownloadStage;
 use crate::calls::voice_channel;
 use crate::harness::{Admin, Window, World, member};
 use crate::recording_server::{RecordingServer, Spoken};
-use crate::support::{Device, logged_in};
+use crate::support::{Device, FaultProxy, logged_in};
 
 impl Window {
     /// The card of a recording that the chat of the shown voice channel draws.
@@ -694,6 +694,26 @@ fn recorded_scene(
     junto_client_core::protocol::ids::ChannelId,
     junto_client_core::ServerHandle,
 ) {
+    let (server, admin, directory, window, voice, luca, _) = recorded_scene_at(cx, world, false);
+    (server, admin, directory, window, voice, luca)
+}
+
+/// As [`recorded_scene`]; with `through_proxy` the window reaches the server through a proxy,
+/// which the scene returns as well.
+#[allow(clippy::type_complexity)]
+fn recorded_scene_at(
+    cx: &mut TestAppContext,
+    world: &World,
+    through_proxy: bool,
+) -> (
+    RecordingServer,
+    Admin,
+    tempfile::TempDir,
+    Window,
+    junto_client_core::protocol::ids::ChannelId,
+    junto_client_core::ServerHandle,
+    Option<FaultProxy>,
+) {
     let server = world.run(RecordingServer::start("Acme Studio"));
     let admin = world.run(async {
         let device = Device::new();
@@ -707,7 +727,15 @@ fn recorded_scene(
         logged_in(&handle);
         Admin { device, handle }
     });
-    let (directory, mut window) = member(cx, world, &server.address(), &admin, "Luca");
+    // The proxy listens at the address that the server lists as its second public origin.
+    let proxy = through_proxy.then(|| {
+        let (listener, port) = server.take_proxy();
+        world.run(FaultProxy::start_on(listener, port))
+    });
+    let address = proxy
+        .as_ref()
+        .map_or_else(|| server.address(), FaultProxy::address);
+    let (directory, mut window) = member(cx, world, &address, &admin, "Luca");
     voice_channel(world, &admin, &mut window, "Daily");
     let voice = window
         .channels()
@@ -719,7 +747,7 @@ fn recorded_scene(
         .state
         .read_with(&window.cx, |state, _| state.client().servers())
         .remove(0);
-    (server, admin, directory, window, voice, luca)
+    (server, admin, directory, window, voice, luca, proxy)
 }
 
 /// The page of the recordings that the open administration shows.
@@ -762,7 +790,9 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
     use junto_client_core::protocol::recording::RecordingState;
 
     let world = World::new();
-    let (server, admin, _directory, mut window, voice, luca) = recorded_scene(cx, &world);
+    let (server, admin, _directory, mut window, voice, luca, proxy) =
+        recorded_scene_at(cx, &world, true);
+    let proxy = proxy.unwrap();
     let ada = logged_in(&admin.handle);
     window.open_administration();
     window.until("the page of the recordings is offered", |window| {
@@ -812,7 +842,17 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
         end_ms: 120,
         text: "The plan for the week.".to_owned(),
     };
+    // Without an event the page reads nothing, also when its clock moves. The events wait at
+    // the proxy, and a read that an event caused before has ended, so no event can reach
+    // the page while the clock moves.
+    proxy.hold_events();
+    pass_waiting_reload(&mut window);
+    window.settle();
     let before = reads(&mut window);
+    window.cx.executor().advance_clock(Duration::from_secs(5));
+    window.settle();
+    assert_eq!(reads(&mut window), before);
+    proxy.release_events();
     world.run(server.transcribe(first, std::slice::from_ref(&line)));
     // A read that an event causes starts at the earliest one second after the read before
     // (ADR 0784). The clock of the test platform moves only when the test moves it, and the
