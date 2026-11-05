@@ -1522,6 +1522,20 @@ def start_recorder(scene: Scene) -> None:
     report.ok(f"the recorder container is healthy {time.time() - started:.1f} s after its start")
 
 
+def handlers(deployment: Deployment, signal_name: str) -> int:
+    """Sends a signal to the job processes of the recorder (`egress run-handler`) and returns
+    their number."""
+    count = deployment.inside(
+        "recorder",
+        "for process in /proc/[0-9]*; do "
+        "case \"$(tr '\\000' ' ' < \"$process/cmdline\" 2>/dev/null)\" in "
+        f"\"egress run-handler\"*) kill -{signal_name} \"${{process#/proc/}}\" && echo held ;; esac; "
+        "done | grep -c held; true",
+        check=False,
+    ).strip()
+    return int(count) if count.isdigit() else 0
+
+
 def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     """The recorder container is stopped right after a person stopped a recording, and then
     during a recording, after which it stays stopped. A recording that was stopped is ready.
@@ -1540,12 +1554,27 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     scene.stop_recording()
     stopped = time.time()
     since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stopped - 1))
-    deployment.run("stop", "recorder", seconds=180)
+    # The jobs that finish the files are held with SIGSTOP from the answer of the server on,
+    # so that they still run when the container gets its stop signal, whatever the speed of
+    # the host; they go on with SIGCONT once the start script states the jobs at the signal.
+    held = handlers(deployment, "STOP")
+    report.info(f"recorder stop: {held} jobs held after the stop of the recording")
+    stopping = subprocess.Popen([*deployment.command, "stop", "recorder"], cwd=deployment.directory,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def stated() -> bool:
+        return "recorder stop: jobs running at the stop signal" in deployment.run(
+            "logs", "--no-log-prefix", "--since", since, "recorder", check=False)
+
+    try:
+        wait_for("the start script of the recorder states the jobs at the stop signal", stated, 60, 0.2)
+    finally:
+        handlers(deployment, "CONT")
+    stopping.wait(timeout=180)
     report.ok(f"the recorder container was stopped {time.time() - stopped:.1f} s after the stop of the recording")
     # The start script of the recorder states the jobs at the stop signal and the signal that
-    # it passed on (deploy/images/recorder/start.sh). The step holds only when a job still
-    # ran at the signal: a recorder that had ended its jobs, or that got SIGINT at once, does
-    # not show that the jobs end within the wait.
+    # it passed on (deploy/images/recorder/start.sh): the jobs end within the wait, and the
+    # recorder gets SIGTERM. A start script that sent SIGINT at once fails here.
     lines = deployment.run("logs", "--no-log-prefix", "--since", since, "recorder").splitlines()
     running = [int(match.group(1)) for line in lines if (match := re.match(r"recorder stop: jobs running at the stop signal: (\d+);", line))]
     report.check("a job of the recorder still ran when its container got the stop signal", len(running) == 1 and running[0] >= 1, running)
