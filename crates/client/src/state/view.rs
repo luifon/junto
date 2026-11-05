@@ -20,7 +20,7 @@ use junto_client_core::model::{
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{Departure, RecoveryNotice};
 use junto_client_core::protocol::call::{
-    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio,
+    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio, ShareShows,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
@@ -3476,11 +3476,16 @@ fn share_stage(
                     account_id: seen.account_id,
                     name: name_of(seen.account_id),
                     // The track of a share of an application has the name of a window share,
-                    // and the state of the server states the application (ADR 0737).
-                    kind: reported
-                        .and_then(|share| share.shows())
-                        .and_then(shown_kind)
-                        .or(seen.kind),
+                    // and the state of the server states the application (ADR 0737). The
+                    // track is current; the state of the slot can still hold the share before
+                    // it, so it only names a window track an application.
+                    kind: match (seen.kind, reported.and_then(|share| share.shows())) {
+                        (Some(ShareKind::Window), Some(ShareShows::Application)) => {
+                            Some(ShareKind::Application)
+                        }
+                        (Some(kind), _) => Some(kind),
+                        (None, shows) => shows.and_then(shown_kind),
+                    },
                     number: None,
                     sound: reported.map(|share| share.audio),
                     sound_held: false,
@@ -3540,10 +3545,9 @@ fn share_stage(
     (!shares.is_empty()).then_some(ShareStage { shares, volume })
 }
 
-/// What a share shows as the window names it, from the state of the server. A value of a
-/// later version states nothing.
-fn shown_kind(shows: junto_client_core::protocol::call::ShareShows) -> Option<ShareKind> {
-    use junto_client_core::protocol::call::ShareShows;
+/// What a share shows as the window names it, from the state of the server, for a track
+/// whose name states nothing. A value of a later version states nothing.
+fn shown_kind(shows: ShareShows) -> Option<ShareKind> {
     match shows {
         ShareShows::Screen => Some(ShareKind::Screen),
         ShareShows::Window => Some(ShareKind::Window),

@@ -2296,8 +2296,9 @@ pub(super) mod calls {
     }
 
     /// The picture track of a share of an application has the name of a window share, which
-    /// a client of 0.1.0 reads; the card names the application from the state of the server,
-    /// and the track when the server states nothing (ADR 0737).
+    /// a client of 0.1.0 reads; the card names a window track an application when the state
+    /// of the server states one, and otherwise takes the track, which is current while the
+    /// state of the slot can still hold the share before it (ADR 0737).
     #[test]
     fn a_share_of_an_application_is_named_from_the_state_of_the_server() {
         use junto_client_core::protocol::call::{ShareKind as ReportedKind, ShareShows};
@@ -2312,8 +2313,10 @@ pub(super) mod calls {
             audio: ShareAudio::Application,
             started_at: time(),
         };
+        // Slot 0: the state still names the screen that the slot held before the window
+        // share of its track. Slot 1: an application. Slot 2: a value of a later version.
         ana_row.screen_shares = vec![
-            shared(0, None),
+            shared(0, Some(ShareShows::Screen)),
             shared(1, Some(ShareShows::Application)),
             shared(2, Some(ShareShows::Unknown)),
         ];
@@ -2338,6 +2341,9 @@ pub(super) mod calls {
                 Some(ShareKind::Window)
             ]
         );
+        // The state of slot 0 still names the screen that the slot held before; the track
+        // of the window share that replaced it decides.
+        assert_eq!(stage.shares[0].kind, Some(ShareKind::Window));
         assert!(
             crate::text::share_title(&stage.shares[1], false).ends_with("'s application"),
             "{}",
