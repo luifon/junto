@@ -16,6 +16,8 @@ pub enum TileMark {
     MicrophoneOff,
     MicrophoneHeld,
     SoundOff,
+    /// The microphone is closed and the sound is off: one mark for both.
+    MicrophoneAndSoundOff,
     Sharing,
     HandRaised,
     /// The level of an open microphone, as lit segments of five.
@@ -246,6 +248,9 @@ impl RenderOnce for PersonTile {
             }
             TileMark::SoundOff => {
                 icon(Icon::PhonesOff, 13.0, colors.plate_warning).into_any_element()
+            }
+            TileMark::MicrophoneAndSoundOff => {
+                icon(Icon::MicrophoneAndSoundOff, 13.0, colors.plate_warning).into_any_element()
             }
             TileMark::Sharing => icon(Icon::Screen, 13.0, colors.ochre).into_any_element(),
             TileMark::HandRaised => icon(Icon::Hand, 13.0, colors.ochre).into_any_element(),

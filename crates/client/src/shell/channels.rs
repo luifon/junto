@@ -65,7 +65,8 @@ pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
 }
 
 /// The marks of a person in a voice channel, in the order of the design: hand, screen,
-/// sound, and the microphone last.
+/// sound, and the microphone last. A closed microphone with the sound off is one mark in
+/// the place of the microphone.
 pub(crate) fn occupant_marks(occupant: &Occupant) -> Vec<OccupantMark> {
     let mut marks = Vec::new();
     if occupant.hand_raised {
@@ -74,10 +75,14 @@ pub(crate) fn occupant_marks(occupant: &Occupant) -> Vec<OccupantMark> {
     if occupant.sharing {
         marks.push(OccupantMark::Sharing(text::SHARING_SCREEN.into()));
     }
-    if occupant.sound_off {
+    let both_off = occupant.sound_off
+        && occupant.presence == Presence::Here
+        && occupant.microphone == Microphone::Closed;
+    if occupant.sound_off && !both_off {
         marks.push(OccupantMark::SoundOff(text::SOUND_OFF.into()));
     }
     marks.push(match (occupant.presence, occupant.microphone) {
+        _ if both_off => OccupantMark::MicrophoneAndSoundOff(text::MUTED_AND_SOUND_OFF.into()),
         (Presence::Connecting, _) => OccupantMark::Status(text::STATUS_CONNECTING.into()),
         (Presence::Reconnecting, _) => OccupantMark::Status(text::STATUS_RECONNECTING.into()),
         (Presence::Here, Microphone::Held(reason)) => {
@@ -1536,6 +1541,59 @@ pub(crate) fn unread_sign(unread: crate::state::view::Unread) -> Option<crate::u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn occupant(microphone: Microphone, sound_off: bool, presence: Presence) -> Occupant {
+        Occupant {
+            account_id: junto_client_core::protocol::ids::AccountId::generate(),
+            name: None,
+            is_self: false,
+            microphone,
+            held_by: None,
+            sharing: false,
+            hand_raised: false,
+            sound_off,
+            sound_blocked: false,
+            level: None,
+            presence,
+            volume: 100,
+        }
+    }
+
+    #[test]
+    fn a_closed_microphone_with_the_sound_off_is_one_mark_in_the_place_of_the_microphone() {
+        let marks = |microphone, sound_off, presence| {
+            occupant_marks(&occupant(microphone, sound_off, presence))
+        };
+        assert_eq!(
+            marks(Microphone::Closed, true, Presence::Here),
+            [OccupantMark::MicrophoneAndSoundOff(
+                text::MUTED_AND_SOUND_OFF.into()
+            )]
+        );
+        assert_eq!(
+            marks(Microphone::Closed, false, Presence::Here),
+            [OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into())]
+        );
+        let held = junto_client_core::protocol::call::BlockReason::Moderator;
+        assert_eq!(
+            marks(Microphone::Held(held), true, Presence::Here),
+            [
+                OccupantMark::SoundOff(text::SOUND_OFF.into()),
+                OccupantMark::MicrophoneHeld(text::microphone_held(held).into()),
+            ]
+        );
+        assert_eq!(
+            marks(Microphone::Closed, true, Presence::Reconnecting),
+            [
+                OccupantMark::SoundOff(text::SOUND_OFF.into()),
+                OccupantMark::Status(text::STATUS_RECONNECTING.into()),
+            ]
+        );
+        assert!(matches!(
+            marks(Microphone::Open { speaking: false }, true, Presence::Here).as_slice(),
+            [OccupantMark::SoundOff(_), OccupantMark::Level { .. }]
+        ));
+    }
 
     #[test]
     fn a_user_limit_is_shown_whenever_it_is_set() {

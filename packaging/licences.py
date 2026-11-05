@@ -502,9 +502,9 @@ def icon_section():
     return Section("Icons", [
         "The icons of Lucide that are compiled into junto, unchanged, under the ISC licence of Lucide. The icons "
         "that Lucide derived from the Feather project, which its licence file names, are also under the MIT "
-        "licence of Feather. The icon mic-held of junto is drawn from the Lucide icons mic-off and lock and is "
-        "under the same licences."],
-        [(f"Lucide icons {', '.join(icons)}, and mic-held: LICENSE", (LUCIDE / "LICENSE").read_bytes())])
+        "licence of Feather. The icon mic-held of junto is drawn from the Lucide icons mic-off and lock, and the "
+        "icon headset-off from the Lucide icons headset and headphone-off; both are under the same licences."],
+        [(f"Lucide icons {', '.join(icons)}, mic-held and headset-off: LICENSE", (LUCIDE / "LICENSE").read_bytes())])
 
 
 def normal(text):
