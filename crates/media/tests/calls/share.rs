@@ -1579,6 +1579,7 @@ async fn a_client_of_a_release_before_several_shares_never_receives_a_further_sh
                 "0.5",
             ])
             .env("LIVEKIT_TOKEN", join.token.expose())
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)

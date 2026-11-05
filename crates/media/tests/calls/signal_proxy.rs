@@ -459,9 +459,13 @@ async fn the_end_of_a_connection_whose_answers_wait_follows_the_answers() {
             .first()
             .is_some_and(|link| link.state.lock().unwrap().server_ended)
     };
-    while !ended() {
-        tokio::task::yield_now().await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !ended() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the proxy did not read the end of the connection of the media server");
     let mut first = [0; 1];
     let early = tokio::time::timeout(
         std::time::Duration::from_millis(200),
