@@ -9,9 +9,76 @@ fn entry(root: &Path, program: &str) -> Autostart {
     Autostart {
         path: root.join("autostart/entry.desktop"),
         program,
+        profile: Profile::Normal,
         inherited: Vec::new(),
         desktops: vec!["Test".to_owned()],
     }
+}
+
+/// The entry of another profile of the program of `normal`, in the same directory.
+fn profile_entry(root: &Path, normal: &Autostart, name: &str) -> Autostart {
+    let directory = root.join("profiles").join(name);
+    fs::create_dir_all(&directory).unwrap();
+    let profile = Profile::of(&directory, None).unwrap();
+    Autostart {
+        path: root.join(format!("autostart/{}.desktop", profile.entry_name("."))),
+        program: normal.program.clone(),
+        profile,
+        inherited: Vec::new(),
+        desktops: vec!["Test".to_owned()],
+    }
+}
+
+/// Each profile has an entry of its own that names it and starts the program with its
+/// directory; turning one on or off leaves the others, and the removal of the program
+/// removes the entries of its profiles and leaves those of another installation.
+#[test]
+fn each_profile_has_its_own_entry_and_the_removal_of_the_program_removes_them() {
+    let root = tempfile::tempdir().unwrap();
+    let normal = entry(root.path(), "Junto/junto");
+    let work = profile_entry(root.path(), &normal, "Work profile");
+    let test = profile_entry(root.path(), &normal, "test");
+    assert_ne!(work.path, test.path);
+    assert_eq!(work.set(true).unwrap(), Status::On);
+    assert_eq!(normal.status().unwrap(), Status::Off);
+    assert_eq!(test.status().unwrap(), Status::Off);
+    let text = fs::read_to_string(&work.path).unwrap();
+    assert_eq!(field(&text, "Name"), Some("Junto\\s(Work\\sprofile)"));
+    let exec = field(&text, "Exec").unwrap();
+    assert!(exec.contains("--data-dir"), "{exec}");
+    assert!(
+        exec.ends_with(&quoted_argument(
+            program_text(
+                &root
+                    .path()
+                    .join("profiles/Work profile")
+                    .canonicalize()
+                    .unwrap()
+            )
+            .unwrap()
+        ))
+    );
+    assert_eq!(normal.set(true).unwrap(), Status::On);
+    assert_eq!(test.set(true).unwrap(), Status::On);
+    assert_eq!(work.set(false).unwrap(), Status::Off);
+    assert!(
+        !work.path.exists(),
+        "the entry of a profile is removed when it is turned off"
+    );
+    assert_eq!(
+        (normal.status().unwrap(), test.status().unwrap()),
+        (Status::On, Status::On)
+    );
+
+    // An entry of another installation, which the removal leaves.
+    let other = entry(root.path(), "Other/junto");
+    let other_profile = profile_entry(root.path(), &other, "elsewhere");
+    other_profile.set(true).unwrap();
+    remove_profile_entries(&root.path().join("autostart"), &normal.program).unwrap();
+    assert!(!test.path.exists());
+    assert_eq!(test.status().unwrap(), Status::Off);
+    assert_eq!(other_profile.status().unwrap(), Status::On);
+    assert_eq!(normal.status().unwrap(), Status::On);
 }
 
 #[test]

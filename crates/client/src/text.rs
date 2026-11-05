@@ -50,8 +50,13 @@ pub const WINDOW_RESTORE: &str = "Restore";
 pub const WINDOW_CLOSE: &str = "Close";
 pub const START_AT_LOGIN: &str = "Start Junto at login";
 pub const START_AT_LOGIN_HELP: &str = "Open Junto when you log in to your computer.";
-pub const LOGIN_CUSTOM_PROFILE: &str =
-    "Open Junto with its normal profile to change whether it starts at login.";
+/// The switch of start at login of a profile: the normal profile, or another one by its name.
+pub fn start_at_login(profile: Option<&str>) -> String {
+    match profile {
+        None => START_AT_LOGIN.to_owned(),
+        Some(name) => format!("Start Junto at login with the profile {name}"),
+    }
+}
 pub const LOGIN_SYSTEM_VERSION: &str = "Start at login needs macOS 13 or later.";
 pub const LOGIN_NOT_INSTALLED: &str = "Install Junto to choose whether it starts at login.";
 pub const LOGIN_CHECKING: &str = "Checking the login setting…";

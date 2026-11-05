@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use super::{Startup, Status, Unavailable};
+use super::{Profile, Startup, Status, Unavailable};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use std::io;
 
@@ -65,6 +65,42 @@ pub(super) fn open_approval() {
         unsafe {
             SMAppService::openSystemSettingsLoginItems();
         }
+    }
+}
+
+/// The entry at login of a profile: the login service of the system for the normal profile,
+/// a launch agent of the account for another one (`launch_agent`). Both need the installed
+/// bundle.
+pub(super) fn running(profile: Profile) -> io::Result<std::sync::Arc<dyn Startup>> {
+    Ok(match profile {
+        Profile::Normal => std::sync::Arc::new(Login),
+        Profile::Other { .. } => {
+            let path = super::launch_agent::directory()?
+                .join(format!("{}.plist", profile.entry_name(".")));
+            std::sync::Arc::new(Installed(super::launch_agent::Agent {
+                path,
+                program: std::env::current_exe()?,
+                profile,
+            }))
+        }
+    })
+}
+
+/// A launch agent of a profile, which only an installed bundle writes.
+struct Installed(super::launch_agent::Agent);
+
+impl Startup for Installed {
+    fn status(&self) -> io::Result<Status> {
+        if !installed() {
+            return Ok(Status::Unavailable(Unavailable::NotInstalled));
+        }
+        self.0.status()
+    }
+    fn set(&self, enabled: bool) -> io::Result<Status> {
+        if !installed() {
+            return Ok(Status::Unavailable(Unavailable::NotInstalled));
+        }
+        self.0.set(enabled)
     }
 }
 
