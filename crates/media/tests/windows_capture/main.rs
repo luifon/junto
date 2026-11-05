@@ -107,6 +107,20 @@ impl Fixture {
         line.trim_end().to_owned()
     }
 
+    /// Sends a command and gives the inner area that the answer with `prefix` states, in
+    /// pixels of the screen of the window.
+    fn answer(&mut self, command: &str, prefix: &str) -> (i32, i32, i32, i32) {
+        self.send(command);
+        let line = self.line();
+        let words: Vec<i32> = line
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("the fixture wrote {line:?} to {command:?}"))
+            .split_whitespace()
+            .map(|word| word.parse().unwrap())
+            .collect();
+        (words[1], words[2], words[3], words[4])
+    }
+
     /// Changes the size of the inner area and gives the inner area that results.
     fn resize(&mut self, (width, height): (i32, i32)) -> (i32, i32, i32, i32) {
         self.send(&format!("resize {width} {height}"));
@@ -567,6 +581,136 @@ fn until_black(pictures: &Pictures, at: (f64, f64), what: &str) {
         assert!(started.elapsed() < PATIENCE, "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The middle of an area of the screen in a picture of the screen.
+fn middle(area: (i32, i32, i32, i32), screen: (u32, u32), picture: &PictureFrame) -> (u32, u32) {
+    let x = f64::from(picture.width) / f64::from(screen.0);
+    let y = f64::from(picture.height) / f64::from(screen.1);
+    (
+        (f64::from(area.0 + area.2) / 2.0 * x) as u32,
+        (f64::from(area.1 + area.3) / 2.0 * y) as u32,
+    )
+}
+
+/// Waits until the newest picture shows a colour in the middle of an area of the screen.
+fn until_middle(
+    pictures: &Pictures,
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+    colour: (u8, u8, u8),
+    what: &str,
+) {
+    let started = Instant::now();
+    let mut seen = None;
+    loop {
+        assert!(
+            pictures.ended.lock().unwrap().is_empty(),
+            "{:?}",
+            pictures.ended.lock().unwrap()
+        );
+        if let Some(picture) = pictures.latest.lock().unwrap().as_ref() {
+            let (x, y) = middle(area, screen, picture);
+            seen = picture.pixel(x, y);
+            if seen.is_some_and(|pixel| near(pixel, colour)) {
+                return;
+            }
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "{what}: {seen:?} instead of {colour:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A share of an application draws a dialog that its window opens, a window that the
+/// application opens after the start of the share, and its window at the new place after a
+/// move, with black at the place that the window left (ADR 0738).
+#[test]
+fn an_application_share_draws_a_dialog_a_later_window_and_a_moved_window() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let process = fixture.child.id() as i32;
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .unwrap()
+        .clone();
+    let screen = (display.width, display.height);
+    let pictures = Arc::new(Pictures::default());
+    let stream = runtime
+        .block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Application(process),
+                sound: SoundChoice::None,
+                quality: ShareQuality {
+                    resolution: Resolution::Source,
+                    frame_rate: 30,
+                },
+                dialog_parent: None,
+            },
+            pictures.clone(),
+        ))
+        .unwrap();
+    until_colours(
+        &pictures,
+        0,
+        screen_places(fixture.area, screen),
+        "the application share",
+    );
+
+    let dialog = fixture.answer("open dialog", "opened dialog ");
+    until_middle(
+        &pictures,
+        dialog,
+        screen,
+        window::DIALOG_COLOUR,
+        "the dialog of the window",
+    );
+    let later = fixture.answer("open window", "opened window ");
+    until_middle(
+        &pictures,
+        later,
+        screen,
+        window::LATER_COLOUR,
+        "the window opened after the start of the share",
+    );
+
+    // The window moves left and up, so that its old bottom right quarter is free of it, of
+    // the dialog and of the later window.
+    let before = fixture.area;
+    let (right, down) = (-120, -100);
+    let moved = fixture.answer(&format!("move {right} {down}"), "moved ");
+    assert_eq!(
+        (moved.0 - before.0, moved.1 - before.1),
+        (right, down),
+        "the fixture did not move by the asked pixels"
+    );
+    until_colours(
+        &pictures,
+        0,
+        screen_places(moved, screen),
+        "the application share after a move",
+    );
+    let left_place = (before.2 - 30, before.3 - 30, before.2 - 10, before.3 - 10);
+    until_middle(
+        &pictures,
+        left_place,
+        screen,
+        (0, 0, 0),
+        "the place that the window left",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        pictures.ended.lock().unwrap().is_empty(),
+        "{:?}",
+        pictures.ended.lock().unwrap()
+    );
+    runtime.block_on(stream.stop()).unwrap();
 }
 
 /// A share of an application (ADR 0738) lists the program of the fixture on the screen of its
