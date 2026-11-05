@@ -327,7 +327,7 @@ exit 0
 
     # The runner was ended by a signal or by its caller while the build container ran: the
     # container and the network are removed, and the client of the container and the runner
-    # end (CD-07).
+    # end.
     def end_a_long_build(self, launcher, end, scenario="long_build"):
         ended = {}
 

@@ -198,7 +198,7 @@ run_build() {
 # the shell runs a trap only after a command in the foreground has ended. The caller usually
 # starts the lock program (tools/serial.sh), whose child this script is; when the caller ends
 # that program, or when this script is killed, the watcher ends the run: it sends TERM to this
-# script while the script runs, and removes the containers itself when it does not (CD-07).
+# script while the script runs, and removes the containers itself when it does not.
 # The lock is held through the inherited descriptor until the last of these processes ends.
 parent=$PPID
 self=$$

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests of hold_output.py: the hold ends when the go file appears or when the test that set it
-has ended, and never by a time of its own (RA-34)."""
+has ended, and never by a time of its own."""
 from __future__ import annotations
 
 import subprocess
