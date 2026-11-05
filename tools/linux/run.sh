@@ -72,6 +72,9 @@ remove_all() {
 }
 client="" watcher=""
 cleanup() {
+    # A second signal, such as a second Ctrl-C or the TERM of the watcher, must not end the
+    # cleanup in its middle.
+    trap '' INT TERM HUP
     [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
     remove_all
     # The client of the build container ends when its container is removed. A trapped signal
@@ -133,7 +136,7 @@ docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
 docker network create "$network" >/dev/null
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT TERM HUP
 if [ "$services" = all ]; then
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
@@ -216,7 +219,9 @@ run_build docker run --name "$build" --user 0 --network "$network" --memory "$me
     "$image" /opt/junto-linux/run-as-user.sh "$build_uid" "$build_gid" "$@" &
 client=$!
 (
-    trap - EXIT INT TERM
+    trap - EXIT TERM
+    # A HUP or INT to the whole group, as at the end of an SSH session, leaves the watcher.
+    trap '' HUP INT
     while kill -0 "$self" 2>/dev/null && [ "$(ps -o ppid= -p "$self" | tr -d ' ')" = "$parent" ]; do
         sleep 1
     done

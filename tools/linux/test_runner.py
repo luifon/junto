@@ -63,7 +63,12 @@ case "$*" in
             exit 137
         fi
         exit 37 ;;
-    "rm -f -v junto-linux-build") touch "$COMMAND_LOG.removed" ;;
+    "rm -f -v junto-linux-build")
+        touch "$COMMAND_LOG.removed"
+        if [ "$SCENARIO" = long_build_slow_removal ]; then
+            touch "$COMMAND_LOG.removing"
+            sleep 2
+        fi ;;
 esac
 exit 0
 ''')
@@ -323,7 +328,7 @@ exit 0
     # The runner was ended by a signal or by its caller while the build container ran: the
     # container and the network are removed, and the client of the container and the runner
     # end (CD-07).
-    def end_a_long_build(self, launcher, end):
+    def end_a_long_build(self, launcher, end, scenario="long_build"):
         ended = {}
 
         def during(root, process):
@@ -345,7 +350,7 @@ exit 0
                 time.sleep(0.05)
             ended["seconds"] = time.monotonic() - began
 
-        result = self.run_script("long_build", launcher=launcher is not None, extra={"JUNTO_LINUX_SERVICES": "none"},
+        result = self.run_script(scenario, launcher=launcher is not None, extra={"JUNTO_LINUX_SERVICES": "none"},
                                  during=during)
         self.assertIn("rm -f -v junto-linux-build", result.commands, result.stderr)
         self.assertIn("network rm junto-linux-tests", result.commands, result.stderr)
@@ -355,6 +360,22 @@ exit 0
 
     def test_a_term_to_the_runner_removes_the_build_container_at_once(self):
         self.end_a_long_build(None, lambda process, _: process.send_signal(signal.SIGTERM))
+
+    def test_a_second_term_during_the_cleanup_does_not_cut_it_short(self):
+        # A second Ctrl-C, or the TERM of the watcher, while the containers are removed.
+        def twice(process, _):
+            process.send_signal(signal.SIGTERM)
+            removing = Path(process.args[1]).parents[3] / "commands.removing"
+            deadline = time.monotonic() + 20
+            while not removing.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            process.send_signal(signal.SIGTERM)
+        self.end_a_long_build(None, twice, scenario="long_build_slow_removal")
+
+    def test_a_hup_to_the_runner_removes_the_build_container(self):
+        # An SSH session that ends without a terminal multiplexer: HUP to the whole group,
+        # the watcher included.
+        self.end_a_long_build(None, lambda process, _: os.killpg(process.pid, signal.SIGHUP))
 
     @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
     def test_a_term_to_the_lock_program_ends_the_runner_and_removes_its_container(self):
