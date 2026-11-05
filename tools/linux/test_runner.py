@@ -3,9 +3,11 @@
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,7 +20,8 @@ COMMON = TOOLS.parent / "deploy/livekit-common.yaml"
 
 class RunnerFailures(unittest.TestCase):
     def run_script(self, scenario, launcher=False, memory="6g", processors="4", cpu_first=None, service_first=None,
-                   extra=None):
+                   extra=None, during=None):
+        """Runs the runner with the command `true`. `during(root, process)` is called while it runs."""
         with tempfile.TemporaryDirectory(prefix="junto-linux-runner-", dir="/tmp") as directory:
             root = Path(directory)
             tools = root / "checkout/tools"
@@ -52,20 +55,31 @@ case "$*" in
     "image ls "*) [ "$SCENARIO" = replaced_image ] && echo sha256:old sha256:new sha256:parent sha256:older; exit 0 ;;
     "run --name "*)
         if [ -d "$CHECKOUT/spikes/test-participant/target" ]; then echo present >> "$COMMAND_LOG.participant"; fi
+        if [ "${SCENARIO#long_build}" != "$SCENARIO" ]; then
+            # A build that runs until its container is removed, at most 60 seconds.
+            echo "$$" > "$COMMAND_LOG.client.new" && mv "$COMMAND_LOG.client.new" "$COMMAND_LOG.client"
+            tries=0
+            while [ ! -e "$COMMAND_LOG.removed" ] && [ "$tries" -lt 600 ]; do sleep 0.1; tries=$((tries + 1)); done
+            exit 137
+        fi
         exit 37 ;;
+    "rm -f -v junto-linux-build") touch "$COMMAND_LOG.removed" ;;
 esac
 exit 0
 ''')
             docker.chmod(0o755)
             for name, body in [("uname", 'if [ "$SCENARIO" = macos ]; then echo Darwin; else echo Linux; fi'), ("id", 'if [ "$SCENARIO" = root ]; then echo 0; else case "$1" in -u) echo 12345 ;; -g) echo 23456 ;; esac; fi'),
-                               ("getconf", "echo 16"), ("flock", 'printf \'flock %s\\n\' "$1" >> "$COMMAND_LOG"; shift; exec "$@"')]:
+                               ("getconf", "echo 16"), ("flock", 'printf \'flock %s\\n\' "$1" >> "$COMMAND_LOG"; shift\n'
+                                         # util-linux flock runs the command as its child.
+                                         '"$@" &\nwait "$!"')]:
                 executable = root / name
                 executable.write_text(f"#!/bin/sh\n{body}\n")
                 executable.chmod(0o755)
             search = f"{root}:{os.environ['PATH']}"
             if launcher:
                 # A Linux host has flock and no lockf.
-                for name in ["sh", "dirname", "nice", "grep", "mkdir", "cat", "python3"]:
+                for name in ["sh", "dirname", "nice", "grep", "mkdir", "cat", "python3", "sleep", "touch", "mv", "ps",
+                             "tr"]:
                     (root / name).symlink_to(shutil.which(name))
                 search = str(root)
             environment = dict(os.environ, PATH=search, CHECKOUT=str(root / "checkout"),
@@ -98,7 +112,17 @@ exit 0
             if scenario == "database_budget":
                 environment["JUNTO_LINUX_POSTGRES_CPUS"] = "2.75"
             script = tools / ("linux-container.sh" if launcher else "linux/run.sh")
-            result = subprocess.run(["/bin/sh", str(script), "true"], env=environment, capture_output=True, text=True)
+            process = subprocess.Popen(["/bin/sh", str(script), "true"], env=environment, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
+            try:
+                if during:
+                    during(root, process)
+                stdout, stderr = process.communicate(timeout=120)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+            result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
             commands = root / "commands"
             result.commands = commands.read_text() if commands.exists() else ""
             builder = root / "commands.builder"
@@ -296,12 +320,69 @@ exit 0
         end = result.commands.index("--dev --bind 0.0.0.0", start)
         self.assertIn(COMMON.read_text(encoding="utf-8").strip(), result.commands[start:end])
 
+    # The runner was ended by a signal or by its caller while the build container ran: the
+    # container and the network are removed, and the client of the container and the runner
+    # end (CD-07).
+    def end_a_long_build(self, launcher, end):
+        ended = {}
+
+        def during(root, process):
+            client = root / "commands.client"
+            deadline = time.monotonic() + 60
+            while not client.exists():
+                self.assertLess(time.monotonic(), deadline, "the build container did not start")
+                self.assertIsNone(process.poll(), "the runner ended before its build container started")
+                time.sleep(0.05)
+            runner = process.pid if launcher is None else children(process.pid)[0]
+            ended["client"] = int(client.read_text())
+            ended["runner"] = runner
+            began = time.monotonic()
+            end(process, runner)
+            deadline = began + 20
+            while time.monotonic() < deadline and (
+                    "network rm junto-linux-tests" not in (root / "commands").read_text()
+                    or alive(ended["client"]) or alive(runner)):
+                time.sleep(0.05)
+            ended["seconds"] = time.monotonic() - began
+
+        result = self.run_script("long_build", launcher=launcher is not None, extra={"JUNTO_LINUX_SERVICES": "none"},
+                                 during=during)
+        self.assertIn("rm -f -v junto-linux-build", result.commands, result.stderr)
+        self.assertIn("network rm junto-linux-tests", result.commands, result.stderr)
+        self.assertFalse(alive(ended["client"]), "the client of the build container still runs")
+        self.assertFalse(alive(ended["runner"]), "the runner still runs")
+        self.assertLess(ended["seconds"], 20, result.stderr)
+
+    def test_a_term_to_the_runner_removes_the_build_container_at_once(self):
+        self.end_a_long_build(None, lambda process, _: process.send_signal(signal.SIGTERM))
+
+    @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
+    def test_a_term_to_the_lock_program_ends_the_runner_and_removes_its_container(self):
+        # The caller ends the process that it started, the lock program, whose child is the runner.
+        self.end_a_long_build("lock", lambda process, _: process.send_signal(signal.SIGTERM))
+
+    @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
+    def test_a_kill_of_the_runner_still_removes_its_container(self):
+        self.end_a_long_build("lock", lambda _, runner: os.kill(runner, signal.SIGKILL))
+
     @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
     def test_the_launcher_runs_on_a_host_without_lockf(self):
         result = self.run_script("ownership", launcher=True)
         self.assertEqual(result.returncode, 37, result.stderr)
         self.assertIn("flock ", result.commands)
         self.assertIn("run --name junto-linux-build ", result.commands)
+
+
+def children(pid):
+    """The processes whose parent is `pid`."""
+    listed = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout.split()
+    return [int(child) for child, parent in zip(listed[0::2], listed[1::2]) if int(parent) == pid]
+
+
+def alive(pid):
+    """Whether a process exists that is not a zombie."""
+    result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return result.returncode == 0 and not result.stdout.strip().startswith("Z")
 
 
 if __name__ == "__main__":
