@@ -1373,6 +1373,7 @@ fn page_of_moves(
             },
         ],
         refusal: None,
+        places: true,
     };
     (page, x, projects, others)
 }
@@ -1555,4 +1556,37 @@ fn a_refused_move_is_drawn_where_the_page_read_it_over_a_changed_state() {
     assert_eq!(order(&scene, &admin), [daily, general, third.id]);
     admin.channel_moves.release();
     assert_eq!(order(&scene, &admin), [third.id, general, daily]);
+}
+
+#[test]
+fn a_server_before_revision_20_gets_the_positions_of_release_0_1_0() {
+    // The server takes positions only: the moved channel gets a position next to its new
+    // neighbours (`placings`), the neighbours follow as checks, and no move names a place
+    // (ADR 0206).
+    // With these identifiers the channel moves alone: its position 1 is shared with the next
+    // channel, whose identifier comes after it.
+    let (mut page, x, projects, others) = page_of_moves(&[0, 1], &[50, 100]);
+    page.places = false;
+    let planned = page.plan(x, Some(projects), 1).unwrap();
+    assert!(planned.moves.iter().all(|moved| moved.to.place.is_none()));
+    assert_eq!(planned.moves[0].channel_id, x);
+    assert_eq!(planned.moves[0].to.category_id, Some(projects));
+    let mut order = [
+        (others[0], 0),
+        (others[1], 1),
+        (x, planned.moves[0].to.position),
+    ];
+    for moved in &planned.moves[1..] {
+        if moved.to != moved.from
+            && let Some(held) = order.iter_mut().find(|(id, _)| *id == moved.channel_id)
+        {
+            held.1 = moved.to.position;
+        }
+    }
+    order.sort_by_key(|(id, position)| (*position, id.as_uuid().as_u128()));
+    let ids: Vec<ChannelId> = order.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, [others[0], x, others[1]]);
+    // The page draws the channel and its neighbours at their indices after the move.
+    assert_eq!(planned.drawn[0].0, x);
+    assert_eq!(planned.drawn[0].1.position, 1);
 }

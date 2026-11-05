@@ -1333,7 +1333,7 @@ fn server_categories(
         .run(owner.api().channels(workspace_id))
         .unwrap()
         .categories;
-    categories.sort_by_key(|category| category.position);
+    categories.sort_by_key(|category| (category.position, category.id));
     categories
         .into_iter()
         .map(|category| category.name)
@@ -1396,6 +1396,108 @@ fn up_and_down_move_a_category_by_one_place_among_four(cx: &mut TestAppContext) 
         page_categories(window) == moved_down && crate::admin_pages::idle(window)
     });
     assert_eq!(server_categories(&world, &owner, default), moved_down);
+}
+
+/// A server of an event revision before 20 takes no `place`: the window moves categories and
+/// channels there with the positions that release 0.1.0 computed, and sends no `place`
+/// (ADR 0206, ADR 0761).
+#[gpui::test]
+fn a_server_of_an_older_event_revision_gets_the_positions_of_release_0_1_0(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    proxy.state_event_revision(19);
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    let server_id = window.view().servers[0].id;
+    window.until("the server states the revision 19", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .client()
+                .server(server_id)
+                .and_then(|server| server.live().view().server_events)
+                == Some(19)
+        })
+    });
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    for name in ["First", "Second", "Third"] {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap();
+    }
+    let third = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .categories
+        .into_iter()
+        .find(|category| category.name == "Third")
+        .unwrap()
+        .id;
+    let x = world
+        .run(owner.api().create_channel(
+            default,
+            &CreateChannel {
+                topic: String::new(),
+                name: "x".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the categories and x", |window| {
+        page_categories(window) == ["First", "Second", "Third"]
+            && group_order(window, None).contains(&x)
+            && crate::admin_pages::idle(window)
+    });
+
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{third}")));
+    let moved_up = ["First", "Third", "Second"];
+    window.until("the third category is second", |window| {
+        page_categories(window) == moved_up && crate::admin_pages::idle(window)
+    });
+    assert_eq!(server_categories(&world, &owner, default), moved_up);
+
+    let before = group_order(&mut window, None);
+    let at = before.iter().position(|id| *id == x).unwrap();
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-up-{x}")));
+    let mut wanted = before.clone();
+    wanted.swap(at - 1, at);
+    window.until("x is one place higher", |window| {
+        group_order(window, None) == wanted && crate::admin_pages::idle(window)
+    });
+    let mut on_server: Vec<(i32, ChannelId)> = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .channels
+        .into_iter()
+        .filter(|channel| channel.category_id.is_none())
+        .map(|channel| (channel.position, channel.id))
+        .collect();
+    on_server.sort();
+    let on_server: Vec<ChannelId> = on_server.into_iter().map(|(_, id)| id).collect();
+    assert_eq!(on_server, wanted);
+
+    let sent: Vec<String> = proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.method == "PATCH")
+        .map(|seen| String::from_utf8_lossy(&seen.body).into_owned())
+        .collect();
+    assert!(!sent.is_empty());
+    assert!(sent.iter().all(|body| !body.contains("place")), "{sent:?}");
 }
 
 #[gpui::test]

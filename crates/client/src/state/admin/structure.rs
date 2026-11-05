@@ -2,7 +2,7 @@
 //! categories, channels, the archive and the retention.
 
 use gpui::Context;
-use junto_client_core::api::ErrorCategory;
+use junto_client_core::api::{ApiError, ErrorCategory, ServerApi};
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::discovery::Retention;
 use junto_client_core::protocol::ids::{
@@ -19,6 +19,145 @@ use super::{AskKind, Made};
 use crate::state::AppState;
 use crate::state::receipts::Awaited;
 use crate::text;
+
+/// The new positions that put `moving` at the place `to` of a group, whose entries are
+/// `order` in their shown order, with the fewest changed entries. Empty when nothing
+/// moves. See [`placings`].
+pub fn placed<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> Vec<(Id, i32)> {
+    placings(order, moving, to)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+/// The ways to put `moving` at the place `to` of a group, each as the new positions of the
+/// entries that change, the way with the fewest changes first. `order` holds the entries in
+/// their shown order, which is the order of their position and then of their identifier, as
+/// the state and the server order them; it holds `moving` when `moving` moves inside its
+/// group. Empty when nothing moves.
+///
+/// `moving` takes a position next to one of its new neighbours: the position of the entry
+/// before it or one above, or the position of the entry after it or one below; with no
+/// neighbour, position 0. An entry after it whose order would no longer follow moves up to
+/// the lowest position at which it follows the entry before it: that entry's position when
+/// its identifier comes after, else the one above; and so on until the order follows. An
+/// entry before it moves down in the same way. A way that would pass the bounds of a 32-bit
+/// position is not offered. The position that `moving` leaves in its own group is free, and
+/// two entries can share a position, which their identifiers order. Of two ways with as
+/// many changes, the one that gives `moving` a position of its own comes first, and then
+/// the one that moves the entries after it.
+pub fn placings<Id: Copy + Ord>(order: &[(Id, i32)], moving: Id, to: usize) -> Vec<Vec<(Id, i32)>> {
+    let from = order.iter().position(|(id, _)| *id == moving);
+    let others: Vec<(Id, i32)> = order
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != moving)
+        .collect();
+    let at = to.min(others.len());
+    if from == Some(at) {
+        return Vec::new();
+    }
+    let (before, after) = (&others[..at], &others[at..]);
+    let key = |(id, position): (Id, i32)| (position, id);
+    let mut starts: Vec<i32> = Vec::new();
+    match (before.last(), after.first()) {
+        (None, None) => starts.push(0),
+        (previous, next) => {
+            if let Some((_, position)) = previous {
+                starts.extend(position.checked_add(1));
+            }
+            if let Some((_, position)) = next {
+                starts.extend(position.checked_sub(1));
+            }
+            starts.extend(previous.map(|(_, position)| *position));
+            starts.extend(next.map(|(_, position)| *position));
+        }
+    }
+    starts.dedup();
+    let mut ways: Vec<(Vec<(Id, i32)>, bool)> = Vec::new();
+    for start in starts {
+        let mut way = vec![(moving, start)];
+        let mut fits = true;
+        // The entries after the place move up while they would not follow.
+        let mut last = (moving, start);
+        for entry in after {
+            if key(*entry) > key(last) {
+                break;
+            }
+            // The lowest position at which the entry follows: the position of the entry
+            // before it when its identifier comes after, else the one above.
+            let lowest = if entry.0 > last.0 {
+                Some(last.1)
+            } else {
+                last.1.checked_add(1)
+            };
+            match lowest {
+                Some(position) => {
+                    last = (entry.0, position);
+                    way.push(last);
+                }
+                None => {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        // The entries before it move down while they would not come before.
+        let mut first = (moving, start);
+        for entry in before.iter().rev() {
+            if !fits || key(*entry) < key(first) {
+                break;
+            }
+            let highest = if entry.0 < first.0 {
+                Some(first.1)
+            } else {
+                first.1.checked_sub(1)
+            };
+            match highest {
+                Some(position) => {
+                    first = (entry.0, position);
+                    way.push(first);
+                }
+                None => {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if !fits {
+            continue;
+        }
+        let shared = others.iter().any(|(_, position)| *position == start);
+        ways.push((way, shared));
+    }
+    ways.sort_by_key(|(way, shared)| (way.len(), *shared));
+    let mut found: Vec<Vec<(Id, i32)>> = Vec::with_capacity(ways.len());
+    for (way, _) in ways {
+        if !found.contains(&way) {
+            found.push(way);
+        }
+    }
+    found
+}
+
+/// Sends the positions of `changes` one after the other, as the window of release 0.1.0 did
+/// for a server that takes no place (ADR 0206).
+async fn move_categories(
+    api: ServerApi,
+    workspace_id: WorkspaceId,
+    changes: Vec<(CategoryId, i32)>,
+) -> Result<(), ApiError> {
+    for (category_id, position) in changes {
+        let change = UpdateCategory {
+            name: None,
+            position: Some(position),
+            place: None,
+        };
+        api.update_category(workspace_id, category_id, &change)
+            .await?;
+    }
+    Ok(())
+}
 
 impl AppState {
     pub fn create_workspace(&mut self, server_id: ServerId, name: String, cx: &mut Context<Self>) {
@@ -131,10 +270,17 @@ impl AppState {
         up: bool,
         cx: &mut Context<Self>,
     ) {
-        let order: Vec<(CategoryId, i32)> = self
+        let live = self
             .client
             .server(server_id)
-            .and_then(|server| server.live().view().model)
+            .map(|server| server.live().view());
+        // A server of event revision 20 and later takes the place; an older one takes the
+        // positions of release 0.1.0 (ADR 0206).
+        let places = live
+            .as_ref()
+            .is_some_and(|view| view.server_events.is_some_and(|revision| revision >= 20));
+        let order: Vec<(CategoryId, i32)> = live
+            .and_then(|view| view.model)
             .and_then(|model| {
                 model.workspace(workspace_id).map(|workspace| {
                     workspace
@@ -148,8 +294,30 @@ impl AppState {
         let Some(index) = order.iter().position(|(id, _)| *id == category_id) else {
             return;
         };
-        // The position of a request is the place among the categories that the person
-        // sees, without the moved one (ADR 0304).
+        if !places {
+            let to = if up {
+                index.checked_sub(1)
+            } else {
+                Some(index + 1)
+            };
+            let Some(to) = to else {
+                return;
+            };
+            let changes = placed(&order, category_id, to);
+            if changes.is_empty() {
+                return;
+            }
+            self.admin_ask(
+                server_id,
+                AskKind::UpdateCategory(category_id),
+                |api| move_categories(api, workspace_id, changes),
+                |_, (), _| {},
+                cx,
+            );
+            return;
+        }
+        // The place of a request is the place among the categories that the person sees,
+        // without the moved one (ADR 0304).
         let to = if up {
             index.checked_sub(1)
         } else {
