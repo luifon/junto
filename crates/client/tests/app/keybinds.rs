@@ -791,3 +791,91 @@ fn the_key_of_the_call_panel_closes_and_opens_it_as_its_button_does(cx: &mut Tes
     });
     assert!(!closed(&mut window));
 }
+
+/// The unread count of a channel in the channel list: messages and mentions.
+fn unread_in_list(
+    window: &mut Window,
+    channel_id: junto_client_core::protocol::ids::ChannelId,
+) -> u64 {
+    window
+        .channels()
+        .into_iter()
+        .find(|row| row.id == channel_id)
+        .map(|row| row.unread.messages)
+        .unwrap()
+}
+
+/// The keys of the shown channel (ADR 0777): Shift+Escape marks it as read, Shift+PageDown
+/// brings its list to the newest message, and the main modifier with Shift+U opens the file
+/// dialog for the next message.
+#[gpui::test]
+fn the_keys_of_the_shown_channel_mark_it_read_jump_to_the_newest_and_upload(
+    cx: &mut TestAppContext,
+) {
+    use junto_client::shell::Pane;
+    use junto_client_core::model::PlaceId;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let plans = admin.text_channel(&world, &mut window, "plans");
+    let first = admin.send(&world, plans, crate::messages::document("filler 0"));
+    for number in 1..60 {
+        admin.send(
+            &world,
+            plans,
+            crate::messages::document(&format!("filler {number}")),
+        );
+    }
+    window.click_channel("plans");
+    window.until_message("filler 59");
+    let own = window.handle();
+    let stored = |world: &World| {
+        world
+            .run(own.api().message_state(PlaceId::Channel(plans)))
+            .unwrap()
+            .unread
+    };
+
+    // The test window is not the active window: the shown channel stays unread until the
+    // key marks it as read, here and on the server.
+    window.until("the channel is unread", |window| {
+        unread_in_list(window, plans) > 0
+    });
+    press_default(&mut window, KeyAction::MarkChannelRead);
+    window.until("the channel is read", |window| {
+        unread_in_list(window, plans) == 0
+    });
+    window.until("the server holds the read position", |_| {
+        stored(&world) == 0
+    });
+
+    // The list is away from its end: the key brings it to the newest message.
+    let at_end =
+        |window: &mut Window| window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main));
+    window.wheel_up_to(
+        "message-list",
+        crate::harness::selector(format!("message:{}", first.id)),
+    );
+    assert!(!at_end(&mut window));
+    press_default(&mut window, KeyAction::JumpToNewest);
+    window.until("the list is at the newest message", at_end);
+
+    // The key of an upload opens the file dialog of the composer: the chosen file is in the
+    // draft of the channel.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("agenda.txt");
+    std::fs::write(&path, b"the agenda").unwrap();
+    press_default(&mut window, KeyAction::UploadFile);
+    let chosen = path.clone();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    window.until("the file is in the draft", |window| {
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.draft.iter().any(|file| file.name == "agenda.txt"))
+    });
+}
