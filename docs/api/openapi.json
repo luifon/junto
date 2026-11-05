@@ -18371,7 +18371,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The stored position: the channels of a category, or of the root, are in the order of\nposition and then identifier (ADR 0304); an archived channel states none. Absent: a\nnew channel goes after the last one, an existing one keeps its position."
+            "description": "The stored position: the channels of a category, or of the root, are in the order of\nposition and then identifier (ADR 0304); an archived channel states its stored\nposition too. Absent: a new channel goes after the last one, an existing one keeps its\nposition."
           },
           "synced": {
             "type": [

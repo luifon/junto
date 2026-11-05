@@ -243,6 +243,27 @@ pub async fn permissions_changed_by_overrides_of(
     record(connection, now, &audience, &event).await
 }
 
+/// True when a rule can keep a person of the workspace from seeing the channel: the channel
+/// is in a category, has rules of its own, the workspace has person rules, or its everyone
+/// role lacks "view channel". False only when every person sees it.
+pub async fn may_be_hidden(
+    connection: &mut PgConnection,
+    channel_id: ChannelId,
+) -> ApiResult<bool> {
+    let has_overrides: bool =
+        sqlx::query_scalar("select exists (select 1 from channels c where c.id=$1 and (
+            c.category_id is not null
+            or exists(select 1 from effective_channel_overrides o where o.channel_id=c.id)
+            or exists(select 1 from effective_channel_person_overrides o where o.channel_id=c.id)
+            or exists(select 1 from workspace_person_overrides o where o.workspace_id=c.workspace_id)
+            or exists(select 1 from workspace_roles r where r.workspace_id=c.workspace_id and r.is_everyone and r.permissions & $2 = 0)))")
+            .bind(channel_id)
+            .bind(crate::db::workspace_bits(junto_authz::WorkspacePermission::ViewChannel.into()))
+            .fetch_one(&mut *connection)
+            .await?;
+    Ok(has_overrides)
+}
+
 /// Records the notice for the accounts that see a new workspace. An account that sees it
 /// without being a member, by the administrator permission, holds permissions in it that
 /// no other event states (ADR 0310).

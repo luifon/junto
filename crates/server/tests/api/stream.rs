@@ -198,7 +198,7 @@ async fn a_transaction_that_commits_later_gets_the_later_position() {
     assert!(unassigned.is_empty(), "an uncommitted event is visible");
 
     server
-        .category(&owner, workspace.id, "committed first", 2)
+        .category(&owner, workspace.id, "committed first", 0)
         .await;
     let (early_id, early) = stream.event().await;
     assert_eq!(category_name(&early).as_deref(), Some("committed first"));

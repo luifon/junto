@@ -211,44 +211,143 @@ async fn up_and_down_of_a_0_1_0_window_move_a_category_by_one_place() {
     }
 }
 
-/// A drag of the window of 0.1.0 sends one request with a move of every changed channel,
-/// from the positions that it read; the channels end in the order that the window drew.
+/// The channels of a group as a person reads them, in the order of the window.
+async fn group(
+    server: &TestServer,
+    member: &Member,
+    workspace_id: WorkspaceId,
+    category_id: Option<CategoryId>,
+) -> Vec<(ChannelId, i32)> {
+    let mut held: Vec<(ChannelId, i32)> = list(server, member, workspace_id)
+        .await
+        .channels
+        .iter()
+        .filter(|channel| channel.category_id == category_id)
+        .map(|channel| (channel.id, channel.position))
+        .collect();
+    held.sort_by_key(|(id, position)| (*position, *id));
+    held
+}
+
+/// The moves that the window of release 0.1.0 sends for a drop of `moving` at the place `to`
+/// of the group `into` (`plan` of `crates/client/src/state/admin/view.rs` at that release):
+/// a move of every channel that `placed` changes, from where the window read it, and the
+/// channels next to the place as checks.
+/// The channels of each group as a person read them.
+type Read = [(Option<CategoryId>, Vec<(ChannelId, i32)>)];
+
+fn plan_of_0_1_0(
+    read: &Read,
+    moving: ChannelId,
+    into: Option<CategoryId>,
+    to: usize,
+) -> Vec<serde_json::Value> {
+    let place_of = |id: ChannelId| {
+        read.iter()
+            .find_map(|(group, held)| {
+                held.iter()
+                    .find(|(held, _)| *held == id)
+                    .map(|(_, position)| json!({"category_id": group, "position": position}))
+            })
+            .unwrap()
+    };
+    let order = &read.iter().find(|(group, _)| *group == into).unwrap().1;
+    let others: Vec<ChannelId> = order
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| *id != moving)
+        .collect();
+    let at = to.min(others.len());
+    let mut moves: Vec<serde_json::Value> = placed(order, moving, to)
+        .into_iter()
+        .map(|(id, position)| {
+            json!({
+                "channel_id": id,
+                "from": place_of(id),
+                "to": {"category_id": into, "position": position},
+            })
+        })
+        .collect();
+    if let Some(own) = moves
+        .iter()
+        .position(|held| held["channel_id"] == json!(moving))
+    {
+        let own = moves.remove(own);
+        moves.insert(0, own);
+    }
+    let neighbours = at
+        .checked_sub(1)
+        .and_then(|before| others.get(before))
+        .into_iter()
+        .chain(others.get(at));
+    for id in neighbours {
+        if moves.iter().all(|held| held["channel_id"] != json!(id)) {
+            moves.push(json!({"channel_id": id, "from": place_of(*id), "to": place_of(*id)}));
+        }
+    }
+    moves
+}
+
+/// A drag of the window of 0.1.0 sends one request with a move of every changed channel and
+/// checks of the channels next to the place, from the positions that it read; the channels
+/// end in the order that the window drew, inside a group and between the root and two
+/// categories.
 #[tokio::test]
 async fn a_drag_of_a_0_1_0_window_puts_the_channel_where_it_was_dropped() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let workspace_id = server.default_workspace(&owner).await.id;
+    let first = server.category(&owner, workspace_id, "First", 0).await;
+    let second = server.category(&owner, workspace_id, "Second", 1).await;
     for name in ["a", "b", "c", "d"] {
         server.channel(&owner, workspace_id, name).await;
     }
-    let count = root(&server, &owner, workspace_id).await.len();
+    for (category, name) in [(first.id, "f1"), (first.id, "f2"), (second.id, "s1")] {
+        let _: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": category}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+    }
+    let groups = [None, Some(first.id), Some(second.id)];
     let mut state: u64 = 11;
-    for _ in 0..30 {
+    let mut next = |bound: usize| {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);
-        let from = usize::try_from(state >> 33).unwrap() % count;
-        let to = usize::try_from(state >> 40).unwrap() % count;
-        let order = root(&server, &owner, workspace_id).await;
-        let (moving, _) = order[from];
-        let changes = placed(&order, moving, to);
-        if changes.is_empty() {
+        usize::try_from(state >> 33).unwrap() % bound
+    };
+    for _ in 0..40 {
+        let mut read = Vec::new();
+        for group_id in groups {
+            read.push((
+                group_id,
+                group(&server, &owner, workspace_id, group_id).await,
+            ));
+        }
+        let from_group = next(3);
+        let into = next(3);
+        if read[from_group].1.is_empty() {
             continue;
         }
-        let mut wanted: Vec<ChannelId> = order.iter().map(|(id, _)| *id).collect();
-        let held = wanted.remove(from);
-        wanted.insert(to.min(wanted.len()), held);
-        let moves: Vec<_> = changes
+        let from = next(read[from_group].1.len());
+        let (moving, _) = read[from_group].1[from];
+        let size = read[into].1.len() + usize::from(from_group != into);
+        let to = next(size);
+        let mut wanted: Vec<Vec<ChannelId>> = read
             .iter()
-            .map(|(channel_id, position)| {
-                let read = order.iter().find(|(id, _)| id == channel_id).unwrap().1;
-                json!({
-                    "channel_id": channel_id,
-                    "from": {"category_id": null, "position": read},
-                    "to": {"category_id": null, "position": position},
-                })
-            })
+            .map(|(_, held)| held.iter().map(|(id, _)| *id).collect())
             .collect();
+        wanted[from_group].retain(|id| *id != moving);
+        let at = to.min(wanted[into].len());
+        wanted[into].insert(at, moving);
+        let moves = plan_of_0_1_0(&read, moving, groups[into], to);
+        if moves.iter().all(|held| held["to"] == held["from"]) {
+            continue;
+        }
         server
             .patch(
                 &owner,
@@ -257,12 +356,17 @@ async fn a_drag_of_a_0_1_0_window_puts_the_channel_where_it_was_dropped() {
             )
             .await
             .empty(StatusCode::NO_CONTENT);
-        let after: Vec<ChannelId> = root(&server, &owner, workspace_id)
-            .await
-            .iter()
-            .map(|(id, _)| *id)
-            .collect();
-        assert_eq!(after, wanted, "{from} to {to}");
+        for (index, group_id) in groups.into_iter().enumerate() {
+            let after: Vec<ChannelId> = group(&server, &owner, workspace_id, group_id)
+                .await
+                .iter()
+                .map(|(id, _)| *id)
+                .collect();
+            assert_eq!(
+                after, wanted[index],
+                "group {index}: {from_group}/{from} to {into}/{to}"
+            );
+        }
     }
 }
 
@@ -402,4 +506,232 @@ async fn the_removal_of_a_root_channel_refreshes_the_people_of_the_workspace() {
         places,
         (0..i32::try_from(places.len()).unwrap()).collect::<Vec<_>>()
     );
+}
+
+/// Denies a member "view channel" in a channel by a rule of that person.
+async fn hide_from(
+    server: &TestServer,
+    workspace_id: WorkspaceId,
+    member: &Member,
+    channel: ChannelId,
+) {
+    sqlx::query("insert into channel_person_overrides(channel_id,workspace_id,account_id,allow,deny) values($1,$2,$3,0,1)")
+        .bind(channel).bind(workspace_id).bind(member.account_id).execute(&server.db).await.unwrap();
+}
+
+/// The positions of a list, which must be 0 to n-1.
+fn without_gap(positions: &[i32]) -> bool {
+    positions
+        .iter()
+        .copied()
+        .eq(0..i32::try_from(positions.len()).unwrap())
+}
+
+/// An entry that leaves a group leaves no gap in the stored positions: a member who did not
+/// see it, and sees every remaining entry afterwards, reads the stored positions, which then
+/// do not show where the hidden entry was (ADR 0304). The paths: a deletion, the deletion of
+/// an archived channel, a move to another category, and the deletion of a category.
+#[tokio::test]
+async fn an_entry_that_leaves_a_group_leaves_no_gap() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let positions = |list: Vec<(ChannelId, i32)>| list.iter().map(|(_, p)| *p).collect::<Vec<_>>();
+
+    // A deletion of a root channel that the member does not see.
+    let secret = server.channel(&owner, workspace_id, "secret").await;
+    server.channel(&owner, workspace_id, "random").await;
+    hide_from(&server, workspace_id, &member, secret.id).await;
+    server
+        .delete(&owner, &format!("/api/v1/channels/{}", secret.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let read = positions(root(&server, &member, workspace_id).await);
+    assert!(without_gap(&read), "{read:?}");
+
+    // The deletion of an archived channel that stood before a listed one.
+    let archived = server.channel(&owner, workspace_id, "archived").await;
+    server.channel(&owner, workspace_id, "after").await;
+    hide_from(&server, workspace_id, &member, archived.id).await;
+    let _: serde_json::Value = server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/archive", archived.id),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    server
+        .delete(&owner, &format!("/api/v1/channels/{}", archived.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let read = positions(root(&server, &member, workspace_id).await);
+    assert!(without_gap(&read), "{read:?}");
+
+    // A move of a hidden channel into a category.
+    let moved = server.channel(&owner, workspace_id, "moved").await;
+    server.channel(&owner, workspace_id, "last").await;
+    hide_from(&server, workspace_id, &member, moved.id).await;
+    let category = server.category(&owner, workspace_id, "Elsewhere", 0).await;
+    let _: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "seen", "kind": "text", "category_id": category.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let _: Channel = server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", moved.id),
+            &json!({"category_id": category.id}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let read = positions(root(&server, &member, workspace_id).await);
+    assert!(without_gap(&read), "{read:?}");
+
+    // The deletion of a category that the member does not see.
+    let first = server.category(&owner, workspace_id, "First", 9).await;
+    let staff = server.category(&owner, workspace_id, "Staff", 10).await;
+    let last = server.category(&owner, workspace_id, "Last", 11).await;
+    for held in [&first, &last] {
+        let _: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": "open", "kind": "text", "category_id": held.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+    }
+    server
+        .delete(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/categories/{}", staff.id),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let read: Vec<i32> = categories(&server, &member, workspace_id)
+        .await
+        .iter()
+        .map(|(_, p)| *p)
+        .collect();
+    assert!(without_gap(&read), "{read:?}");
+    let all: Vec<i32> = categories(&server, &owner, workspace_id)
+        .await
+        .iter()
+        .map(|(_, p)| *p)
+        .collect();
+    assert!(without_gap(&all), "{all:?}");
+}
+
+/// A new entry that a person may not see makes every person of the workspace read the
+/// structure again when the numbers of that person change: from the stored positions of the
+/// group to places, which differ where an archived channel stands before a listed one or a
+/// position was stored as given (ADR 0304). A category is listed only to the people who
+/// manage channels while it is empty; a channel in a category can be hidden by its rules. A
+/// root channel that every person sees records none.
+#[tokio::test]
+async fn a_new_entry_hidden_from_a_person_refreshes_the_workspace() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let workspace_id = server.default_workspace(&owner).await.id;
+    // A position stored as given, as a client of API v1 stores it: 5 for the only category.
+    let given = server.category(&owner, workspace_id, "Given", 5).await;
+    let first: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "first", "kind": "text", "category_id": given.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let _: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "listed", "kind": "text", "category_id": given.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let _: serde_json::Value = server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/archive", first.id),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let mut stream = server.subscribed(&member, Level::Full).await;
+    server.category(&owner, workspace_id, "New", 0).await;
+    let events = server.traffic(&member, &mut stream).await;
+    assert_eq!(refreshes(&events, workspace_id), 1, "{events:?}");
+    let _: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "inside", "kind": "text", "category_id": given.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let events = server.traffic(&member, &mut stream).await;
+    assert!(refreshes(&events, workspace_id) >= 1, "{events:?}");
+    server.channel(&owner, workspace_id, "open").await;
+    let events = server.traffic(&member, &mut stream).await;
+    assert_eq!(refreshes(&events, workspace_id), 0, "{events:?}");
+}
+
+/// The channels of a deleted category go after the channels of the root in their stored
+/// order, whatever positions were stored as given: a negative one, as a drag of the window
+/// of 0.1.0 to the top of a group stores, and one near the largest position (ADR 0304).
+#[tokio::test]
+async fn the_channels_of_a_deleted_category_go_after_the_root_in_their_order() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let category = server.category(&owner, workspace_id, "Projects", 0).await;
+    let mut made = Vec::new();
+    for (name, position) in [("top", -3), ("last", 2_147_483_645)] {
+        let channel: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": category.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        let _: Channel = server
+            .patch(
+                &owner,
+                &format!("/api/v1/channels/{}", channel.id),
+                &json!({"position": position}),
+            )
+            .await
+            .ok(StatusCode::OK);
+        made.push(channel.id);
+    }
+    let root_before: Vec<ChannelId> = root(&server, &owner, workspace_id)
+        .await
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    server
+        .delete(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{workspace_id}/categories/{}",
+                category.id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let after = root(&server, &owner, workspace_id).await;
+    let ids: Vec<ChannelId> = after.iter().map(|(id, _)| *id).collect();
+    let mut wanted = root_before;
+    wanted.extend(made);
+    assert_eq!(ids, wanted);
 }

@@ -279,10 +279,16 @@ async fn rule_43_the_export_of_one_server_is_applied_to_an_empty_server() {
         .succeeded();
 
     let after = state(&target).await;
+    let second_plan = tool(&target, &target_token, &["plan", exported]).await;
     let again = tool(&target, &target_token, &["apply", exported])
         .await
         .succeeded();
-    assert!(again.out.starts_with("No changes:"), "{}", again.out);
+    assert!(
+        again.out.starts_with("No changes:"),
+        "{}\n{}",
+        second_plan.out,
+        second_plan.err
+    );
     assert_eq!(state(&target).await, after);
 
     // The target has the entries of the source under the identifiers of the file, in its own

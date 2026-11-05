@@ -146,10 +146,10 @@ async fn a_member_reads_category_positions_with_no_gap_of_a_hidden_category() {
     );
 }
 
-/// A deleted category leaves a gap in the stored positions, which the owner, who sees every
-/// category, reads; a person who does not see every category reads places without a gap.
+/// A deleted category leaves no gap: the remaining categories are numbered from 0 again, for
+/// the owner, who reads the stored positions, and in the export (ADR 0304).
 #[tokio::test]
-async fn a_deleted_category_leaves_no_gap_for_a_person_who_does_not_see_every_category() {
+async fn a_deleted_category_leaves_no_gap() {
     let scene = scene().await;
     scene
         .server
@@ -158,7 +158,7 @@ async fn a_deleted_category_leaves_no_gap_for_a_person_who_does_not_see_every_ca
         .empty(StatusCode::NO_CONTENT);
     assert_eq!(
         scene.listed(&scene.owner).await,
-        [(scene.hidden.id, 1), (scene.last.id, 2)]
+        [(scene.hidden.id, 0), (scene.last.id, 1)]
     );
     assert_eq!(scene.listed(&scene.reader).await, [(scene.last.id, 0)]);
     let export: StructureExport = scene
@@ -172,7 +172,7 @@ async fn a_deleted_category_leaves_no_gap_for_a_person_who_does_not_see_every_ca
         .iter()
         .flat_map(|workspace| workspace.categories.iter().map(|c| c.position))
         .collect();
-    assert_eq!(positions, [Some(1), Some(2)]);
+    assert_eq!(positions, [Some(0), Some(1)]);
 }
 
 #[tokio::test]

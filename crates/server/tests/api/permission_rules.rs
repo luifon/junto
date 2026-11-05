@@ -918,7 +918,14 @@ async fn a_synced_channel_that_moves_takes_the_rules_of_its_new_category() {
     let events = place.server.traffic(&manager, &mut stream).await;
     assert!(has_event(&events, "channel_rules_synced"), "{events:?}");
 
-    // A synced channel that leaves its category keeps the rules it had, as its own.
+    // A synced channel that leaves its category keeps the rules it had, as its own. Its
+    // category was numbered again when the other channel left it (ADR 0304).
+    let read: Value = place
+        .server
+        .get(&manager, &format!("/api/v1/channels/{}", other.id))
+        .await
+        .ok(StatusCode::OK);
+    let read = read["position"].as_i64().unwrap();
     place
         .server
         .patch(
@@ -926,7 +933,7 @@ async fn a_synced_channel_that_moves_takes_the_rules_of_its_new_category() {
             &format!("/api/v1/workspaces/{}/channels/positions", place.workspace),
             &json!({"moves": [{
                 "channel_id": other.id,
-                "from": {"category_id": first.id, "position": other.position},
+                "from": {"category_id": first.id, "position": read},
                 "to": {"category_id": null, "position": other.position},
             }]}),
         )

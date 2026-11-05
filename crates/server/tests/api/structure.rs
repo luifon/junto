@@ -1426,7 +1426,8 @@ async fn channels_are_moved_together_or_not_at_all() {
     let after = places().await;
     assert_eq!(after[&plans.id], (Some(category.id), 0));
     assert_eq!(after[&notes.id], (None, plans.position));
-    assert_eq!(after[&closed.id], before[&closed.id]);
+    // "closed" stays after "notes", and the root closes the place that "plans" left.
+    assert_eq!(after[&closed.id], (None, before[&closed.id].1 - 1));
 }
 
 /// A page drops "x" after "b", between "b" at 10 and "c" at 20, and sends the two neighbours
