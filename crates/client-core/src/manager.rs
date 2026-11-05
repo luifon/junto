@@ -1658,11 +1658,14 @@ impl Server {
             changed.then_some(entry)
         };
         if let Some(entry) = refreshed {
-            let stored = self.core.book.update(self.key, |saved| {
-                saved.name = entry.name;
-                saved.logo_path = entry.logo_path;
-                saved.api_versions = entry.api_versions;
-                saved.capabilities = entry.capabilities;
+            let held = self.core.data_dir.try_lock();
+            let stored = held.map_err(BookError::from).and_then(|_held| {
+                self.core.book.update(self.key, |saved| {
+                    saved.name = entry.name;
+                    saved.logo_path = entry.logo_path;
+                    saved.api_versions = entry.api_versions;
+                    saved.capabilities = entry.capabilities;
+                })
             });
             if let Err(error) = stored {
                 tracing::warn!(server = %self.id, %error, "the server book was not updated");
@@ -1726,7 +1729,11 @@ impl Server {
     /// entry of this object, under the lock of the book.
     fn key_or_new(&self) -> Result<DeviceKey, KeyFault> {
         let book = &self.core.book;
-        let _lock = book.lock().map_err(|error| KeyFault::Book(error.into()))?;
+        let _lock = self
+            .core
+            .data_dir
+            .try_lock()
+            .map_err(|error| KeyFault::Book(error.into()))?;
         let saved = book
             .has(self.key)
             .map_err(|error| KeyFault::Book(error.into()))?;
@@ -2007,10 +2014,6 @@ impl Server {
             )
         };
         let written = membership.clone();
-        // The actions run on the runtime of the client, whose threads do not wait for
-        // another program that holds the data directory: the action fails with that reason,
-        // and the entry stays unsaved for the next action (ADR 0710).
-        let _held = self.core.data_dir.try_lock()?;
         #[cfg(test)]
         {
             let pause = lock(&self.core.before_write).clone();
@@ -2018,6 +2021,10 @@ impl Server {
                 pause();
             }
         }
+        // The actions run on the runtime of the client, whose threads do not wait for
+        // another program that holds the data directory: the action fails with that reason,
+        // and the entry stays unsaved for the next action (ADR 0710).
+        let _held = self.core.data_dir.try_lock()?;
         self.core.book.update(self.key, |entry| {
             entry.membership = membership;
             entry.profile_sync = profile_sync;
@@ -2104,6 +2111,7 @@ impl Server {
     /// Deletes the key and the membership in one step under the lock of the book.
     fn forget_account(&self) -> Result<(), FlowError> {
         let _saving = lock(&self.saving);
+        let _held = self.core.data_dir.try_lock()?;
         let keys = self.core.keys.clone();
         self.core.book.transact(self.key, |entry| {
             entry.membership = Membership::None;

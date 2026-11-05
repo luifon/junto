@@ -563,10 +563,6 @@ impl ServerBook {
         Ok(self.entries()?.iter().any(|entry| entry.key() == key))
     }
 
-    pub(crate) fn lock(&self) -> Result<crate::storage::DirectoryLock, StorageError> {
-        self.data_dir.lock()
-    }
-
     fn change<R, E: From<BookError>>(
         &self,
         change: impl FnOnce(&mut Vec<ServerEntry>) -> Result<R, E>,

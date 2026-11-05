@@ -188,15 +188,21 @@ impl AddServerFlow {
                 {
                     return Outcome::failed(error);
                 }
-                let discarded = core.book.lock().map_err(FlowError::from).and_then(|_lock| {
-                    let saved = core.book.entry(preview.server_id)?;
-                    if let Some(saved) = saved {
-                        return Err(FlowError::AlreadySaved {
-                            server_id: saved.server_id,
+                // The flow runs on the runtime of the client: it does not wait for another
+                // program that holds the data directory (ADR 0710).
+                let discarded =
+                    core.data_dir
+                        .try_lock()
+                        .map_err(FlowError::from)
+                        .and_then(|_lock| {
+                            let saved = core.book.entry(preview.server_id)?;
+                            if let Some(saved) = saved {
+                                return Err(FlowError::AlreadySaved {
+                                    server_id: saved.server_id,
+                                });
+                            }
+                            Ok(core.keys.remove(preview.server_id)?)
                         });
-                    }
-                    Ok(core.keys.remove(preview.server_id)?)
-                });
                 match discarded {
                     Ok(()) => Outcome::moved(AddServerState::Preview(preview)),
                     Err(error) => Outcome::failed(error),
@@ -205,12 +211,17 @@ impl AddServerFlow {
             (AddServerAction::Save { connection_mode }, AddServerState::Preview(preview)) => {
                 let mut entry = preview.entry.clone();
                 entry.connection_mode = connection_mode;
+                let held = match core.data_dir.try_lock() {
+                    Ok(held) => held,
+                    Err(error) => return Outcome::failed(FlowError::from(error)),
+                };
                 let checked = core.book.add_after(entry, || {
                     match self.key_of_other_address(preview.server_id, &preview.address)? {
                         None => Ok(()),
                         Some(stored) => Err(FlowError::KeyOfOtherAddress { stored }),
                     }
                 });
+                drop(held);
                 match checked {
                     Ok(entry) => Outcome::moved(AddServerState::Saved {
                         server_id: self.client.adopt(entry),

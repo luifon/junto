@@ -430,6 +430,10 @@ impl Dir {
         let file = if held {
             None
         } else {
+            // A thread of this process waits for another thread of it, for the few
+            // milliseconds of its change; the lock of the file then answers for the other
+            // processes only.
+            let process = InProcess::take(self.identity);
             let file = self
                 .handle
                 .open_lock(LOCK_NAME)
@@ -448,7 +452,7 @@ impl Dir {
                     }
                 }
             }
-            Some(file)
+            Some((file, process))
         };
         HELD.with_borrow_mut(|held| held.push(self.identity));
         Ok(DirectoryLock {
@@ -490,10 +494,49 @@ pub fn refuse_locks_while(refused: fn() -> bool) {
     let _ = LOCKS_REFUSED.set(refused);
 }
 
-/// The lock of one data directory. It stays with the thread that took it.
+/// The directories whose lock a thread of this process holds, and the wait of the other
+/// threads of the process for them. The lock of a file belongs to its open handle, so two
+/// threads of one process with their own handles would refuse each other as two processes
+/// do (ADR 0710).
+static TAKEN: std::sync::Mutex<Vec<Identity>> = std::sync::Mutex::new(Vec::new());
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The lock of one directory among the threads of this process, given back when dropped.
+struct InProcess(Identity);
+
+impl InProcess {
+    fn take(directory: Identity) -> Self {
+        let mut taken = TAKEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while taken.contains(&directory) {
+            taken = FREED
+                .wait(taken)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        taken.push(directory);
+        Self(directory)
+    }
+}
+
+impl Drop for InProcess {
+    fn drop(&mut self) {
+        let mut taken = TAKEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = taken.iter().position(|held| *held == self.0) {
+            taken.swap_remove(index);
+        }
+        drop(taken);
+        FREED.notify_all();
+    }
+}
+
+/// The lock of one data directory. It stays with the thread that took it. The handle of
+/// the file is dropped before the lock among the threads of the process is given back.
 pub(crate) struct DirectoryLock {
     directory: Identity,
-    _file: Option<File>,
+    _file: Option<(File, InProcess)>,
     _thread: PhantomData<*const ()>,
 }
 

@@ -4899,3 +4899,119 @@ fn a_login_while_another_program_holds_the_data_directory_says_so_at_once() {
     let book = device.reopened(&network);
     assert!(!book.servers()[0].entry().logged_out);
 }
+
+/// Runs an action of a server on a thread of its own and waits at most 30 seconds for its
+/// answer: an action that waited for another program would not answer.
+fn answered_while_held(
+    action: impl Future<Output = Result<(), FlowError>> + Send + 'static,
+) -> Result<(), FlowError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(action));
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the action waited for the other program")
+}
+
+/// The lock of the data directory as another program holds it: a handle of its own.
+fn held_by_another_program(device: &Device) -> std::fs::File {
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+    other_program
+}
+
+/// Forgetting an account on this device and creating the key of a join take the lock of the
+/// data directory on the runtime of the client too: while another program holds it they
+/// answer at once that another program changes the data (ADR 0710).
+#[test]
+fn forget_here_and_a_join_do_not_wait_for_another_program() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("JOIN-CODE", 1);
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (waiting, fresh) = driver.block_on(async {
+        let waiting = device.add("acme").await;
+        waiting.dispatch(ask("Grace")).await.unwrap();
+        let other = network.host("harbor");
+        other.add_invite("JOIN-CODE", 1);
+        let fresh = device.add("harbor").await;
+        (waiting, fresh)
+    });
+    let other_program = held_by_another_program(&device);
+
+    let forgotten = answered_while_held(waiting.dispatch(AccessAction::ForgetAccountHere));
+    let joined = answered_while_held(fresh.dispatch(AccessAction::Join {
+        code: InviteCode::new("JOIN-CODE"),
+        name: "Grace".to_owned(),
+        device_name: "Laptop".to_owned(),
+    }));
+    other_program.unlock().unwrap();
+    assert_eq!(forgotten, Err(FlowError::DataHeld));
+    assert_eq!(joined, Err(FlowError::DataHeld));
+    assert!(device.client.data_dir().key_file(waiting.id()).exists());
+    assert!(!device.client.data_dir().key_file(fresh.id()).exists());
+
+    driver
+        .block_on(waiting.dispatch(AccessAction::ForgetAccountHere))
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(waiting.id()).exists());
+}
+
+/// Another thread of the same client holds the lock of the data directory for a moment, as a
+/// background write of the window does: the write of an action waits for it and succeeds,
+/// and is not told as a change of another program (ADR 0710).
+#[test]
+fn a_write_waits_for_another_thread_of_the_same_process() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    // Right before the write, another thread takes the lock and keeps it for a moment.
+    let data_dir = device.client.data_dir().clone();
+    let holder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let started = holder.clone();
+    *device.client.inner.core.before_write.lock().unwrap() = Some(Arc::new(move || {
+        let mut started = started.lock().unwrap();
+        if started.is_some() {
+            return;
+        }
+        let (taken, has_taken) = std::sync::mpsc::channel();
+        let data_dir = data_dir.clone();
+        *started = Some(std::thread::spawn(move || {
+            let _lock = data_dir.lock().unwrap();
+            taken.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }));
+        has_taken.recv().unwrap();
+    }));
+    let login = handle.dispatch(AccessAction::LogIn);
+    assert_eq!(answered_while_held(login), Ok(()));
+    holder.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    assert!(!handle.entry().logged_out);
+}
