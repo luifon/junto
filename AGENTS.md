@@ -167,7 +167,7 @@ These must pass:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo deny check` (`deny.toml`, ADR 0801)
+- `cargo update --dry-run --quiet && cargo deny check` (`deny.toml`, ADR 0801); the first command renews the cached index entries from which `cargo deny` reads whether a version is yanked, as `tools/ci/licences.sh` does (ADR 0905)
 - `tools/check-pins.sh`
 - the workspace suite
 - the window live tier and the media live tier, when call, media or window code changed; the tests that `vendor/README.md` names, when a copy in `vendor/` changed
