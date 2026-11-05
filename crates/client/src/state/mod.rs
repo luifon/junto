@@ -614,6 +614,9 @@ pub struct AppState {
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), messages::QuoteRead>,
+    /// How many times the event stream of each server had become live at the last look of the
+    /// quote reads.
+    quote_streams: HashMap<ServerId, u64>,
     quote_asks: u64,
     /// The account that uploaded the files that wait for a message, by server.
     upload_owners: HashMap<ServerId, AccountId>,
@@ -1107,6 +1110,7 @@ impl AppState {
             unread_pauses: HashSet::new(),
             reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
+            quote_streams: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
             uploads: HashMap::new(),

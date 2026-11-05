@@ -289,6 +289,8 @@ struct Client {
     halted: bool,
     fault: Option<StreamFault>,
     shown: Option<(StreamStatus, Option<Level>)>,
+    /// How many times the stream became live (`LiveView::connections`).
+    connections: u64,
     model_changed: bool,
     /// The release version of the last `hello`. It stays while the connection is lost,
     /// and is forgotten with the state.
@@ -366,6 +368,7 @@ pub(crate) async fn run(
         halted: false,
         fault: None,
         shown: None,
+        connections: 0,
         model_changed: false,
         server_version: None,
         server_events: None,
@@ -1807,6 +1810,13 @@ impl Client {
                 _ => (StreamStatus::Connecting, None),
             }
         };
+        if status == StreamStatus::Live
+            && self
+                .shown
+                .is_none_or(|(shown, _)| shown != StreamStatus::Live)
+        {
+            self.connections += 1;
+        }
         if self.model_changed || self.version_changed || self.shown != Some((status, level)) {
             let model = match (&self.model, self.model_changed) {
                 (Some(model), true) => Some(Arc::new(model.clone())),
@@ -1819,6 +1829,7 @@ impl Client {
                 model,
                 server_version: self.server_version.clone(),
                 server_events: self.server_events,
+                connections: self.connections,
             });
             self.shown = Some((status, level));
             self.model_changed = false;

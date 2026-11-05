@@ -80,6 +80,9 @@ pub struct LiveView {
     /// The revision of the messages and events that the server stated (ADR 0206). Absent
     /// while the stream has not greeted.
     pub server_events: Option<u32>,
+    /// How many times the stream became live: a reader learns from it that the connection
+    /// came back, also when it did not see the status between.
+    pub connections: u64,
 }
 
 /// One step of the event stream, for a reader that shows each change by itself. The state
@@ -618,6 +621,7 @@ impl LiveServer {
             model: model.map(Arc::new),
             server_version: None,
             server_events: None,
+            connections: u64::from(status == StreamStatus::Live),
         });
     }
 
