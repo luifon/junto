@@ -1558,7 +1558,9 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     # so that they still run when the container gets its stop signal, whatever the speed of
     # the host; they go on with SIGCONT once the start script states the jobs at the signal.
     held = handlers(deployment, "STOP")
-    report.info(f"recorder stop: {held} jobs held after the stop of the recording")
+    # A job that ended between the answer and the hold cannot show the wait of the start
+    # script; that is a failure of the step, not of the start script.
+    report.check("the step held a job of the recorder after the answer of the server to the stop", held >= 1, held)
     stopping = subprocess.Popen([*deployment.command, "stop", "recorder"], cwd=deployment.directory,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -1577,7 +1579,8 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     # recorder gets SIGTERM. A start script that sent SIGINT at once fails here.
     lines = deployment.run("logs", "--no-log-prefix", "--since", since, "recorder").splitlines()
     running = [int(match.group(1)) for line in lines if (match := re.match(r"recorder stop: jobs running at the stop signal: (\d+);", line))]
-    report.check("a job of the recorder still ran when its container got the stop signal", len(running) == 1 and running[0] >= 1, running)
+    if held >= 1:
+        report.check("a job of the recorder still ran when its container got the stop signal", len(running) == 1 and running[0] >= 1, running)
     report.check(
         "the recorder got SIGTERM after its jobs ended within the wait, and no SIGINT",
         any(re.match(r"recorder stop: no job runs after \d+ s; SIGTERM to the recorder$", line) for line in lines)
