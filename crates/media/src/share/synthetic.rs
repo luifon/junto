@@ -211,8 +211,6 @@ impl SyntheticCapture {
         self.lock().sources = sources;
     }
 
-    /// The colours of the left and of the right half of the pictures of one source from
-    /// now on, so that two shares of one person are told apart.
     /// Gives a screen or a window a new size, as a person who resizes a window. A capture of
     /// it gives its next pictures at the new size.
     pub fn resize_source(&self, source: PictureSource, width: u32, height: u32) {
@@ -242,6 +240,8 @@ impl SyntheticCapture {
         }
     }
 
+    /// The colours of the left and of the right half of the pictures of one source from
+    /// now on, so that two shares of one person are told apart.
     pub fn set_source_colours(&self, source: PictureSource, left: Colour, right: Colour) {
         self.lock().source_colours.insert(source, (left, right));
     }

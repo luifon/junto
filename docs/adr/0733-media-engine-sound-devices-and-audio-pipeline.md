@@ -156,6 +156,13 @@ Track permissions after a new connection:
 - `crates/media/tests/mute_order.rs` reads the source of the room: `handle_restarted` sends the permissions before its first `publish_track`. The media live test `share::a_client_of_a_release_before_several_shares_never_receives_a_further_share` makes the call library of a person with two shares connect anew while a test participant of a release from before several shares is in the room, and fails when that participant is given a track of the share of the higher slot.
 - This correction is removed when a pinned upstream version sends the track permissions before it publishes the tracks again, or when the pinned media server keeps the permissions of a participant over a new connection of its session.
 
+The bitrate of a published video track:
+
+- The published version computes the encodings of a video track once, at its publication, and gives the application no way to change them later. The pictures of a shared window change size with the window (ADR 0737), and the bitrate of the share must follow the size.
+- The vendored copy adds `LocalVideoTrack::set_max_bitrate` (`src/room/track/local_video_track.rs`): it sets the maximum bitrate of every encoding of the sender of the published track through `RtpSender::set_parameters` of `libwebrtc`, and returns `false` for a track that is not published.
+- The media live test `share::the_bitrate_of_a_shared_window_follows_its_size` checks that the encoder of a window that grows from 640 × 400 to 1920 × 1080 aims above the bitrate of the first size.
+- This correction is removed when a pinned upstream version can change the encodings of a published track.
+
 Call diagnostics:
 
 - Each media engine has a process-local numeric log identifier. Logs name connection attempts, room connection and closure, sound-state changes, local publication and remote subscription changes and failures. They never log join tokens.

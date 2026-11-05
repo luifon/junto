@@ -1682,9 +1682,21 @@ async fn a_shared_window_that_changes_its_size_is_sent_and_stated_at_its_new_siz
         ann.calls.start_share(window(SoundChoice::None));
         assert_eq!(ann.until_sharing().await.size, (800, 600));
         ben.until_width_stays(ann_id, 800).await;
-        for (width, height) in [(500, 600), (1000, 700)] {
+        // The third size is larger than the resolution of the share quality: the pictures and
+        // both statements have the size of the window fitted into that resolution.
+        let beyond = ShareQuality::default().resolution.fit(3840, 2400);
+        assert_ne!(
+            beyond,
+            (3840, 2400),
+            "the window must be larger than the resolution"
+        );
+        for ((source_width, source_height), (width, height)) in [
+            ((500, 600), (500, 600)),
+            ((1000, 700), (1000, 700)),
+            ((3840, 2400), beyond),
+        ] {
             ann.capture
-                .resize_source(PictureSource::Window(11), width, height);
+                .resize_source(PictureSource::Window(11), source_width, source_height);
             ben.until_width_stays(ann_id, width).await;
             let size = |view: &junto_media::calls::CallsView| {
                 view.call
@@ -1709,6 +1721,73 @@ async fn a_shared_window_that_changes_its_size_is_sent_and_stated_at_its_new_siz
                 Some((width, height)),
                 "the viewer states another size"
             );
+        }
+    })
+    .await;
+}
+
+/// The bitrate of a share follows the size of its pictures (ADR 0737): a window shared at
+/// 640 × 400 is encoded within the bitrate of that size, and after the window grows to
+/// 1920 × 1080 the encoder aims above it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn the_bitrate_of_a_shared_window_follows_its_size() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let _ = &ben_at;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        ann.capture
+            .resize_source(PictureSource::Window(11), 640, 400);
+        ann.calls.start_share(window(SoundChoice::None));
+        assert_eq!(ann.until_sharing().await.size, (640, 400));
+        ben.until_width_stays(ann_id, 640).await;
+        // 3 Mbit/s for 1920 × 1080 at 30 pictures a second, in proportion to the pixels.
+        let small = 3_000_000.0 * 640.0 * 400.0 / (1920.0 * 1080.0);
+        let target = |width| {
+            let ann = &ann;
+            async move {
+                let stats = ann.calls.statistics().await.ok()?;
+                (stats.publisher_stats.iter())
+                    .chain(&stats.subscriber_stats)
+                    .find_map(|stat| match stat {
+                        RtcStats::OutboundRtp(stat)
+                            if stat.stream.kind == "video"
+                                && stat.outbound.frame_width == width =>
+                        {
+                            Some(stat.outbound.target_bitrate)
+                        }
+                        _ => None,
+                    })
+            }
+        };
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let before = target(640).await.expect("no encoding of 640 pixels");
+        assert!(
+            before <= small * 1.05,
+            "the encoder of 640 × 400 aims at {before} bit/s, above the {small} of its size"
+        );
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1920, 1080);
+        ben.until_width_stays(ann_id, 1920).await;
+        let started = tokio::time::Instant::now();
+        loop {
+            let after = target(1920).await.unwrap_or_default();
+            if after > small * 1.5 {
+                break;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the encoder of 1920 × 1080 aims at {after} bit/s, still \
+                 within the bitrate of 640 × 400 ({small}); the sender: {}",
+                ann.encoding(1920).await
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await;

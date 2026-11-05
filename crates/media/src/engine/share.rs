@@ -522,6 +522,8 @@ pub(super) struct OwnShare {
     /// The picture track waits until the call library has taken the track permissions of
     /// this number (ADR 0737).
     cleared_by: Option<(u64, LocalVideoTrack, TrackPublishOptions)>,
+    /// The maximum bitrate that the published picture track has, when the engine set it.
+    bitrate: Option<u64>,
     /// The answer of the system to the start of the capture, until the engine takes it.
     /// The share owns it: a capture that has started when the share ends is stopped with
     /// the share.
@@ -529,6 +531,31 @@ pub(super) struct OwnShare {
     /// The work of the share: the start of its capture, the sound on its way to the track,
     /// and the pictures. It ends with the share.
     tasks: Vec<JoinHandle<()>>,
+}
+
+impl OwnShare {
+    /// Gives the published picture track the bitrate of the size of the last picture of the
+    /// capture: the pictures of a shared window follow the size of the window (ADR 0737).
+    fn follow_size(&mut self) {
+        let (Publication::Published(publication), Some(size)) = (&self.picture, self.sink.size())
+        else {
+            return;
+        };
+        let bitrate = picture_encoding(size, self.request.quality.frame_rate).max_bitrate;
+        if self.bitrate == Some(bitrate) {
+            return;
+        }
+        let Some(LocalTrack::Video(track)) = publication.track() else {
+            return;
+        };
+        match track.set_max_bitrate(bitrate) {
+            Ok(true) => self.bitrate = Some(bitrate),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, slot = self.slot, "the bitrate of the share was not changed");
+            }
+        }
+    }
 }
 
 impl Drop for OwnShare {
@@ -1173,6 +1200,7 @@ impl Actor {
                 sound_returns: None,
                 waits: 0,
                 cleared_by: None,
+                bitrate: None,
                 started,
                 tasks,
             },
@@ -1401,6 +1429,8 @@ impl Actor {
         match (current, result) {
             (Some(share), Ok(publication)) => {
                 share.picture = Publication::Published(publication);
+                share.bitrate = None;
+                share.follow_size();
                 self.tell_shares();
             }
             (Some(share), Err(error)) => {
@@ -1486,8 +1516,19 @@ impl Actor {
         });
         match returned {
             Some((held, returns)) => {
+                let sid = publication.sid();
                 *held = Publication::Published(publication);
                 *returns = None;
+                // The call library published the track again with the options of its
+                // first publication.
+                if track == ShareTrack::Picture
+                    && let Some(share) = self.own_shares.values_mut().find(|share| {
+                        matches!(&share.picture, Publication::Published(held) if held.sid() == sid)
+                    })
+                {
+                    share.bitrate = None;
+                    share.follow_size();
+                }
                 // The permission can have changed while the track was away.
                 self.sync_share_sound();
             }
@@ -1661,7 +1702,8 @@ impl Actor {
 
     /// The pictures of the capture of a share have a new size.
     pub(super) fn share_sized(&mut self, generation: u64) {
-        if self.own_share_of(generation).is_some() {
+        if let Some(share) = self.own_share_of(generation) {
+            share.follow_size();
             self.tell_shares();
         }
     }
