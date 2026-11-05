@@ -258,8 +258,9 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
         .unwrap();
     message_when(member, place, "after the restore").await;
 
-    // The archive and the restore reached the member as events, and the state was not
-    // read again.
+    // The archive and the restore reached the member as events. "general" is before an
+    // open channel of the root, whose place changes for a person who does not see every
+    // channel of the root, so the state is read again as well (ADR 0304).
     let mut seen = told_until(&mut told, "the restored channel", |notices| {
         told_of(notices, |event| {
             matches!(event, Event::ChannelRestored { channel }
@@ -273,7 +274,7 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
             if channel.channel.id == general.id)
     };
     assert!(told_of(&seen, was_archived), "{seen:?}");
-    assert!(!reloaded(&seen), "{seen:?}");
+    assert!(reloaded(&seen), "{seen:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
