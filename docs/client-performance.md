@@ -125,9 +125,22 @@ Measured on 2026-11-05 on the Mac of the table above, with the code of that day:
 
 A `sample` of 5 seconds in the middle of each mode (about 3,390 samples per thread, one sample about 1.5 ms) counts the work of the pictures. With H.264 the decoder of the system decodes the received pictures (`RTCVideoDecoderH264` with VideoToolbox), and the client converts each decoded pixel buffer into planes (`ObjCFrameBuffer::ToI420`, `NV12ToI420`): 9 samples in the mode `camera` (about 0.3 % of one core) and 6 in the mode `cameras` (about 0.2 %). With VP8 the decoder gives planes and there is no such conversion. For both codecs the follower writes the planes of each camera picture into the pixel buffer that the window paints (`share::picture::surface::convert`): in the mode `camera`, with one received camera at 1280 × 720 and the own camera, 189 samples with VP8 (about 5.6 % of one core) and 176 with H.264 (about 5.2 %); in the mode `cameras` 132 with VP8 and 82 with H.264, at the smaller widths of that mode.
 
+### The call with many people
+
+The time of a frame of the window with a call of many people, measured on 2026-11-05 with the method of ADR 0914 for many members (`JUNTO_SCREENS_ONLY=people-frames`, release build of `junto-screens`, headless renderer, two processors of the Linux host, the median and the longest of 60 frames after 5 frames of warming up):
+
+| Case | Median | Longest |
+|---|---|---|
+| A call of 7 people, the members of the call shown | 19.5 ms | 31.4 ms |
+| A call of 601 people, the members of the call shown | 440.6 ms | 588.1 ms |
+| A call of 601 people, the stage of the call shown | 394.7 ms | 480.5 ms |
+
+The member list of the call lays out only the rows in view; with 601 people it adds about 45 ms to a frame of the stage. The stage builds one tile for each person who is not hidden (`shell::call`, the grid of `ui::tile`), so with 601 people a frame takes about 395 ms. In the same run the frames with 601 members of the workspace took a median of 19.0 ms with the member list of the side panel open and 13.6 ms with it closed.
+
 ## Open points
 
 - The modes idle, text, voice, share and `share-camera` have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table "Junto, per mode" is from before both changes; the modes `camera` and `cameras` were measured again (section "Received H.264 pictures on a Mac").
 - A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes and writes them into a new pixel buffer (ADR 0774). A direct paint of the decoder buffer is not built. By the measurement above it would remove the conversion and the write of each received H.264 picture: for one camera received at 1280 × 720 at 30 pictures a second about 4 to 5 % of one core, for smaller layers less. It needs a new unsafe call (ADR 0774).
+- A call of hundreds of people: the stage draws a tile for every person, about 395 ms per frame with 601 people (section "The call with many people"), and the member list of the call adds about 45 ms.
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 

@@ -302,5 +302,67 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
             .map_err(|error| format!("{error:#}"))?;
         studio.cx.run_until_parked();
     }
+    measure_call_members(studio)
+}
+
+/// The time of a frame of a call of 7 and of 601 people with the members of the call shown in
+/// the panel of the call, whose list lays out only the rows in view, and of the call of 601
+/// people with its stage shown (ADR 0914).
+fn measure_call_members(studio: &mut Studio) -> Result<(), String> {
+    const WARM_UP: usize = 5;
+    for (people, members) in [(7u32, true), (601, true), (601, false)] {
+        let servers = vec![
+            super::acme_with_luca(move |call| {
+                let known = call.participants.len() as u32;
+                for index in known..people {
+                    let mut participant = super::participant("Ana");
+                    participant.account_id = super::id(6_000 + index);
+                    participant.identity = format!("seat-{index}");
+                    call.participants.push(participant);
+                }
+            }),
+            harbor(),
+        ];
+        let (window, _, _) = studio.open(
+            Screen::call(
+                "call-member-frames",
+                super::in_call(super::Phase::Connected),
+            )
+            .servers(servers),
+            if members {
+                Box::new(super::show_daily_tab(super::CallTab::Members))
+            } else {
+                Box::new(super::show_daily)
+            },
+        )?;
+        let mut times = Vec::new();
+        for step in 0..WARM_UP + 60 {
+            let started = Instant::now();
+            studio
+                .cx
+                .update_window(window.into(), |_, window, _| window.refresh())
+                .map_err(|error| format!("{error:#}"))?;
+            studio.cx.run_until_parked();
+            if step >= WARM_UP {
+                times.push(started.elapsed());
+            }
+        }
+        println!(
+            "{}",
+            Times(times).line(&format!(
+                "a call of {people} people, {}",
+                if members {
+                    "the members of the call shown"
+                } else {
+                    "the stage of the call shown"
+                }
+            ))
+        );
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+    }
     Ok(())
 }
