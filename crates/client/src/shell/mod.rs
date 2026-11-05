@@ -184,6 +184,36 @@ pub(crate) enum Layer {
     FileLink(Box<crate::state::OpenFileLink>),
 }
 
+impl Layer {
+    /// The layer covers the content of the window: a dialog with its scrim, or the viewer of
+    /// pictures. A menu or a list at a control lies over a part only, and the pictures beside
+    /// it stay in view.
+    pub(crate) fn covers_content(&self) -> bool {
+        !matches!(
+            self,
+            Layer::None
+                | Layer::ServerMenu
+                | Layer::DeviceMenu(_)
+                | Layer::ShareMenu
+                | Layer::PersonMenu(_)
+                | Layer::AccountMenu(_)
+                | Layer::CallMoveMenu(_)
+                | Layer::ThreadMenu(_)
+                | Layer::MessageMenu(_)
+                | Layer::ComposerMenu(_)
+                | Layer::NoticeMenu(..)
+                | Layer::ChannelMenu(_)
+                | Layer::GroupMenu(_)
+                | Layer::WorkspaceMenu(..)
+                | Layer::DirectMenu(_)
+                | Layer::SearchFilter(_)
+                | Layer::RecordingFiles(_)
+                | Layer::RecordingParts(_)
+                | Layer::RecordLanguage
+        )
+    }
+}
+
 /// What the emoji of the picker is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmojiTarget {
@@ -1800,7 +1830,7 @@ impl Render for Shell {
         self.message_pictures.drawing_starts();
         self.message_pictures
             .playback
-            .set_covered(!matches!(self.layer, Layer::None));
+            .set_covered(self.layer.covers_content());
         self.notice_list.frame_starts();
         if std::mem::take(&mut self.view_stale) {
             self.take_state(window, cx);

@@ -1091,6 +1091,18 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     wait_for(&mut window, 100);
     assert_eq!(frames(&mut window, id), [1]);
 
+    // A menu of the message lies over a part of the window only: the animation plays on.
+    window.in_shell(|shell, window, cx| shell.open_message_menu(Pane::Main, sent.id, window, cx));
+    assert!(window.shows("message-menu"));
+    wait_for(&mut window, 100);
+    assert_eq!(
+        frames(&mut window, id),
+        [2],
+        "the animation stopped beside a menu"
+    );
+    window.press("escape");
+    assert!(!window.shows("message-menu"));
+
     // The viewer plays the animation.
     click_picture(&mut window, id);
     assert!(window.shows("picture-viewer"));
@@ -1099,6 +1111,10 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     });
     let shown = frames(&mut window, id);
     let behind = window.in_shell(|shell, _, _| shell.shown_frames_behind_the_viewer(id));
+    assert!(
+        !behind.is_empty(),
+        "the picture under the viewer is not drawn"
+    );
     wait_for(&mut window, 100);
     let next = frames(&mut window, id);
     assert!(
