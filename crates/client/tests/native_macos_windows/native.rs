@@ -202,7 +202,10 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                         .zip(maximized)
                         .all(|(normal, saved)| same_geometry(normal, saved))
                     {
-                        return Err("maximizing replaced the normal placement".into());
+                        return Err(format!(
+                            "maximizing replaced the normal placement: {normal:?} before, \
+                             {maximized:?} after"
+                        ));
                     }
                 } else {
                     let normal: [WindowPlacement; 2] = serde_json::from_slice(
@@ -275,15 +278,25 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                 }
                 Ok(())
             }
-            .await;
+            .await
+            .and_then(|()| {
+                if junto_client::panics::panics_in_this_process() == 0 {
+                    Ok(())
+                } else {
+                    Err("a native window callback panicked".to_owned())
+                }
+            });
+            // `quit` ends the process inside AppKit with exit code 0 and `run` does not
+            // return, so a failure is stated here and ends the process with its own code.
+            if let Err(error) = &result {
+                eprintln!("native_macos_windows: {error}");
+                std::process::exit(1);
+            }
             *answer.borrow_mut() = Some(result);
             cx.update(|cx| cx.quit());
         })
         .detach();
     });
     let result = outcome.borrow_mut().take();
-    if junto_client::panics::panics_in_this_process() != 0 {
-        return Err("a native window callback panicked".into());
-    }
     result.unwrap_or_else(|| Err("the application ended before the native checks".into()))
 }

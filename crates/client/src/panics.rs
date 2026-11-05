@@ -416,7 +416,8 @@ pub mod test_support {
         /// The listener of a scroll of the message list, which runs inside the scroll of the
         /// list while the list holds its state.
         FeedScroll,
-        /// The listener of the end of a press of the left button anywhere in the shell.
+        /// A listener of the window of the shell for the end of a press of the left button
+        /// anywhere in the window, also on an element that covers the shell.
         PressEnd,
         /// The render of the shell, inside a draw of the window.
         Render,

@@ -68,6 +68,16 @@ fn main() -> ExitCode {
             let window = app::open_main_window(state.clone(), start, cx).unwrap();
             cx.spawn(async move |cx| {
                 let checked = stages(&state, window, &directory, cx).await;
+                // On macOS `quit` ends the process inside AppKit with exit code 0 and `run`
+                // does not return, so the result is stated here and a failure ends the
+                // process with its own code.
+                match &checked {
+                    Ok(()) => println!("native_panics: passed"),
+                    Err(failure) => {
+                        eprintln!("native_panics: failed: {failure}");
+                        std::process::exit(1);
+                    }
+                }
                 *result.borrow_mut() = Some(checked);
                 cx.update(|cx| cx.quit());
             })
@@ -75,14 +85,8 @@ fn main() -> ExitCode {
         });
     let outcome = outcome.borrow_mut().take();
     match outcome {
-        Some(Ok(())) => {
-            println!("native_panics: passed");
-            ExitCode::SUCCESS
-        }
-        Some(Err(failure)) => {
-            eprintln!("native_panics: failed: {failure}");
-            ExitCode::FAILURE
-        }
+        Some(Ok(())) => ExitCode::SUCCESS,
+        Some(Err(_)) => ExitCode::FAILURE,
         None => {
             eprintln!("native_panics: failed: the application ended before the test did");
             ExitCode::FAILURE
