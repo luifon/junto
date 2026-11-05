@@ -256,8 +256,8 @@ fn the_main_area_keeps_its_least_width_with_every_panel_at_its_widest(cx: &mut T
 }
 
 /// A drag past the room of a panel keeps the width that the person saw, not the width
-/// that the pointer reached: a wider window later opens the panel as wide as it was shown
-///. The same holds for the arrow keys.
+/// that the pointer reached: a wider window later opens the panel as wide as it was shown.
+/// The same holds for the arrow keys.
 #[gpui::test]
 fn a_drag_past_the_room_of_a_panel_keeps_the_width_that_was_shown(cx: &mut TestAppContext) {
     let world = World::new();
