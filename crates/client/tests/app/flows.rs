@@ -494,6 +494,69 @@ fn a_key_of_another_address_is_discarded_on_this_device_when_the_server_cannot_b
     );
 }
 
+/// The information that a server gives at `/api/server`, read without the client.
+fn server_information(world: &World, address: &str) -> serde_json::Value {
+    world.run(async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let authority = address.trim_start_matches("http://").to_owned();
+        let mut stream = tokio::net::TcpStream::connect(&authority).await.unwrap();
+        let request =
+            format!("GET /api/server HTTP/1.1\r\nhost: {authority}\r\nconnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer).await.unwrap();
+        let answer = String::from_utf8(answer).unwrap();
+        let (_, body) = answer.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap()
+    })
+}
+
+/// A server whose API versions this build cannot use is saved, and the main area shows its
+/// panel with "Check again", which asks the server again, and "Remove" (ADR 0713, ADR 0732).
+#[gpui::test]
+fn the_panel_of_a_server_of_another_api_version_checks_again_and_removes(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let mut information = server_information(&world, &server.address());
+    information["api_versions"] = serde_json::json!([999]);
+    proxy.answer_json(
+        "GET",
+        "/api/server",
+        serde_json::to_vec(&information).unwrap(),
+    );
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&proxy.address());
+    assert!(window.shows("join-incompatible"));
+    window.click("add-to-server-book");
+    window.until("the panel of the incompatible server", |window| {
+        window.shows("incompatible")
+            && window.shows("check-server")
+            && window.shows("remove-server")
+    });
+    assert!(matches!(
+        window.status(),
+        Some(ServerStatus::Incompatible(_))
+    ));
+
+    let asked = proxy.seen("/api/server").len();
+    window.click("check-server");
+    window.until("the server is asked again", |_| {
+        proxy.seen("/api/server").len() > asked
+    });
+    window.until("the panel stays", |window| {
+        window.shows("incompatible") && window.shows("check-server")
+    });
+
+    window.click("remove-server");
+    window.click("confirm");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(!window.shows("incompatible"));
+}
+
 #[gpui::test]
 fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut TestAppContext) {
     let world = World::new();

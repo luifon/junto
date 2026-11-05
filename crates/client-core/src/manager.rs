@@ -166,8 +166,9 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    pub(crate) fn adopt(&self, entry: ServerEntry) -> ServerId {
+    pub(crate) fn adopt(&self, entry: ServerEntry, reach: Reach) -> ServerId {
         let server = Server::new(self.core.clone(), entry);
+        lock(&server.state).reach = reach;
         let id = server.id;
         lock(&self.servers).push(server);
         self.core.notify();

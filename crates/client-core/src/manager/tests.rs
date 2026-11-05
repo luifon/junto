@@ -1528,6 +1528,10 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     let on_newer = add(&client, "newer").await;
     let on_older = add(&client, "older").await;
     let on_future = add(&client, "future").await;
+    // A server without a common version is incompatible from its save, with the reason
+    // that the preview found (ADR 0713).
+    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
+    assert_eq!(on_future.reach(), Reach::Incompatible(incompatible));
 
     on_newer.dispatch(claim()).await.unwrap();
     on_older.dispatch(claim()).await.unwrap();
@@ -1546,7 +1550,6 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     on_newer.api().own_account().await.unwrap();
     assert_eq!(newer.seen().last().unwrap(), "Get /api/v2/account");
 
-    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
     assert_eq!(
         on_future.dispatch(claim()).await,
         Err(FlowError::Incompatible(incompatible))

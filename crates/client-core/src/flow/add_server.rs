@@ -13,7 +13,7 @@ use super::{FlowError, FlowView};
 use crate::address::ServerAddress;
 use crate::api::{ApiClient, server_info};
 use crate::book::{ConnectionMode, ServerEntry};
-use crate::manager::Inner;
+use crate::manager::{Inner, Reach};
 use crate::version::{ApiVersion, Incompatibility};
 
 /// What the server at an address says about itself, cut to what the client shows.
@@ -223,8 +223,16 @@ impl AddServerFlow {
                 });
                 drop(held);
                 match checked {
+                    // A server without a common API version is shown as incompatible from
+                    // its save, with the reason that the preview found (ADR 0713).
                     Ok(entry) => Outcome::moved(AddServerState::Saved {
-                        server_id: self.client.adopt(entry),
+                        server_id: self.client.adopt(
+                            entry,
+                            preview
+                                .version
+                                .err()
+                                .map_or(Reach::Unknown, Reach::Incompatible),
+                        ),
                     }),
                     Err(FlowError::KeyOfOtherAddress { stored }) => Outcome::failed_and_moved(
                         AddServerState::KeyOfOtherAddress {
