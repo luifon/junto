@@ -33,7 +33,7 @@ Measurement:
 The picker:
 
 - It offers the emoji that are not Broken. A group without such an emoji has no tab. When no group has one, the picker states that the system has no font that draws emoji. An open picker keeps the measurement that it had when it opened: a measurement that arrives while it is open changes its grid at the next opening, so the grid does not move under the pointer.
-- The tabs are icons of the design (16 by 16 units, one colour) in buttons of 26 by 26 units, with the name of the group as their tooltip and their accessible name, as in Slack and Discord. The open tab is marked selected for a screen reader, and the name of the open group is a line above the grid, also for a person who moves through the tabs with the keyboard. Nine tabs take 250 units; a dialog is 500 units wide, or the width of the window when that is less.
+- The tabs are icons of the design (16 by 16 units, one colour) in buttons of 26 by 26 units, with the name of the group as their tooltip and their accessible name, as in Slack and Discord. The open tab is marked selected for a screen reader, and the name of the open group is a line above the grid, also for a person who moves through the tabs with the keyboard. The window test `messages::the_tabs_of_the_emoji_picker_do_not_cover_each_other` reads the accessible label and the selection that each tab gives the system from the controls that a drawing records (`ui::Placed`), and checks that the picker paints the name of the open group once, for three tabs in turn; the gpui platform of the tests builds no tree of accessibility. Nine tabs take 250 units; a dialog is 500 units wide, or the width of the window when that is less.
 
 The stand-in of an emoji that is Broken:
 
