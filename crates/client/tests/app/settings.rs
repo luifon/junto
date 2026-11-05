@@ -293,11 +293,11 @@ fn the_settings_of_another_profile_name_it_and_change_its_own_entry(cx: &mut Tes
     });
     window.click("app-settings");
     window.click("settings-section-interface");
+    let label = "Start Junto at login with the profile Work";
     window.until("the profile is named", |window| {
-        window
-            .in_shell(|shell, _, _| shell.painted_readonly_text())
+        crate::admin_pages::drawn_text(window)
             .iter()
-            .any(|text| text == "Start Junto at login with the profile Work")
+            .any(|text| text.text == label || text.label.as_deref() == Some(label))
     });
     window.click_in_settings("start-at-login");
     window.until("the entry of the profile is on", |window| {
