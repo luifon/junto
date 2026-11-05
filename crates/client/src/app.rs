@@ -208,6 +208,41 @@ pub fn state_with_media(
     state
 }
 
+/// The options of the main window. The server book reaches the top edge of the window, and
+/// macOS draws the window controls over it at `MAIN_WINDOW_CONTROLS`; Windows draws no title
+/// bar, and the window draws its strip with the window buttons (ADR 0703). The headers at the
+/// top act as the title bar on macOS: they move the window and take its double press
+/// (`shell::title_bar`).
+pub fn main_window_options(
+    bounds: WindowBounds,
+    display: Option<gpui::DisplayId>,
+    minimum: gpui::Size<gpui::Pixels>,
+    focus: bool,
+) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(bounds),
+        display_id: display,
+        titlebar: Some(TitlebarOptions {
+            title: Some(text::APP_NAME.into()),
+            appears_transparent: true,
+            traffic_light_position: Some(point(
+                px(MAIN_WINDOW_CONTROLS.0),
+                px(MAIN_WINDOW_CONTROLS.1),
+            )),
+        }),
+        app_owns_titlebar_drag: true,
+        focus,
+        show: true,
+        app_id: Some(APP_ID.to_owned()),
+        icon: crate::window_icon::icon(),
+        window_min_size: Some(minimum),
+        ..WindowOptions::default()
+    }
+}
+
+/// Where macOS draws the window controls of the main window, from its top left corner.
+pub const MAIN_WINDOW_CONTROLS: (f32, f32) = (12.0, 13.0);
+
 /// Opens the main window.
 pub fn open_main_window(
     state: Entity<AppState>,
@@ -222,33 +257,17 @@ pub fn open_main_window(
         &cx.displays(),
         cx.primary_display().map(|display| display.id()),
     );
-    let bounds = restored.bounds;
     let window = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(if saved.maximized {
-                WindowBounds::Maximized(bounds)
+        main_window_options(
+            if saved.maximized {
+                WindowBounds::Maximized(restored.bounds)
             } else {
-                WindowBounds::Windowed(bounds)
-            }),
-            display_id: restored.display,
-            titlebar: Some(TitlebarOptions {
-                title: Some(text::APP_NAME.into()),
-                // The server book reaches the top edge of the window; macOS draws the
-                // window controls over it. Windows draws no title bar: the window draws
-                // its strip with the window buttons (ADR 0703).
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(12.0), px(13.0))),
-            }),
-            // The headers at the top act as the title bar on macOS: they move the window
-            // and take its double press (`shell::title_bar`).
-            app_owns_titlebar_drag: true,
-            focus: start.activate,
-            show: true,
-            app_id: Some(APP_ID.to_owned()),
-            icon: crate::window_icon::icon(),
-            window_min_size: Some(restored.minimum),
-            ..WindowOptions::default()
-        },
+                WindowBounds::Windowed(restored.bounds)
+            },
+            restored.display,
+            restored.minimum,
+            start.activate,
+        ),
         move |window, cx| {
             window.set_rem_size(theme::rem_size(scale));
             #[cfg(target_os = "macos")]

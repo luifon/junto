@@ -14,7 +14,9 @@ use junto_media::{
     share::synthetic::SyntheticCapture,
 };
 use objc2::{MainThreadMarker, rc::Retained};
-use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSApplicationDelegate, NSWindow, NSWindowButton, NSWindowStyleMask,
+};
 use objc2_foundation::NSSize;
 use std::{
     cell::RefCell,
@@ -90,6 +92,71 @@ fn windows() -> Vec<Retained<NSWindow>> {
         .collect()
 }
 
+/// The main window draws its content up to its top edge, and its headers act as the title bar
+/// (ADR 0703): the client asks gpui for a transparent title bar, for the window controls at
+/// `MAIN_WINDOW_CONTROLS` and for the move of the window by the application; the native window
+/// has a content view of its full size with a transparent title bar, its close button at that
+/// place, and the content of the window reaches the band of the title bar.
+///
+/// That the content view takes the presses in the title bar (`app_owns_titlebar_drag`) is
+/// answered by a private method of AppKit (`_opaqueRectForWindowMoveWhenInTitlebar`), which
+/// only an untyped message, unsafe code, can call; the test reads that setting in the options
+/// that the client gives gpui.
+fn title_bar(window: &NSWindow, reaches: bool) -> Result<(), String> {
+    let options = app::main_window_options(
+        WindowBounds::Windowed(gpui::Bounds::default()),
+        None,
+        gpui::Size::default(),
+        false,
+    );
+    let titlebar = options
+        .titlebar
+        .ok_or("the main window has no title bar options")?;
+    let controls = app::MAIN_WINDOW_CONTROLS;
+    if !options.app_owns_titlebar_drag
+        || !titlebar.appears_transparent
+        || titlebar.traffic_light_position
+            != Some(gpui::point(gpui::px(controls.0), gpui::px(controls.1)))
+    {
+        return Err("the main window does not ask for its own title bar".into());
+    }
+    if !window
+        .styleMask()
+        .contains(NSWindowStyleMask::FullSizeContentView)
+    {
+        return Err("the content view of the main window is not of its full size".into());
+    }
+    if !window.titlebarAppearsTransparent() {
+        return Err("the title bar of the main window is not transparent".into());
+    }
+    let content = window
+        .contentView()
+        .ok_or("the main window has no content view")?;
+    let layout = window.contentLayoutRect();
+    if content.frame().size.height <= layout.size.height + 1.0 {
+        return Err(format!(
+            "the content of the main window ({:?}) does not reach above its layout area ({layout:?})",
+            content.frame()
+        ));
+    }
+    let close = window
+        .standardWindowButton(NSWindowButton::CloseButton)
+        .ok_or("the main window has no close button")?;
+    let place = close.frame().origin.x;
+    if (place - f64::from(controls.0)).abs() > 1.0 {
+        return Err(format!(
+            "the close button of the main window is at {place}, not at {}",
+            controls.0
+        ));
+    }
+    if !reaches {
+        return Err(
+            "the client does not treat the headers of the main window as its title bar".into(),
+        );
+    }
+    Ok(())
+}
+
 async fn until(
     cx: &mut AsyncApp,
     description: &str,
@@ -155,6 +222,15 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                 })
                 .await?;
                 let main_native = windows().pop().unwrap();
+                if !restoring {
+                    let reaches = cx.update(|cx| {
+                        main.update(cx, |_, window, cx| {
+                            junto_client::shell::title_bar::reaches_title_bar(window, cx)
+                        })
+                        .unwrap()
+                    });
+                    title_bar(&main_native, reaches)?;
+                }
                 cx.update(|cx| detached::open(state.clone(), cx));
                 until(cx, "the detached call window appears", |_| {
                     windows().len() == 2

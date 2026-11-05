@@ -106,7 +106,7 @@ pub fn content_reaches_title_bar(window: &Window, cx: &mut App) {
 }
 
 /// Whether the content of this window reaches its title bar.
-pub(crate) fn reaches_title_bar(window: &Window, cx: &App) -> bool {
+pub fn reaches_title_bar(window: &Window, cx: &App) -> bool {
     cx.try_global::<ContentTitleWindows>()
         .is_some_and(|windows| windows.0.contains(&window.window_handle().window_id()))
 }
