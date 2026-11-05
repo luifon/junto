@@ -677,34 +677,56 @@ impl ServerModel {
             })
     }
 
-    /// The channels whose mute has a stated end and whose sign depends on it: the end
-    /// has not passed at `now`, or the summary of the channel still says "muted". The
-    /// clock of the server decides the end, and it can differ from the clock of `now`.
-    pub(crate) fn mute_ends(&self, now: OffsetDateTime) -> Vec<(ChannelId, OffsetDateTime)> {
-        self.notification_settings
+    /// The places whose mute has a stated end and whose sign depends on it: the end has
+    /// not passed at `now`, or the summary of the place still says "muted". A place is a
+    /// channel or a group conversation with a mute in its settings, or a direct
+    /// conversation with a mute of ADR 0515. The clock of the server decides the end, and it
+    /// can differ from the clock of `now`.
+    pub(crate) fn mute_ends(&self, now: OffsetDateTime) -> Vec<(PlaceId, OffsetDateTime)> {
+        let mut ends: Vec<(PlaceId, OffsetDateTime)> = self
+            .notification_settings
             .iter()
             .filter(|held| held.settings.mute)
             .filter_map(|held| {
                 let until = held.settings.muted_until?;
-                let channel_id = ChannelId::from_uuid(held.scope_id);
-                self.channel(channel_id)?;
-                let muted = self
-                    .message_state(PlaceId::Channel(channel_id))
-                    .is_some_and(|state| state.muted);
-                (until > now || muted).then_some((channel_id, until))
+                let place = self.muted_place(held.scope_id)?;
+                Some((place, until))
             })
-            .collect()
+            .collect();
+        ends.extend(self.direct_mutes.iter().filter_map(|mute| {
+            let until = mute.until?;
+            let conversation = self.conversation_with(mute.account_id)?;
+            Some((PlaceId::Direct(conversation.id), until))
+        }));
+        ends.retain(|(place, until)| {
+            *until > now || self.message_state(*place).is_some_and(|state| state.muted)
+        });
+        ends
     }
 
-    /// The end that the settings state for the mute of a channel, while the summary of
-    /// the channel says "muted".
-    pub(crate) fn stated_mute_end(&self, channel_id: ChannelId) -> Option<OffsetDateTime> {
-        let muted = self
-            .message_state(PlaceId::Channel(channel_id))
-            .is_some_and(|state| state.muted);
-        self.notification_settings(SettingsScope::Channel(channel_id))
-            .filter(|settings| settings.mute && muted)
-            .and_then(|settings| settings.muted_until)
+    /// The channel or the conversation that the state holds with this identifier of a scope
+    /// of settings.
+    fn muted_place(&self, scope_id: uuid::Uuid) -> Option<PlaceId> {
+        let channel_id = ChannelId::from_uuid(scope_id);
+        if self.channel(channel_id).is_some() {
+            return Some(PlaceId::Channel(channel_id));
+        }
+        let conversation = junto_protocol::ids::ConversationId::from_uuid(scope_id);
+        self.place(PlaceId::Direct(conversation))
+            .map(|_| PlaceId::Direct(conversation))
+    }
+
+    /// The end that the state holds for the mute of a place, while the summary of the place
+    /// says "muted".
+    pub(crate) fn stated_mute_end(&self, place: PlaceId) -> Option<OffsetDateTime> {
+        let muted = self.message_state(place).is_some_and(|state| state.muted);
+        if !muted {
+            return None;
+        }
+        self.mute_ends(OffsetDateTime::UNIX_EPOCH)
+            .into_iter()
+            .find(|(held, _)| *held == place)
+            .map(|(_, until)| until)
     }
 
     /// The channels whose summary shows mentions. A `thread_read` names no channel, and

@@ -642,6 +642,53 @@ async fn the_summary_of_a_channel_is_read_when_its_mute_ends() {
     assert_eq!(rig.http.count("/messages/read"), 1);
 }
 
+/// The mute of a direct conversation (ADR 0515) has an end that no event tells, as the mute
+/// of a channel: the summary of the conversation is read after that end, so that it does
+/// not stay "muted".
+#[tokio::test(start_paused = true)]
+async fn the_summary_of_a_direct_conversation_is_read_when_its_mute_ends() {
+    let mut rig = rig();
+    let own = rig.scene.account_id;
+    let other = junto_protocol::ids::AccountId::generate();
+    let conversation = junto_protocol::ids::ConversationId::generate();
+    let (low, high) = if own < other {
+        (own, other)
+    } else {
+        (other, own)
+    };
+    let until = time::OffsetDateTime::now_utc() + time::Duration::minutes(10);
+    rig.set_snapshot(40, |snapshot| {
+        snapshot
+            .messages
+            .push(junto_protocol::message::MessageState {
+                read_revision: 0,
+                place: junto_protocol::message::MessagePlace::Direct {
+                    conversation_id: conversation,
+                    low_account_id: low,
+                    high_account_id: high,
+                },
+                last_read: 0,
+                latest: 3,
+                unread: 3,
+                mentions: 0,
+                unread_sign: true,
+                notification_mentions: 0,
+                muted: true,
+            });
+        snapshot.direct_mutes = vec![junto_protocol::call::DirectMute {
+            account_id: other,
+            until: Some(until),
+        }];
+    });
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let _served = rig.served().await;
+    let read = format!("/conversations/{conversation}/messages/read");
+    tokio::time::sleep(Duration::from_secs(9 * 60)).await;
+    assert_eq!(rig.http.count(&read), 0);
+    tokio::time::sleep(Duration::from_secs(2 * 60)).await;
+    assert_eq!(rig.http.count(&read), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_page_around_a_position_replaces_what_is_loaded_and_is_the_anchor_of_a_reload() {
     let mut room = room().await;
