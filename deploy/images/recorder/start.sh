@@ -47,17 +47,23 @@ jobs_left() {
 
 recorder=""
 stopping=""
+# Each stop states the jobs that run at the signal and the signal that the recorder gets, so
+# that the log shows whether jobs ended within the wait.
 stop() {
-    local waited=0
+    local waited=0 left
     stopping=1
     [ -n "$recorder" ] || return 0
+    echo "recorder stop: jobs running at the stop signal: $(jobs_left); the wait for them is $stop_wait s" >&2
     while [ "$waited" -lt "$stop_wait" ] && [ "$(jobs_left)" -gt 0 ]; do
         sleep 1
         waited=$((waited + 1))
     done
-    if [ "$(jobs_left)" -gt 0 ]; then
+    left=$(jobs_left)
+    if [ "$left" -gt 0 ]; then
+        echo "recorder stop: jobs still running after $waited s: $left; SIGINT to the recorder" >&2
         kill -INT "$recorder" 2>/dev/null
     else
+        echo "recorder stop: no job runs after $waited s; SIGTERM to the recorder" >&2
         kill -TERM "$recorder" 2>/dev/null
     fi
 }

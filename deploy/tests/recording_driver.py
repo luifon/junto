@@ -1539,8 +1539,22 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     time.sleep(6)
     scene.stop_recording()
     stopped = time.time()
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stopped - 1))
     deployment.run("stop", "recorder", seconds=180)
     report.ok(f"the recorder container was stopped {time.time() - stopped:.1f} s after the stop of the recording")
+    # The start script of the recorder states the jobs at the stop signal and the signal that
+    # it passed on (deploy/images/recorder/start.sh). The step holds only when a job still
+    # ran at the signal: a recorder that had ended its jobs, or that got SIGINT at once, does
+    # not show that the jobs end within the wait.
+    lines = deployment.run("logs", "--no-log-prefix", "--since", since, "recorder").splitlines()
+    running = [int(match.group(1)) for line in lines if (match := re.match(r"recorder stop: jobs running at the stop signal: (\d+);", line))]
+    report.check("a job of the recorder still ran when its container got the stop signal", len(running) == 1 and running[0] >= 1, running)
+    report.check(
+        "the recorder got SIGTERM after its jobs ended within the wait, and no SIGINT",
+        any(re.match(r"recorder stop: no job runs after \d+ s; SIGTERM to the recorder$", line) for line in lines)
+        and not any("SIGINT to the recorder" in line for line in lines),
+        [line for line in lines if line.startswith("recorder stop:")],
+    )
     detail = scene.wait_final(ended, 240)
     report.check(
         "a recording that was stopped right before the stop of the recorder is ready, with four ended segments and checked files",

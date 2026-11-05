@@ -104,12 +104,17 @@ stopped() {
     echo $(cat /work/events) "$code"
 }
 check "without a job the recorder gets SIGTERM without a wait" "[ \"$(stopped "" 60 keep)\" = \"TERM 0\" ]"
+check "it states the stop: no job at the signal and SIGTERM after 0 s" \
+    "grep -q \"^recorder stop: jobs running at the stop signal: 0; the wait for them is 60 s\$\" /work/log && grep -q \"^recorder stop: no job runs after 0 s; SIGTERM to the recorder\$\" /work/log"
 events=$(stopped 1 60 end)
 check "with a job that ends within the wait the recorder gets SIGTERM after the job ended: $events" \
     "case \"$events\" in \"waited \"*\"ended \"*\"TERM 0\") true ;; *) false ;; esac"
+check "it states one job at the signal and SIGTERM after the wait" \
+    "grep -q \"^recorder stop: jobs running at the stop signal: 1;\" /work/log && grep -q \"^recorder stop: no job runs after [1-9][0-9]* s; SIGTERM\" /work/log"
 events=$(stopped 1 2 keep)
 check "with a job that runs after the wait the recorder gets SIGINT at the end of the wait: $events" \
     "[ \"$events\" = \"waited waited INT 0\" ]"
+check "it states the job that still runs and SIGINT" "grep -q \"^recorder stop: jobs still running after 2 s: 1; SIGINT to the recorder\$\" /work/log"
 
 if [ "$failures" -eq 0 ]; then echo "all checks passed"; else echo "$failures check(s) failed"; exit 1; fi
 '
