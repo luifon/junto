@@ -791,7 +791,10 @@ def check_frame(scene: Scene, when: str, path: str, at: float) -> None:
         unit = picture_width / 640
         for bar in range(8):
             crops[f"camera-{tile}-bar-{bar}"] = (left + (bar * 80 + 28) * unit, y + 170 * unit, 24 * unit, 24 * unit)
+        # Two places of the band: the white line that crosses the camera picture can cover
+        # one of them, never both.
         crops[f"camera-{tile}-band"] = (left + 500 * unit, y + 306 * unit, 100 * unit, 20 * unit)
+        crops[f"camera-{tile}-band-2"] = (left + 300 * unit, y + 306 * unit, 100 * unit, 20 * unit)
     crops["corner"] = (2, 2, 4, 4)
     measured = scene.media.regions(path, at, crops)
     if set(measured) != set(crops):
@@ -812,12 +815,16 @@ def check_frame(scene: Scene, when: str, path: str, at: float) -> None:
             sum(bars) >= 7,
             [tuple(round(value) for value in measured[f"camera-{tile}-bar-{bar}"]) for bar in range(8)],
         )
-        band = measured[f"camera-{tile}-band"]
-        owners[tile] = "A" if same_colour(band, COLOUR_A) else "B" if same_colour(band, COLOUR_B) else None
+        bands = [measured[f"camera-{tile}-band"], measured[f"camera-{tile}-band-2"]]
+        owners[tile] = (
+            "A" if any(same_colour(band, COLOUR_A) for band in bands)
+            else "B" if any(same_colour(band, COLOUR_B) for band in bands)
+            else None
+        )
     report.check(
         f"frame {when}: the two camera tiles are the cameras of A and of B",
         sorted(str(owner) for owner in owners.values()) == ["A", "B"],
-        {tile: tuple(round(value) for value in measured[f"camera-{tile}-band"]) for tile in range(2)},
+        {tile: [tuple(round(value) for value in measured[f"camera-{tile}-{band}"]) for band in ("band", "band-2")] for tile in range(2)},
     )
     report.check(f"frame {when}: the stage beside the tiles is dark", measured["corner"][0] < 60, measured["corner"])
 

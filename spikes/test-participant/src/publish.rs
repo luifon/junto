@@ -225,8 +225,14 @@ async fn join(args: &PublishArgs, files: &Files, sharing: bool, second: bool, mu
 
     let camera = if args.camera {
         let (width, height) = pattern::parse_size(&args.camera_size)?;
-        let pattern =
-            Pattern::new(PatternKind::Camera, (width, height), &label(args), color(args)?, marker(args));
+        let pattern = Pattern::new(
+            PatternKind::Camera,
+            (width, height),
+            &label(args),
+            color(args)?,
+            marker(args),
+            matrix(args),
+        );
         let options = video_options(TrackSource::Camera, args);
         Some(publish_pattern(&room, "camera", pattern, (width, height), args.camera_fps, options).await?)
     } else {
@@ -240,8 +246,14 @@ async fn join(args: &PublishArgs, files: &Files, sharing: bool, second: bool, mu
 
 async fn publish_screen(room: &Room, args: &PublishArgs, files: &Files) -> Result<Vec<Published>> {
     let (width, height) = pattern::parse_size(&args.screen_size)?;
-    let pattern =
-        Pattern::new(PatternKind::Screen, (width, height), &label(args), color(args)?, marker(args));
+    let pattern = Pattern::new(
+        PatternKind::Screen,
+        (width, height),
+        &label(args),
+        color(args)?,
+        marker(args),
+        matrix(args),
+    );
     let options = video_options(TrackSource::Screenshare, args);
     let mut tracks =
         vec![publish_pattern(room, "screen", pattern, (width, height), args.screen_fps, options).await?];
@@ -268,7 +280,8 @@ async fn publish_second_screen(room: &Room, args: &PublishArgs) -> Result<Vec<Pu
         Some(text) => pattern::parse_color(text).map_err(|e| anyhow!("--second-screen-color: {e}"))?,
         None => color(args)?,
     };
-    let pattern = Pattern::new(PatternKind::Screen, (width, height), &label(args), colour, marker(args));
+    let pattern =
+        Pattern::new(PatternKind::Screen, (width, height), &label(args), colour, marker(args), matrix(args));
     let options = video_options(TrackSource::Screenshare, args);
     let name = format!("screen/{}/1", args.screen_fps);
     let mut tracks = vec![publish_pattern(room, &name, pattern, (width, height), args.screen_fps, options).await?];
@@ -298,6 +311,14 @@ fn color(args: &PublishArgs) -> Result<(u8, u8, u8)> {
     match &args.screen_color {
         Some(text) => pattern::parse_color(text).map_err(|e| anyhow!("--screen-color: {e}")),
         None => Ok(pattern::color_for(&label(args))),
+    }
+}
+
+/// The matrix that the receivers of the video codec of `args` read (`pattern::Matrix`).
+fn matrix(args: &PublishArgs) -> pattern::Matrix {
+    match args.video_codec {
+        VideoCodecArg::Vp8 => pattern::Matrix::Bt601,
+        VideoCodecArg::H264 => pattern::Matrix::Bt709,
     }
 }
 
