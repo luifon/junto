@@ -82,7 +82,7 @@ pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
 pub use text_targets::TextTargets;
 pub use tile::{PersonTile, TileMark};
-pub use tooltip::tooltip;
+pub use tooltip::{focused_tooltip, tooltip};
 
 use crate::assets::Icon;
 use crate::theme::{Theme, Type, u};
