@@ -1732,7 +1732,33 @@ fn a_move_that_the_moved_device_cannot_join_is_told_to_the_mover(cx: &mut TestAp
             .any(|occupant| occupant.account_id == ada)
     );
 
-    // The notice stays until Luca puts it away.
+    // The notice stays until Luca puts it away: a minute of the clock of the window and a
+    // change of the own call do not take it away.
+    scene
+        .window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(60));
+    scene.window.settle();
+    let own_muted = |window: &mut crate::harness::Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.calls().view().muted)
+    };
+    let muted_before = own_muted(&mut scene.window);
+    scene.window.click("microphone");
+    scene
+        .window
+        .until("the microphone control of Luca changed", |window| {
+            own_muted(window) != muted_before
+        });
+    assert!(scene.window.shows("call-told"));
+    assert_eq!(
+        scene.window.state.read_with(&scene.window.cx, |state, _| {
+            state.pending().call_told.clone()
+        }),
+        told
+    );
     scene.window.click("dismiss-call-told");
     assert!(!scene.window.shows("call-told"));
     assert!(scene.window.state.read_with(&scene.window.cx, |state, _| {
@@ -2060,8 +2086,8 @@ fn listed(
 }
 
 /// From a call on one server, a double click on a voice channel of a second server does what
-/// the join button does there: a locked room refuses it and the call on the first server
-/// goes on; an open room is entered and the first server no longer lists the person; the
+/// the join button does there: a locked room and a full room refuse it and the call on the
+/// first server goes on; an open room is entered and the first server no longer lists the person; the
 /// join button on the first server brings the device back in the same way.
 #[gpui::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
@@ -2141,11 +2167,46 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
     assert!(in_first(&mut scene.window));
     scene.window.click("dismiss-call-notice");
 
-    // The open room is entered: the device leaves the call of the first server.
+    // A full room of the second server refuses the double click as it refuses the join
+    // button, and the call on the first server goes on.
     scene.world.run(bea_api.unlock_call(review)).unwrap();
     scene
+        .world
+        .run(bea_api.update_call_settings(
+            review,
+            &UpdateCallSettings {
+                user_limit: Some(Some(1)),
+                hides_occupants: None,
+            },
+        ))
+        .unwrap();
+    scene.window.until("the full room is shown", |window| {
+        closed(window) == Some(Closed::Full)
+    });
+    scene.window.double_click_channel("Review");
+    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    assert!(in_first(&mut scene.window));
+    scene.window.click("dismiss-call-notice");
+    scene.window.click("join-call");
+    let at_button = refusal(&mut scene.window, "the refusal of the join button");
+    assert_eq!(at_double_click, at_button);
+    assert!(in_first(&mut scene.window));
+    scene.window.click("dismiss-call-notice");
+
+    // The open room is entered: the device leaves the call of the first server.
+    scene
+        .world
+        .run(bea_api.update_call_settings(
+            review,
+            &UpdateCallSettings {
+                user_limit: Some(None),
+                hides_occupants: None,
+            },
+        ))
+        .unwrap();
+    scene
         .window
-        .until("the lock is gone", |window| closed(window).is_none());
+        .until("the room is open", |window| closed(window).is_none());
     scene.window.double_click_channel("Review");
     scene
         .window
