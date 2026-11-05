@@ -285,6 +285,9 @@ pub struct Shell {
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
     thread_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
+    /// Where the open menu of a message was drawn first: it stays there while the message
+    /// grows, such as with its first reaction (ADR 0730).
+    message_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
     profile: profile::ProfileUi,
@@ -838,6 +841,7 @@ impl Shell {
             focus: cx.focus_handle(),
             layer_focus: cx.focus_handle(),
             thread_menu_placement: Default::default(),
+            message_menu_placement: Default::default(),
             layer: Layer::None,
             switcher,
             profile: profile::ProfileUi::default(),
@@ -1462,6 +1466,9 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(layer, Layer::MessageMenu(_)) {
+            self.message_menu_placement = Default::default();
+        }
         let reaction = match &layer {
             Layer::ReactionPeople(dialog) => {
                 self.reaction_menu = None;

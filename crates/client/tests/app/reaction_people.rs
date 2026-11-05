@@ -421,3 +421,41 @@ fn an_external_channel_link_closes_the_reactor_account_menu_and_roster(cx: &mut 
 fn an_external_message_link_closes_the_reactor_profile_and_roster(cx: &mut TestAppContext) {
     external_link_closes_reactor_overlays(cx, true);
 }
+
+/// The first reaction that arrives while the menu of a message is open moves no item of the
+/// menu: "Who reacted" stays in it while the message has no reaction, disabled (ADR 0730).
+#[gpui::test]
+fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let channel = window.selected_channel();
+    let sent = admin.send(&world, channel, document("a plan to confirm"));
+    window.until_message("a plan to confirm");
+    window.right_click_message(sent.id);
+    let before = window.cx.debug_bounds("message-mark-read").unwrap();
+    assert!(window.shows("message-reaction-people"));
+    window.click("message-reaction-people");
+    assert!(
+        window.shows("message-mark-read"),
+        "a press on the disabled item leaves the menu open"
+    );
+    world
+        .run(admin.handle.api().add_reaction(sent.id, "👍"))
+        .unwrap();
+    window.until("the message has its reaction", |window| {
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == sent.id && !row.message.reactions.is_empty())
+    });
+    assert_eq!(window.cx.debug_bounds("message-mark-read"), Some(before));
+    window.click("message-reaction-people");
+    let author = admin.handle.account().unwrap();
+    window.until("the reactor is listed", |window| {
+        window.shows_named(format!("reaction-person:{author}"))
+    });
+}

@@ -4872,15 +4872,19 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(reaction) = row.message.reactions.first()
-            && let Some(key) = self.reactor_key(
-                server_id,
-                PlaceId::of_message(&row.message),
-                message_id,
-                reaction.emoji.clone(),
-                cx,
-            )
-        {
+        // The item stays while the message has no reaction, disabled: the first reaction that
+        // arrives while the menu is open would otherwise insert it and move every item under
+        // it, also the one under the pointer (ADR 0730).
+        if !row.message.deleted && self.state.read(cx).owner(server_id).is_some() {
+            let key = row.message.reactions.first().and_then(|reaction| {
+                self.reactor_key(
+                    server_id,
+                    PlaceId::of_message(&row.message),
+                    message_id,
+                    reaction.emoji.clone(),
+                    cx,
+                )
+            });
             let emojis = row
                 .message
                 .reactions
@@ -4890,9 +4894,12 @@ impl Shell {
             items.push(
                 MenuItem::new("message-reaction-people", text::WHO_REACTED)
                     .selector("message-reaction-people")
+                    .disabled(key.is_none())
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
+                        if let Some(key) = &key {
+                            this.close_layer(window, cx);
+                            this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
+                        }
                     }))
                     .into_any_element(),
             );
@@ -5057,10 +5064,13 @@ impl Shell {
                 this.close_layer(window, cx);
             }))
             .children(items)
-            .popup(point(
-                u(44.0).to_pixels(window.rem_size()),
-                u(4.0).to_pixels(window.rem_size()),
-            ))
+            .popup_stable(
+                point(
+                    u(44.0).to_pixels(window.rem_size()),
+                    u(4.0).to_pixels(window.rem_size()),
+                ),
+                self.message_menu_placement.clone(),
+            )
     }
 
     /// The question before a message is deleted: the deletion cannot be undone
