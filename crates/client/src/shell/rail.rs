@@ -156,8 +156,13 @@ impl Shell {
                             .update(cx, |address, cx| address.set_value("", window, cx));
                         this.state
                             .update(cx, |state, cx| state.select_server(server_id, cx));
+                        // Only the code of a link to the typed address: a link of another
+                        // server whose read failed earlier gives no code.
                         let code = match this.pending_link.take() {
-                            Some(junto_client_core::links::AppLink::Invite { code, .. }) => {
+                            Some(junto_client_core::links::AppLink::Invite { server, code })
+                                if junto_client_core::address::ServerAddress::parse(&address)
+                                    .is_ok_and(|typed| typed == server) =>
+                            {
                                 Some(code)
                             }
                             _ => None,

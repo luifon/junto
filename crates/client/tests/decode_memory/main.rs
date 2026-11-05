@@ -12,8 +12,10 @@ use std::time::Instant;
 #[global_allocator]
 static ALLOCATOR: junto_alloc_count::Counting = junto_alloc_count::Counting::new();
 
-/// The size of the viewer on a screen of 2560 × 1440.
-const FIT: (u32, u32) = (2400, 1300);
+/// The size of the viewer on a screen of 2560 × 1440, and the largest picture of a list at
+/// the display scale of 2 (ADR 0740).
+const VIEWER: (u32, u32) = (2400, 1300);
+const LIST: (u32, u32) = (584, 440);
 const MIB: f64 = 1024.0 * 1024.0;
 
 /// A photo-like picture: smooth colours with fine detail, so that the files have the size
@@ -76,41 +78,50 @@ fn measure(
     file: &[u8],
     media_type: &str,
     size: (u32, u32),
+    fit: (u32, u32),
     reduce: bool,
 ) -> (Option<(u32, u32)>, f64, f64) {
     ALLOCATOR.reset_peak();
     let before = ALLOCATOR.held();
     let started = Instant::now();
-    let decoded = junto_client::shell::decode_still(file, media_type, size, FIT, reduce);
+    let decoded = junto_client::shell::decode_still(file, media_type, size, fit, reduce);
     let time = started.elapsed().as_secs_f64() * 1000.0;
     let peak = ALLOCATOR.peak().saturating_sub(before) as f64 / MIB;
     (decoded, peak, time)
 }
+
+/// A photo of the measurement: its format, its size, the name and the size of the plan,
+/// and whether it is decoded reduced.
+type Photo = (&'static str, (u32, u32), (&'static str, (u32, u32)), bool);
 
 fn main() {
     if std::env::var_os("JUNTO_TEST_DECODE_MEMORY").is_none() {
         return;
     }
     println!(
-        "| Photo | File | Decoding | Result | Most memory beyond the file | Time |\n|---|---|---|---|---|---|"
+        "| Photo | File | Plan | Decoding | Result | Most memory beyond the file | Time |\n\
+         |---|---|---|---|---|---|---|"
     );
-    let photos: [(&str, (u32, u32), bool); 5] = [
-        ("JPEG", (6000, 4000), true),
-        ("JPEG", (6000, 4000), false),
-        ("JPEG", (9000, 6000), true),
-        ("PNG", (6000, 4000), true),
-        ("PNG", (6000, 4000), false),
+    let photos: [Photo; 8] = [
+        ("JPEG", (6000, 4000), ("viewer", VIEWER), true),
+        ("JPEG", (6000, 4000), ("viewer", VIEWER), false),
+        ("JPEG", (9000, 6000), ("viewer", VIEWER), true),
+        ("JPEG", (9000, 6000), ("list", LIST), true),
+        ("JPEG", (6000, 4000), ("list", LIST), false),
+        ("PNG", (6000, 4000), ("viewer", VIEWER), true),
+        ("PNG", (6000, 4000), ("viewer", VIEWER), false),
+        ("PNG", (6000, 4000), ("list", LIST), true),
     ];
     let mut failures = Vec::new();
-    for (kind, size, reduce) in photos {
+    for (kind, size, (plan, fit), reduce) in photos {
         let (file, media_type) = if kind == "JPEG" {
             (jpeg(size), "image/jpeg")
         } else {
             (png(size), "image/png")
         };
-        let (decoded, peak, time) = measure(&file, media_type, size, reduce);
+        let (decoded, peak, time) = measure(&file, media_type, size, fit, reduce);
         println!(
-            "| {kind} {} × {} | {:.1} MiB | {} | {} | {peak:.1} MiB | {time:.0} ms |",
+            "| {kind} {} × {} | {:.1} MiB | {plan} | {} | {} | {peak:.1} MiB | {time:.0} ms |",
             size.0,
             size.1,
             file.len() as f64 / MIB,
@@ -123,13 +134,15 @@ fn main() {
                 "{width} × {height}"
             )),
         );
-        // The bound that the gate of the decodings reserves for a reduced decoding: 24
-        // bytes for each planned pixel, the result of 4 bytes, and 1 MiB.
+        // The bound that the gate of the decodings reserves for a reduced decoding besides
+        // the file: 24 bytes for each planned pixel, the result of 4 bytes, 40 bytes for
+        // each pixel of the longest side, and 1 MiB. A copy of the file would exceed it
+        // for a list plan.
         let planned = decoded.map_or(0.0, |(width, height)| f64::from(width) * f64::from(height));
         let bound = (planned * 28.0) / MIB + 1.0 + f64::from(size.0.max(size.1)) * 40.0 / MIB;
         if reduce && (decoded.is_none() || peak > bound) {
             failures.push(format!(
-                "{kind} {size:?}: a reduced decoding held {peak:.1} MiB, above {bound:.1} MiB"
+                "{kind} {size:?} for the {plan}: a reduced decoding held {peak:.1} MiB, above {bound:.1} MiB"
             ));
         }
     }

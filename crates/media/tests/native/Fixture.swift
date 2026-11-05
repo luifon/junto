@@ -132,7 +132,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
         second = window
         return "second \(place(window))"
     }
-    /// Moves the second window by points, left and down, and gives its new place.
+    /// Moves the second window by points, left and up, and gives its new place.
     func moveSecond(_ dx: CGFloat, _ dy: CGFloat) -> String {
         guard let window = second else { return "error no second window" }
         window.setFrameOrigin(NSPoint(x: window.frame.minX - dx, y: window.frame.minY + dy))

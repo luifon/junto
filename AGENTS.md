@@ -103,10 +103,10 @@ The release tooling of the client: the macOS bundle, its disk image and their si
 
 ## `vendor/`
 
-Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8, `gpui-pre-linux` 0.3.8 and `gpui-pre-macos` 0.3.8, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
+Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8, `gpui-pre-linux` 0.3.8 and `gpui-pre-macos` 0.3.8, and of the component library `gpui-base` 0.7.1, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
 
 - `vendor/README.md`: the checksum of each source archive, the files that were kept, each correction, when to remove it, and the tests to run when a copy is replaced.
-- ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
+- ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui and of `gpui-base`. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
 
 ## Build
 

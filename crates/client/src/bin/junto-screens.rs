@@ -594,6 +594,8 @@ struct Screen {
     preset: &'static str,
     /// The screen capture of the screen. It exists only in the program.
     capture: Arc<dyn ScreenCapture>,
+    /// A check of the drawn pixels of the screen: the problem that it finds.
+    check: Option<fn(&image::RgbaImage) -> Option<String>>,
 }
 
 impl Screen {
@@ -606,7 +608,14 @@ impl Screen {
             scale: 100,
             preset: "Luca",
             capture: Arc::new(capture()),
+            check: None,
         }
+    }
+
+    /// Checks the drawn pixels of the screen; a problem fails the run as an empty band does.
+    fn check(mut self, check: fn(&image::RgbaImage) -> Option<String>) -> Self {
+        self.check = Some(check);
+        self
     }
 
     fn capture(mut self, capture: Arc<dyn ScreenCapture>) -> Self {
@@ -749,6 +758,7 @@ impl Studio {
         };
         let name = screen.name;
         let (width, scale) = (screen.size.0, screen.scale);
+        let check = screen.check;
         self.drawing(Some(name));
         let (window, shell, _) = self.open(screen, prepare)?;
         let started = Instant::now();
@@ -839,6 +849,9 @@ impl Studio {
                 .into_iter()
                 .map(|band| format!("{name}: {band}")),
         );
+        if let Some(problem) = check.and_then(|check| check(&image)) {
+            self.bands.push(format!("{name}: {problem}"));
+        }
         self.bands.extend(
             junto_client::ui::outside(&controls, px(width))
                 .into_iter()

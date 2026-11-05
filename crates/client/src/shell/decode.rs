@@ -318,15 +318,16 @@ fn reduced(bytes: &[u8], stated: Stated, plan: Plan) -> Option<RgbaImage> {
 }
 
 fn reduced_jpeg(bytes: &[u8], stated: Stated, plan: Plan, limit: usize) -> Option<RgbaImage> {
-    use image::ImageDecoder as _;
-    let orientation = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes))
-        .ok()?
-        .orientation()
-        .unwrap_or(Orientation::NoTransforms);
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_max_decoding_buffer_size(limit);
     decoder.read_info().ok()?;
     let info = decoder.info()?;
+    // The EXIF block comes before the frame header, which ends `read_info`; the decoder
+    // reads the file from the held bytes and makes no copy of it.
+    let orientation = decoder
+        .exif_data()
+        .and_then(Orientation::from_exif_chunk)
+        .unwrap_or(Orientation::NoTransforms);
     if info.coding_process != jpeg_decoder::CodingProcess::DctSequential
         || !matches!(
             info.pixel_format,

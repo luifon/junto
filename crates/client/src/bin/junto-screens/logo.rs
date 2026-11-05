@@ -50,14 +50,18 @@ fn acme_id() -> ServerId {
     id(1)
 }
 
-/// A logo of a workspace that is wider than its square: three bands of colour, so that a
-/// screen shows the middle band in the square and nothing of the logo outside it.
+/// The outer bands of the wide logo of a workspace: colours that no theme uses.
+const SPILL: [[u8; 3]; 2] = [[0x00, 0xFF, 0x00], [0xFF, 0x00, 0xFF]];
+
+/// A logo of a workspace that is three times as wide as high: a green band, a beige band
+/// of 160 of its 360 pixels in the middle, and a magenta band. The square of the row shows
+/// the middle third of a covering image, 120 pixels, which lies inside the beige band.
 fn wide_mark() -> Vec<u8> {
     let drawn = image::RgbImage::from_fn(360, 120, |x, _| {
         image::Rgb(match x {
-            0..120 => [0xC0, 0x3A, 0x2B],
-            120..240 => [0xEB, 0xD9, 0xBC],
-            _ => [0x2B, 0x5D, 0xC0],
+            0..100 => SPILL[0],
+            100..260 => RING,
+            _ => SPILL[1],
         })
     });
     let mut bytes = Vec::new();
@@ -68,6 +72,28 @@ fn wide_mark() -> Vec<u8> {
         panic!("the logo of a screen was not encoded: {error}");
     }
     bytes
+}
+
+/// The square of the row shows the middle of the wide logo and nothing else: no pixel of the
+/// screen has the colour of one of its outer bands (ADR 0122). With the cut of the decoder
+/// and the cover of the drawing both removed, the check finds them.
+fn logo_inside_its_square(image: &image::RgbaImage) -> Option<String> {
+    let near = |pixel: &image::Rgba<u8>, colour: [u8; 3]| {
+        pixel.0[..3]
+            .iter()
+            .zip(colour)
+            .all(|(got, wanted)| got.abs_diff(wanted) <= 40)
+    };
+    let spilled = image
+        .pixels()
+        .filter(|pixel| SPILL.iter().any(|colour| near(pixel, *colour)))
+        .count();
+    (spilled > 0).then(|| {
+        format!(
+            "{spilled} pixels of the outer bands of a workspace logo are drawn: the square of \
+             the row shows more than the middle of the logo"
+        )
+    })
 }
 
 /// The workspaces "Studio" and "Client Alpha" of "Acme Studio" have logos; "Client Beta"
@@ -162,8 +188,17 @@ pub fn draw(studio: &mut Studio) -> Result<(), String> {
     // The workspace lists with the logos of two workspaces in place of their generated
     // pictures: the logo of "Studio" is wider than its square.
     studio.draw(
-        Screen::new("logo-book-workspaces", two_servers()).scale(200),
+        Screen::new("logo-book-workspaces", two_servers()).check(logo_inside_its_square),
         with_workspace_logos(|_, _, _| {}),
+    )?;
+    // At 200 % the server book is collapsed: the hover menu of the server lists the rows.
+    studio.draw(
+        Screen::new("logo-book-workspaces-menu", two_servers())
+            .scale(200)
+            .check(logo_inside_its_square),
+        with_workspace_logos(|shell, window, cx| {
+            shell.open(junto_client::shell::Open::ServerHoverMenu, window, cx);
+        }),
     )?;
     studio.draw(
         Screen::new("logo-workspaces-page", owned_with_workspace_logos()),

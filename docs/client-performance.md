@@ -94,17 +94,20 @@ A received picture in planes that is drawn smaller is scaled from its planes whe
 
 ### A large photo is decoded at the size at which it is drawn
 
-A still JPEG of sequential coding and a still PNG without interlacing are decoded at the size at which the window draws them, without the whole picture in memory (ADR 0408, ADR 0740); before, every still picture was decoded at its own size and then reduced, and a photo above 33,554,432 pixels or a file above 32 MiB was a file row. Measured on 2026-11-05 with the target `decode_memory` in a release build in the Linux build image (two processors), for the viewer at 2400 × 1300 pixels: the most bytes of Rust allocations that the decoding held beyond the bytes of the file, and its time on one thread. The pictures are generated with smooth colours and fine detail.
+A still JPEG of sequential coding and a still PNG without interlacing are decoded at the size at which the window draws them, without the whole picture in memory (ADR 0408, ADR 0740); before, every still picture was decoded at its own size and then reduced, and a photo above 33,554,432 pixels or a file above 32 MiB was a file row. Measured on 2026-11-05 with the target `decode_memory` in a release build in the Linux build image (two processors), for the viewer at 2400 × 1300 pixels and a list: the most bytes of Rust allocations that the decoding held beyond the bytes of the file, and its time. The JPEG decoder starts one thread for each colour component of a picture above 128 × 128 pixels, so its time is not the time of one thread. The pictures are generated with smooth colours and fine detail.
 
-| Photo | File | Decoding | Result | Most memory beyond the file | Time |
-|---|---|---|---|---|---|
-| JPEG 6000 × 4000 | 6.4 MiB | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 619 ms |
-| JPEG 6000 × 4000 | 6.4 MiB | reduced | 1950 × 1300 | 34.4 MiB | 348 ms |
-| JPEG 9000 × 6000 | 14.3 MiB | reduced (a file row before) | 1950 × 1300 | 26.6 MiB | 828 ms |
-| PNG 6000 × 4000 | 5.4 MiB | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 348 ms |
-| PNG 6000 × 4000 | 5.4 MiB | reduced | 1950 × 1300 | 10.2 MiB | 295 ms |
+| Photo | File | Plan | Decoding | Result | Most memory beyond the file | Time |
+|---|---|---|---|---|---|---|
+| JPEG 6000 × 4000 | 6.4 MiB | viewer | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 576 ms |
+| JPEG 6000 × 4000 | 6.4 MiB | viewer | reduced | 1950 × 1300 | 34.4 MiB | 348 ms |
+| JPEG 9000 × 6000 | 14.3 MiB | viewer | reduced (a file row before) | 1950 × 1300 | 26.6 MiB | 483 ms |
+| JPEG 6000 × 4000 | 6.4 MiB | list | whole, then reduced (before) | 584 × 389 | 75.3 MiB | 401 ms |
+| JPEG 9000 × 6000 | 14.3 MiB | list | reduced (a file row before) | 584 × 389 | 4.8 MiB | 386 ms |
+| PNG 6000 × 4000 | 5.4 MiB | viewer | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 351 ms |
+| PNG 6000 × 4000 | 5.4 MiB | viewer | reduced | 1950 × 1300 | 10.2 MiB | 305 ms |
+| PNG 6000 × 4000 | 5.4 MiB | list | reduced | 584 × 389 | 1.3 MiB | 197 ms |
 
-The JPEG decoder reduces by a power of two to the smallest size that covers the plan: 6000 × 4000 is decoded at 3000 × 2000 for this plan and 9000 × 6000 at 2250 × 1500, which is why the larger photo holds less. The memory figures of a debug build on a Mac were the same. A JPEG of progressive coding and an interlaced PNG are still decoded whole, within 33,554,432 pixels.
+The list plan is the largest picture of a list at the display scale of 2 (584 × 440 pixels). The EXIF orientation of a JPEG is read from the block that the JPEG decoder reads before the frame header: an earlier version read it with a second decoder that copied the whole file, which the reservation of the decoding gate did not count. That copy was not measured; for a list plan it is larger than the reservation of the decoding (4.8 MiB held against a file of 14.3 MiB above), and the bound check of the target fails when a decoding holds more than its reservation besides the file. The JPEG decoder reduces by a power of two to the smallest size that covers the plan: 6000 × 4000 is decoded at 3000 × 2000 for this plan and 9000 × 6000 at 2250 × 1500, which is why the larger photo holds less. The memory figures of a debug build on a Mac were the same. A JPEG of progressive coding and an interlaced PNG are still decoded whole, within 33,554,432 pixels.
 
 ### The emoji of the fonts are measured once per installation and font set
 

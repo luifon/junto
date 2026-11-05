@@ -624,6 +624,43 @@ fn until_middle(
     }
 }
 
+/// Waits until the newest picture shows the colours of the quarters of an area of the screen,
+/// for the quarters whose middle is outside `covered` (an inner area of the screen, widened by
+/// 80 pixels for a frame and a caption at every display scale).
+fn until_colours_beside(
+    pictures: &Pictures,
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+    covered: (i32, i32, i32, i32),
+    what: &str,
+) {
+    let margin = 80;
+    let (left, top) = (area.0, area.1);
+    let (width, height) = (area.2 - area.0, area.3 - area.1);
+    let middles = [
+        (left + width / 4, top + height / 4),
+        (left + width * 3 / 4, top + height / 4),
+        (left + width / 4, top + height * 3 / 4),
+        (left + width * 3 / 4, top + height * 3 / 4),
+    ];
+    let free: Vec<(usize, (i32, i32))> = middles
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (x, y))| {
+            !(covered.0 - margin..covered.2 + margin).contains(x)
+                || !(covered.1 - margin..covered.3 + margin).contains(y)
+        })
+        .collect();
+    assert!(
+        free.len() >= 2,
+        "{what}: the dialog covers {} quarters",
+        4 - free.len()
+    );
+    for (quarter, (x, y)) in free {
+        until_middle(pictures, (x, y, x, y), screen, COLOURS[quarter], what);
+    }
+}
+
 /// A share of an application draws a dialog that its window opens, a window that the
 /// application opens after the start of the share, and its window at the new place after a
 /// move, with black at the place that the window left (ADR 0738).
@@ -680,8 +717,9 @@ fn an_application_share_draws_a_dialog_a_later_window_and_a_moved_window() {
         "the window opened after the start of the share",
     );
 
-    // The window moves left and up, so that its old bottom right quarter is free of it, of
-    // the dialog and of the later window.
+    // The window moves left and up, so that its old bottom right corner is free of it, of
+    // the dialog and of the later window. An owned dialog does not move with its owner: it
+    // stays at its place, above the moved window, and covers part of it.
     let before = fixture.area;
     let (right, down) = (-120, -100);
     let moved = fixture.answer(&format!("move {right} {down}"), "moved ");
@@ -690,11 +728,19 @@ fn an_application_share_draws_a_dialog_a_later_window_and_a_moved_window() {
         (right, down),
         "the fixture did not move by the asked pixels"
     );
-    until_colours(
+    until_colours_beside(
         &pictures,
-        0,
-        screen_places(moved, screen),
+        moved,
+        screen,
+        dialog,
         "the application share after a move",
+    );
+    until_middle(
+        &pictures,
+        dialog,
+        screen,
+        window::DIALOG_COLOUR,
+        "the dialog at its place after the move of its owner",
     );
     let left_place = (before.2 - 30, before.3 - 30, before.2 - 10, before.3 - 10);
     until_middle(

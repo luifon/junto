@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use sha2::{Digest, Sha256};
 
 use crate::app_identity::APP_ID;
-use crate::paths::{DataDir, data_dir_of_this_user};
+use crate::paths::{DataDir, normal_data_dir_of_this_user};
 
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -191,7 +191,7 @@ impl SystemStartup {
         if let Some(service) = held.as_ref() {
             return Ok(service.clone());
         }
-        let normal = data_dir_of_this_user().map_err(io::Error::other)?;
+        let normal = normal_data_dir_of_this_user().map_err(io::Error::other)?;
         let profile = Profile::of(self.directory.root(), Some(&normal))?;
         let service: Arc<dyn Startup> = {
             #[cfg(target_os = "linux")]
@@ -223,7 +223,7 @@ impl Startup for SystemStartup {
         self.native()?.open_approval()
     }
     fn profile_name(&self) -> Option<String> {
-        let normal = data_dir_of_this_user().ok();
+        let normal = normal_data_dir_of_this_user().ok();
         match Profile::of(self.directory.root(), normal.as_deref()) {
             Ok(Profile::Other { name, .. }) => Some(name),
             _ => None,
@@ -262,6 +262,28 @@ mod tests {
         let third = root.path().join("third");
         std::fs::create_dir_all(&third).unwrap();
         assert_ne!(Profile::of(&third, Some(&normal)).unwrap(), profile);
+        // A directory chosen with `JUNTO_DATA_DIR` is another profile: the normal directory
+        // is the default of the system without that variable.
+        let home = root.path().join("home");
+        let variables = |name: &str| match name {
+            "JUNTO_DATA_DIR" => Some(other.clone().into_os_string()),
+            "HOME" => Some(home.clone().into_os_string()),
+            _ => None,
+        };
+        let system_normal =
+            crate::paths::normal_data_dir(crate::paths::System::MacOs, variables).unwrap();
+        assert_eq!(
+            system_normal,
+            home.join("Library/Application Support/Junto")
+        );
+        assert_eq!(
+            crate::paths::default_data_dir(crate::paths::System::MacOs, variables).unwrap(),
+            other
+        );
+        assert!(matches!(
+            Profile::of(&other, Some(&system_normal)).unwrap(),
+            Profile::Other { .. }
+        ));
         // Without a directory of the user every directory is another profile.
         assert!(matches!(
             Profile::of(&normal, None).unwrap(),

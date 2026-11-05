@@ -43,8 +43,10 @@ const MOVE: u32 = WM_APP + 5;
 /// The colours of a dialog and of a later window, as red, green and blue.
 pub const DIALOG_COLOUR: (u8, u8, u8) = (204, 26, 204);
 pub const LATER_COLOUR: (u8, u8, u8) = (26, 204, 204);
-/// The size of the inner area of a dialog and of a later window, and their place: the
-/// dialog over the top left quarter of the window, the later window right of it.
+/// The size of the inner area of a dialog and of a later window. The outer frame of the
+/// dialog starts 40 pixels right of and 60 pixels below the outer frame of the window, over
+/// its left half; the later window is 20 pixels right of the window. An owned dialog does
+/// not move with its window.
 const SECOND_SIZE: (i32, i32) = (200, 150);
 /// The place of the outer frame of the window at the start.
 const START: (i32, i32) = (160, 160);
@@ -217,7 +219,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
                 let instance =
                     HINSTANCE(INSTANCE.load(Ordering::Relaxed) as *mut core::ffi::c_void);
                 // The second call that creates a window, for the dialog and for the later
-                // window (allowed by the operator, ADR 0738): the class and the instance are
+                // window (ADR 0706): the class and the instance are
                 // those of the first window, the owner of a dialog is that window of this
                 // thread, and the title is static. It shows the window without activating it.
                 let Ok(second) = CreateWindowExW(
@@ -252,8 +254,8 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
             MOVE => {
                 let left = LEFT.fetch_add(w.0 as i32, Ordering::Relaxed) + w.0 as i32;
                 let top = TOP.fetch_add(l.0 as i32, Ordering::Relaxed) + l.0 as i32;
-                // The second call that places the window (allowed by the operator, ADR 0738):
-                // only its place changes, on the thread of the window.
+                // The second call that places the window (ADR 0706): only its place changes,
+                // on the thread of the window.
                 let _ = SetWindowPos(
                     window,
                     None,

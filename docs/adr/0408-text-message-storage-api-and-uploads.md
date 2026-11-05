@@ -290,6 +290,12 @@ Attachments:
   `previews_state_the_size_of_a_reducible_picture_up_to_its_longest_side`.
   Before, every still picture had the bounds of a whole decoding, so a photo above 33.5
   megapixels and a file above 32 MiB remained files.
+  A client of 0.1.0 reads a picture only up to 32 MiB. It takes a reducible JPEG or PNG of
+  32 to 64 MiB within 33,554,432 pixels from a server of 0.2.0 as a picture, its read
+  refuses the file, and its card states "The picture could not be shown. You can download
+  the file." with the download control of the file, where a server of 0.1.0 gave a file
+  row. A larger reducible picture is not a picture for a client of 0.1.0 (its bound of the
+  pixels), and stays a file row there.
   HEIC files remain files: no HEVC decoder in Rust exists without a C library (libheif,
   libde265) or a decoder of the system, and the client builds no C code for its decoders.
   AVIF files remain files: the AV1 decoders were measured on 2026-11-05 against the
