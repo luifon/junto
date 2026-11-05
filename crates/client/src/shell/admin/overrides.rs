@@ -583,15 +583,14 @@ impl Shell {
             .as_ref()
             .map(|list| list.subjects.clone())
             .unwrap_or_default();
-        let mut rows = vec![Row::new("permissions-header", true).part()];
+        let mut rows = vec![Row::part("permissions-header", true)];
         if list.is_some() {
-            rows.push(Row::new("rules-add-row", true).part());
+            rows.push(Row::part("rules-add-row", true));
         }
-        rows.extend(
-            subjects
-                .iter()
-                .map(|row| Row::new(format!("override-{}", subject_name(row.subject)), true)),
-        );
+        rows.extend(subjects.iter().map(|row| {
+            let name = subject_name(row.subject);
+            Row::item(format!("override-{name}"), true, name)
+        }));
         self.admin.list.take(Some(view), rows, window, cx);
         let view = view.clone();
         let failure = match rules {

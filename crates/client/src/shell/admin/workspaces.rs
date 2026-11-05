@@ -208,13 +208,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let list = std::iter::once(Row::new("workspaces-header", true).part())
+        let list = std::iter::once(Row::part("workspaces-header", true))
             .chain(
                 page.rows
                     .iter()
-                    .map(|row| Row::new(format!("workspace-{}", row.id), true)),
+                    .map(|row| Row::item(format!("workspace-{}", row.id), true, row.name.clone())),
             )
-            .chain(std::iter::once(Row::new("workspaces-footer", true).part()))
+            .chain(std::iter::once(Row::part("workspaces-footer", true)))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();

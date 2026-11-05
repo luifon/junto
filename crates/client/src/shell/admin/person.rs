@@ -13,7 +13,7 @@ use junto_client_core::protocol::ids::AccountId;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::list::Row;
-use super::overrides::OnChoose;
+use super::overrides::{OnChoose, Shown as _};
 use super::{line, line_text, page_title, refusal, sentence};
 use crate::shell::Shell;
 use crate::state::admin::AskKind;
@@ -68,11 +68,12 @@ impl Shell {
         let workspace_id = page.workspace_id;
         let what = AskKind::SetMemberPermission(workspace_id, account_id);
         let lines = page.lines.loaded().cloned().unwrap_or_default();
-        let rows = std::iter::once(Row::new("person-header", true).part())
+        let rows = std::iter::once(Row::part("person-header", true))
             .chain(lines.iter().map(|line| {
-                Row::new(
+                Row::item(
                     format!("member-permission-{}", line.permission.name()),
                     true,
+                    line.permission.label(),
                 )
             }))
             .collect();
@@ -141,12 +142,14 @@ impl Shell {
     ) -> AnyElement {
         let account_id = settings.account_id;
         let channels = page.channels.loaded().cloned().unwrap_or_default();
-        let rows = std::iter::once(Row::new("person-header", false).part())
-            .chain(
-                channels
-                    .iter()
-                    .map(|line| Row::new(format!("access-{}", line.channel_id), false)),
-            )
+        let rows = std::iter::once(Row::part("person-header", false))
+            .chain(channels.iter().map(|line| {
+                Row::item(
+                    format!("access-{}", line.channel_id),
+                    false,
+                    access_name(line),
+                )
+            }))
             .collect();
         self.admin.list.take(Some(view), rows, window, cx);
         let view = view.clone();
@@ -182,11 +185,7 @@ impl Shell {
                 }
                 let channel = &channels[index - 1];
                 let channel_id = channel.channel_id;
-                let name = text::admin::channel_name(channel.kind, &channel.name);
-                let name = match &channel.category {
-                    Some(category) => format!("{name} · {category}"),
-                    None => name,
-                };
+                let name = access_name(channel);
                 div()
                     .flex()
                     .flex_col()
@@ -229,11 +228,12 @@ impl Shell {
         } else {
             page.lines.loaded().cloned().unwrap_or_default()
         };
-        let rows = std::iter::once(Row::new("person-header", true).part())
+        let rows = std::iter::once(Row::part("person-header", true))
             .chain(lines.iter().map(|line| {
-                Row::new(
+                Row::item(
                     format!("server-permission-{}", line.permission.name()),
                     true,
+                    line.permission.label(),
                 )
             }))
             .collect();
@@ -296,5 +296,14 @@ impl Shell {
             window,
             cx,
         )
+    }
+}
+
+/// The name of a channel in the access of a person: the channel and its category.
+fn access_name(channel: &crate::state::admin::view::person::AccessLine) -> String {
+    let name = text::admin::channel_name(channel.kind, &channel.name);
+    match &channel.category {
+        Some(category) => format!("{name} · {category}"),
+        None => name,
     }
 }

@@ -320,21 +320,21 @@ impl Shell {
             .or(sending(view).then_some(text::admin::SENDING));
         let terms = page.terms.loaded().cloned().unwrap_or_default();
         let open = |index: usize| matches!(self.admin.mode, Some(Mode::ChangeTerm(at) | Mode::RemoveTerm(at)) if at as usize == index);
-        let list =
-            std::iter::once(
-                Row::new(
-                    "glossary-header",
-                    held.is_none()
-                        || matches!(page.terms, Listed::Failed(_))
-                        || self.admin.mode == Some(Mode::AddTerm),
-                )
-                .part(),
+        let list = std::iter::once(Row::part(
+            "glossary-header",
+            held.is_none()
+                || matches!(page.terms, Listed::Failed(_))
+                || self.admin.mode == Some(Mode::AddTerm),
+        ))
+        .chain(terms.iter().enumerate().map(|(index, term)| {
+            Row::item(
+                format!("term-{term}"),
+                held.is_none() || open(index),
+                term.clone(),
             )
-            .chain(terms.iter().enumerate().map(|(index, term)| {
-                Row::new(format!("term-{term}"), held.is_none() || open(index))
-            }))
-            .chain(std::iter::once(Row::new("glossary-footer", false).part()))
-            .collect();
+        }))
+        .chain(std::iter::once(Row::part("glossary-footer", false)))
+        .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();

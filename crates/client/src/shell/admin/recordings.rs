@@ -385,13 +385,15 @@ impl Shell {
                 });
             });
         }
-        let list = std::iter::once(Row::new("recordings-header", false).part())
-            .chain(
-                page.rows
-                    .iter()
-                    .map(|row| Row::new(format!("recording-{}", row.id), row.downloads)),
-            )
-            .chain(std::iter::once(Row::new("recordings-footer", true).part()))
+        let list = std::iter::once(Row::part("recordings-header", false))
+            .chain(page.rows.iter().map(|row| {
+                Row::item(
+                    format!("recording-{}", row.id),
+                    row.downloads,
+                    txt::channel(row),
+                )
+            }))
+            .chain(std::iter::once(Row::part("recordings-footer", true)))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let page = page.clone();

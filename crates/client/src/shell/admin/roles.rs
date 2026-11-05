@@ -1009,10 +1009,10 @@ impl Shell {
     ) -> AnyElement {
         self.settle_roles(view, window, cx);
         let rows = page.roles.loaded().cloned().unwrap_or_default();
-        let list = std::iter::once(Row::new("roles-header", true).part())
+        let list = std::iter::once(Row::part("roles-header", true))
             .chain(
                 rows.iter()
-                    .map(|row| Row::new(format!("role-{:?}", row.role), true)),
+                    .map(|row| Row::item(format!("role-{:?}", row.role), true, row.name.clone())),
             )
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
