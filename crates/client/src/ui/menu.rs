@@ -506,6 +506,9 @@ impl RenderOnce for MenuItem {
             .role(Role::MenuItem)
             .aria_label(self.title.clone())
             .aria_disabled(self.disabled)
+            .when_some(self.detail.clone(), |item, detail| {
+                item.aria_description(detail)
+            })
             .when_some(self.selector, |item, selector| {
                 item.debug_selector(|| selector.to_owned())
             })

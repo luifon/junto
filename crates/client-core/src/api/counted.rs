@@ -58,6 +58,25 @@ impl Open {
     }
 }
 
+/// Runs `work` with the number of `ticket`: its requests carry it, and the request stays
+/// on its way until `work` and every other holder of the ticket ended.
+pub(crate) async fn within<F: std::future::Future>(
+    ticket: Option<Arc<Open>>,
+    work: F,
+) -> F::Output {
+    match ticket {
+        Some(open) => {
+            NUMBER
+                .scope(open.number(), async move {
+                    let _open = open;
+                    work.await
+                })
+                .await
+        }
+        None => work.await,
+    }
+}
+
 /// A request on its way; it is answered when this is dropped.
 pub(crate) struct Open(Requests, u64);
 

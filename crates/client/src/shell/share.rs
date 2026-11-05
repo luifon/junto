@@ -1537,7 +1537,7 @@ impl Shell {
         let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
         (stage.shares.len() > 1 || stage.watched().is_none())
             .then(|| {
-                let cards = stage.shares.iter().enumerate().map(|(index, share)| {
+                let cards = stage.shares.iter().map(|share| {
                     let id = share.id;
                     let title: SharedString = title_of(share).into();
                     let small = self
@@ -1576,7 +1576,7 @@ impl Shell {
                             .into_any_element()
                     };
                     div()
-                        .id(("share-card", index))
+                        .id(SharedString::from(format!("share-card:{id:?}")))
                         .role(Role::RadioButton)
                         .aria_label(title.clone())
                         .aria_selected(share.watched)

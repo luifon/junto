@@ -441,13 +441,26 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     // A screen reader states that the item takes no action now.
     let nodes = window.a11y_nodes(junto_client::text::WHO_REACTED);
     assert!(
-        nodes.iter().any(|node| node["aria"]["disabled"] == true),
-        "the item is not disabled in the accessibility tree: {nodes:?}"
+        nodes.iter().any(|node| node["aria"]["disabled"] == true
+            && node["aria"]["description"] == junto_client::text::NO_REACTIONS_YET),
+        "the item is not disabled with its reason in the accessibility tree: {nodes:?}"
     );
     window.click("message-reaction-people");
     assert!(
         window.shows("message-mark-read"),
         "a press on the disabled item leaves the menu open"
+    );
+    // The keys of the menu reach the item, and Enter on it does nothing.
+    let mut steps = 0;
+    while window.a11y_focused()["aria"]["label"] != junto_client::text::WHO_REACTED {
+        assert!(steps < 12, "the down key does not reach the disabled item");
+        window.press("down");
+        steps += 1;
+    }
+    window.press("enter");
+    assert!(
+        window.shows("message-mark-read"),
+        "Enter on the disabled item closed the menu"
     );
     world
         .run(admin.handle.api().add_reaction(sent.id, "👍"))

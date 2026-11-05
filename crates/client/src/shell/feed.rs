@@ -2284,7 +2284,7 @@ impl Shell {
                 } else {
                     MessageShape::Wide
                 };
-                self.render_message(index, row, feed, shape, window, cx)
+                self.render_message(row, feed, shape, window, cx)
             }
             FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, window, cx),
         }
@@ -2844,7 +2844,7 @@ impl Shell {
                 let reason = (can_react && !acts)
                     .then(|| text::not_permitted(WorkspacePermission::AddReactions));
                 div()
-                    .id(("reaction", index))
+                    .id(SharedString::from(format!("reaction:{emoji}")))
                     .role(if can_react { Role::Button } else { Role::Note })
                     .aria_label(label.clone())
                     .debug_selector(move || format!("reaction:{message_id}:{index}"))
@@ -4164,7 +4164,6 @@ impl Shell {
     /// One message of a person.
     pub(crate) fn render_message(
         &mut self,
-        index: usize,
         row: &MessageRow,
         feed: &Feed,
         shape: MessageShape,
@@ -4336,7 +4335,7 @@ impl Shell {
         )
         .into();
         div()
-            .id(("message", index))
+            .id(("message", message_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(label)
             .debug_selector(move || {
@@ -4564,7 +4563,7 @@ impl Shell {
             cx,
         );
         let frame = div()
-            .id(("waiting", index))
+            .id(("waiting", pending.id))
             .focusable()
             .tab_stop(true)
             .debug_selector(move || format!("waiting:{id}"))

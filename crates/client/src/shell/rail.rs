@@ -84,7 +84,7 @@ pub(super) fn picture(
         return picture.into_any_element();
     }
     div()
-        .id((place, index))
+        .id((place, row.id.as_uuid().as_u128() as u64))
         .role(Role::Image)
         .aria_label(text::logo_of(&row.name))
         .debug_selector(move || format!("{place}-{index}"))
@@ -442,7 +442,7 @@ impl Shell {
                 .into_any_element(),
         };
         let head = div()
-            .id(("server", index))
+            .id(("server", row.id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(super::book::head_label(row))
             .aria_selected(row.selected)
@@ -757,7 +757,7 @@ impl Shell {
             row.name.clone()
         };
         let icon = div()
-            .id(("server", index))
+            .id(("server", server_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(label)
             .aria_selected(row.selected)
@@ -980,7 +980,10 @@ impl Shell {
             text::book::COLLAPSE_WORKSPACES
         };
         let toggle = div()
-            .id(("menu-workspaces-toggle", index))
+            .id((
+                "menu-workspaces-toggle",
+                server_id.as_uuid().as_u128() as u64,
+            ))
             .role(Role::MenuItem)
             .aria_label(toggle_label)
             .aria_expanded(!collapsed)
@@ -1007,7 +1010,7 @@ impl Shell {
             .child(toggle_label);
         let empty = row.workspaces.is_empty();
         div()
-            .id(("hover-menu", index))
+            .id(("hover-menu", server_id.as_uuid().as_u128() as u64))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.stay_in_hover_menu();

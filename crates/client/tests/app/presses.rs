@@ -23,6 +23,9 @@ struct Scene {
     cover: Cell<bool>,
     /// The height of the frame that clips the button, when it clips it.
     clip: Cell<Option<f32>>,
+    /// The buttons lie on a layer over the whole window that blocks the pointer, as the
+    /// content of a dialog does.
+    layer: Cell<bool>,
     clicks: Cell<u32>,
     above_clicks: Cell<u32>,
 }
@@ -61,20 +64,30 @@ impl gpui::Render for Moving {
                 .h(px(30.0))
                 .on_click(move |_, _, _| clicked.above_clicks.set(clicked.above_clicks.get() + 1))
         });
-        div()
+        let column = div()
             .size_full()
-            .relative()
             .flex()
             .flex_col()
             .child(div().flex_none().h(px(scene.spacer.get())))
             .children(above)
-            .child(button)
-            .children(
-                scene
-                    .cover
-                    .get()
-                    .then(|| div().id("cover").absolute().inset_0().occlude()),
-            )
+            .child(button);
+        let content = if scene.layer.get() {
+            div()
+                .id("layer")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .child(column)
+                .into_any_element()
+        } else {
+            column.into_any_element()
+        };
+        div().size_full().relative().child(content).children(
+            scene
+                .cover
+                .get()
+                .then(|| div().id("cover").absolute().inset_0().occlude()),
+        )
     }
 }
 
@@ -191,6 +204,41 @@ fn a_control_that_a_cover_hides_before_the_release_takes_no_click(cx: &mut TestA
 }
 
 #[gpui::test]
+fn a_second_cover_of_the_window_over_a_pressed_control_on_a_cover_takes_no_click(
+    cx: &mut TestAppContext,
+) {
+    let (mut cx, scene) = moving(cx);
+    scene.layer.set(true);
+    view_redraw(&mut cx);
+    let at = point(px(50.0), px(15.0));
+    let refused = gpui::refused_presses();
+    down(&mut cx, at);
+    // A second layer of the same bounds and behaviour as the one that holds the button.
+    scene.cover.set(true);
+    view_redraw(&mut cx);
+    up(&mut cx, at);
+    assert_eq!(
+        scene.clicks.get(),
+        0,
+        "the release passed through the second cover"
+    );
+    assert_eq!(
+        gpui::refused_presses(),
+        refused + 1,
+        "the refused press is counted for the window tests"
+    );
+
+    // Without the second cover the same press is a click, and no press is refused.
+    scene.cover.set(false);
+    view_redraw(&mut cx);
+    let refused = gpui::refused_presses();
+    down(&mut cx, at);
+    up(&mut cx, at);
+    assert_eq!(scene.clicks.get(), 1);
+    assert_eq!(gpui::refused_presses(), refused);
+}
+
+#[gpui::test]
 fn a_release_on_the_clipped_part_of_a_control_is_no_click(cx: &mut TestAppContext) {
     let (mut cx, scene) = moving(cx);
     // The frame shows the upper 20 of the 30 pixels of the button.
@@ -274,4 +322,55 @@ fn a_press_waits_for_its_own_request_while_a_proxy_holds_an_earlier_one(cx: &mut
         "the press returned before its read of the devices was answered"
     );
     proxy.release();
+}
+
+/// A press that opens a channel waits for the read of its first page, which the stream task
+/// of the client core starts after a command from the window (ADR 0902): one `busy` answer
+/// makes that read last a second.
+#[gpui::test]
+fn a_press_waits_for_the_page_that_the_stream_task_reads_for_it(cx: &mut TestAppContext) {
+    use crate::harness::{World, member};
+    use crate::messages::document;
+    use crate::support::{Fault, FaultProxy};
+    use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let workspace = world.run(api.snapshot()).unwrap().snapshot.workspaces[0]
+        .workspace
+        .id;
+    world
+        .run(api.create_channel(
+            workspace,
+            &CreateChannel {
+                topic: String::new(),
+                name: "elsewhere".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap();
+    let elsewhere = world.run(api.snapshot()).unwrap().snapshot.workspaces[0]
+        .channels
+        .iter()
+        .find(|channel| channel.name == "elsewhere")
+        .unwrap()
+        .id;
+    admin.send(&world, elsewhere, document("the slowed message"));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the other channel is listed", |window| {
+        window.channel_row("elsewhere").is_some()
+    });
+    proxy.fail_ending(&format!("/channels/{elsewhere}/messages"), [Fault::Busy]);
+    window.click_channel("elsewhere");
+    assert!(
+        window
+            .texts()
+            .iter()
+            .any(|text| text == "the slowed message"),
+        "the press returned before the stream task read the page of the channel"
+    );
 }

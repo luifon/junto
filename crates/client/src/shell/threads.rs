@@ -479,14 +479,7 @@ impl Shell {
                             .min_h_0()
                             .overflow_y_scroll()
                             .pt(u(8.0))
-                            .child(this.render_message(
-                                0,
-                                root,
-                                feed,
-                                MessageShape::Bare,
-                                window,
-                                cx,
-                            )),
+                            .child(this.render_message(root, feed, MessageShape::Bare, window, cx)),
                     )
                     .child(
                         div()
@@ -582,8 +575,7 @@ impl Shell {
                     // notice: a pinned reply of a thread is shown in its thread, at its
                     // place, and the list marks it (ADR 0741).
                     let jump = Jump::to(server_id, &row.message);
-                    let message =
-                        self.render_message(index, row, feed, MessageShape::Bare, window, cx);
+                    let message = self.render_message(row, feed, MessageShape::Bare, window, cx);
                     shown.push(self.message_preview_menu(
                         row,
                         feed,

@@ -1299,7 +1299,7 @@ impl Shell {
         };
         let row = |index: usize, account_id: AccountId, label: SharedString| {
             div()
-                .id(("call-member", index))
+                .id(("call-member", account_id.as_uuid().as_u128() as u64))
                 .role(Role::ListItem)
                 .aria_label(label)
                 .debug_selector(move || format!("call-member:{account_id}"))

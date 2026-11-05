@@ -1300,7 +1300,12 @@ impl Server {
     fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
-            live: Shared::new(),
+            live: {
+                let live = Shared::new();
+                #[cfg(feature = "test-support")]
+                live.count_with(core.requests.clone());
+                live
+            },
             id: entry.server_id,
             key: entry.key(),
             address: entry.address.clone(),

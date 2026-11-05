@@ -600,6 +600,7 @@ impl Window {
             .state
             .read_with(&self.cx, |state, _| state.client().requests());
         let started = requests.next();
+        let refused = gpui::refused_presses();
         let (down, up) = pointer_press(position, button, count);
         for (index, input) in [down, up].into_iter().enumerate() {
             self.holding(|this| {
@@ -619,6 +620,16 @@ impl Window {
                      press on"
                 );
             }
+        }
+        if button == gpui::MouseButton::Left
+            && let Some(target) = target
+            && gpui::refused_presses() > refused
+        {
+            panic!(
+                "the press on {target} at {position:?} was refused: between the pointer going \
+                 down and up, {target} moved and something else came to where it was, or the \
+                 release was on a part of it that is not shown (ADR 0757, point 6)"
+            );
         }
         self.until("the requests that the press started have an answer", |_| {
             let held = crate::support::held_by_proxies();
@@ -775,16 +786,7 @@ impl Window {
     /// The nodes of the accessibility tree with this label, as JSON (`Window::debug_a11y_tree_json`
     /// of gpui), after a frame of a window whose accessibility a screen reader activated.
     pub fn a11y_nodes(&mut self, label: &str) -> Vec<serde_json::Value> {
-        let handle = self.cx.update(|window, _| window.window_handle());
-        self.cx.cx.test_window(handle).simulate_a11y_activation();
-        self.cx.update(|window, _| window.refresh());
-        self.settle();
-        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
-        let Some(tree) =
-            json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        else {
-            return Vec::new();
-        };
+        let tree = self.a11y_tree();
         tree["nodes"]
             .as_object()
             .into_iter()
@@ -792,6 +794,23 @@ impl Window {
             .filter(|node| node["aria"]["label"] == label)
             .cloned()
             .collect()
+    }
+
+    /// The accessibility node that has the focus of the window.
+    pub fn a11y_focused(&mut self) -> serde_json::Value {
+        let tree = self.a11y_tree();
+        let focus = tree["gpui_focus"].as_str().unwrap_or_default().to_owned();
+        tree["nodes"][focus].clone()
+    }
+
+    fn a11y_tree(&mut self) -> serde_json::Value {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
+        json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .unwrap_or_default()
     }
 
     pub fn shows(&mut self, selector: &'static str) -> bool {

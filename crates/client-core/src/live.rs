@@ -207,12 +207,33 @@ pub(crate) enum Command {
     ReadAdminNow(AdminPart),
 }
 
+/// A command with what counts the requests that it starts: under `test-support` a request
+/// on its way from the call that sent the command (ADR 0902).
+pub(crate) type Sent = (Command, Ticket);
+#[cfg(feature = "test-support")]
+pub(crate) type Ticket = Option<Arc<crate::api::counted::Open>>;
+#[cfg(not(feature = "test-support"))]
+#[derive(Clone, Default)]
+pub(crate) struct Ticket;
+
+/// Runs the work of a command with its ticket.
+#[cfg(feature = "test-support")]
+pub(crate) fn counted<F: Future>(ticket: Ticket, work: F) -> impl Future<Output = F::Output> {
+    crate::api::counted::within(ticket, work)
+}
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn counted<F: Future>(_: Ticket, work: F) -> F {
+    work
+}
+
 /// What the stream client of one server and its readers share.
 pub(crate) struct Shared {
     pub(crate) presence: std::sync::atomic::AtomicBool,
     view: watch::Sender<LiveView>,
     notices: broadcast::Sender<Notice>,
-    commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
+    commands: Mutex<Option<mpsc::UnboundedSender<Sent>>>,
+    #[cfg(feature = "test-support")]
+    requests: Mutex<Option<crate::api::Requests>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) typing_watches: Mutex<Vec<junto_protocol::typing::TypingPlace>>,
     /// The numbers that this client gives to its waiting messages and to its uploads.
@@ -230,6 +251,8 @@ impl Shared {
             view: watch::Sender::new(LiveView::default()),
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            requests: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             typing_watches: Mutex::default(),
             numbers: std::sync::atomic::AtomicU64::new(1),
@@ -243,7 +266,14 @@ impl Shared {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(crate) fn attach(&self, commands: mpsc::UnboundedSender<Command>) {
+    /// Counts each command as a request of `requests` until the stream client handled it
+    /// and the requests that it started have an answer.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn count_with(&self, requests: crate::api::Requests) {
+        *lock(&self.requests) = Some(requests);
+    }
+
+    pub(crate) fn attach(&self, commands: mpsc::UnboundedSender<Sent>) {
         *lock(&self.commands) = Some(commands);
     }
 
@@ -268,9 +298,15 @@ impl Shared {
     }
 
     pub(crate) fn send(&self, command: Command) -> bool {
+        #[cfg(feature = "test-support")]
+        let ticket = lock(&self.requests)
+            .as_ref()
+            .map(|requests| Arc::new(requests.start()));
+        #[cfg(not(feature = "test-support"))]
+        let ticket = Ticket;
         lock(&self.commands)
             .as_ref()
-            .is_some_and(|commands| commands.send(command).is_ok())
+            .is_some_and(|commands| commands.send((command, ticket)).is_ok())
     }
 }
 
