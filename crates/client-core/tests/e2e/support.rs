@@ -644,12 +644,37 @@ struct ProxyState {
     kept_answer: Option<usize>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
+    /// How many requests wait at the proxy now.
+    requests_waiting: usize,
     /// What the server sends on the event stream waits at the proxy.
     events_held: bool,
     /// How many connections ended before a whole request arrived.
     unfinished: usize,
     /// The errors of the connections that the proxy served, with their time.
     failures: Vec<(std::time::Instant, String)>,
+}
+
+thread_local! {
+    /// The proxies that the test of this thread started.
+    static PROXIES: std::cell::RefCell<Vec<std::sync::Weak<Mutex<ProxyState>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How many requests and answers the proxies that the test of this thread started hold
+/// now. A press of a window test waits for the requests that it started, except for these
+/// (ADR 0902).
+#[allow(dead_code)]
+pub fn held_by_proxies() -> usize {
+    PROXIES.with_borrow(|proxies| {
+        proxies
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .map(|state| {
+                let state = state.lock().unwrap();
+                state.requests_waiting + state.answers_waiting
+            })
+            .sum()
+    })
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -701,6 +726,10 @@ impl FaultProxy {
     fn serve_on(listener: TcpListener, upstream_port: u16) -> Self {
         let port = listener.local_addr().unwrap().port();
         let state = Arc::<Mutex<ProxyState>>::default();
+        PROXIES.with_borrow_mut(|proxies| {
+            proxies.retain(|held| held.strong_count() > 0);
+            proxies.push(Arc::downgrade(&state));
+        });
         let shared = state.clone();
         let cut = watch::Sender::new(0);
         let cuts = cut.clone();
@@ -1078,8 +1107,14 @@ async fn serve(
                 .iter()
                 .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
-    while held(&state.lock().unwrap()) {
-        if released.changed().await.is_err() {
+    if held(&state.lock().unwrap()) {
+        state.lock().unwrap().requests_waiting += 1;
+        let mut open = true;
+        while open && held(&state.lock().unwrap()) {
+            open = released.changed().await.is_ok();
+        }
+        state.lock().unwrap().requests_waiting -= 1;
+        if !open {
             return Ok(());
         }
     }

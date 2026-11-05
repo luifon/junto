@@ -143,6 +143,8 @@ pub(crate) struct Core {
     after_remove: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     selected: Mutex<Option<EntryKey>>,
     streams: Mutex<Option<Arc<dyn EventStreams>>>,
+    #[cfg(feature = "test-support")]
+    requests: crate::api::Requests,
     changes: watch::Sender<u64>,
 }
 
@@ -195,6 +197,8 @@ impl Client {
             Some(transport) => transport,
             None => Arc::new(ReqwestTransport::new()?),
         };
+        #[cfg(feature = "test-support")]
+        let (transport, requests) = crate::api::counted::Counted::wrap(transport);
         let keys = options
             .key_store
             .unwrap_or_else(|| Arc::new(FileKeyStore::new(data_dir.clone())));
@@ -228,6 +232,8 @@ impl Client {
             after_remove: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            requests,
             changes,
         });
         let servers = entries
@@ -277,6 +283,12 @@ impl Client {
     /// with the event streams. A change of its state is a change of the client.
     pub fn updates(&self) -> &UpdateCheck {
         &self.inner.core.updates
+    }
+
+    /// The requests of this client that are on their way, for the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn requests(&self) -> crate::api::Requests {
+        self.inner.core.requests.clone()
     }
 
     /// The saved servers in the order of the server book.

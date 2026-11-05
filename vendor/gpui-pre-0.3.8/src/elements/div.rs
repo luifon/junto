@@ -1,3 +1,6 @@
+// Modified: this file differs from the published gpui-pre 0.3.8. A press whose element moved
+// away from the pointer before the release, at a redraw, is delivered when the release is
+// inside the bounds that the element had at the press.
 //! Div is the central, reusable element that most GPUI trees will be built from.
 //! It functions as a container for other elements, and provides a number of
 //! useful features for laying out and styling its children as well as binding
@@ -2948,6 +2951,11 @@ impl Interactivity {
                     .get_or_insert_with(Default::default)
                     .clone();
 
+                let pressed_bounds = element_state
+                    .pending_mouse_down_bounds
+                    .get_or_insert_with(Default::default)
+                    .clone();
+
                 let clicked_state = element_state
                     .clicked_state
                     .get_or_insert_with(Default::default)
@@ -2955,6 +2963,7 @@ impl Interactivity {
 
                 window.on_mouse_event({
                     let pending_mouse_down = pending_mouse_down.clone();
+                    let pressed_bounds = pressed_bounds.clone();
                     let hitbox = hitbox.clone();
                     let has_aux_click_listeners = !aux_click_listeners.is_empty();
                     move |event: &MouseDownEvent, phase, window, _cx| {
@@ -2963,6 +2972,7 @@ impl Interactivity {
                             && hitbox.is_hovered(window)
                         {
                             *pending_mouse_down.borrow_mut() = Some(event.clone());
+                            pressed_bounds.set(Some(hitbox.bounds));
                             window.refresh();
                         }
                     }
@@ -3089,7 +3099,16 @@ impl Interactivity {
                         // propagation.
                         DispatchPhase::Capture => {
                             let mut pending_mouse_down = pending_mouse_down.borrow_mut();
-                            if pending_mouse_down.is_some() && hitbox.is_hovered(window) {
+                            // Modified: a redraw between the press and the release can move
+                            // the element away from the pointer, as when content above it
+                            // grows; the release where the element was at the press still
+                            // ends the press on it. A release outside those bounds does not.
+                            let pressed_here = pressed_bounds
+                                .take()
+                                .is_some_and(|bounds| bounds.contains(&event.position));
+                            if pending_mouse_down.is_some()
+                                && (hitbox.is_hovered(window) || pressed_here)
+                            {
                                 captured_mouse_down = pending_mouse_down.take();
                                 window.refresh();
                             } else if pending_mouse_down.is_some() {
@@ -3612,6 +3631,8 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<ElementHoverState>>>,
     pub(crate) hover_listener_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
+    // Modified: the bounds of the element at the pending press.
+    pub(crate) pending_mouse_down_bounds: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
     /// Set to the window's [`focus_generation`](crate::Window::focus_generation)
     /// when an Enter/Space keydown is received while this element is focused,
     /// recording that we are waiting for the matching keyup to fire a keyboard

@@ -3,6 +3,8 @@
 mod admin;
 mod calls;
 mod client;
+#[cfg(feature = "test-support")]
+pub(crate) mod counted;
 pub(crate) mod error;
 mod messages;
 mod moderation;
@@ -21,6 +23,8 @@ pub(crate) mod transport;
 pub(crate) mod testing;
 
 pub use client::{ApiClient, Session, server_info};
+#[cfg(feature = "test-support")]
+pub use counted::Requests;
 pub use error::{
     AccessLoss, ApiError, ErrorCategory, Rejection, category, code_name, unknown_refusal,
 };

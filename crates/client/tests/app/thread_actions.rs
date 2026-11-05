@@ -101,7 +101,7 @@ impl Window {
 
     /// Takes one action of the bar of a message: the pointer goes to the message, and the
     /// action is pressed and released as it is drawn, with no work of the application
-    /// between the two (see `a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button`).
+    /// between the two.
     fn act_on(&mut self, message_id: MessageId, action: &str) {
         self.hover_named(format!("message:{message_id}"));
         self.press_as_drawn(selector(format!("{action}:{message_id}")));
@@ -324,13 +324,11 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
 }
 
 /// A reply that is drawn while the pointer is pressed on the thread button of its root moves
-/// the button: the release lands outside it, and the thread does not open. The test of the
-/// fork above failed so on macOS when the reply event arrived between its press and its
-/// release; this test makes that order on every system.
+/// the button, and the release where the button was at the press still opens the thread
+/// (ADR 0757). The test of the fork above failed on macOS when the reply event arrived
+/// between its press and its release; this test makes that order on every system.
 #[gpui::test]
-fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
-    cx: &mut TestAppContext,
-) {
+fn a_reply_drawn_between_the_press_and_the_release_still_opens_the_thread(cx: &mut TestAppContext) {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
     let world = World::new();
     let (_server, admin, _directory, mut window, channel_id, _) = with_root(cx, &world);
@@ -372,13 +370,12 @@ fn a_reply_drawn_between_the_press_and_the_release_moves_the_thread_button(
     });
     window.settle();
     assert_ne!(moved, pressed, "the thread button stayed in place");
-    assert!(
+    window.until("the press on the moved button opens the thread", |window| {
         window
             .view()
             .workspace()
-            .is_some_and(|workspace| workspace.thread.is_none()),
-        "the thread opened from a press and a release on two places"
-    );
+            .is_some_and(|workspace| workspace.thread.is_some())
+    });
 }
 
 #[gpui::test]

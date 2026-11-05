@@ -548,14 +548,43 @@ impl Window {
         self.press_at_count(position, button, 1);
     }
 
+    /// Presses a button of the pointer at a point of the window and keeps it pressed.
+    pub fn press_down_at(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        let (down, _) = pointer_press(position, button, 1);
+        self.holding(|this| {
+            this.cx.update(|window, cx| window.dispatch_event(down, cx));
+            this.cx.run_until_parked();
+        });
+    }
+
+    /// Releases a button of the pointer that [`Window::press_down_at`] pressed.
+    pub fn release_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
+        let (_, up) = pointer_press(position, button, 1);
+        self.holding(|this| {
+            this.cx.update(|window, cx| window.dispatch_event(up, cx));
+            this.cx.run_until_parked();
+        });
+    }
+
     /// The press number `count` of a series at one point, as the system counts the presses
     /// of a double click.
+    ///
+    /// The press waits until the requests to a server that it started have an answer, except
+    /// the requests and answers that a proxy of the test holds (ADR 0902).
     pub fn press_at_count(
         &mut self,
         position: gpui::Point<gpui::Pixels>,
         button: gpui::MouseButton,
         count: usize,
     ) {
+        let requests = self
+            .state
+            .read_with(&self.cx, |state, _| state.client().requests());
+        let started = requests.next();
         let (down, up) = pointer_press(position, button, count);
         for input in [down, up] {
             self.holding(|this| {
@@ -565,6 +594,9 @@ impl Window {
                 this.cx.run_until_parked();
             });
         }
+        self.until("the requests that the press started have an answer", |_| {
+            requests.open_since(started) <= crate::support::held_by_proxies()
+        });
     }
 
     /// Ends the application, as closing its window does: the window is removed, and the
@@ -1518,6 +1550,19 @@ pub fn native_frame(cx: &mut VisualTestContext, nested: bool) {
     } else {
         request();
     }
+}
+
+/// Gives an event of the pointer to a window of a view of the test that uses gpui alone,
+/// through the input callback of the test window, and runs its work until it rests.
+pub fn view_input(cx: &mut VisualTestContext, event: impl gpui::InputEvent) {
+    cx.simulate_event(event);
+}
+
+/// Draws a window of a view of the test that uses gpui alone again, as after a change of its
+/// state, and runs its work until it rests.
+pub fn view_redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test
