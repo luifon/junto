@@ -635,6 +635,12 @@ impl Shell {
             switcher.observe(window, cx),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
+            Self::observe_formatting(Pane::Main, &composer.input, window, cx),
+            Self::observe_formatting(Pane::Thread, &thread_composer.input, window, cx),
+            cx.observe_global_in::<crate::theme::ActiveTheme>(window, |this, _, cx| {
+                this.show_formatting(Pane::Main, cx);
+                this.show_formatting(Pane::Thread, cx);
+            }),
             Field::observe(
                 &contact_part,
                 window,

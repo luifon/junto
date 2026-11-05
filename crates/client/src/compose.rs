@@ -84,20 +84,60 @@ fn token_index(character: char) -> Option<usize> {
         .then(|| (code - TOKEN_BASE) as usize)
 }
 
-/// The text without what the server refuses in a text node: control characters other than
-/// the line break and the tab. A line break of two characters becomes one.
+/// A character that a text node keeps: no control character other than the line break and
+/// the tab. A line break of two characters becomes one, as its carriage return is left out.
+fn kept(character: char) -> bool {
+    (!character.is_control() || matches!(character, '\n' | '\t'))
+        && token_index(character).is_none()
+}
+
+/// The text without what the server refuses in a text node.
 fn clean(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .chars()
-        .filter(|character| {
-            (!character.is_control() || matches!(character, '\n' | '\t'))
-                && token_index(*character).is_none()
-        })
-        .collect()
+    text.chars().filter(|character| kept(*character)).collect()
+}
+
+/// Where the bytes of a text that was made from the text of the composer stand in that
+/// text: the runs of bytes that were copied in order, each as the byte of the made text at
+/// which it starts and the byte of the source.
+#[derive(Debug, Default)]
+struct Origin(Vec<(usize, usize)>);
+
+impl Origin {
+    /// The byte `made` of the made text was copied from the byte `source`.
+    fn copied(&mut self, made: usize, source: usize) {
+        if let Some(&(run_made, run_source)) = self.0.last()
+            && source >= run_source
+            && made - run_made == source - run_source
+        {
+            return;
+        }
+        self.0.push((made, source));
+    }
+
+    fn source(&self, made: usize) -> usize {
+        let index = self.0.partition_point(|(run_made, _)| *run_made <= made);
+        match index.checked_sub(1).and_then(|index| self.0.get(index)) {
+            Some(&(run_made, run_source)) => run_source + (made - run_made),
+            None => made,
+        }
+    }
+}
+
+/// A text with one private-use character in place of each mention, the targets of the
+/// mentions, and where its bytes stand in the text of the composer.
+struct Tokened {
+    text: String,
+    targets: Vec<MentionTarget>,
+    origin: Origin,
 }
 
 /// The text with one private-use character in place of each mention.
 fn with_tokens(text: &str, mentions: &[Mention]) -> (String, Vec<MentionTarget>) {
+    let tokened = tokened(text, mentions);
+    (tokened.text, tokened.targets)
+}
+
+fn tokened(text: &str, mentions: &[Mention]) -> Tokened {
     let mut ordered: Vec<&Mention> = mentions
         .iter()
         .filter(|mention| {
@@ -109,7 +149,16 @@ fn with_tokens(text: &str, mentions: &[Mention]) -> (String, Vec<MentionTarget>)
         .collect();
     ordered.sort_by_key(|mention| mention.range.start);
     let mut made = String::with_capacity(text.len());
+    let mut origin = Origin::default();
     let mut targets = Vec::new();
+    let copy = |made: &mut String, origin: &mut Origin, range: Range<usize>| {
+        for (offset, character) in text[range.clone()].char_indices() {
+            if kept(character) {
+                origin.copied(made.len(), range.start + offset);
+                made.push(character);
+            }
+        }
+    };
     let mut at = 0;
     for mention in ordered {
         if mention.range.start < at {
@@ -118,13 +167,21 @@ fn with_tokens(text: &str, mentions: &[Mention]) -> (String, Vec<MentionTarget>)
         let Some(mark) = token(targets.len()) else {
             break;
         };
-        made.push_str(&clean(&text[at..mention.range.start]));
+        copy(&mut made, &mut origin, at..mention.range.start);
+        origin.copied(made.len(), mention.range.start);
         made.push(mark);
         targets.push(mention.target);
         at = mention.range.end;
+        // The end of the character stands at the end of the mention.
+        origin.copied(made.len(), at);
     }
-    made.push_str(&clean(&text[at..]));
-    (made, targets)
+    copy(&mut made, &mut origin, at..text.len());
+    origin.copied(made.len(), text.len());
+    Tokened {
+        text: made,
+        targets,
+        origin,
+    }
 }
 
 /// True for a supported link, including an application target, within the URI bounds.
@@ -152,9 +209,22 @@ fn ordered(marks: &[Mark]) -> Vec<Mark> {
 struct Inlines<'a> {
     targets: &'a [MentionTarget],
     nodes: Vec<Inline>,
+    /// The formatted parts, in bytes of the text that [`inline`] reads, when the composer
+    /// asks for them.
+    formats: Option<&'a mut Vec<Formatted>>,
 }
 
 impl Inlines<'_> {
+    fn format(&mut self, format: Format, whole: Range<usize>, content: Range<usize>) {
+        if let Some(formats) = self.formats.as_deref_mut() {
+            formats.push(Formatted {
+                format,
+                whole,
+                content,
+            });
+        }
+    }
+
     fn text(&mut self, text: &str, marks: &[Mark]) {
         if text.is_empty() {
             return;
@@ -475,6 +545,12 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                     out.nodes.push(Inline::Code {
                         text: code.to_owned(),
                     });
+                    let base = piece.base;
+                    out.format(
+                        Format::Code,
+                        base + at..base + end + run,
+                        base + at + run..base + end,
+                    );
                 }
                 at = end + run;
                 plain = at;
@@ -488,6 +564,12 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                             text: unescaped(shown),
                             url: address.to_owned(),
                         });
+                        let start = piece.base + at;
+                        out.format(
+                            Format::Link,
+                            start..start + length,
+                            start + 1..start + 1 + shown.len(),
+                        );
                         at += length;
                         plain = at;
                         continue;
@@ -508,6 +590,8 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                         text: rest[..length].to_owned(),
                         url: rest[..length].to_owned(),
                     });
+                    let start = piece.base + at;
+                    out.format(Format::Link, start..start + length, start..start + length);
                     at += length;
                     plain = at;
                     continue;
@@ -518,14 +602,20 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                 if !never_closed.contains(&('|', 2)) {
                     if let Some(end) = closing(piece, inner, '|', 2) {
                         flush!(at);
+                        let base = piece.base;
+                        out.format(
+                            Format::Spoiler,
+                            base + at..base + end + 2,
+                            base + inner..base + end,
+                        );
                         let mut inside = Inlines {
                             targets: out.targets,
                             nodes: Vec::new(),
+                            formats: out.formats.as_deref_mut(),
                         };
                         parse_inline(piece.part(inner..end), marks, depth + 1, &mut inside);
-                        out.nodes.push(Inline::Spoiler {
-                            content: inside.nodes,
-                        });
+                        let content = inside.nodes;
+                        out.nodes.push(Inline::Spoiler { content });
                         at = end + 2;
                         plain = at;
                         continue;
@@ -561,6 +651,16 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
                     match closing(piece, inner, character, count) {
                         Some(end) => {
                             flush!(at);
+                            let base = piece.base;
+                            out.format(
+                                match mark {
+                                    Mark::Bold => Format::Bold,
+                                    Mark::Italic => Format::Italic,
+                                    Mark::Strikethrough => Format::Strikethrough,
+                                },
+                                base + at..base + end + count,
+                                base + inner..base + end,
+                            );
                             let mut inner_marks = marks.to_vec();
                             if !inner_marks.contains(&mark) {
                                 inner_marks.push(mark);
@@ -584,9 +684,19 @@ fn parse_inline(piece: Piece<'_>, marks: &[Mark], depth: usize, out: &mut Inline
 }
 
 fn inline(text: &str, targets: &[MentionTarget]) -> Vec<Inline> {
+    inline_formats(text, targets, None)
+}
+
+/// The nodes of a text, and its formatted parts in bytes of `text` when `formats` is given.
+fn inline_formats(
+    text: &str,
+    targets: &[MentionTarget],
+    formats: Option<&mut Vec<Formatted>>,
+) -> Vec<Inline> {
     let mut out = Inlines {
         targets,
         nodes: Vec::new(),
+        formats,
     };
     let runs = backticks(text);
     let piece = Piece {
@@ -671,6 +781,101 @@ fn read(text: &str, mentions: &[Mention]) -> (Document, bool) {
 }
 
 fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Document, bool) {
+    read_marked(text, mentions, most_text, None)
+}
+
+/// What the marks of a part of the text of the composer make of it (ADR 0740).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Bold,
+    Italic,
+    Strikethrough,
+    Code,
+    CodeBlock,
+    Quote,
+    Spoiler,
+    Link,
+    Heading,
+    Small,
+    /// An item of a list or of a check list.
+    Item,
+}
+
+/// A part of the text of the composer that its marks format: the bytes of the part with
+/// its marks, and the bytes of its content. The bytes of `whole` outside `content` are the
+/// marks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Formatted {
+    pub format: Format,
+    pub whole: Range<usize>,
+    pub content: Range<usize>,
+}
+
+/// The formatted parts of a text of the composer, in bytes of the text, as [`parse`] reads
+/// the text: the composer shows the same formatting that the message will have. The outer
+/// part comes before the parts inside it. A text above [`MOST_TEXT`] has none.
+pub fn formats(text: &str, mentions: &[Mention]) -> Vec<Formatted> {
+    let mut formats = Vec::new();
+    read_marked(text, mentions, MOST_TEXT, Some(&mut formats));
+    formats
+}
+
+/// Collects formatted parts in bytes of the text of the composer.
+struct Marker<'a> {
+    formats: Option<&'a mut Vec<Formatted>>,
+    origin: &'a Origin,
+}
+
+impl Marker<'_> {
+    /// A part in bytes of the text with tokens.
+    fn block(&mut self, format: Format, whole: Range<usize>, content: Range<usize>) {
+        let origin = self.origin;
+        if let Some(formats) = self.formats.as_deref_mut() {
+            formats.push(Formatted {
+                format,
+                whole: origin.source(whole.start)..origin.source(whole.end),
+                content: origin.source(content.start)..origin.source(content.end),
+            });
+        }
+    }
+
+    /// The nodes of a text, whose byte `at` stands at the byte `made(at)` of the text with
+    /// tokens.
+    fn inline(
+        &mut self,
+        text: &str,
+        targets: &[MentionTarget],
+        made: impl Fn(usize) -> usize,
+    ) -> Vec<Inline> {
+        let Some(formats) = self.formats.as_deref_mut() else {
+            return inline(text, targets);
+        };
+        let mut found = Vec::new();
+        let nodes = inline_formats(text, targets, Some(&mut found));
+        let source = |at: usize| self.origin.source(made(at));
+        formats.extend(found.into_iter().map(|part| Formatted {
+            format: part.format,
+            whole: source(part.whole.start)..source(part.whole.end),
+            content: source(part.content.start)..source(part.content.end),
+        }));
+        nodes
+    }
+}
+
+/// A part of a line without white space at its ends: the byte of the line at which it
+/// starts, and the part.
+fn trimmed(line: &str, from: usize) -> (usize, &str) {
+    let rest = &line[from..];
+    let content = rest.trim();
+    (from + rest.len() - rest.trim_start().len(), content)
+}
+
+fn read_marked(
+    text: &str,
+    mentions: &[Mention],
+    most_text: usize,
+    formats: Option<&mut Vec<Formatted>>,
+) -> (Document, bool) {
     if text.len() > most_text {
         let content = vec![Inline::Text {
             text: clean(text),
@@ -679,8 +884,34 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
         let blocks = vec![Block::Paragraph { content }];
         return (Document { blocks }, false);
     }
-    let (text, targets) = with_tokens(text, mentions);
+    let Tokened {
+        text,
+        targets,
+        origin,
+    } = tokened(text, mentions);
+    let mut marker = Marker {
+        formats,
+        origin: &origin,
+    };
     let lines: Vec<&str> = text.split('\n').collect();
+    // The byte of the text at which each line starts.
+    let starts: Vec<usize> = lines
+        .iter()
+        .scan(0, |next, line| {
+            let start = *next;
+            *next += line.len() + 1;
+            Some(start)
+        })
+        .collect();
+    let line_range = |at: usize| starts[at]..starts[at] + lines[at].len();
+    // The content of a line from a byte, without white space at its ends, as nodes; and
+    // the format of the line.
+    let line = |marker: &mut Marker<'_>, at: usize, start: usize, format: Format| {
+        let (offset, content) = trimmed(lines[at], start);
+        let base = starts[at] + offset;
+        marker.block(format, line_range(at), base..base + content.len());
+        marker.inline(content, &targets, |byte| base + byte)
+    };
     let mut blocks = Vec::new();
     let mut open = false;
     let mut at = 0;
@@ -689,14 +920,14 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
         match kind {
             LineKind::Blank => at += 1,
             LineKind::Heading(level) => {
-                let content = inline(lines[at][start..].trim(), &targets);
+                let content = line(&mut marker, at, start, Format::Heading);
                 if !content.is_empty() {
                     blocks.push(Block::Heading { level, content });
                 }
                 at += 1;
             }
             LineKind::Small => {
-                let content = inline(lines[at][start..].trim(), &targets);
+                let content = line(&mut marker, at, start, Format::Small);
                 if !content.is_empty() {
                     blocks.push(Block::Small { content });
                 }
@@ -706,6 +937,7 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
                 let opening = lines[at][start..].trim_end();
                 let ticks = opening.chars().take_while(|c| *c == '`').count();
                 let language = opening[ticks..].trim();
+                let first = at;
                 let mut code = Vec::new();
                 at += 1;
                 open = true;
@@ -719,6 +951,14 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
                     }
                     code.push(lines[at - 1]);
                 }
+                let whole = starts[first]..line_range(at - 1).end;
+                let content_start = (line_range(first).end + 1).min(whole.end);
+                let content_end = if code.is_empty() {
+                    content_start
+                } else {
+                    line_range(first + code.len()).end
+                };
+                marker.block(Format::CodeBlock, whole, content_start..content_end);
                 let code = code.join("\n");
                 if !code.trim().is_empty() {
                     blocks.push(Block::Code {
@@ -728,16 +968,35 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
                 }
             }
             LineKind::Quote | LineKind::Plain => {
-                let mut content = Vec::new();
+                // The lines of the block without their marks, joined, and where each
+                // part of the joined text stands in the text with tokens.
+                let mut joined = String::new();
+                let mut joined_origin = Origin::default();
                 while at < lines.len() {
                     let (next, start) = line_kind(lines[at]);
                     if next != kind {
                         break;
                     }
-                    content.push(lines[at][start..].trim_end());
+                    let part = lines[at][start..].trim_end();
+                    if kind == LineKind::Quote {
+                        marker.block(
+                            Format::Quote,
+                            line_range(at),
+                            starts[at] + start..starts[at] + start + part.len(),
+                        );
+                    }
+                    if !joined_origin.0.is_empty() {
+                        joined.push('\n');
+                    }
+                    joined_origin.copied(joined.len(), starts[at] + start);
+                    joined.push_str(part);
+                    joined_origin.copied(joined.len(), starts[at] + start + part.len());
                     at += 1;
                 }
-                let content = inline(content.join("\n").trim(), &targets);
+                let lead = joined.len() - joined.trim_start().len();
+                let content = marker.inline(joined.trim(), &targets, |byte| {
+                    joined_origin.source(lead + byte)
+                });
                 if !content.is_empty() {
                     blocks.push(if kind == LineKind::Quote {
                         Block::Quote { content }
@@ -753,7 +1012,7 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
                     if next != kind {
                         break;
                     }
-                    items.push(inline(lines[at][start..].trim(), &targets));
+                    items.push(line(&mut marker, at, start, Format::Item));
                     at += 1;
                 }
                 blocks.push(Block::List {
@@ -769,7 +1028,7 @@ fn read_with_limit(text: &str, mentions: &[Mention], most_text: usize) -> (Docum
                     };
                     items.push(CheckItem {
                         checked,
-                        content: inline(lines[at][start..].trim(), &targets),
+                        content: line(&mut marker, at, start, Format::Item),
                     });
                     at += 1;
                 }
@@ -1341,6 +1600,84 @@ fn one_line(content: &[Inline]) -> Vec<Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shown<'a>(text: &'a str, mentions: &[Mention]) -> Vec<(Format, &'a str, &'a str)> {
+        formats(text, mentions)
+            .into_iter()
+            .map(|part| {
+                (
+                    part.format,
+                    &text[part.whole.clone()],
+                    &text[part.content.clone()],
+                )
+            })
+            .collect()
+    }
+
+    /// Each formatted part stands at the bytes of its marks and of its content in the text
+    /// of the composer, in the order of the parse, for every mark of a message.
+    #[test]
+    fn the_formatted_parts_stand_at_the_bytes_of_their_marks_in_the_text() {
+        let text = "**bold** and *it* ~~gone~~ `code` ||a *b*|| [site](https://example.org) \
+                    https://example.org/a\n> quoted **x**\n# Title\n-# small\n- item\n\
+                    - [x] done\n```rust\nlet a = 1;\n```";
+        assert_eq!(
+            shown(text, &[]),
+            vec![
+                (Format::Bold, "**bold**", "bold"),
+                (Format::Italic, "*it*", "it"),
+                (Format::Strikethrough, "~~gone~~", "gone"),
+                (Format::Code, "`code`", "code"),
+                (Format::Spoiler, "||a *b*||", "a *b*"),
+                (Format::Italic, "*b*", "b"),
+                (Format::Link, "[site](https://example.org)", "site"),
+                (
+                    Format::Link,
+                    "https://example.org/a",
+                    "https://example.org/a"
+                ),
+                (Format::Quote, "> quoted **x**", "quoted **x**"),
+                (Format::Bold, "**x**", "x"),
+                (Format::Heading, "# Title", "Title"),
+                (Format::Small, "-# small", "small"),
+                (Format::Item, "- item", "item"),
+                (Format::Item, "- [x] done", "done"),
+                (Format::CodeBlock, "```rust\nlet a = 1;\n```", "let a = 1;"),
+            ]
+        );
+        // A code block without its closing line holds every line to the end of the text.
+        assert_eq!(
+            shown("```\nfn a()\n", &[]),
+            vec![(Format::CodeBlock, "```\nfn a()\n", "fn a()\n")]
+        );
+    }
+
+    /// The bytes of a part are those of the text of the composer, also after a mention, a
+    /// carriage return, and the lines of a paragraph or a quote that the parse joins.
+    #[test]
+    fn the_formatted_parts_keep_their_bytes_after_mentions_and_joined_lines() {
+        let everyone = |range| Mention {
+            range,
+            target: MentionTarget::Everyone,
+        };
+        assert_eq!(
+            shown("hi @all **x @all**", &[everyone(3..7), everyone(11..15)]),
+            vec![(Format::Bold, "**x @all**", "x @all")]
+        );
+        assert_eq!(shown("a\r\n**b**", &[]), vec![(Format::Bold, "**b**", "b")]);
+        assert_eq!(
+            shown("one\n  **two**", &[]),
+            vec![(Format::Bold, "**two**", "two")]
+        );
+        assert_eq!(
+            shown("> a\n> **b**", &[]),
+            vec![
+                (Format::Quote, "> a", "a"),
+                (Format::Quote, "> **b**", "**b**"),
+                (Format::Bold, "**b**", "b"),
+            ]
+        );
+    }
 
     fn plain(text: &str) -> Inline {
         Inline::Text {

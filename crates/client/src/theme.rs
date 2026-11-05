@@ -590,7 +590,7 @@ impl Theme {
     }
 }
 
-struct ActiveTheme(Rc<Theme>);
+pub(crate) struct ActiveTheme(Rc<Theme>);
 
 impl Global for ActiveTheme {}
 
