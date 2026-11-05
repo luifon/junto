@@ -4,7 +4,10 @@
 //! the design allows, above its first part or between two parts, is an empty band. Space
 //! after the last part is the end of the area, except in the frame of a kept result
 //! ([`junto_client::ui::KEPT`]), which has the height of the row that it replaces and whose
-//! sentence is its content.
+//! sentence is its content. The parts of a centred area ([`junto_client::ui::CENTRED`]), such
+//! as the tiles of a call, have equal space above and below them; the space between its parts
+//! is not measured, because a tile has nearly the ground of the stage and the inside of a
+//! tile would read as an empty band.
 
 use gpui::{Bounds, Pixels, SharedString};
 use image::RgbaImage;
@@ -19,6 +22,9 @@ const SIDE: f32 = 12.0;
 /// The height at the top and at the bottom of an area that is not read, in pixels of the
 /// window.
 const EDGE: f32 = 2.0;
+/// The largest difference, in pixels of the design, between the space above the parts of a
+/// centred area and the space below them: the rounding of the centre and of the edges.
+const CENTRE_TOLERANCE: f32 = 2.0;
 /// The largest difference of a colour channel from the ground that is still the ground.
 const TOLERANCE: u8 = 6;
 
@@ -69,6 +75,8 @@ pub fn empty_bands(
             })
         };
         let at = |y: u32| (y as f32 / design).round();
+        let centred = name.as_ref() == junto_client::ui::CENTRED;
+        let mut first_part: Option<u32> = None;
         let mut last_part: Option<u32> = None;
         for y in top..bottom {
             if blank(y) {
@@ -76,7 +84,8 @@ pub fn empty_bands(
             }
             let from = last_part.map_or(top, |part| part + 1);
             let space = y - from;
-            if space > most {
+            first_part.get_or_insert(y);
+            if space > most && !centred {
                 let place = if last_part.is_some() {
                     "between two parts"
                 } else {
@@ -108,6 +117,20 @@ pub fn empty_bands(
                     at(last),
                     at(bottom),
                 ));
+            }
+            Some(last) if centred => {
+                let above = first_part.map_or(0, |first| first - top);
+                let below = bottom - (last + 1);
+                if above.abs_diff(below) as f32 > CENTRE_TOLERANCE * design {
+                    found.push(format!(
+                        "{name}: its parts are not centred: {} design px of empty space above \
+                         them and {} below them, from {} to {} design px of the window",
+                        at(above),
+                        at(below),
+                        at(top),
+                        at(bottom),
+                    ));
+                }
             }
             Some(_) => {}
         }
@@ -209,6 +232,43 @@ mod tests {
         )];
         assert_eq!(
             empty_bands(&image, &fitting, 200.0, 100),
+            Vec::<String>::new()
+        );
+    }
+
+    fn centred() -> Vec<(gpui::SharedString, Bounds<gpui::Pixels>)> {
+        vec![(
+            junto_client::ui::CENTRED.into(),
+            Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(400.0))),
+        )]
+    }
+
+    /// Tiles in the middle of the stage of a call, with their gap between them.
+    #[test]
+    fn a_centred_area_with_equal_space_above_and_below_its_parts_has_no_empty_band() {
+        let image = screen(&[(140, 195), (205, 260)]);
+        assert_eq!(
+            empty_bands(&image, &centred(), 200.0, 100),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Tiles at the top of the stage of a call leave an empty band under them.
+    #[test]
+    fn a_centred_area_whose_parts_lie_at_its_top_is_found() {
+        let image = screen(&[(10, 100)]);
+        let found = empty_bands(&image, &centred(), 200.0, 100);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("not centred"), "{found:?}");
+    }
+
+    /// A tile in the middle of the stage: its borders and its picture are parts, and its
+    /// inside has nearly the ground of the stage.
+    #[test]
+    fn the_inside_of_a_tile_in_a_centred_area_is_not_an_empty_band() {
+        let image = screen(&[(100, 102), (170, 230), (298, 300)]);
+        assert_eq!(
+            empty_bands(&image, &centred(), 200.0, 100),
             Vec::<String>::new()
         );
     }

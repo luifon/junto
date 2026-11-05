@@ -158,6 +158,33 @@ fn watch_the_drawing(drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant
     });
 }
 
+/// The screen that the watch of [`watch_the_drawing`] names while the guard lives.
+struct Noted {
+    drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
+}
+
+impl Noted {
+    fn new(
+        drawing: &Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
+        name: &'static str,
+    ) -> Self {
+        if let Ok(mut noted) = drawing.lock() {
+            *noted = Some((name, Instant::now()));
+        }
+        Self {
+            drawing: Arc::clone(drawing),
+        }
+    }
+}
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        if let Ok(mut noted) = self.drawing.lock() {
+            *noted = None;
+        }
+    }
+}
+
 /// An identifier that is the same in every run, so that a generated avatar is the same.
 fn id<T: FromStr>(number: u32) -> T
 where
@@ -692,13 +719,6 @@ impl Studio {
         })
     }
 
-    /// Notes the screen that is drawn from now on.
-    fn drawing(&self, name: Option<&'static str>) {
-        if let Ok(mut drawing) = self.drawing.lock() {
-            *drawing = name.map(|name| (name, Instant::now()));
-        }
-    }
-
     /// Draws one screen. `prepare` opens what the screen shows beyond its servers.
     fn draw(
         &mut self,
@@ -747,7 +767,9 @@ impl Studio {
         };
         let name = screen.name;
         let (width, scale) = (screen.size.0, screen.scale);
-        self.drawing(Some(name));
+        // The watch names this screen until the guard ends, on every way out of this
+        // function, also after an error.
+        let _drawing = Noted::new(&self.drawing, name);
         let (window, shell, _) = self.open(screen, prepare)?;
         let started = Instant::now();
         loop {
@@ -851,7 +873,6 @@ impl Studio {
             .update_window(window.into(), |_, window, _| window.remove_window())
             .map_err(|error| format!("{error:#}"))?;
         self.cx.run_until_parked();
-        self.drawing(None);
         Ok(())
     }
 
@@ -3179,7 +3200,7 @@ impl gpui::Render for Components {
 }
 
 fn draw_components(studio: &mut Studio) -> Result<(), String> {
-    studio.drawing(Some("components"));
+    let _drawing = Noted::new(&studio.drawing, "components");
     let window = studio
         .cx
         .open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -3216,7 +3237,6 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
         .update_window(window.into(), |_, window, _| window.remove_window())
         .map_err(|error| format!("{error:#}"))?;
     studio.cx.run_until_parked();
-    studio.drawing(None);
     Ok(())
 }
 
@@ -3418,5 +3438,29 @@ fn main() -> std::process::ExitCode {
             eprintln!("junto-screens: {problem}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::Noted;
+
+    fn fails(
+        drawing: &Arc<Mutex<Option<(&'static str, std::time::Instant)>>>,
+    ) -> Result<(), String> {
+        let _noted = Noted::new(drawing, "sample");
+        assert!(drawing.lock().is_ok_and(|noted| noted.is_some()));
+        Err("the screen did not reach its state".to_owned())?;
+        Ok(())
+    }
+
+    /// A screen that ends with an error is no longer named by the watch.
+    #[test]
+    fn a_screen_that_ends_with_an_error_is_no_longer_noted() {
+        let drawing = Arc::new(Mutex::new(None));
+        assert!(fails(&drawing).is_err());
+        assert!(drawing.lock().is_ok_and(|noted| noted.is_none()));
     }
 }
