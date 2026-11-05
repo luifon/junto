@@ -87,8 +87,9 @@ pub struct ApplicationSource {
 pub struct ApplicationPicture {
     pub application: ApplicationId,
     pub name: String,
-    /// The screen whose area the share shows: the screen that holds the front window of the
-    /// application when the list was read.
+    /// The screen whose area the share shows: the screen that shows the largest part of the
+    /// windows of the application when the list was read, the first listed of equal ones
+    /// (`listing::application_pictures`).
     pub display: u32,
     /// The size of the picture in pixels: the size of that screen.
     pub width: u32,

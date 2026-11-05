@@ -109,6 +109,79 @@ pub(crate) fn placed_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<(Windo
         .collect()
 }
 
+/// The windows that a share of an application draws (ADR 0738): every visible top-level
+/// window of the process of the application, with its frame, in the order of the list. Its
+/// dialogs, menus, tool windows and pop-ups without a title are drawn too, which the list of
+/// the Window tab leaves out, because the person sees them on the screen. A window without a
+/// size, a minimised window, a window that the window manager hides (on another virtual
+/// desktop) and a window of the shell draw nothing.
+pub(crate) fn application_windows(
+    listed: Vec<ListedWindow>,
+    process_id: u32,
+) -> Vec<(u32, Bounds)> {
+    listed
+        .into_iter()
+        .filter(|window| window.process_id == process_id && process_id != 0)
+        .filter(|window| window.visible && !window.cloaked && !window.minimized)
+        .filter(|window| window.size.0 > 0 && window.size.1 > 0)
+        .filter(|window| !SHELL_CLASSES.contains(&window.class.as_str()))
+        .map(|window| {
+            let bounds = Bounds {
+                x: f64::from(window.origin.0),
+                y: f64::from(window.origin.1),
+                width: f64::from(window.size.0),
+                height: f64::from(window.size.1),
+            };
+            (window.id, bounds)
+        })
+        .collect()
+}
+
+/// What a new reading of the windows of a shared application changes (ADR 0738).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Followed {
+    /// The captures that end: of a window that is not drawn any more, as a window that closed,
+    /// was minimised or left the screen, and of a window whose capture ended by itself.
+    pub end: Vec<u32>,
+    /// The windows whose capture starts: drawn now, without a capture, and not refused, as a
+    /// window that opened or moved onto the screen.
+    pub start: Vec<u32>,
+    /// The windows that are not captured again while they stay drawn: their capture did not
+    /// start or ended by itself. A window that leaves the list is tried again when it returns.
+    pub refused: Vec<u32>,
+}
+
+/// The captures that start and end after a reading of the windows of a shared application:
+/// `captured` holds the windows with a capture, `ended` those of them whose capture ended by
+/// itself, `refused` the windows refused before, and `now` the windows to draw. A window that
+/// only moves keeps its capture; the picture is drawn anew because its place changed.
+pub(crate) fn follow(captured: &[u32], ended: &[u32], refused: &[u32], now: &[Layer]) -> Followed {
+    let drawn = |window: &u32| now.iter().any(|layer| layer.window == *window);
+    let end: Vec<u32> = captured
+        .iter()
+        .copied()
+        .filter(|window| ended.contains(window) || !drawn(window))
+        .collect();
+    let mut kept_refused: Vec<u32> = Vec::new();
+    for window in refused.iter().chain(ended) {
+        if drawn(window) && !kept_refused.contains(window) {
+            kept_refused.push(*window);
+        }
+    }
+    let start = now
+        .iter()
+        .map(|layer| layer.window)
+        .filter(|window| {
+            !(captured.contains(window) && !end.contains(window)) && !kept_refused.contains(window)
+        })
+        .collect();
+    Followed {
+        end,
+        start,
+        refused: kept_refused,
+    }
+}
+
 /// One window in the picture of a shared application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Layer {
@@ -760,5 +833,118 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_shared_application_draws_its_dialogs_menus_and_untitled_pop_ups_too() {
+        let player = r"C:\Program Files\Player\Player.exe";
+        let mut dialog = window(2, 7, player);
+        dialog.owned = true;
+        let mut tool = window(3, 7, player);
+        tool.tool = true;
+        let mut menu = window(4, 7, player);
+        menu.no_activate = true;
+        menu.title = String::new();
+        menu.class = "#32768".to_owned();
+        menu.size = (180, 40);
+        let mut hidden = window(5, 7, player);
+        hidden.visible = false;
+        let mut minimized = window(6, 7, player);
+        minimized.minimized = true;
+        let mut cloaked = window(7, 7, player);
+        cloaked.cloaked = true;
+        let mut empty = window(8, 7, player);
+        empty.size = (0, 0);
+        let mut shell = window(9, 7, player);
+        shell.class = "Shell_TrayWnd".to_owned();
+        let other = window(10, 8, r"C:\Program Files\Other\Other.exe");
+        let listed = vec![
+            menu.clone(),
+            window(1, 7, player),
+            dialog,
+            tool,
+            hidden,
+            minimized,
+            cloaked,
+            empty,
+            shell,
+            other,
+        ];
+        let drawn: Vec<u32> = application_windows(listed.clone(), 7)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        // The order of the window manager, from the front, is kept.
+        assert_eq!(drawn, [4, 1, 2, 3]);
+        // The Window tab offers only the ordinary window of the application.
+        let offered: Vec<u32> = shareable_windows(listed, &own())
+            .into_iter()
+            .map(|window| window.id)
+            .filter(|id| [1, 2, 3, 4].contains(id))
+            .collect();
+        assert_eq!(offered, [1]);
+        assert!(application_windows(vec![window(1, 0, player)], 0).is_empty());
+    }
+
+    #[test]
+    fn the_follow_of_a_shared_application_starts_ends_and_keeps_the_captures_of_its_windows() {
+        let screen = Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let at = |x: f64, y: f64| Bounds {
+            x,
+            y,
+            width: 400.0,
+            height: 300.0,
+        };
+        let layers = |windows: &[(u32, Bounds)]| application_layers(windows, screen);
+
+        // The share starts with one window; a second window of the application opens later.
+        let first = layers(&[(1, at(100.0, 100.0))]);
+        assert_eq!(follow(&[], &[], &[], &first).start, [1]);
+        let opened = layers(&[(2, at(600.0, 200.0)), (1, at(100.0, 100.0))]);
+        assert_eq!(
+            follow(&[1], &[], &[], &opened),
+            Followed {
+                end: Vec::new(),
+                start: vec![2],
+                refused: Vec::new(),
+            }
+        );
+
+        // The first window moves: its capture stays, and its place in the picture changes,
+        // so the picture is drawn anew.
+        let moved = layers(&[(2, at(600.0, 200.0)), (1, at(900.0, 500.0))]);
+        assert_eq!(follow(&[1, 2], &[], &[], &moved), Followed::default());
+        assert_ne!(moved, opened);
+        // The layers run from the back: window 1 is behind window 2.
+        assert_eq!((moved[0].window, moved[0].at), (1, (900, 500)));
+
+        // The second window closes: its capture ended by itself and it is not listed.
+        let closed = layers(&[(1, at(900.0, 500.0))]);
+        assert_eq!(follow(&[1, 2], &[2], &[], &closed).end, [2]);
+        // A window leaves the screen or is minimised: its capture ends.
+        assert_eq!(follow(&[1], &[], &[], &[]).end, [1]);
+
+        // A capture that ended while its window is still drawn is not started again at each
+        // reading; the window is tried again after it left the list and returned.
+        let failed = follow(&[1, 2], &[2], &[], &opened);
+        assert_eq!(
+            (failed.end, failed.start, failed.refused.clone()),
+            (vec![2], Vec::new(), vec![2])
+        );
+        assert_eq!(
+            follow(&[1], &[], &failed.refused, &opened),
+            Followed {
+                end: Vec::new(),
+                start: Vec::new(),
+                refused: vec![2],
+            }
+        );
+        assert_eq!(follow(&[1], &[], &[2], &first).refused, Vec::<u32>::new());
+        assert_eq!(follow(&[1], &[], &[], &opened).start, [2]);
     }
 }

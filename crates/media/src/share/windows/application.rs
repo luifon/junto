@@ -63,13 +63,18 @@ pub(super) fn resolve(own: &Own, process_id: i32) -> Result<Shared, CaptureError
 }
 
 /// The windows of the application on its screen, from the back to the front, each at its
-/// place in the picture.
-fn layers(own: &Own, shared: &Shared) -> Vec<Layer> {
-    let front_to_back: Vec<(u32, Bounds)> = sources::application_windows(own, &shared.application)
-        .into_iter()
-        .map(|(window, bounds)| (window.id, bounds))
-        .collect();
+/// place in the picture, with its frame.
+fn layers(shared: &Shared, hosts: &mut sources::FrameHosts) -> Vec<(Layer, Bounds)> {
+    let front_to_back = sources::application_windows(shared.application.0.process_id as u32, hosts);
     rules::application_layers(&front_to_back, shared.screen)
+        .into_iter()
+        .filter_map(|layer| {
+            let (_, bounds) = front_to_back
+                .iter()
+                .find(|(window, _)| *window == layer.window)?;
+            Some((layer, *bounds))
+        })
+        .collect()
 }
 
 fn handle(window: u32) -> HWND {
@@ -91,7 +96,6 @@ struct Captured {
 /// of one window that ends, as when the window is closed, ends that window only.
 pub(super) fn picture(
     life: Arc<Life>,
-    own: Own,
     shared: Shared,
     pictures: Arc<Latest<()>>,
     drawn: Drawn,
@@ -111,18 +115,25 @@ pub(super) fn picture(
         // Windows whose capture did not start; they are tried again when they are listed
         // anew after they left the list.
         let mut refused: HashSet<u32> = HashSet::new();
+        let mut hosts = sources::FrameHosts::new();
         let mut next = Instant::now();
         while !life.stopped() {
             if Instant::now() >= next {
+                let first = ready.is_some();
                 follow(
-                    &own,
                     &shared,
+                    &mut hosts,
                     &life,
                     &pictures,
                     &drawn,
                     &mut captured,
                     &mut refused,
                 );
+                // The first reading gives a picture also when no window is captured: the
+                // screen is black then, and the viewers are not left without a picture.
+                if first {
+                    pictures.put(());
+                }
                 next = Instant::now() + FOLLOW;
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok(()));
@@ -156,19 +167,30 @@ fn end(window: Captured, life: &Life) {
 /// gone or no longer on the screen, starts the captures of new windows, and gives the
 /// delivery the windows in their order and at their places.
 fn follow(
-    own: &Own,
     shared: &Shared,
+    hosts: &mut sources::FrameHosts,
     life: &Life,
     pictures: &Arc<Latest<()>>,
     drawn: &Drawn,
     captured: &mut Vec<Captured>,
     refused: &mut HashSet<u32>,
 ) {
-    let layers = layers(own, shared);
-    refused.retain(|window| layers.iter().any(|layer| layer.window == *window));
-    let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(captured).into_iter().partition(|held| {
-        !held.life.stopped() && layers.iter().any(|layer| layer.window == held.window)
-    });
+    let layers: Vec<Layer> = layers(shared, hosts)
+        .into_iter()
+        .map(|(layer, _)| layer)
+        .collect();
+    let held: Vec<u32> = captured.iter().map(|held| held.window).collect();
+    let ended: Vec<u32> = captured
+        .iter()
+        .filter(|held| held.life.stopped())
+        .map(|held| held.window)
+        .collect();
+    let before: Vec<u32> = refused.iter().copied().collect();
+    let step = rules::follow(&held, &ended, &before, &layers);
+    *refused = step.refused.into_iter().collect();
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(captured)
+        .into_iter()
+        .partition(|held| step.end.contains(&held.window));
     *captured = kept;
     for window in gone {
         if let Err(failure) = window.life.result() {
@@ -176,26 +198,21 @@ fn follow(
         }
         end(window, life);
     }
-    for layer in &layers {
-        if captured.iter().any(|held| held.window == layer.window)
-            || refused.contains(&layer.window)
-        {
-            continue;
-        }
+    for window in step.start {
         let window_life = Arc::new(Life::default());
         match Session::start(
-            Target::Window(handle(layer.window)),
+            Target::Window(handle(window)),
             window_life.clone(),
             pictures.clone(),
         ) {
             Ok(session) => captured.push(Captured {
-                window: layer.window,
+                window,
                 life: window_life,
                 session,
             }),
             Err(error) => {
-                tracing::warn!(%error, window = layer.window, "a window of the shared application could not be captured");
-                refused.insert(layer.window);
+                tracing::warn!(%error, window, "a window of the shared application could not be captured");
+                refused.insert(window);
             }
         }
     }
@@ -249,16 +266,8 @@ pub(super) fn preview(
     let shared = resolve(own, process_id)?;
     let (width, height) = crate::share::picture::fit(shared.size, bound);
     let scale = f64::from(width) / f64::from(shared.size.0.max(1));
-    let windows: std::collections::HashMap<u32, Bounds> =
-        sources::application_windows(own, &shared.application)
-            .into_iter()
-            .map(|(window, bounds)| (window.id, bounds))
-            .collect();
     let mut stills = Vec::new();
-    for layer in layers(own, &shared) {
-        let Some(bounds) = windows.get(&layer.window) else {
-            continue;
-        };
+    for (layer, bounds) in layers(&shared, &mut sources::FrameHosts::new()) {
         let wanted = (
             ((bounds.width * scale).round() as u32).max(1),
             ((bounds.height * scale).round() as u32).max(1),

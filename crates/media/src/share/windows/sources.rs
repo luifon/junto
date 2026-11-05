@@ -330,23 +330,29 @@ pub(super) fn placed_windows(own: &Own) -> Vec<(WindowSource, Bounds)> {
     rules::placed_windows(listed, own)
 }
 
-/// The windows of one application that a person can share now, each with its frame, from
-/// the front to the back. The program of a window of another process is not read, so the
-/// list costs little enough to be read again while the application is shared (ADR 0738).
-pub(super) fn application_windows(
-    own: &Own,
-    application: &(ApplicationId, String),
-) -> Vec<(WindowSource, Bounds)> {
+/// The processes of a share of an application that draw the frames of applications of the
+/// store, read once for each process while the share runs.
+pub(super) type FrameHosts = std::collections::HashMap<u32, bool>;
+
+/// The windows that a share of the application of the process `process_id` draws, each with
+/// its frame, from the front to the back (`rules::application_windows`). The process of each
+/// window is read first, and only a window of that process, or of a process that draws the
+/// frames of store applications, is read further, so the list can be read again several times
+/// a second while the application is shared (ADR 0738).
+pub(super) fn application_windows(process_id: u32, hosts: &mut FrameHosts) -> Vec<(u32, Bounds)> {
     let listed = top_level_windows()
         .into_iter()
-        .map(read_window)
-        .filter(|window| window.process_id == application.0.process_id as u32)
-        .map(|mut window| {
-            window.application = Some(application.clone());
-            window
+        .filter(|window| {
+            let process = process_of(*window);
+            process == process_id
+                || *hosts.entry(process).or_insert_with(|| {
+                    process_path(process)
+                        .is_some_and(|path| rules::program_identity(&path).1 == FRAME_HOST)
+                })
         })
+        .map(read_window)
         .collect();
-    rules::placed_windows(listed, own)
+    rules::application_windows(listed, process_id)
 }
 
 /// A screen with its handle.

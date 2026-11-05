@@ -259,7 +259,7 @@ async fn start(
         ));
     }
     let (target, loopback) = tokio::task::spawn_blocking({
-        let (own, request) = (own.clone(), request.clone());
+        let request = request.clone();
         move || resolve(&own, &request)
     })
     .await
@@ -289,7 +289,7 @@ async fn start(
             let (ready, picture_ready) = oneshot::channel();
             workers.spawn("share-application", {
                 let (life, pictures, drawn) = (life.clone(), pictures.clone(), drawn.clone());
-                move || application::picture(life, own, shared, pictures, drawn, ready)
+                move || application::picture(life, shared, pictures, drawn, ready)
             })?;
             answer(picture_ready, &life).await?;
             (
