@@ -524,6 +524,8 @@ pub(super) struct OwnShare {
     cleared_by: Option<(u64, LocalVideoTrack, TrackPublishOptions)>,
     /// The maximum bitrate that the published picture track has, when the engine set it.
     bitrate: Option<u64>,
+    /// A set of the bitrate failed and was tried once more; the next failure is only logged.
+    bitrate_retried: bool,
     /// The answer of the system to the start of the capture, until the engine takes it.
     /// The share owns it: a capture that has started when the share ends is stopped with
     /// the share.
@@ -549,8 +551,22 @@ impl OwnShare {
             return;
         };
         match track.set_max_bitrate(bitrate) {
-            Ok(true) => self.bitrate = Some(bitrate),
+            Ok(true) => {
+                self.bitrate = Some(bitrate);
+                self.bitrate_retried = false;
+            }
             Ok(false) => {}
+            // The sender refuses parameters that another set changed in between, such as the
+            // layers that the media server asks for; the set is tried once more after the
+            // work of the engine that is waiting.
+            Err(error) if !self.bitrate_retried => {
+                tracing::info!(%error, slot = self.slot, "the bitrate of the share is set again");
+                self.bitrate_retried = true;
+                let _ = self
+                    .sink
+                    .internal
+                    .send(Internal::ShareSized(self.generation));
+            }
             Err(error) => {
                 tracing::warn!(%error, slot = self.slot, "the bitrate of the share was not changed");
             }
@@ -1201,6 +1217,7 @@ impl Actor {
                 waits: 0,
                 cleared_by: None,
                 bitrate: None,
+                bitrate_retried: false,
                 started,
                 tasks,
             },

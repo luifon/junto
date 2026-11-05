@@ -1727,8 +1727,10 @@ async fn a_shared_window_that_changes_its_size_is_sent_and_stated_at_its_new_siz
 }
 
 /// The bitrate of a share follows the size of its pictures (ADR 0737): a window shared at
-/// 640 × 400 is encoded within the bitrate of that size, and after the window grows to
-/// 1920 × 1080 the encoder aims above it.
+/// 640 × 400 is encoded within the bitrate of that size; after the window grows to
+/// 1920 × 1080 the encoder aims above it; when the window becomes small again it returns
+/// within it; and after the call library publishes the track again, the new publication has
+/// the bitrate of the size of the window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_bitrate_of_a_shared_window_follows_its_size() {
@@ -1766,8 +1768,17 @@ async fn the_bitrate_of_a_shared_window_follows_its_size() {
                     })
             }
         };
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let before = target(640).await.expect("no encoding of 640 pixels");
+        let started = tokio::time::Instant::now();
+        let before = loop {
+            if let Some(before) = target(640).await {
+                break before;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the sender states no encoding of 640 pixels"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
         assert!(
             before <= small * 1.05,
             "the encoder of 640 × 400 aims at {before} bit/s, above the {small} of its size"
@@ -1785,6 +1796,53 @@ async fn the_bitrate_of_a_shared_window_follows_its_size() {
                 started.elapsed() < PATIENCE,
                 "after {PATIENCE:?} the encoder of 1920 × 1080 aims at {after} bit/s, still \
                  within the bitrate of 640 × 400 ({small}); the sender: {}",
+                ann.encoding(1920).await
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // The window becomes small again: the encoder returns within the bitrate of that size.
+        ann.capture
+            .resize_source(PictureSource::Window(11), 640, 400);
+        ben.until_width_stays(ann_id, 640).await;
+        let started = tokio::time::Instant::now();
+        loop {
+            let again = target(640).await.unwrap_or(f64::MAX);
+            if again <= small * 1.05 {
+                break;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the encoder of 640 × 400 aims at {again} bit/s, above the \
+                 {small} of its size; the sender: {}",
+                ann.encoding(640).await
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // The window grows, and the call library connects anew and publishes the track again
+        // with the options of its first publication: the engine gives the new publication the
+        // bitrate of the size of the window.
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1920, 1080);
+        ben.until_width_stays(ann_id, 1920).await;
+        ann.calls.simulate_full_reconnect();
+        ann.until("the share runs after the new connection", |view| {
+            view.call.as_ref().is_some_and(|call| {
+                call.phase == junto_media::calls::Phase::Connected
+                    && matches!(call.own_shares.get(&0), Some(ShareState::Running(_)))
+            })
+        })
+        .await;
+        ben.until_width_stays(ann_id, 1920).await;
+        let started = tokio::time::Instant::now();
+        loop {
+            let after = target(1920).await.unwrap_or_default();
+            if after > small * 1.5 {
+                break;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} and a new connection the encoder of 1920 × 1080 aims at \
+                 {after} bit/s, within the bitrate of the first size ({small}); the sender: {}",
                 ann.encoding(1920).await
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
