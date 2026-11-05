@@ -951,8 +951,9 @@ fn inside(bounds: gpui::Bounds<gpui::Pixels>, area: gpui::Bounds<gpui::Pixels>) 
         && near(area.bottom(), bounds.bottom())
 }
 
-/// A picture of `size` was painted inside `area` with its proportions, as large as the area
-/// allows: it reaches the two edges of the area in one direction.
+/// The picture of `size` whose middle lies in `area` was painted inside `area` with its
+/// proportions, as large as the area allows: it reaches the two edges of the area in one
+/// direction.
 #[track_caller]
 pub(crate) fn assert_fitted(
     painted: &[junto_client::ui::PaintedPicture],
@@ -960,8 +961,13 @@ pub(crate) fn assert_fitted(
     area: gpui::Bounds<gpui::Pixels>,
     place: &str,
 ) {
-    let Some(picture) = painted.iter().find(|picture| picture.size == size) else {
-        panic!("no picture of {size:?} of {place} was painted: {painted:?}");
+    let Some(picture) = painted
+        .iter()
+        .find(|picture| picture.size == size && area.contains(&picture.bounds.center()))
+    else {
+        panic!(
+            "no picture of {size:?} of {place} was painted with its middle in {area:?}: {painted:?}"
+        );
     };
     let bounds = picture.bounds;
     assert!(
@@ -1101,7 +1107,7 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
             kind: ShareKind::Window,
             sound: ShareAudio::None,
             sound_held: false,
-            size: (64, 36),
+            size: (36, 64),
             frame_rate: 30,
         }),
     )]);
@@ -1117,13 +1123,14 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
-    let small = || {
-        let pixels = two_colours(64, 36, (200, 30, 30), (30, 30, 200));
-        Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap())
+    // The own share is a portrait window, the other one a landscape screen.
+    let small = |width: u32, height: u32| {
+        let pixels = two_colours(width, height, (200, 30, 30), (30, 30, 200));
+        Arc::new(VideoPicture::new(&pixels, false, (width, height)).unwrap())
     };
     calls.show_small_pictures_for_test(HashMap::from([
-        (ShareId::own(0), small()),
-        (ShareId::of(other, 0), small()),
+        (ShareId::own(0), small(36, 64)),
+        (ShareId::of(other, 0), small(64, 36)),
     ]));
     window.until_pictures_taken();
     let images = window
@@ -1140,19 +1147,17 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
     let painted = window.painted_pictures();
     // The selectors of gpui live as long as the program.
     let other_thumbnail: &'static str = format!("share-thumbnail:{other}:0").leak();
-    for thumbnail in ["share-thumbnail:own:0", other_thumbnail] {
+    for (thumbnail, size) in [
+        ("share-thumbnail:own:0", (36, 64)),
+        (other_thumbnail, (64, 36)),
+    ] {
         // The picture lies inside the border of one pixel of the frame.
         let area = window
             .cx
             .debug_bounds(thumbnail)
             .unwrap()
             .inset(gpui::px(1.0));
-        let near: Vec<_> = painted
-            .iter()
-            .copied()
-            .filter(|picture| area.contains(&picture.bounds.center()))
-            .collect();
-        assert_fitted(&near, (64, 36), area, thumbnail);
+        assert_fitted(&painted, size, area, thumbnail);
     }
 }
 
@@ -1379,6 +1384,169 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
         .advance_clock(Duration::from_millis(200));
     window.park();
     assert_eq!(held(&mut window).1, Some(22));
+}
+
+/// Shows the call `call` of the window with these people in it, as the server states them.
+pub(crate) fn show_call_with_people(
+    window: &mut Window,
+    world: &World,
+    call: junto_media::calls::ActiveCall,
+    people: &[junto_client_core::protocol::ids::AccountId],
+) {
+    use std::sync::Arc;
+
+    use junto_client::state::view::ServerSnapshot;
+    use junto_client_core::model::ServerModel;
+    use junto_client_core::protocol::call::{Call, CallParticipant, ChannelCall};
+    use junto_client_core::protocol::ids::CallId;
+
+    let CallPlace::Channel {
+        workspace_id,
+        channel_id,
+    } = call.target.place
+    else {
+        unreachable!("a call of a voice channel")
+    };
+    let handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers()[0].clone());
+    let mut snapshot = world.run(handle.api().snapshot()).unwrap().snapshot;
+    show_call(window, call);
+    let workspace = (snapshot.workspaces.iter_mut())
+        .find(|state| state.workspace.id == workspace_id)
+        .unwrap();
+    workspace.calls.retain(|call| call.channel_id != channel_id);
+    workspace.calls.push(ChannelCall {
+        workspace_id,
+        channel_id,
+        in_use: true,
+        call: Some(Call {
+            id: CallId::generate(),
+            place: CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            started_at: Some(time::OffsetDateTime::now_utc()),
+            lock: None,
+            meeting: None,
+            hides_occupants: false,
+            participants: people
+                .iter()
+                .map(|account_id| CallParticipant {
+                    avatar: None,
+                    account_id: *account_id,
+                    identity: format!("seat-{account_id}"),
+                    joined_at: time::OffsetDateTime::now_utc(),
+                    muted: false,
+                    deafened: false,
+                    microphone_block: None,
+                    sound_block: None,
+                    hand_raised: false,
+                    watching: None,
+                    screen_share: None,
+                    screen_shares: Vec::new(),
+                })
+                .collect(),
+            recording: None,
+        }),
+    });
+    let fixture = ServerSnapshot {
+        model: Some(Arc::new(ServerModel::from_snapshot(snapshot))),
+        ..ServerSnapshot::of(&handle)
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_fixture(vec![fixture], cx));
+    });
+    window.settle();
+}
+
+/// CD-26: a portrait camera picture in a tile that is wider than high is drawn inside the
+/// tile, at its height, with its proportions.
+#[gpui::test]
+fn a_portrait_camera_is_drawn_inside_a_wide_tile(cx: &mut TestAppContext) {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use junto_media::camera::CameraState;
+    use junto_media::engine::Person;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let mut call = connected_call(&mut window, "Daily");
+    call.camera = CameraState::Running;
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let pixels = two_colours(36, 64, (200, 30, 30), (30, 30, 200));
+    calls.show_camera_pictures_for_test(HashMap::from([(
+        Person::Own,
+        Arc::new(VideoPicture::new(&pixels, true, (36, 64)).unwrap()),
+    )]));
+    window.until_pictures_taken();
+    let painted = window.painted_pictures();
+    let tile = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
+        .unwrap();
+    assert!(
+        tile.size.width > tile.size.height,
+        "the tile {tile:?} is not wide"
+    );
+    // The picture lies inside the border of one pixel of the tile.
+    assert_fitted(
+        &painted,
+        (36, 64),
+        tile.inset(gpui::px(1.0)),
+        "the camera tile",
+    );
+}
+
+/// An avatar of a picture that is higher than wide, set through the API, is drawn as a square
+/// inside its call tile: the window holds the middle square of the picture, and the avatar
+/// element is a square whatever image it draws.
+#[gpui::test]
+fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers()[0].clone());
+    world
+        .run(handle.api().set_avatar(crate::pictures::png(48, 200)))
+        .unwrap();
+    let call = connected_call(&mut window, "Daily");
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let avatar = crate::harness::selector(format!("avatar-image:{}", own.as_uuid().as_u128()));
+    window.until("the avatar picture is drawn in the tile", |window| {
+        window.shows(avatar)
+    });
+    let drawn = window.cx.debug_bounds(avatar).unwrap();
+    let tile = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
+        .unwrap();
+    assert!(
+        (f32::from(drawn.size.width) - f32::from(drawn.size.height)).abs() <= 1.0,
+        "the avatar was laid out at {drawn:?}, not as a square"
+    );
+    assert!(
+        inside(drawn, tile),
+        "the avatar {drawn:?} passes the edge of the tile {tile:?}"
+    );
 }
 
 /// ADR 0735: the tiles of the people fill the free area of the stage, with the largest 16:9

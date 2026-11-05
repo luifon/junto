@@ -517,6 +517,20 @@ fn run_mode(mode: Mode) -> ExitCode {
     }
     let (all_draws, picture_draws) = draws(&mut window);
     let drawn = (all_draws - draws_before.0, picture_draws - draws_before.1);
+    // The width at which each camera picture that the window holds was received: the media
+    // server sends the layer of the size at which the window draws the camera.
+    let mut received: Vec<u32> = window
+        .in_shell(|shell, _, _| shell.camera_widths())
+        .into_values()
+        .collect();
+    received.sort_unstable();
+    if !received.is_empty() {
+        println!(
+            "modes: {}: the camera pictures were received {:?} pixels wide",
+            mode.name(),
+            received
+        );
+    }
     let mut failures = check_mode(&mut window, mode, &text, drawn);
     for other in &mut others {
         if let Some(status) = other.child.try_wait().unwrap() {
@@ -770,8 +784,8 @@ impl Drop for Other {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// The codec of the pictures of the other people (`JUNTO_TEST_MODES_CODEC`).
+#[cfg(target_os = "macos")]
 fn codec() -> String {
     match std::env::var("JUNTO_TEST_MODES_CODEC").as_deref() {
         Ok("h264") => "h264".to_owned(),
@@ -780,6 +794,7 @@ fn codec() -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn participant_tool() -> String {
     // The directory of this package in the checkout that runs the test, which `cargo test`
     // sets at run time; a path compiled into the binary can name another checkout whose build

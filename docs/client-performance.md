@@ -114,20 +114,20 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 
 ### Received H.264 pictures on a Mac
 
-The target `modes` with `JUNTO_TEST_MODES_CODEC` set to the codec of the participants (release build, 120 seconds measured per mode, participants send cameras of 1280 × 720 at 30 pictures a second in simulcast layers):
+Measured on 2026-11-05 on the Mac of the table above, with the code of that day: the own camera of the client is encoded in H.264 by the hardware encoder (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The target `modes` ran the modes `camera` and `cameras` with `JUNTO_TEST_MODES_CODEC` set to the codec of the participants (release build, 120 seconds measured per mode; the participants send cameras of 1280 × 720 at 30 pictures a second in simulcast layers). The widths are those at which the window received the camera pictures that it held, the own camera of 640 × 360 included; the media server sends the layer of the size at which the window draws a camera. The figures differ from the table above, which is from 2026-10-17 and from the code before the changes of ADR 0733 and ADR 0737; the difference is not analysed.
 
-| Mode | Codec | Footprint | Processor average | Processor peak |
-|---|---|---|---|---|
-| camera | VP8 | 76.0 MiB | 29.9 % | 30.8 % |
-| cameras | VP8 | 97.2 MiB | 32.5 % | 34.9 % |
-| camera | H.264 | 73.6 MiB | 28.4 % | 29.0 % |
-| cameras | H.264 | 74.5 MiB | 32.2 % | 33.9 % |
+| Mode | Codec | Received widths | Footprint | Processor (average) | Processor (busiest 5 s) |
+|---|---|---|---|---|---|
+| camera | VP8 | 640, 1280 | 80.9 MiB | 29.4 % | 34.4 % |
+| camera | H.264 | 640, 1280 | 77.5 MiB | 27.9 % | 29.2 % |
+| cameras | VP8 | 640, 640, 640, 640 | 85.0 MiB | 31.9 % | 33.9 % |
+| cameras | H.264 | 480, 480, 640, 1280 | 73.7 MiB | 31.5 % | 37.2 % |
 
-A `sample` of 5 seconds of the mode `cameras` with H.264 (3,330 samples per thread) shows the decoder of the system (`RTCVideoDecoderH264` with VideoToolbox). The conversion of the decoder buffer into planes (`ObjCFrameBuffer::ToI420`, `NV12ToI420`) had 4 samples, about 0.1 % of one core; the write of the planes into the pixel buffer that the window paints (`share::picture::surface::convert`) had 78, about 2.3 % of one core, for the four camera pictures.
+A `sample` of 5 seconds in the middle of each mode (about 3,390 samples per thread, one sample about 1.5 ms) counts the work of the pictures. With H.264 the decoder of the system decodes the received pictures (`RTCVideoDecoderH264` with VideoToolbox), and the client converts each decoded pixel buffer into planes (`ObjCFrameBuffer::ToI420`, `NV12ToI420`): 9 samples in the mode `camera` (about 0.3 % of one core) and 6 in the mode `cameras` (about 0.2 %). With VP8 the decoder gives planes and there is no such conversion. For both codecs the follower writes the planes of each camera picture into the pixel buffer that the window paints (`share::picture::surface::convert`): in the mode `camera`, with one received camera at 1280 × 720 and the own camera, 189 samples with VP8 (about 5.6 % of one core) and 176 with H.264 (about 5.2 %); in the mode `cameras` 132 with VP8 and 82 with H.264, at the smaller widths of that mode.
 
 ## Open points
 
-- The modes have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
-- A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes (ADR 0774). A direct paint of the decoder buffer is not built; the measurement below shows a gain of at most about 2 % of one core.
+- The modes idle, text, voice, share and `share-camera` have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table "Junto, per mode" is from before both changes; the modes `camera` and `cameras` were measured again (section "Received H.264 pictures on a Mac").
+- A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes and writes them into a new pixel buffer (ADR 0774). A direct paint of the decoder buffer is not built. By the measurement above it would remove the conversion and the write of each received H.264 picture: for one camera received at 1280 × 720 at 30 pictures a second about 4 to 5 % of one core, for smaller layers less. It needs a new unsafe call (ADR 0774).
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 
