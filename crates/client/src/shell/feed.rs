@@ -3096,6 +3096,15 @@ impl Shell {
             .shown_frames(&attachment_id.to_string())
     }
 
+    /// The frames that the last drawing showed of the animations of a file in the places
+    /// other than the picture viewer. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn shown_frames_behind_the_viewer(&self, attachment_id: AttachmentId) -> Vec<usize> {
+        self.message_pictures
+            .playback
+            .shown_frames_outside(moving::VIEWER_SLOT, &attachment_id.to_string())
+    }
+
     /// True while an animation will draw the window again. A test uses it.
     #[cfg(feature = "test-support")]
     pub fn animation_waits(&self) -> bool {

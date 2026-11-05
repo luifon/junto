@@ -1798,6 +1798,9 @@ impl Render for Shell {
             crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
+        self.message_pictures
+            .playback
+            .set_covered(!matches!(self.layer, Layer::None));
         self.notice_list.frame_starts();
         if std::mem::take(&mut self.view_stale) {
             self.take_state(window, cx);

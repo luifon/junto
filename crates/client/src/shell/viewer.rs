@@ -22,7 +22,7 @@ use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::AppState;
 use crate::state::feed::{Feed, FeedRow};
-use crate::state::view::ShellView;
+use crate::state::view::{PinsState, ShellView};
 use crate::text;
 use crate::theme::{REM_AT_100, Theme, theme, u};
 use crate::ui::{Button, ButtonKind, StyleExt, float_shadow, icon, paint_text};
@@ -53,6 +53,10 @@ pub(crate) struct PictureViewer {
     area: Rc<Cell<Option<Size<Pixels>>>>,
     /// The size of that place in pixels of the device, at most [`LONGEST_SIDE`].
     fit: (u32, u32),
+    /// The loaded pins of the channel held the message when the viewer opened. A deleted
+    /// message leaves the pins, so its absence from them tells the deletion also when no list
+    /// of the window holds it.
+    in_pins: bool,
 }
 
 struct Large {
@@ -86,7 +90,8 @@ impl PictureViewer {
 
     /// The server left the server book, or a list of the window shows the message without
     /// the shown file: the message was deleted, or the retention removed its files. The
-    /// call window lists no servers, so the server book is read in the state.
+    /// pins of the channel no longer hold a message that they held: it was deleted or
+    /// unpinned. The call window lists no servers, so the server book is read in the state.
     pub(super) fn is_stale(&self, view: &ShellView, state: &AppState) -> bool {
         if state
             .server(self.server_id)
@@ -110,9 +115,29 @@ impl PictureViewer {
         let thread = view
             .workspace()
             .and_then(|workspace| workspace.thread.as_ref());
+        let lost_from_pins = loaded_pins(view).is_some_and(|rows| {
+            match rows.iter().find(|row| row.message.id == self.message_id) {
+                Some(row) => {
+                    row.message.deleted
+                        || !row.message.attachments.iter().any(|file| file.id == shown)
+                }
+                None => self.in_pins,
+            }
+        });
         lost(view.lists().and_then(|lists| lists.feed.as_ref()))
             || lost(thread.and_then(|thread| thread.feed.as_ref()))
+            || lost_from_pins
     }
+}
+
+/// The pinned messages of the side panel, once they are loaded.
+fn loaded_pins(view: &ShellView) -> Option<&Vec<crate::state::feed::MessageRow>> {
+    view.workspace()
+        .and_then(|workspace| workspace.pins.as_ref())
+        .and_then(|pins| match &pins.state {
+            PinsState::Loaded(rows) => Some(rows),
+            PinsState::Loading | PinsState::Failed => None,
+        })
 }
 
 /// True when the message lists hold the picture reduced to `fit`, or with fewer frames than
@@ -170,6 +195,9 @@ impl Shell {
             large: None,
             area: Rc::new(Cell::new(None)),
             fit: device_fit(window, place(window, None)),
+            in_pins: (self.view.as_ref())
+                .and_then(loaded_pins)
+                .is_some_and(|rows| rows.iter().any(|row| row.message.id == message_id)),
         };
         self.open_layer(Layer::Picture(Box::new(viewer)), window, cx);
         self.read_viewer_picture(cx);
@@ -562,9 +590,11 @@ impl Shell {
             .clamp(0.0, 1.0);
         let drawn = size(largest.width * fit, largest.height * fit);
         let shown: AnyElement = match image {
-            Some(image) => {
-                moving::picture(image, format!("viewer:{}", attachment.id).into(), playback)
-            }
+            Some(image) => moving::picture(
+                image,
+                format!("{}{}", moving::VIEWER_SLOT, attachment.id).into(),
+                playback,
+            ),
             None => div()
                 .size_full()
                 .flex()
