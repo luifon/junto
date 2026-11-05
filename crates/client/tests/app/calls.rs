@@ -1549,6 +1549,97 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
     );
 }
 
+/// CD-33: the stage and the channel list of a call of 601 people build the tiles and the rows
+/// in view only, and a scroll of each brings the last people into view (ADR 0735).
+#[gpui::test]
+fn a_call_of_many_people_draws_the_tiles_and_the_rows_in_view(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ids::AccountId;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1600.0), gpui::px(900.0))));
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let people: Vec<AccountId> = std::iter::once(own)
+        .chain((1..601).map(|_| AccountId::generate()))
+        .collect();
+    let call = connected_call(&mut window, "Daily");
+    show_call_with_people(&mut window, &world, call, &people);
+    let tile = |account: &AccountId| crate::harness::selector(format!("call-tile:{account}"));
+    let drawn = |window: &mut Window| {
+        window.settle();
+        people
+            .iter()
+            .filter(|account| window.cx.debug_bounds(tile(account)).is_some())
+            .count()
+    };
+    let at_start = drawn(&mut window);
+    assert!(
+        (1..150).contains(&at_start),
+        "the stage draws {at_start} tiles of 601 people"
+    );
+    let last = people.last().unwrap();
+    assert!(
+        window.cx.debug_bounds(tile(last)).is_none(),
+        "the tile of the last person is drawn before a scroll"
+    );
+    // One turn of the wheel to the end of the stage.
+    window.wheel_by("call-area", -20_000.0);
+    let area = window.cx.debug_bounds("call-area").unwrap();
+    let shown = window.cx.debug_bounds(tile(last));
+    assert!(
+        shown.is_some_and(|shown| shown.top() >= area.top() && shown.bottom() <= area.bottom()),
+        "the tile of the last person is not in view at the end of the stage: {shown:?} in {area:?}"
+    );
+    assert!(
+        window.cx.debug_bounds(tile(&people[0])).is_none(),
+        "the tile of the first person is still drawn at the end of the stage"
+    );
+    let at_end = drawn(&mut window);
+    assert!(
+        (1..150).contains(&at_end),
+        "the stage draws {at_end} tiles of 601 people at its end"
+    );
+
+    // The people under the voice channel in the channel list.
+    let row = |account: &AccountId| crate::harness::selector(format!("occupant:{account}"));
+    let rows = |window: &mut Window| {
+        window.settle();
+        people
+            .iter()
+            .filter(|account| window.cx.debug_bounds(row(account)).is_some())
+            .count()
+    };
+    let at_start = rows(&mut window);
+    assert!(
+        (1..150).contains(&at_start),
+        "the channel list draws {at_start} rows of 601 people"
+    );
+    assert!(
+        window.cx.debug_bounds(row(last)).is_none(),
+        "the row of the last person is drawn before a scroll"
+    );
+    window.wheel_by("channel-list", -40_000.0);
+    let list = window.cx.debug_bounds("channel-list").unwrap();
+    let shown = window.cx.debug_bounds(row(last));
+    assert!(
+        shown.is_some_and(|shown| shown.top() >= list.top() && shown.bottom() <= list.bottom()),
+        "the row of the last person is not in view at the end of the list: {shown:?} in {list:?}"
+    );
+    assert!(
+        window.cx.debug_bounds(row(&people[0])).is_none(),
+        "the row of the first person is still drawn at the end of the list"
+    );
+    let at_end = rows(&mut window);
+    assert!(
+        (1..150).contains(&at_end),
+        "the channel list draws {at_end} rows of 601 people at its end"
+    );
+}
+
 /// ADR 0735: the tiles of the people fill the free area of the stage, with the largest 16:9
 /// size at which all of them fit: 1, 2, 4 and 9 people, at two sizes of the window. Before
 /// the change every tile had 222 by 126 design pixels in the middle of the stage.

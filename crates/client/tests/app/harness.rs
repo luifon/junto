@@ -913,6 +913,24 @@ impl Window {
         self.wheel_until(list, target, 300.0);
     }
 
+    /// Turns the wheel once over the element with the name `list` by `by` pixels: negative
+    /// toward the end of the list.
+    #[track_caller]
+    pub fn wheel_by(&mut self, list: &'static str, by: f32) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let area = self
+            .cx
+            .debug_bounds(list)
+            .unwrap_or_else(|| panic!("{list} is not drawn"));
+        self.dispatch(ScrollWheelEvent {
+            position: area.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+        self.settle();
+    }
+
     #[track_caller]
     fn wheel_until(&mut self, list: &'static str, target: &'static str, step: f32) {
         use gpui::{ScrollDelta, ScrollWheelEvent, point, px};

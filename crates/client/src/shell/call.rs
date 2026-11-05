@@ -494,6 +494,60 @@ impl Shell {
     }
 
     /// The stage of the call: the people as tiles, or what the call waits for.
+    /// The tile of a person on the stage: at `size`, or in the strip under the focused tile
+    /// `focus`.
+    fn stage_tile(
+        &self,
+        index: usize,
+        occupant: &Occupant,
+        focus: Option<junto_client_core::protocol::ids::AccountId>,
+        size: (f32, f32),
+        faces: &crate::state::people::ServerFaces,
+        cx: &gpui::App,
+    ) -> PersonTile {
+        let (marks, label) = tile_marks(occupant);
+        let name: SharedString = if occupant.is_self {
+            format!("{} ({})", occupant_name(occupant), text::YOU).into()
+        } else {
+            occupant_name(occupant)
+        };
+        let focused = focus == Some(occupant.account_id);
+        PersonTile::new(
+            ("tile", index),
+            name,
+            occupant.account_id.as_uuid().as_u128(),
+            label,
+        )
+        .map(|tile| {
+            if focus.is_some() && !focused {
+                tile.in_strip()
+            } else {
+                tile.size(size)
+            }
+        })
+        .focused(focused)
+        .picture(faces.image(occupant.account_id))
+        .presence(faces.presence(occupant.account_id))
+        .name_color(faces.color(occupant.account_id))
+        .when_some(faces.server_id(), |tile, server| {
+            tile.profile(crate::ui::OpenProfile {
+                server,
+                account: occupant.account_id,
+            })
+        })
+        .camera_view(self.camera_request(occupant, cx))
+        .camera_picture(self.camera_image(occupant))
+        .speaking(matches!(
+            occupant.microphone,
+            Microphone::Open { speaking: true }
+        ))
+        .marks(marks)
+        .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
+            tile.on_menu(open)
+        })
+        .selector(format!("call-tile:{}", occupant.account_id))
+    }
+
     pub(crate) fn render_stage(
         &self,
         panel: &CallPanel,
@@ -641,49 +695,6 @@ impl Shell {
                     Some(_) => crate::ui::tile::grid(1, area),
                     None => crate::ui::tile::grid(shown.len(), area),
                 };
-                let tile = |index: usize, occupant: &Occupant| {
-                    let (marks, label) = tile_marks(occupant);
-                    let name: SharedString = if occupant.is_self {
-                        format!("{} ({})", occupant_name(occupant), text::YOU).into()
-                    } else {
-                        occupant_name(occupant)
-                    };
-                    let focused = focus == Some(occupant.account_id);
-                    PersonTile::new(
-                        ("tile", index),
-                        name,
-                        occupant.account_id.as_uuid().as_u128(),
-                        label,
-                    )
-                    .map(|tile| {
-                        if focus.is_some() && !focused {
-                            tile.in_strip()
-                        } else {
-                            tile.size(size)
-                        }
-                    })
-                    .focused(focused)
-                    .picture(faces.image(occupant.account_id))
-                    .presence(faces.presence(occupant.account_id))
-                    .name_color(faces.color(occupant.account_id))
-                    .when_some(faces.server_id(), |tile, server| {
-                        tile.profile(crate::ui::OpenProfile {
-                            server,
-                            account: occupant.account_id,
-                        })
-                    })
-                    .camera_view(self.camera_request(occupant, cx))
-                    .camera_picture(self.camera_image(occupant))
-                    .speaking(matches!(
-                        occupant.microphone,
-                        Microphone::Open { speaking: true }
-                    ))
-                    .marks(marks)
-                    .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
-                        tile.on_menu(open)
-                    })
-                    .selector(format!("call-tile:{}", occupant.account_id))
-                };
                 let (large, strip): (Vec<_>, Vec<_>) = shown
                     .iter()
                     .enumerate()
@@ -695,6 +706,70 @@ impl Shell {
                             + crate::ui::tile::TILE_GAP * columns.saturating_sub(1) as f32
                     }
                 };
+                // A call of many people builds only the lines of tiles in view of the stage:
+                // the rows of the grid, or the rows of the strip under a focused tile
+                // (ADR 0735).
+                let gap = crate::ui::tile::TILE_GAP;
+                let lines = |id: &'static str,
+                             tiles: Vec<(usize, Occupant)>,
+                             across: usize,
+                             height: f32| {
+                    let across = across.max(1);
+                    let heights = vec![height; tiles.len().div_ceil(across)];
+                    let shell = shell.clone();
+                    let faces = faces.clone();
+                    crate::ui::in_view::in_view(id, heights, gap, move |range, _, cx| {
+                        let Some(shell) = shell.upgrade() else {
+                            return Vec::new();
+                        };
+                        let this = shell.read(cx);
+                        tiles
+                            .chunks(across)
+                            .skip(range.start)
+                            .take(range.len())
+                            .map(|row| {
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .justify_center()
+                                    .gap(u(gap))
+                                    .w_full()
+                                    .children(row.iter().map(|(index, person)| {
+                                        let id = person.account_id;
+                                        div()
+                                            .when(focus == Some(id), |tile| {
+                                                tile.debug_selector(move || {
+                                                    format!("person-stage:{id}")
+                                                })
+                                            })
+                                            .child(this.stage_tile(
+                                                *index, person, focus, size, &faces, cx,
+                                            ))
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect()
+                    })
+                };
+                let owned = |tiles: Vec<(usize, &&Occupant)>| {
+                    tiles
+                        .into_iter()
+                        .map(|(index, person)| (index, (*person).clone()))
+                        .collect::<Vec<_>>()
+                };
+                let large_lines = lines(
+                    "call-grid",
+                    owned(large),
+                    if focus.is_some() { 1 } else { columns },
+                    size.1,
+                );
+                let has_strip = !strip.is_empty();
+                let strip_lines = lines(
+                    "call-strip",
+                    owned(strip),
+                    crate::ui::tile::strip_across(area.0),
+                    crate::ui::tile::STRIP_TILE_SIZE.1,
+                );
                 let measured = self.stage_area.clone();
                 let shell = shell.clone();
                 // The size of the free area of the stage, in design pixels: a new size draws
@@ -755,26 +830,14 @@ impl Shell {
                                                 .debug_selector(|| "call-people".to_owned())
                                                 .relative()
                                                 .flex()
-                                                .flex_wrap()
-                                                .justify_center()
-                                                .content_center()
-                                                .gap(u(crate::ui::tile::TILE_GAP))
+                                                .flex_col()
                                                 .w(u(width))
                                                 .max_w_full()
                                                 .flex_none()
-                                                .children(large.into_iter().map(|(index, p)| {
-                                                    let id = p.account_id;
-                                                    div()
-                                                        .when(focus == Some(id), |row| {
-                                                            row.debug_selector(move || {
-                                                                format!("person-stage:{id}")
-                                                            })
-                                                        })
-                                                        .child(tile(index, p))
-                                                }))
+                                                .child(large_lines)
                                                 .child(self.stage_controls.mark()),
                                         )
-                                        .when(!strip.is_empty(), |area| {
+                                        .when(has_strip, |area| {
                                             area.child(
                                                 div()
                                                     .debug_selector(|| {
@@ -782,17 +845,11 @@ impl Shell {
                                                     })
                                                     .relative()
                                                     .flex()
-                                                    .flex_wrap()
-                                                    .justify_center()
-                                                    .gap(u(crate::ui::tile::TILE_GAP))
+                                                    .flex_col()
                                                     .mt(u(crate::ui::tile::TILE_GAP))
                                                     .w_full()
                                                     .flex_none()
-                                                    .children(
-                                                        strip
-                                                            .into_iter()
-                                                            .map(|(index, p)| tile(index, p)),
-                                                    )
+                                                    .child(strip_lines)
                                                     .child(self.stage_controls.mark()),
                                             )
                                         }),

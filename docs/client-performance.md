@@ -127,20 +127,36 @@ A `sample` of 5 seconds in the middle of each mode (about 3,390 samples per thre
 
 ### The call with many people
 
-The time of a frame of the window with a call of many people, measured on 2026-11-05 with the method of ADR 0914 for many members (`JUNTO_SCREENS_ONLY=people-frames`, release build of `junto-screens`, headless renderer, two processors of the Linux host, the median and the longest of 60 frames after 5 frames of warming up):
+The time of a frame of the window with a call of many people, with the method of ADR 0914 for many members: the release build of `junto-screens` with `JUNTO_SCREENS_ONLY=call-frames`, the headless renderer, the median and the longest of 60 frames after 5 frames of warming up, each frame a full drawing of the window (`Window::refresh`). The cases separate the stage, the member list of the call and the rows of the people under the voice channel in the channel list: the stage with the first tab of the panel of the call, the stage with the members of the call in the panel, and a text channel, where the window draws no stage and the channel list holds the people of the call. Each case is a call of 7 and of 601 people. The window shows the stage of 601 people in tiles of the size of the strip, and the stage scrolls.
+
+Two processors of the Linux host, on 2026-11-05. "Before" is the code before CD-33, where the stage built one tile and the channel list one row for each person at each frame; "after" is the code with the columns of `ui::in_view` (ADR 0735), which build only the lines in view:
+
+| Case | Before, median | Before, longest | After, median | After, longest |
+|---|---|---|---|---|
+| Stage, 7 people | 16.3 ms | 19.8 ms | 16.4 ms | 18.8 ms |
+| Stage, 601 people | 462.2 ms | 575.5 ms | 27.1 ms | 43.7 ms |
+| Stage and members of the call, 7 people | 20.6 ms | 24.0 ms | 17.8 ms | 23.7 ms |
+| Stage and members of the call, 601 people | 471.6 ms | 577.6 ms | 33.4 ms | 41.5 ms |
+| Text channel, call of 7 in the channel list | 8.6 ms | 14.1 ms | 10.9 ms | 16.6 ms |
+| Text channel, call of 601 in the channel list | 230.8 ms | 280.4 ms | 15.7 ms | 20.6 ms |
+
+The Mac of the table "Junto, per mode", on 2026-11-05, with the code after CD-33 (two runs; the medians of the second run differ by at most 0.2 ms):
 
 | Case | Median | Longest |
 |---|---|---|
-| A call of 7 people, the members of the call shown | 19.5 ms | 31.4 ms |
-| A call of 601 people, the members of the call shown | 440.6 ms | 588.1 ms |
-| A call of 601 people, the stage of the call shown | 394.7 ms | 480.5 ms |
+| Stage, 7 people | 3.9 ms | 4.9 ms |
+| Stage, 601 people | 7.2 ms | 8.0 ms |
+| Stage and members of the call, 7 people | 4.8 ms | 6.0 ms |
+| Stage and members of the call, 601 people | 8.4 ms | 10.5 ms |
+| Text channel, call of 7 in the channel list | 3.1 ms | 4.2 ms |
+| Text channel, call of 601 in the channel list | 3.4 ms | 4.3 ms |
 
-The member list of the call lays out only the rows in view; with 601 people it adds about 45 ms to a frame of the stage. The stage builds one tile for each person who is not hidden (`shell::call`, the grid of `ui::tile`), so with 601 people a frame takes about 395 ms. In the same run the frames with 601 members of the workspace took a median of 19.0 ms with the member list of the side panel open and 13.6 ms with it closed.
+Before CD-33, with 601 people the rows of the channel list took about 220 ms of a frame and the tiles of the stage about 240 ms; the member list of the call, a gpui list, added about 9 ms. A first version of the columns built the lines in view at the previous paint with half a view more on each side, and asked for another frame after a scroll: 38.4 ms for the stage of 601 people and 17.5 ms for the text channel on the Linux host. A `sample` of the stage of 601 people on the Mac (3 seconds, with that version and again with the current one) gave most of the thread of the window to the layout, prepaint and paint of the tiles that it built: gpui `request_layout`, `prepaint` and `paint` with the insertion of the bounds of each element, and the generated avatars. The columns now choose their lines in the prepaint of the frame that draws them, without lines out of view. A frame of the stage of 601 people now costs the tiles in view: on the Mac it is within one frame of a display at 60 Hz (16.7 ms), at about twice the frame of the call of 7 people, and on the two processors of the Linux host, where a frame of the call of 7 people already takes about 16 ms, it takes about 1.7 times that frame.
 
 ## Open points
 
 - The modes idle, text, voice, share and `share-camera` have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table "Junto, per mode" is from before both changes; the modes `camera` and `cameras` were measured again (section "Received H.264 pictures on a Mac").
 - A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes and writes them into a new pixel buffer (ADR 0774). A direct paint of the decoder buffer is not built. By the measurement above it would remove the conversion and the write of each received H.264 picture: for one camera received at 1280 × 720 at 30 pictures a second about 4 to 5 % of one core, for smaller layers less. It needs a new unsafe call (ADR 0774).
-- A call of hundreds of people: the stage draws a tile for every person, about 395 ms per frame with 601 people (section "The call with many people"), and the member list of the call adds about 45 ms.
+- A call of hundreds of people: a frame of the stage costs the tiles in view (section "The call with many people"). A full drawing of the window builds each tile in view again; a tile whose person did not change is not kept from the previous frame.
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 

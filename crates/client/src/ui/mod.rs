@@ -14,6 +14,7 @@ mod field;
 mod fit;
 mod form_space;
 mod held;
+pub mod in_view;
 mod input_menu;
 mod link_menu;
 mod marks;
