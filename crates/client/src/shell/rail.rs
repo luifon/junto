@@ -100,6 +100,14 @@ impl Shell {
             return;
         }
         let address = self.address.read(cx).value().to_string();
+        // A pasted link of Junto opens as the link does: an invite of a server of the
+        // server book is redeemed into its account (ADR 0115).
+        if let Some(link) = junto_client_core::links::parse(address.trim()) {
+            self.address
+                .update(cx, |field, cx| field.set_value("", window, cx));
+            self.open_app_link(link, window, cx);
+            return;
+        }
         let flow = self.state.read(cx).client().add_server();
         let asking = flow.dispatch(AddServerAction::Fetch {
             address: address.clone(),
@@ -139,6 +147,25 @@ impl Shell {
                             cx,
                         );
                         this.focus_field(&this.code.clone(), window, cx);
+                    }
+                    // The address of a server of the server book: its own dialog opens, which
+                    // redeems an invite into its account or joins it (ADR 0115).
+                    // A link of the server under another of its addresses brings its code.
+                    (Err(junto_client_core::flow::FlowError::AlreadySaved { server_id }), _) => {
+                        this.address
+                            .update(cx, |address, cx| address.set_value("", window, cx));
+                        this.state
+                            .update(cx, |state, cx| state.select_server(server_id, cx));
+                        let code = match this.pending_link.take() {
+                            Some(junto_client_core::links::AppLink::Invite { code, .. }) => {
+                                Some(code)
+                            }
+                            _ => None,
+                        };
+                        this.open_join_for(server_id, window, cx);
+                        if let Some(code) = code {
+                            this.type_code(code.expose(), window, cx);
+                        }
                     }
                     (Err(error), _) => {
                         this.address_error = Some(text::flow_error(&error));
@@ -1033,6 +1060,31 @@ impl Shell {
                     menu.child(menu_label(text::WORKSPACES, true, cx))
                         .children(workspaces)
                         .child(toggle)
+                        // An invite of the same server adds further workspaces to the
+                        // account (ADR 0115).
+                        .child(
+                            div()
+                                .id(("hover-join-with-invite", index))
+                                .role(Role::MenuItem)
+                                .aria_label(text::JOIN_WITH_INVITE)
+                                .debug_selector(|| "hover-join-with-invite".to_owned())
+                                .px(u(12.0))
+                                .py(u(8.0))
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.bone_2)
+                                .cursor_pointer()
+                                .focusable()
+                                .tab_stop(true)
+                                .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.dismiss_hover_menu(window, cx);
+                                    this.state.update(cx, |state, cx| {
+                                        state.select_server(server_id, cx);
+                                    });
+                                    this.open_join_for(server_id, window, cx);
+                                }))
+                                .child(text::JOIN_WITH_INVITE),
+                        )
                 })
                 .when(empty, |menu| {
                     menu.child(

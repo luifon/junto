@@ -1407,6 +1407,15 @@ impl Shell {
         }
     }
 
+    /// The sentence that the join dialog shows after a redemption: the workspaces that it
+    /// added (ADR 0115).
+    pub fn join_redeemed(&self, cx: &gpui::App) -> Option<String> {
+        match &self.layer {
+            Layer::Join(join) => join::redeemed_sentence(join, &self.state.read(cx).view()),
+            _ => None,
+        }
+    }
+
     /// True while the keyboard focus is inside the open layer.
     pub fn layer_holds_focus(&self, window: &Window, cx: &gpui::App) -> bool {
         !matches!(self.layer, Layer::None) && self.active_layer_focus().contains_focused(window, cx)

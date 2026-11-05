@@ -3379,6 +3379,31 @@ pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailabl
 pub const INVITATION_EXISTING_ACCOUNT: &str =
     "Use this invitation with your existing account. It may add you to workspaces on this server.";
 pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+/// The item of the menus of a server that opens the redemption of an invite (ADR 0115).
+pub const JOIN_WITH_INVITE: &str = "Join workspaces with an invite";
+
+/// The refusal of an invite whose workspaces all hold the account already.
+pub const REDEEM_ALREADY_MEMBER: &str =
+    "Your account is already a member of every workspace of this invite. The invite was not used.";
+
+/// What a redemption of an invite added (the server refuses an invite that adds none): the names of the workspaces that the window knows,
+/// and how many more whose names have not arrived yet.
+pub fn redeemed_workspaces(names: &[String], unknown: usize) -> String {
+    let mut parts: Vec<String> = names.iter().map(|name| format!("“{name}”")).collect();
+    match unknown {
+        0 => {}
+        1 if parts.is_empty() => parts.push("1 workspace".to_owned()),
+        1 => parts.push("1 more workspace".to_owned()),
+        count if parts.is_empty() => parts.push(format!("{count} workspaces")),
+        count => parts.push(format!("{count} more workspaces")),
+    }
+    let list = match parts.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    format!("Your account is now a member of {list}.")
+}
 pub const COPY_TARGET_LINK: &str = "Copy link";
 
 pub const EDIT_TEXT_MENU: &str = "Edit text";

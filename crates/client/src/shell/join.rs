@@ -4,14 +4,14 @@
 //! holds no rule of joining.
 
 use gpui::{
-    AnyElement, Context, Hsla, IntoElement, ParentElement, SharedString, Styled, Window, div,
-    prelude::FluentBuilder,
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
+    Styled, Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessAction;
 use junto_client_core::flow::add_server::{AddServerAction, AddServerFlow, AddServerState};
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 use junto_client_core::protocol::secret::{InviteCode, OwnerCode};
 use junto_client_core::version::Incompatibility;
 
@@ -57,6 +57,9 @@ pub(crate) struct Join {
     pub(crate) error: Option<String>,
     /// The text of the "Add server" field that the preview was asked for with.
     typed: Option<String>,
+    /// The workspaces that a redemption of an invite added to the account, after it ended
+    /// (ADR 0115). The dialog then lists them.
+    pub(crate) redeemed: Option<Vec<WorkspaceId>>,
 }
 
 impl Join {
@@ -67,6 +70,7 @@ impl Join {
             running: None,
             error: None,
             typed: Some(typed),
+            redeemed: None,
         }
     }
 
@@ -77,6 +81,7 @@ impl Join {
             running: None,
             error: None,
             typed: None,
+            redeemed: None,
         }
     }
 
@@ -109,6 +114,29 @@ impl Join {
     }
 }
 
+/// The sentence that names the workspaces that a redemption of the dialog added: the names
+/// that the window knows, and a count of those whose names have not arrived yet.
+pub(crate) fn redeemed_sentence(join: &Join, view: &ShellView) -> Option<String> {
+    let added = join.redeemed.as_ref()?;
+    let Target::Member(owner) = &join.target else {
+        return None;
+    };
+    let row = view
+        .servers
+        .iter()
+        .find(|row| row.id == owner.entry.server_id)?;
+    let names: Vec<String> = added
+        .iter()
+        .filter_map(|id| {
+            row.workspaces
+                .iter()
+                .find(|workspace| workspace.id == *id)
+                .map(|workspace| workspace.name.clone())
+        })
+        .collect();
+    Some(text::redeemed_workspaces(&names, added.len() - names.len()))
+}
+
 /// What the dialog shows of its server.
 struct Card {
     seed: u128,
@@ -123,6 +151,8 @@ enum Body {
         found: bool,
     },
     Redeem,
+    /// A redemption ended: the sentence that names the workspaces that it added.
+    Redeemed(String),
     /// The server and this build share no API version. It can still be saved.
     Incompatible(Incompatibility),
     KeyOfOtherAddress(String),
@@ -242,12 +272,15 @@ impl Shell {
         let api = server.api_for(owner.account_id);
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = api
-                .redeem_invite(code)
-                .await
-                .map(|_| ())
+            let answer = api.redeem_invite(code).await;
+            // The server refuses an invite whose workspaces all hold the account already,
+            // and counts no use of it (ADR 0115).
+            let already = answer.as_ref().err().and_then(|error| error.code())
+                == Some(junto_client_core::protocol::error::ErrorCode::Conflict);
+            let result = answer
+                .map(|redemption| redemption.workspace_ids)
                 .map_err(|error| FlowError::from(&error));
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _, cx| {
                 if this
                     .state
                     .read(cx)
@@ -258,11 +291,19 @@ impl Shell {
                 {
                     return;
                 }
-                let succeeded = result.is_ok();
+                // The dialog lists the workspaces that the invite added; the person closes it.
+                let (result, added) = match result {
+                    Ok(added) => (Ok(()), Some(added)),
+                    Err(error) => (Err(error), None),
+                };
                 this.join_action_ended(opened, result, cx);
-                if succeeded && this.join_opened(opened).is_some() {
-                    this.close_layer(window, cx);
+                if let Some(join) = this.join_opened(opened) {
+                    join.redeemed = added;
+                    if already {
+                        join.error = Some(text::REDEEM_ALREADY_MEMBER.to_owned());
+                    }
                 }
+                cx.notify();
             });
         })
         .detach();
@@ -472,13 +513,17 @@ impl Shell {
                 else {
                     return div().into_any_element();
                 };
+                let body = match redeemed_sentence(join, view) {
+                    Some(sentence) => Body::Redeemed(sentence),
+                    None => Body::Redeem,
+                };
                 (
                     Card {
                         seed: row.id.as_uuid().as_u128(),
                         name: row.name.clone().into(),
                         address: row.address.clone().into(),
                     },
-                    Body::Redeem,
+                    body,
                 )
             }
             Target::Saved(server_id) => {
@@ -568,7 +613,7 @@ impl Shell {
                 dialog = dialog
                     .child(div().mt(u(12.0)).child(text::INVITATION_EXISTING_ACCOUNT))
                     .child(
-                        Field::new(&self.code, text::CODE_FIELD)
+                        Field::new(&self.code, text::admin::INVITE_CODE)
                             .kind(FieldKind::Code)
                             .selector("code-field"),
                     )
@@ -584,6 +629,21 @@ impl Shell {
                         .on_click(
                             cx.listener(|this, _, window, cx| this.join_with_code(window, cx)),
                         )
+                        .into_any_element()]));
+            }
+            Body::Redeemed(sentence) => {
+                dialog = dialog
+                    .child(
+                        div()
+                            .mt(u(12.0))
+                            .debug_selector(|| "redeemed-workspaces".to_owned())
+                            .child(sentence),
+                    )
+                    .child(dialog_footer([Button::new("redeem-done")
+                        .label(text::CLOSE)
+                        .kind(ButtonKind::Primary)
+                        .selector("redeem-done")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
                         .into_any_element()]));
             }
             Body::Paths { .. } => {

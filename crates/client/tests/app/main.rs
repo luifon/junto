@@ -123,6 +123,7 @@ mod tray;
 mod unread;
 mod window_frame;
 mod window_placement;
+mod workspace_invites;
 
 mod updates;
 
