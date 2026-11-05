@@ -47,6 +47,12 @@ finish() {
     fi
     exit 0
 }
+# The window tests that need FFmpeg with libopus and libx264, for the sample files of
+# recordings. The Windows machine has no FFmpeg; the GitHub-hosted macOS runner has none either,
+# and its workflow sets JUNTO_CI_FFMPEG=absent. The Linux job runs these tests (ADR 0905).
+without_ffmpeg=(--skip recordings:: --skip transcripts::
+    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts
+    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed)
 case "$(uname -s)" in
     Darwin) system=macos ;;
     MINGW* | MSYS* | CYGWIN*) system=windows ;;
@@ -139,7 +145,13 @@ if [ "$system" = macos ]; then
     run python3 tools/test_with_native_postgres.py
     run python3 tools/with_native_postgres.py --fetch
     step "Window tests with PostgreSQL"
-    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates:: --skip live::
+    skipped=()
+    if [ "${JUNTO_CI_FFMPEG:-}" = absent ]; then
+        echo "JUNTO_CI_FFMPEG=absent: this runner has no FFmpeg; the window tests of recordings and transcripts are skipped here and run in the Linux job"
+        skipped=("${without_ffmpeg[@]}")
+    fi
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates:: --skip live:: \
+        ${skipped[@]+"${skipped[@]}"}
     finish
 fi
 
@@ -181,9 +193,5 @@ run python3 tools/windows/with_test_postgres.py --fetch
 step "Window tests with PostgreSQL"
 run python3 -m unittest discover -s tools/windows -p "test_*.py"
 run python3 tools/windows/with_test_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- \
-    --skip updates:: --skip live:: \
-    --skip recordings:: \
-    --skip transcripts:: \
-    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts \
-    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed
+    --skip updates:: --skip live:: "${without_ffmpeg[@]}"
 finish
