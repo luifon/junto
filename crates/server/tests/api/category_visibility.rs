@@ -184,3 +184,56 @@ async fn a_category_manager_can_create_a_channel_in_that_category() {
         .ok(StatusCode::CREATED);
     assert_eq!(channel.category_id, Some(category.id));
 }
+
+#[tokio::test]
+async fn a_channel_enters_the_root_with_what_a_channel_created_there_needs() {
+    let (server, owner, reader, workspace, category) = fixture().await;
+    let manage = 1i64 << 2;
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,$4,0)")
+        .bind(category.id).bind(reader.account_id).bind(workspace.id).bind(manage).execute(&server.db).await.unwrap();
+    let route = format!("/api/v1/workspaces/{}/channels", workspace.id);
+    let inside: Channel = server
+        .post(
+            &reader,
+            &route,
+            &json!({"name":"Inside","kind":"text","category_id":category.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .post(&reader, &route, &json!({"name":"Root","kind":"text"}))
+        .await
+        .error(junto_protocol::error::ErrorCode::Forbidden);
+    let to_root = format!("/api/v1/channels/{}", inside.id);
+    server
+        .patch(&reader, &to_root, &json!({"category_id": null}))
+        .await
+        .error(junto_protocol::error::ErrorCode::Forbidden);
+    server
+        .patch(
+            &reader,
+            &format!("/api/v1/workspaces/{}/channels/positions", workspace.id),
+            &json!({"moves": [{
+                "channel_id": inside.id,
+                "from": {"category_id": category.id, "position": inside.position},
+                "to": {"category_id": null, "position": inside.position},
+            }]}),
+        )
+        .await
+        .error(junto_protocol::error::ErrorCode::Forbidden);
+    // A move inside the category needs only manage channel there.
+    let moved: Channel = server
+        .patch(&reader, &to_root, &json!({"position": inside.position + 1}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(moved.category_id, Some(category.id));
+
+    server
+        .grant_workspace(&owner, &reader, workspace.id, &[W::ManageChannel])
+        .await;
+    let moved: Channel = server
+        .patch(&reader, &to_root, &json!({"category_id": null}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(moved.category_id, None);
+}

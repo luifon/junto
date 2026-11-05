@@ -814,7 +814,9 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         )
         .await
         .ok(StatusCode::OK);
-    assert_eq!((moved.name.as_str(), moved.position), ("Archive", -1));
+    // A position is a place among the categories that the caller sees: one before the
+    // first is the first (ADR 0304).
+    assert_eq!((moved.name.as_str(), moved.position), ("Archive", 0));
 
     let channel: Channel = server
         .post(

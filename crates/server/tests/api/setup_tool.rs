@@ -102,7 +102,7 @@ fn additions(main: &str) -> Value {
         "workspaces": [
             { "id": main, "name": "Main", "default": true,
               "roles": [{ "id": id(11), "name": "Helpers", "permissions": ["manage_glossary"] }],
-              "categories": [{ "id": id(20), "name": "Projects", "position": 2 }],
+              "categories": [{ "id": id(20), "name": "Projects", "position": 0 }],
               "channels": [
                   { "id": id(30), "name": "plans", "kind": "text", "category": id(20),
                     "permanent_messages": true,

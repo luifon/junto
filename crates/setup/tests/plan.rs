@@ -150,7 +150,7 @@ fn only_the_fields_that_differ_are_sent() {
                            "permissions": ["create_invites", "ban_members"] }],
         "workspaces": [{ "id": id(1), "name": "Main",
             "roles": [{ "id": id(11), "name": "Helpers", "permissions": [] }],
-            "categories": [{ "id": id(20), "name": "Projects", "position": 4 }],
+            "categories": [{ "id": id(20), "name": "Projects", "position": 0 }],
             "channels": [
                 { "id": id(30), "name": "general", "kind": "text", "category": null,
                   "position": 0, "permanent_messages": true },
@@ -166,13 +166,44 @@ fn only_the_fields_that_differ_are_sent() {
             json!({ "change": "update_server_role", "id": id(90),
                     "permissions": ["create_invites", "ban_members"] }),
             json!({ "change": "update_workspace_role", "id": id(11), "permissions": [] }),
-            json!({ "change": "update_category", "id": id(20), "position": 4 }),
             json!({ "change": "update_channel", "id": id(30), "category": null,
                     "permanent_messages": true }),
             json!({ "change": "update_call_settings", "id": id(31), "user_limit": 12 }),
             json!({ "change": "set_channel_override", "channel": id(31), "role": id(11),
                     "allow": ["mute_members"], "deny": ["record_calls"] }),
         ]
+    );
+}
+
+/// A position of a category is its place among the categories of its workspace after the
+/// plan, counted from 0 (ADR 0304): a position past the last is refused, because the server
+/// would put the category last and every later plan would change it again.
+#[test]
+fn a_category_position_is_a_place_among_the_categories_of_its_workspace() {
+    let current = server();
+    let moved = json!({
+        "format": 1,
+        "workspaces": [{ "id": id(1), "name": "Main",
+            "categories": [
+                { "id": id(20), "name": "Projects", "position": 1 },
+                { "id": id(21), "name": "Archive", "position": 0 },
+            ] }],
+    });
+    let planned = changes(&file(moved.clone()), &current);
+    assert!(
+        planned.contains(&json!({ "change": "update_category", "id": id(20), "position": 1 })),
+        "{planned:?}"
+    );
+    let mut past = moved;
+    past["workspaces"][0]["categories"][0]["position"] = json!(2);
+    let found = problems(past, &current);
+    assert!(
+        found.contains(&format!(
+            "the category {} has the position 2; the positions of the 2 categories of its \
+             workspace are 0 to 1",
+            id(20)
+        )),
+        "{found}"
     );
 }
 
@@ -194,7 +225,7 @@ fn rule_51_every_change_names_only_entries_that_exist_before_it() {
                   { "id": id(13), "name": "all", "everyone": true, "permissions": ["view_channel"] },
                   { "id": id(14), "name": "Leads", "permissions": ["manage_channel"] },
               ],
-              "categories": [{ "id": id(22), "name": "Rooms", "position": 2 }],
+              "categories": [{ "id": id(22), "name": "Rooms", "position": 0 }],
               "channels": [{ "id": id(33), "name": "room", "kind": "voice", "category": id(22),
                              "user_limit": 5, "hides_occupants": true,
                              "overrides": [{ "role": id(13), "deny": ["view_channel"] },

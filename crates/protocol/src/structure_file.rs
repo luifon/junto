@@ -167,6 +167,7 @@ pub struct RoleEntry {
 pub struct CategoryEntry {
     pub id: StructureId,
     pub name: String,
+    /// The place of the category among the categories of its workspace, counted from 0.
     /// Absent: a new category goes after the last one, an existing one keeps its position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<i32>,

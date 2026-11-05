@@ -39,6 +39,20 @@ async fn require_category(
     })
 }
 
+/// A channel at the root of the list, outside every category, needs manage channel in the
+/// workspace: to create it there and to move it there (ADR 0304).
+async fn require_root(
+    connection: &mut PgConnection,
+    access: &Access,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })
+}
+
 /// Creates a category in a workspace.
 #[utoipa::path(
     post,
@@ -87,35 +101,32 @@ pub(crate) async fn create_category_in(
         permission: WorkspacePermission::ManageChannel,
     })?;
 
-    let position = match position {
-        Some(position) => position,
-        None => {
-            sqlx::query_scalar(
-                "select coalesce(max(position), -1) + 1 from categories
-                 where workspace_id = $1",
-            )
-            .bind(workspace_id)
-            .fetch_one(&mut *connection)
-            .await?
-        }
-    };
+    sqlx::query(
+        "insert into categories (id, workspace_id, name, position, created_at)
+         select $1, $2, $3, coalesce(max(position), -1) + 1, $4 from categories
+         where workspace_id = $2",
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .bind(name)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    let position = place_category(
+        connection,
+        access,
+        now,
+        (workspace_id, &scope),
+        id,
+        position,
+    )
+    .await?;
     let category = Category {
         id,
         workspace_id,
         name: name.to_owned(),
         position,
     };
-    sqlx::query(
-        "insert into categories (id, workspace_id, name, position, created_at)
-         values ($1, $2, $3, $4, $5)",
-    )
-    .bind(category.id)
-    .bind(workspace_id)
-    .bind(&category.name)
-    .bind(category.position)
-    .bind(now)
-    .execute(&mut *connection)
-    .await?;
     audit::record(
         connection,
         now,
@@ -132,6 +143,59 @@ pub(crate) async fn create_category_in(
     };
     events::publish(connection, now, &created).await?;
     Ok(category)
+}
+
+/// Places a category at `rank` among the categories that the caller sees, counted from 0; a
+/// larger rank places it after the last of them, and `None` keeps it where it is. The
+/// categories that the caller does not see keep their order and their place next to the
+/// categories that the caller sees after it. The stored positions of the workspace are written
+/// again as 0, 1, 2 and so on when the order changes, and every person of the workspace then
+/// reads the structure again, because the position that a person reads is the place among the
+/// categories that the person sees (ADR 0304). Returns the place in the view of the caller.
+async fn place_category(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, scope): (WorkspaceId, &WorkspaceScope),
+    category_id: CategoryId,
+    rank: Option<i32>,
+) -> ApiResult<i32> {
+    let before = access
+        .category_order(connection, workspace_id, scope)
+        .await?;
+    let held = before
+        .iter()
+        .position(|(id, _)| *id == category_id)
+        .ok_or_else(ApiError::not_found)?;
+    let mut after = before.clone();
+    if let Some(rank) = rank {
+        let placed = after.remove(held);
+        let visible: Vec<usize> = (0..after.len()).filter(|&at| after[at].1).collect();
+        let wanted = usize::try_from(rank).unwrap_or(0);
+        let at = match (visible.get(wanted), visible.last()) {
+            (Some(&next), _) => next,
+            (None, Some(&last)) => last + 1,
+            (None, None) => held,
+        };
+        after.insert(at, placed);
+    }
+    if after != before {
+        let ids: Vec<CategoryId> = after.iter().map(|(id, _)| *id).collect();
+        sqlx::query(
+            "update categories c set position = o.position - 1
+             from unnest($1::uuid[]) with ordinality as o(id, position)
+             where c.id = o.id and c.workspace_id = $2 and c.position <> o.position - 1",
+        )
+        .bind(&ids)
+        .bind(workspace_id)
+        .execute(&mut *connection)
+        .await?;
+        events::log::categories_reordered(connection, now, workspace_id).await?;
+    }
+    crate::access::categories::ranks(&after)
+        .get(&category_id)
+        .copied()
+        .ok_or_else(ApiError::not_found)
 }
 
 /// Changes the name or the position of a category.
@@ -188,19 +252,27 @@ pub(crate) async fn update_category_in(
         permission: WorkspacePermission::ManageChannel,
     })?;
 
-    let updated: Option<(String, i32)> = sqlx::query_as(
-        "update categories
-         set name = coalesce($3, name), position = coalesce($4, position)
+    let name: Option<String> = sqlx::query_scalar(
+        "update categories set name = coalesce($3, name)
          where id = $1 and workspace_id = $2
-         returning name, position",
+         returning name",
     )
     .bind(category_id)
     .bind(workspace_id)
     .bind(new_name)
-    .bind(position)
     .fetch_optional(&mut *connection)
     .await?;
-    let (name, position) = updated.ok_or_else(ApiError::not_found)?;
+    let name = name.ok_or_else(ApiError::not_found)?;
+    let workspace = access.workspace(connection, workspace_id).await?;
+    let position = place_category(
+        connection,
+        access,
+        now,
+        (workspace_id, &workspace),
+        category_id,
+        position,
+    )
+    .await?;
     audit::record(
         connection,
         now,
@@ -310,7 +382,11 @@ pub async fn visible_structure(
                             .any(|channel| channel.category_id == Some(category.id)),
                     )
                 })
-                .map(|(category, _)| category)
+                .zip(0..)
+                .map(|((category, _), position)| Category {
+                    position,
+                    ..category
+                })
                 .collect(),
             channels,
         },
@@ -437,11 +513,7 @@ pub(crate) async fn create_channel_in(
     if let Some(category_id) = new.category_id {
         require_category(connection, access, workspace_id, category_id).await?;
     } else {
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
+        require_root(connection, access, workspace_id).await?;
     }
 
     let position = match new.position {
@@ -642,8 +714,16 @@ pub(crate) async fn update_channel_in(
     }
     let mut moved_rules = super::rules::MovedRules::Unchanged;
     if let Some(category_id) = change.category_id {
-        if let Some(category_id) = category_id.filter(|id| Some(*id) != channel.category_id) {
-            require_category(connection, access, channel.workspace_id, category_id).await?;
+        match category_id {
+            Some(category_id) if Some(category_id) != channel.category_id => {
+                require_category(connection, access, channel.workspace_id, category_id).await?;
+            }
+            // A channel enters the root of the list with what a channel created there needs
+            // (ADR 0304).
+            None if channel.category_id.is_some() => {
+                require_root(connection, access, channel.workspace_id).await?;
+            }
+            _ => {}
         }
         moved_rules =
             super::rules::check_move(connection, access, &scope, &channel, category_id).await?;

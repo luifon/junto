@@ -1406,3 +1406,73 @@ async fn a_place_holds_a_bounded_number_of_person_rules() {
             .error(ErrorCode::LimitReached);
     }
 }
+
+/// A workspace person grant that would give the member a permission in a channel that the
+/// caller cannot see is refused with the answer of a visible channel where the caller lacks
+/// the permission. The refusal is kept over hiding the channel: a caller who cannot see a
+/// channel holds nothing in it (ADR 0304, ADR 0306).
+#[tokio::test]
+async fn a_person_grant_refused_by_a_hidden_channel_answers_as_for_a_visible_one() {
+    let place = place().await;
+    let manager = place.server.join(&place.owner, "Manager").await;
+    let member = place.server.join(&place.owner, "Member").await;
+    place
+        .server
+        .grant_workspace(
+            &place.owner,
+            &manager,
+            place.workspace,
+            &[W::ManageRoles, W::MentionEveryone],
+        )
+        .await;
+    let hidden = text_channel(&place, "Hidden", None).await;
+    let visible = text_channel(&place, "Visible", None).await;
+    let set = |path: String, rule: Value| {
+        let server = &place.server;
+        let owner = &place.owner;
+        async move {
+            server
+                .put(owner, &path, &rule)
+                .await
+                .ok::<Value>(StatusCode::OK);
+        }
+    };
+    set(
+        channel_role(&hidden, place.everyone),
+        json!({"allow": [], "deny": ["view_channel"]}),
+    )
+    .await;
+    set(
+        channel_person(&hidden, member.account_id),
+        json!({"allow": ["view_channel"], "deny": []}),
+    )
+    .await;
+    let grant = json!({"permission": "mention_everyone", "state": "allow"});
+    let path = member_permissions(place.workspace, member.account_id);
+    let by_hidden = place.server.patch(&manager, &path, &grant).await;
+    by_hidden.error(ErrorCode::ExceedsOwnPermissions);
+
+    set(
+        channel_person(&hidden, member.account_id),
+        json!({"allow": [], "deny": []}),
+    )
+    .await;
+    set(
+        channel_person(&visible, manager.account_id),
+        json!({"allow": [], "deny": ["mention_everyone"]}),
+    )
+    .await;
+    let by_visible = place.server.patch(&manager, &path, &grant).await;
+    assert_eq!(by_hidden.observable(), by_visible.observable());
+
+    set(
+        channel_person(&visible, manager.account_id),
+        json!({"allow": [], "deny": []}),
+    )
+    .await;
+    place
+        .server
+        .patch(&manager, &path, &grant)
+        .await
+        .ok::<Value>(StatusCode::OK);
+}

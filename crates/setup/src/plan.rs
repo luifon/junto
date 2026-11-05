@@ -224,6 +224,7 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
             }
         }
     }
+    category_positions(planner, file);
     let mut seen: HashMap<&'static str, HashSet<StructureId>> = HashMap::new();
     let mut unique = |planner: &mut Planner<'_>, kind: &'static str, id: StructureId| {
         if !seen.entry(kind).or_default().insert(id) {
@@ -1012,6 +1013,38 @@ fn update_role(planner: &mut Planner<'_>, role: &RoleEntry, existing: &RoleEntry
             },
             line,
         );
+    }
+}
+
+/// A position of a category is its place among the categories of its workspace, counted from
+/// 0 (ADR 0304): it is less than the number of categories that the workspace has after the
+/// plan. A position past the last would put the category last, where the server states
+/// another position, and every later plan would change it again.
+fn category_positions(planner: &mut Planner<'_>, file: &StructureFile) {
+    for workspace in &file.workspaces {
+        let current = planner
+            .current
+            .workspaces
+            .iter()
+            .find(|held| held.id == workspace.id || (workspace.default && held.default));
+        let mut ids: HashSet<StructureId> = current
+            .map(|held| held.categories.iter().map(|category| category.id).collect())
+            .unwrap_or_default();
+        ids.extend(workspace.categories.iter().map(|category| category.id));
+        ids.retain(|id| !file.delete.categories.contains(id));
+        let count = ids.len();
+        for category in &workspace.categories {
+            if let Some(position) = category.position
+                && usize::try_from(position).map_or(true, |position| position >= count)
+            {
+                planner.problem(format!(
+                    "the category {} has the position {position}; the positions of the {count} \
+                     categories of its workspace are 0 to {}",
+                    category.id,
+                    count.saturating_sub(1)
+                ));
+            }
+        }
     }
 }
 

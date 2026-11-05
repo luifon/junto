@@ -18029,7 +18029,8 @@
           },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The place of the category among the categories that the reader sees, counted from 0."
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -18062,7 +18063,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: a new category goes after the last one, an existing one keeps its position."
+            "description": "The place of the category among the categories of its workspace, counted from 0.\nAbsent: a new category goes after the last one, an existing one keeps its position."
           }
         },
         "additionalProperties": false
@@ -18689,7 +18690,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: after the last category."
+            "description": "The place among the categories that the caller sees, counted from 0; a place past the\nlast puts it after the last. Absent: after the last category."
           }
         }
       },
@@ -24212,7 +24213,8 @@
               "integer",
               "null"
             ],
-            "format": "int32"
+            "format": "int32",
+            "description": "The place among the categories that the caller sees, counted from 0; a place past the\nlast puts it after the last."
           }
         }
       },

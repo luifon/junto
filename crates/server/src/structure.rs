@@ -170,7 +170,8 @@ pub const EXPORT_ROLES: &str =
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = r.id
      order by r.is_everyone desc, r.id";
 pub const EXPORT_CATEGORIES: &str =
-    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name, c.position
+    "select c.id, c.workspace_id, coalesce(i.identifier, c.id), c.name,
+            (row_number() over (partition by c.workspace_id order by c.position, c.id) - 1)::integer
      from categories c
      left join structure_identifiers i on i.kind = 'category' and i.object_id = c.id
      order by c.position, c.id";

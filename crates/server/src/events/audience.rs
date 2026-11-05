@@ -1156,6 +1156,9 @@ pub struct WorkspaceStanding {
     pub everyone_role_id: WorkspaceRoleId,
     pub channels: std::collections::HashMap<ChannelId, ChannelStanding>,
     pub categories: HashMap<CategoryId, (ChannelScope, bool)>,
+    /// The place of each category that the recipient sees among those categories, read only
+    /// when a category event is delivered (ADR 0304).
+    pub category_ranks: HashMap<CategoryId, i32>,
 }
 
 impl WorkspaceStanding {
@@ -1542,6 +1545,7 @@ mod tests {
             everyone_role_id: place.everyone_role_id,
             channels: HashMap::from([(place.channel_id, channel)]),
             categories: HashMap::new(),
+            category_ranks: HashMap::new(),
         }
     }
 

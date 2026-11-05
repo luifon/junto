@@ -47,6 +47,7 @@ pub struct Category {
     pub id: CategoryId,
     pub workspace_id: WorkspaceId,
     pub name: String,
+    /// The place of the category among the categories that the reader sees, counted from 0.
     pub position: i32,
 }
 
@@ -54,7 +55,8 @@ pub struct Category {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateCategory {
     pub name: String,
-    /// Absent: after the last category.
+    /// The place among the categories that the caller sees, counted from 0; a place past the
+    /// last puts it after the last. Absent: after the last category.
     #[serde(default)]
     pub position: Option<i32>,
 }
@@ -65,6 +67,8 @@ pub struct CreateCategory {
 pub struct UpdateCategory {
     #[serde(default)]
     pub name: Option<String>,
+    /// The place among the categories that the caller sees, counted from 0; a place past the
+    /// last puts it after the last.
     #[serde(default)]
     pub position: Option<i32>,
 }

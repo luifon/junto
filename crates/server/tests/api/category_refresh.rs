@@ -178,3 +178,57 @@ async fn a_category_whose_last_channel_is_archived_sends_its_new_name_only_to_ma
     let told = scene.server.traffic(&scene.reader, &mut scene.stream).await;
     assert!(!renamed(&told), "{told:?}");
 }
+
+#[tokio::test]
+async fn one_request_of_several_moves_between_categories_sends_one_refresh() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = server.join(&owner, "Reader").await;
+    let workspace = server.default_workspace(&owner).await;
+    let source = server.category(&owner, workspace.id, "Plans", 0).await;
+    let destination = server.category(&owner, workspace.id, "Done", 1).await;
+    let mut channels = Vec::new();
+    for name in ["One", "Two", "Three"] {
+        let channel: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{}/channels", workspace.id),
+                &json!({"name":name,"kind":"text","category_id":source.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        channels.push(channel);
+    }
+    let moves: Vec<_> = channels
+        .iter()
+        .map(|channel| {
+            json!({
+                "channel_id": channel.id,
+                "from": {"category_id": source.id, "position": channel.position},
+                "to": {"category_id": destination.id, "position": channel.position},
+            })
+        })
+        .collect();
+    let mut stream = server.subscribed(&reader, Level::Full).await;
+    server
+        .patch(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels/positions", workspace.id),
+            &json!({ "moves": moves }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let events = server.traffic(&reader, &mut stream).await;
+    let refreshes = events
+        .iter()
+        .filter(|(_, event)| {
+            matches!(event, Event::PermissionsChanged { workspace_id: Some(id) } if *id == workspace.id)
+        })
+        .count();
+    assert_eq!(refreshes, 1, "{events:?}");
+    let moved = events
+        .iter()
+        .filter(|(_, event)| matches!(event, Event::ChannelUpdated { .. }))
+        .count();
+    assert_eq!(moved, 3, "{events:?}");
+}

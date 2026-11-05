@@ -485,7 +485,8 @@ async fn rule_22_changes_are_applied_together_with_their_audit_entries_and_event
         (main.categories[0].id, main.categories[0].name.as_str()),
         (category, "Work")
     );
-    assert_eq!(main.categories[0].position, Some(3));
+    // The only category of the workspace is at the first place (ADR 0304).
+    assert_eq!(main.categories[0].position, Some(0));
     let helpers = main.roles.iter().find(|entry| entry.id == role).unwrap();
     assert_eq!(
         helpers.permissions,

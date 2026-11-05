@@ -2885,6 +2885,7 @@
             "type": "string"
           },
           "position": {
+            "description": "The place of the category among the categories that the reader sees, counted from 0.",
             "format": "int32",
             "type": "integer"
           },

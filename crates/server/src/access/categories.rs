@@ -42,12 +42,41 @@ impl Access {
         workspace: &WorkspaceScope,
         ids: &[CategoryId],
     ) -> ApiResult<Vec<(Category, ChannelScope, bool)>> {
+        self.categories_and_children(connection, workspace_id, workspace, Some(ids))
+            .await
+    }
+
+    /// Every category of a workspace in its stored order, with whether the caller sees it.
+    /// The position of a category that a person reads is its place among the categories
+    /// that the person sees, so that a gap does not tell how many are hidden (ADR 0304).
+    pub async fn category_order(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+    ) -> ApiResult<Vec<(CategoryId, bool)>> {
+        Ok(self
+            .categories_and_children(connection, workspace_id, workspace, None)
+            .await?
+            .into_iter()
+            .map(|(category, scope, child)| (category.id, self.category_visible(&scope, child)))
+            .collect())
+    }
+
+    async fn categories_and_children(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+        named: Option<&[CategoryId]>,
+    ) -> ApiResult<Vec<(Category, ChannelScope, bool)>> {
         let categories = self
-            .categories(connection, workspace_id, workspace, Some(ids))
+            .categories(connection, workspace_id, workspace, named)
             .await?;
+        let ids: Vec<CategoryId> = categories.iter().map(|(category, _)| category.id).collect();
         let children: Vec<ChannelId> = sqlx::query_scalar(
             "select id from channels where category_id=any($1) and workspace_id=$2 and deleted_at is null and archived_at is null",
-        ).bind(ids).bind(workspace_id).fetch_all(&mut *connection).await?;
+        ).bind(&ids).bind(workspace_id).fetch_all(&mut *connection).await?;
         let children = self
             .named_channels(connection, workspace_id, workspace, &children)
             .await?;
@@ -117,4 +146,14 @@ impl Access {
             })
             .collect()
     }
+}
+
+/// The place of each category among the visible ones of `order`.
+pub fn ranks(order: &[(CategoryId, bool)]) -> HashMap<CategoryId, i32> {
+    order
+        .iter()
+        .filter(|(_, visible)| *visible)
+        .zip(0..)
+        .map(|((id, _), rank)| (*id, rank))
+        .collect()
 }

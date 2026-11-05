@@ -42,7 +42,7 @@
             "type": "array"
           },
           "position": {
-            "description": "Absent: a new category goes after the last one, an existing one keeps its position.",
+            "description": "The place of the category among the categories of its workspace, counted from 0.\nAbsent: a new category goes after the last one, an existing one keeps its position.",
             "format": "int32",
             "type": [
               "integer",

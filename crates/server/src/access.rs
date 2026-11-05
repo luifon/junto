@@ -1,4 +1,4 @@
-mod categories;
+pub mod categories;
 pub(crate) mod inheritance;
 pub(crate) mod permissions;
 pub(crate) mod rules;
