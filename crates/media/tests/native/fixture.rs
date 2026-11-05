@@ -79,6 +79,22 @@ impl Fixture {
             marker
         ));
     }
+    /// Gives the window a new size in pixels; it keeps its top left corner. The geometry
+    /// takes the size that the window has then.
+    pub fn size(&mut self, width: u32, height: u32) {
+        let reply = self.command(&format!("size {width} {height}"));
+        let fields: Vec<u32> = reply
+            .strip_prefix("size ")
+            .unwrap_or_else(|| panic!("fixture size: {reply}"))
+            .split_whitespace()
+            .map(|field| field.parse().unwrap())
+            .collect();
+        let [width, height] = fields[..] else {
+            panic!("fixture size: {reply}");
+        };
+        self.geometry.width = width;
+        self.geometry.height = height;
+    }
     pub fn tone(&mut self, hz: u32) {
         assert_eq!(self.command(&format!("tone {hz}")), format!("tone {hz}"));
     }

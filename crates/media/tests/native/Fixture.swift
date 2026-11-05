@@ -139,6 +139,21 @@ final class Fixture: NSObject, NSApplicationDelegate {
                     self.pattern.displayIfNeeded()
                 }
                 reply(client, "pattern \(marker)")
+            } else if parts.count == 3, parts[0] == "size", let width = Double(parts[1]), let height = Double(parts[2]),
+                      width >= 64, height >= 64 {
+                // The size in pixels; the window keeps its top left corner.
+                var size = ""
+                DispatchQueue.main.sync {
+                    let scale = self.window.backingScaleFactor
+                    let frame = self.window.frame
+                    let points = NSSize(width: (width / scale).rounded(), height: (height / scale).rounded())
+                    self.window.setFrame(NSRect(x: frame.minX, y: frame.maxY - points.height, width: points.width, height: points.height), display: true)
+                    self.pattern.frame = NSRect(x: 0, y: 0, width: points.width, height: points.height)
+                    self.pattern.needsDisplay = true
+                    self.pattern.displayIfNeeded()
+                    size = "size \(Int(points.width * scale)) \(Int(points.height * scale))"
+                }
+                reply(client, size)
             } else if parts.count == 2, parts[0] == "tone", let hz = UInt32(parts[1]), hz <= 4000 {
                 reply(client, tone(hz))
             } else if command == "close" { reply(client, "closed"); break }

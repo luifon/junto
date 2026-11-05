@@ -281,6 +281,58 @@ pub async fn capture(audio_only: bool) {
                     started.elapsed()
                 );
             }
+            if !display {
+                // CD-27: the shared window becomes half as wide. The stream follows the size of
+                // the window: the native pictures show the whole window at its new size, the
+                // share states that size, and the other side receives it (ADR 0737).
+                let before = (fixture.geometry.width, fixture.geometry.height);
+                fixture.size(before.0 / 2, before.1);
+                let after = (fixture.geometry.width, fixture.geometry.height);
+                let marker = marker ^ 0x0f0f0f0f;
+                fixture.pattern(marker);
+                let near = |one: (u32, u32), other: (u32, u32)| {
+                    one.0.abs_diff(other.0) <= 2 && one.1.abs_diff(other.1) <= 2
+                };
+                let found = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    native_pictures.wait_for(|picture| {
+                        picture.as_ref().is_some_and(|frame| {
+                            near((frame.width, frame.height), after)
+                                && matches(frame, &fixture.geometry, false, marker)
+                        })
+                    }),
+                )
+                .await
+                .is_ok_and(|result| result.is_ok());
+                if !found {
+                    panic!(
+                        "the window went from {before:?} to {after:?}, and the pictures did not \
+                         follow: {:?}",
+                        native_pictures
+                            .borrow()
+                            .as_ref()
+                            .map(|frame| diagnostic(frame, &fixture.geometry))
+                    );
+                }
+                super::calls::state(&local, |v| {
+                    v.call.as_ref().is_some_and(|c| {
+                        matches!(c.own_shares.get(&0), Some(ShareState::Running(info)) if near(info.size, after))
+                    })
+                })
+                .await;
+                super::calls::state(&peer, |v| {
+                    v.call.as_ref().is_some_and(|c| {
+                        c.shares
+                            .iter()
+                            .any(|seen| seen.size.is_some_and(|size| near(size, after)))
+                    })
+                })
+                .await;
+                println!(
+                    "S2 the window went from {before:?} to {after:?}, and the share followed, elapsed={:?}",
+                    started.elapsed()
+                );
+            }
             if display {
                 local.calls.stop_share(None);
             } else {
