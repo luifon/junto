@@ -37,7 +37,7 @@ use gpui_base::input::InputState;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::shell::call::CallTab;
-use junto_client::shell::share::SoundKind;
+use junto_client::shell::share::{ShareTab, SoundKind};
 use junto_client::shell::{Open, SettingsSection, Shell};
 use junto_client::state::AppState;
 use junto_client::state::fixtures::from_roles;
@@ -86,8 +86,8 @@ use junto_media::permission::{FixedPermission, MicrophoneAccess};
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::synthetic::SyntheticCapture;
 use junto_media::share::{
-    ApplicationId, ApplicationSource, CaptureError, DisplaySource, NoCapture, PictureSource,
-    ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
+    ApplicationId, ApplicationPicture, ApplicationSource, CaptureError, DisplaySource, NoCapture,
+    PictureSource, ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
 };
 use time::OffsetDateTime;
 
@@ -302,6 +302,7 @@ fn studio() -> WorkspaceState {
     carla.screen_share = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     });
@@ -1087,6 +1088,25 @@ fn capture() -> SyntheticCapture {
                 height: 800,
             },
         ],
+        application_capture: true,
+        application_pictures: vec![
+            ApplicationPicture {
+                application: editor.clone(),
+                name: "Editor".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 2,
+            },
+            ApplicationPicture {
+                application: desktop.clone(),
+                name: "Remote Desktop".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
+            },
+        ],
         applications: vec![
             ApplicationSource {
                 id: editor,
@@ -1281,6 +1301,7 @@ fn acme_with_shares(
                         .map(|(_, audio)| ScreenShare {
                             slot: 0,
                             kind: None,
+                            shows: None,
                             audio: *audio,
                             started_at: at(),
                         });
@@ -1600,6 +1621,22 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         Shell::share_picker_is_listed,
     )?;
     studio.draw_after(
+        Screen::call("share-dialog-window-tab", in_call(Phase::Connected)),
+        picker(|shell, cx| shell.pick_share_tab(ShareTab::Window, cx)),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-application-with-its-sound",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_tab(ShareTab::Application, cx);
+            shell.pick_share_picture(PictureSource::Application(502), cx);
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
         Screen::call(
             "share-dialog-screen-with-one-application",
             in_call(Phase::Connected),
@@ -1842,6 +1879,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     let share = || ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     };

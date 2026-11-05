@@ -125,6 +125,7 @@ fn a_share_of_a_window_of_another_program_runs_through_the_window_and_ends_with_
             })
         })
     });
+    window.click("share-tab-window");
     window.click_named(format!("share-window:{shared}"));
     // No sound, all system sound, this application.
     window.click("share-sound-2");

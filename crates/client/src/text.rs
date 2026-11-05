@@ -547,7 +547,11 @@ pub const SHARE_SCREEN: &str = "Share your screen";
 pub const SHARE_STARTING: &str = "Starting your share…";
 pub const SHARE_RUNS: &str = "Stop sharing or share another";
 pub const YOUR_SHARES: &str = "Your shares";
-pub const SHARE_ANOTHER: &str = "Share another screen or window";
+pub const SHARE_ANOTHER: &str = if cfg!(target_os = "linux") {
+    "Share another screen or window"
+} else {
+    "Share another screen, window or application"
+};
 pub const STOP_ALL_SHARES: &str = "Stop every share";
 pub const SHARE_STARTS: &str = "Starts…";
 
@@ -574,15 +578,32 @@ pub fn share_viewer_names(names: &[String]) -> String {
 }
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str = SHARE_UNSUPPORTED;
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
-pub const SHARE_READING: &str = "Reading the screens and windows…";
+pub const SHARE_READING: &str = if cfg!(target_os = "linux") {
+    "Reading the screens and windows…"
+} else {
+    "Reading the screens, windows and applications…"
+};
 /// The desktop portal owns the final source chooser on Linux.
 pub const SHARE_DESKTOP_SCREEN: &str = "Choose a screen with the desktop";
 pub const SHARE_DESKTOP_WINDOW: &str = "Choose a window with the desktop";
 pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you press Share.";
 
-pub const SCREENS: &str = "Screens";
-pub const WINDOWS: &str = "Windows";
+/// The tabs of the dialog of a share (ADR 0738).
+pub const SHARE_TABS: &str = "What kind of thing to share";
+pub const SHARE_TAB_SCREEN: &str = "Screen";
+pub const SHARE_TAB_WINDOW: &str = "Window";
+pub const SHARE_TAB_APPLICATION: &str = "Application";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
+pub const NO_APPLICATION_WINDOWS: &str = "No other application has a window on a screen.";
+/// The line under an application in the dialog of a share: its windows and the screen whose
+/// area is shared.
+pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
+    let windows = match windows {
+        1 => "1 window".to_owned(),
+        count => format!("{count} windows"),
+    };
+    format!("{windows} on screen {screen} · {}", pixels(size))
+}
 /// The accessible names of the picture of a screen or a window in the dialog of a share.
 pub const SHARE_PREVIEW_LOADING: &str = "Loading the preview";
 pub const SHARE_PREVIEW_NONE: &str = "No preview";
@@ -641,6 +662,14 @@ pub fn sound_of_window(application: &str) -> String {
     format!(
         "The people in the call hear the sound of {application}, the application of this \
          window. Its sound may include the sound of this call."
+    )
+}
+
+/// The sound of a shared application when the person chooses the sound of that application.
+pub fn sound_of_shared_application(application: &str) -> String {
+    format!(
+        "The people in the call hear the sound of {application}. Its sound may include the \
+         sound of this call."
     )
 }
 
@@ -709,6 +738,7 @@ pub const WATCHING: &str = "Watching";
 pub const WATCH: &str = "Watch";
 pub const ENTIRE_SCREEN: &str = "Entire screen";
 pub const ONE_WINDOW: &str = "Window";
+pub const ONE_APPLICATION: &str = "Application";
 pub const PICTURE_ARRIVES: &str = "Waiting for the picture…";
 pub const SOUND_FOLLOWS: &str = "You hear only the share you are watching.";
 pub const SHARE_SOUND_HELD: &str = "Its sound is not sent while your microphone is blocked";
@@ -748,6 +778,7 @@ fn share_what(kind: Option<ShareKind>, number: Option<usize>) -> String {
     let what = match kind {
         Some(ShareKind::Screen) => "screen",
         Some(ShareKind::Window) => "window",
+        Some(ShareKind::Application) => "application",
         None => "share",
     };
     match number {
@@ -770,6 +801,7 @@ pub fn share_kind(kind: Option<ShareKind>) -> &'static str {
     match kind {
         Some(ShareKind::Screen) => ENTIRE_SCREEN,
         Some(ShareKind::Window) => ONE_WINDOW,
+        Some(ShareKind::Application) => ONE_APPLICATION,
         None => "",
     }
 }

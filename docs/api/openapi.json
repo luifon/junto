@@ -21696,7 +21696,8 @@
           "kind": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ShareKind"
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, in the values that a server of 0.1.0 reads."
               },
               {
                 "type": "null"
@@ -21710,6 +21711,17 @@
             ],
             "format": "uuid",
             "description": "The share that the device started in the slot: a new identifier for each start. A\nreport with another identifier than the share that the slot holds is a new share,\nwhich starts at the report; a report with the same identifier changes the sound and\nthe kind of the share and keeps its start. Absent from a client from before it: a\nreport changes the share of the slot."
+          },
+          "shows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareShows",
+                "description": "What the share shows, also an application. A server of 0.1.0 ignores it and keeps\n`kind`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "slot": {
             "type": "integer",
@@ -21936,7 +21948,18 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ShareKind",
-                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+                "description": "What the share shows, as the device reported it, in the values that a client of\n0.1.0 reads. Absent from a device that did not state it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareShows",
+                "description": "What the share shows, also an application. Absent from a server of 0.1.0 and for a\nshare whose device did not state it; [`ScreenShare::shows`] then reads `kind`."
               },
               {
                 "type": "null"
@@ -22614,10 +22637,19 @@
       },
       "ShareKind": {
         "type": "string",
-        "description": "What a screen share shows.",
+        "description": "What a screen share shows, in the values that a client of 0.1.0 reads: a share of every\nwindow of one application is a `window` here, and [`ShareShows`] tells it apart\n(ADR 0737).",
         "enum": [
           "screen",
           "window"
+        ]
+      },
+      "ShareShows": {
+        "type": "string",
+        "description": "What a screen share shows (ADR 0737). A value that this version does not know, as a later\nversion can send, is read as [`ShareShows::Unknown`], and the reader takes [`ShareKind`]\ninstead.",
+        "enum": [
+          "screen",
+          "window",
+          "application"
         ]
       },
       "Signature": {

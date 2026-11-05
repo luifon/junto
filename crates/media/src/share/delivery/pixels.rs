@@ -91,6 +91,77 @@ impl Frame {
         })
     }
 
+    /// The picture of a shared application (ADR 0738): a black picture of `size` pixels with
+    /// each layer drawn at its place, in the order of the list, so that a later layer covers
+    /// an earlier one. A pixel that a layer leaves fully transparent shows what lies under
+    /// it, and the parts of a layer outside the picture are left out.
+    #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+    pub fn compose(size: (u32, u32), layers: &[(&Self, (i32, i32))]) -> Result<Self, CaptureError> {
+        let (width, height) = size;
+        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 7680 * 4320 {
+            return Err(CaptureError::Failed(
+                "the picture of the application has an invalid size".into(),
+            ));
+        }
+        let mut packed = [0, 0, 0, 255].repeat(width as usize * height as usize);
+        for (layer, (left, top)) in layers {
+            let swapped = matches!(layer.format, Format::Rgba | Format::Rgbx);
+            let transparent = matches!(layer.format, Format::Bgra | Format::Rgba);
+            // The rows and columns of the layer that lie inside the picture.
+            let columns = (
+                i64::from(*left).max(0),
+                (i64::from(*left) + i64::from(layer.width)).min(i64::from(width)),
+            );
+            let rows = (
+                i64::from(*top).max(0),
+                (i64::from(*top) + i64::from(layer.height)).min(i64::from(height)),
+            );
+            for y in rows.0..rows.1 {
+                let from = (y - i64::from(*top)) as usize * layer.width as usize;
+                let to = y as usize * width as usize;
+                for x in columns.0..columns.1 {
+                    let source = (from + (x - i64::from(*left)) as usize) * 4;
+                    let pixel = &layer.packed[source..source + 4];
+                    if transparent && pixel[3] == 0 {
+                        continue;
+                    }
+                    let target = (to + x as usize) * 4;
+                    let (blue, red) = if swapped {
+                        (pixel[2], pixel[0])
+                    } else {
+                        (pixel[0], pixel[2])
+                    };
+                    packed[target..target + 4].copy_from_slice(&[blue, pixel[1], red, 255]);
+                }
+            }
+        }
+        Ok(Self {
+            width,
+            height,
+            format: Format::Bgrx,
+            packed,
+        })
+    }
+
+    /// The picture in the form of a preview of the dialog of a share, in the byte order
+    /// blue, green, red with an alpha byte of 255. `source` is the size of what it shows.
+    #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+    pub fn into_picture(mut self, source: (u32, u32)) -> crate::share::picture::PictureFrame {
+        let swapped = matches!(self.format, Format::Rgba | Format::Rgbx);
+        for pixel in self.packed.as_chunks_mut::<4>().0 {
+            if swapped {
+                pixel.swap(0, 2);
+            }
+            pixel[3] = 255;
+        }
+        crate::share::picture::PictureFrame {
+            width: self.width,
+            height: self.height,
+            bgra: self.packed,
+            source,
+        }
+    }
+
     /// Do not transmit hidden RGB in a fully transparent window pixel.
     fn hide_transparent(&mut self) {
         if matches!(self.format, Format::Bgrx | Format::Rgbx) {
@@ -207,6 +278,54 @@ mod tests {
         let picture = crate::share::picture::convert(&buffer, (16, 16)).unwrap();
         let (red, green, blue) = picture.pixel(8, 8).unwrap();
         assert!(red < 4 && green < 4 && blue < 4, "{red} {green} {blue}");
+    }
+
+    #[test]
+    fn the_picture_of_an_application_draws_its_windows_at_their_places_from_the_back() {
+        let solid = |width: u32, height: u32, pixel: [u8; 4], format| {
+            let pixels = pixel.repeat((width * height) as usize);
+            Frame::copy(&pixels, (width, height), (width * 4) as i32, None, format).unwrap()
+        };
+        let back = solid(3, 2, [10, 20, 30, 255], Format::Bgra);
+        // A window in the other byte order, with one transparent corner, over the first.
+        let mut front = solid(2, 2, [90, 80, 70, 255], Format::Rgba);
+        front.packed[..4].copy_from_slice(&[1, 2, 3, 0]);
+        // A window that lies across the left edge and below the picture.
+        let edge = solid(2, 3, [5, 5, 5, 255], Format::Bgrx);
+        let picture = Frame::compose(
+            (4, 3),
+            &[(&back, (0, 0)), (&front, (2, 1)), (&edge, (-1, 2))],
+        )
+        .unwrap();
+        assert_eq!(
+            (picture.width, picture.height, picture.format),
+            (4, 3, Format::Bgrx)
+        );
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            let index = (y * 4 + x) * 4;
+            picture.packed[index..index + 4].try_into().unwrap()
+        };
+        assert_eq!(at(0, 0), [10, 20, 30, 255]);
+        // The ground is black where no window is.
+        assert_eq!(at(3, 0), [0, 0, 0, 255]);
+        // The transparent corner shows the window behind it.
+        assert_eq!(at(2, 1), [10, 20, 30, 255]);
+        // The front window is drawn in the order blue, green, red.
+        assert_eq!(at(3, 1), [70, 80, 90, 255]);
+        assert_eq!(at(3, 2), [70, 80, 90, 255]);
+        assert_eq!(at(0, 2), [5, 5, 5, 255]);
+        assert_eq!(at(1, 2), [0, 0, 0, 255]);
+        let preview = Frame::compose((1, 1), &[(&front, (-1, 0))])
+            .unwrap()
+            .into_picture((10, 10));
+        assert_eq!(
+            (preview.bgra.as_slice(), preview.source),
+            (&[70, 80, 90, 255][..], (10, 10))
+        );
+        assert!(Frame::compose((0, 3), &[]).is_err());
+        // A layer wholly outside the picture changes nothing.
+        let empty = Frame::compose((2, 2), &[(&back, (5, 5)), (&back, (-9, 0))]).unwrap();
+        assert_eq!(empty.packed, [0, 0, 0, 255].repeat(4));
     }
 
     #[test]

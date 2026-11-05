@@ -1,4 +1,5 @@
-//! Screen share (ADR 0502, ADR 0736): the capture of a screen or a window with its sound.
+//! Screen share (ADR 0502, ADR 0736): the capture of a screen, a window or the windows of one
+//! application, with its sound.
 //!
 //! The engine takes pictures and sound through one interface, [`ScreenCapture`]. The
 //! product implements it with the capture of the operating system; the tests implement it
@@ -80,12 +81,34 @@ pub struct ApplicationSource {
     pub name: String,
 }
 
+/// An application whose windows can be shared together: every window that it shows on one
+/// screen, drawn at its place on that screen (ADR 0738).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationPicture {
+    pub application: ApplicationId,
+    pub name: String,
+    /// The screen whose area the share shows: the screen that holds the front window of the
+    /// application when the list was read.
+    pub display: u32,
+    /// The size of the picture in pixels: the size of that screen.
+    pub width: u32,
+    pub height: u32,
+    /// The windows of the application on that screen when the list was read.
+    pub windows: usize,
+}
+
 /// What a person can share now. Application-owned lists exclude the client itself.
 /// A desktop portal owns its chooser and cannot be given an exclusion list (ADR 0751).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShareSources {
     pub displays: Vec<DisplaySource>,
     pub windows: Vec<WindowSource>,
+    /// The system captures the windows of one application together: macOS and Windows. The
+    /// desktop portal of Linux offers a screen or one window (ADR 0751).
+    pub application_capture: bool,
+    /// The applications whose windows can be shared together.
+    pub application_pictures: Vec<ApplicationPicture>,
+    /// The applications whose sound can be shared alone.
     pub applications: Vec<ApplicationSource>,
     /// Source kinds chosen by the desktop at start, without application-owned IDs.
     pub portal: Vec<ShareKind>,
@@ -106,14 +129,18 @@ pub struct ShareSources {
 pub enum PictureSource {
     Display(u32),
     Window(u32),
+    /// Every window of the application of this process, as
+    /// [`ShareSources::application_pictures`] lists it.
+    Application(i32),
     Portal(ShareKind),
 }
 
-/// What a share shows: a whole screen, or one window.
+/// What a share shows: a whole screen, one window, or every window of one application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShareKind {
     Screen,
     Window,
+    Application,
 }
 
 impl PictureSource {
@@ -121,6 +148,7 @@ impl PictureSource {
         match self {
             Self::Display(_) => ShareKind::Screen,
             Self::Window(_) => ShareKind::Window,
+            Self::Application(_) => ShareKind::Application,
             Self::Portal(kind) => kind,
         }
     }
@@ -463,11 +491,13 @@ pub struct TrackName {
 
 /// The name of the track of a share picture. It states what is shared, at which frame
 /// rate and in which slot: `screen/30` for slot 0, which a client of one share reads, and
-/// `window/30/1` for slot 1 (ADR 0737). The server reads the slot from it (ADR 0510).
+/// `window/30/1` for slot 1 (ADR 0737). The server reads the slot from it (ADR 0510). A share
+/// of an application has the name of a window share, which a client and a server of 0.1.0
+/// read with its slot; the report to the server states the application.
 pub fn track_name(kind: ShareKind, frame_rate: u32, slot: u8) -> String {
     let kind = match kind {
         ShareKind::Screen => "screen",
-        ShareKind::Window => "window",
+        ShareKind::Window | ShareKind::Application => "window",
     };
     match slot {
         0 => format!("{kind}/{frame_rate}"),
@@ -553,6 +583,12 @@ mod tests {
             Some(named(ShareKind::Screen, 30, 0))
         );
         assert_eq!(track_name(ShareKind::Window, 60, 2), "window/60/2");
+        // A client and a server of 0.1.0 read the name of an application share with its slot.
+        assert_eq!(track_name(ShareKind::Application, 30, 1), "window/30/1");
+        assert_eq!(
+            read_track_name(&track_name(ShareKind::Application, 30, 1)),
+            Some(named(ShareKind::Window, 30, 1))
+        );
         assert_eq!(
             read_track_name(&track_name(ShareKind::Window, 60, 2)),
             Some(named(ShareKind::Window, 60, 2))

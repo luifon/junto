@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use livekit::webrtc::video_frame::I420Buffer;
 
 use super::{
-    ApplicationId, ApplicationSource, CaptureError, CaptureRequest, CaptureSink, CaptureStream,
-    DisplaySource, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources, SoundChoice,
-    WindowSource,
+    ApplicationId, ApplicationPicture, ApplicationSource, CaptureError, CaptureRequest,
+    CaptureSink, CaptureStream, DisplaySource, Pending, PictureSource, ScreenAccess, ScreenCapture,
+    ShareSources, SoundChoice, WindowSource,
 };
 use crate::audio::{Format, SAMPLE_RATE};
 
@@ -112,8 +112,8 @@ impl Default for SyntheticCapture {
 }
 
 impl SyntheticCapture {
-    /// One screen of 1280 × 720, one window of 800 × 600 of the application "Player", and
-    /// the permission of the system.
+    /// One screen of 1280 × 720, one window of 800 × 600 of the application "Player", the
+    /// windows of "Player" on that screen, and the permission of the system.
     pub fn new() -> Self {
         let player = ApplicationId {
             process_id: PLAYER,
@@ -139,6 +139,15 @@ impl SyntheticCapture {
                         application_name: "Player".to_owned(),
                         width: 800,
                         height: 600,
+                    }],
+                    application_capture: true,
+                    application_pictures: vec![ApplicationPicture {
+                        application: player.clone(),
+                        name: "Player".to_owned(),
+                        display: 1,
+                        width: 1280,
+                        height: 720,
+                        windows: 1,
                     }],
                     applications: vec![ApplicationSource {
                         id: player.clone(),
@@ -283,6 +292,15 @@ impl SyntheticCapture {
     }
 }
 
+/// The size of the picture of the windows of one application: the screen that it lists.
+fn application_size(sources: &ShareSources, process_id: i32) -> Option<(u32, u32)> {
+    sources
+        .application_pictures
+        .iter()
+        .find(|listed| listed.application.process_id == process_id)
+        .map(|listed| (listed.width, listed.height))
+}
+
 fn end(live: Live, error: &CaptureError) {
     if let Some(stop) = live.stop.upgrade() {
         stop.store(true, Ordering::Relaxed);
@@ -365,6 +383,10 @@ impl ScreenCapture for SyntheticCapture {
                         .map(|window| (window.width, window.height)),
                     id,
                 ),
+                PictureSource::Application(process_id) => (
+                    application_size(&state.sources, process_id),
+                    process_id as u32,
+                ),
                 PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
             };
             let (width, height) = size.ok_or(CaptureError::SourceGone)?;
@@ -416,6 +438,9 @@ impl ScreenCapture for SyntheticCapture {
                     .iter()
                     .find(|window| window.id == id)
                     .map(|window| (window.width, window.height)),
+                PictureSource::Application(process_id) => {
+                    application_size(&state.sources, process_id)
+                }
             };
             let (width, height) = source.ok_or(CaptureError::SourceGone)?;
             let tones = match &request.sound {

@@ -41,7 +41,7 @@ use objc2_screen_capture_kit::{
 };
 use tokio::sync::oneshot;
 
-use super::listing::{Own, shareable_applications};
+use super::listing::{Bounds, Own, application_pictures, shareable_applications};
 use super::picture::PictureFrame;
 use super::{
     ApplicationId, CaptureError, CaptureRequest, CaptureSink, CaptureStream, DisplaySource,
@@ -90,6 +90,8 @@ pub(crate) struct ListedWindow {
     pub title: String,
     pub layer: isize,
     pub on_screen: bool,
+    /// The place of the top left corner in points, in the coordinates of the screens.
+    pub origin: (f64, f64),
     /// The size in points.
     pub size: (f64, f64),
     /// The pixels of one point on the screen that shows the window.
@@ -98,8 +100,11 @@ pub(crate) struct ListedWindow {
 }
 
 /// The windows that a person can share: ordinary windows on a screen that belong to
-/// another application than the client.
-pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<WindowSource> {
+/// another application than the client, each with its frame in points.
+pub(crate) fn shareable_windows(
+    listed: Vec<ListedWindow>,
+    own: &Own,
+) -> Vec<(WindowSource, Bounds)> {
     listed
         .into_iter()
         .filter(|window| window.layer == 0 && window.on_screen)
@@ -113,16 +118,48 @@ pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<Win
             ) {
                 return None;
             }
-            Some(WindowSource {
-                id: window.id,
-                title: window.title,
-                application,
-                application_name,
-                width: (window.size.0 * window.scale).round() as u32,
-                height: (window.size.1 * window.scale).round() as u32,
-            })
+            let frame = Bounds {
+                x: window.origin.0,
+                y: window.origin.1,
+                width: window.size.0,
+                height: window.size.1,
+            };
+            Some((
+                WindowSource {
+                    id: window.id,
+                    title: window.title,
+                    application,
+                    application_name,
+                    width: (window.size.0 * window.scale).round() as u32,
+                    height: (window.size.1 * window.scale).round() as u32,
+                },
+                frame,
+            ))
         })
         .collect()
+}
+
+/// The screen of a content filter.
+#[derive(Debug, Clone, Copy)]
+enum Screen {
+    Id(u32),
+    /// The first screen that the system lists, for a filter of sound only.
+    First,
+}
+
+/// What a content filter of the system selects.
+#[derive(Debug, Clone, Copy)]
+enum Selection<'a> {
+    /// One screen.
+    Screen(Screen),
+    /// One window, wherever it is.
+    Window(u32),
+    /// Every window of one application on one screen, also a window that opens later
+    /// (ADR 0738).
+    Application {
+        screen: Screen,
+        application: &'a ApplicationId,
+    },
 }
 
 /// The format of the samples of a sound buffer, as its description states it.
@@ -727,7 +764,7 @@ impl Content {
     fn sources(&self, own: &Own) -> ShareSources {
         // SAFETY: the content and the objects of its lists are valid, and the calls read
         // values that do not change.
-        unsafe {
+        let (displays, listed, applications) = unsafe {
             let displays = self.content.displays();
             let scales: Vec<_> = displays
                 .iter()
@@ -762,6 +799,7 @@ impl Content {
                             .unwrap_or_default(),
                         layer: window.windowLayer(),
                         on_screen: window.isOnScreen(),
+                        origin: (frame.origin.x, frame.origin.y),
                         size: (frame.size.width, frame.size.height),
                         scale,
                         application: window
@@ -770,53 +808,106 @@ impl Content {
                     }
                 })
                 .collect();
-            let applications = self
+            let applications: Vec<_> = self
                 .content
                 .applications()
                 .iter()
                 .map(|application| application_of(&application))
                 .collect();
-            ShareSources {
-                portal: Vec::new(),
-                system_sound: true,
-                started_the_client: Vec::new(),
-                creators_unknown: false,
-                displays: displays
-                    .iter()
-                    .map(|display| {
-                        let ((width, height), _) = display_pixels(&display);
-                        DisplaySource {
-                            id: display.displayID(),
-                            width,
-                            height,
-                        }
-                    })
-                    .collect(),
-                windows: shareable_windows(listed, own),
-                applications: shareable_applications(applications, own),
-            }
+            let displays: Vec<(DisplaySource, Bounds)> = displays
+                .iter()
+                .zip(&scales)
+                .map(|(display, (frame, _))| {
+                    let ((width, height), _) = display_pixels(&display);
+                    let source = DisplaySource {
+                        id: display.displayID(),
+                        width,
+                        height,
+                    };
+                    let frame = Bounds {
+                        x: frame.origin.x,
+                        y: frame.origin.y,
+                        width: frame.size.width,
+                        height: frame.size.height,
+                    };
+                    (source, frame)
+                })
+                .collect();
+            (displays, listed, applications)
+        };
+        let windows = shareable_windows(listed, own);
+        ShareSources {
+            portal: Vec::new(),
+            system_sound: true,
+            started_the_client: Vec::new(),
+            creators_unknown: false,
+            application_capture: true,
+            application_pictures: application_pictures(&windows, &displays),
+            displays: displays.into_iter().map(|(display, _)| display).collect(),
+            windows: windows.into_iter().map(|(window, _)| window).collect(),
+            applications: shareable_applications(applications, own),
         }
     }
 
-    /// Makes the streams of a share. They do not run yet.
-    /// The filter of the picture of a screen or a window, and its size in pixels.
+    /// The filter of the picture of a share, and its size in pixels.
     fn picture_filter(
         &self,
         picture: PictureSource,
         own: &Own,
     ) -> Result<(Retained<SCContentFilter>, (u32, u32)), CaptureError> {
+        match picture {
+            PictureSource::Portal(_) => Err(CaptureError::Unsupported),
+            PictureSource::Display(id) => self.filter(Selection::Screen(Screen::Id(id)), own),
+            PictureSource::Window(id) => self.filter(Selection::Window(id), own),
+            PictureSource::Application(process_id) => {
+                let sources = self.sources(own);
+                let listed = sources
+                    .application_pictures
+                    .iter()
+                    .find(|listed| listed.application.process_id == process_id)
+                    .ok_or(CaptureError::SourceGone)?;
+                self.filter(
+                    Selection::Application {
+                        screen: Screen::Id(listed.display),
+                        application: &listed.application,
+                    },
+                    own,
+                )
+            }
+        }
+    }
+
+    /// Makes a content filter of the system, and gives the size of what it selects in
+    /// pixels. Every filter of a picture and of a sound is made here.
+    fn filter(
+        &self,
+        selection: Selection<'_>,
+        own: &Own,
+    ) -> Result<(Retained<SCContentFilter>, (u32, u32)), CaptureError> {
+        let listed_window = match selection {
+            Selection::Window(id) => Some(
+                self.sources(own)
+                    .windows
+                    .into_iter()
+                    .find(|window| window.id == id)
+                    .ok_or(CaptureError::SourceGone)?,
+            ),
+            Selection::Screen(_) | Selection::Application { .. } => None,
+        };
         // SAFETY: the content and the objects of its lists are valid. The filter is made on
         // this thread.
         unsafe {
-            match picture {
-                PictureSource::Portal(_) => Err(CaptureError::Unsupported),
-                PictureSource::Display(id) => {
-                    let display = self
-                        .content
-                        .displays()
-                        .iter()
-                        .find(|display| display.displayID() == id)
-                        .ok_or(CaptureError::SourceGone)?;
+            let displays = self.content.displays();
+            let display_of = |screen: Screen| {
+                match screen {
+                    Screen::Id(id) => displays.iter().find(|display| display.displayID() == id),
+                    Screen::First => displays.iter().next(),
+                }
+                .ok_or(CaptureError::SourceGone)
+            };
+            match (selection, listed_window) {
+                (Selection::Screen(screen), _) => {
+                    let display = display_of(screen)?;
                     let filter = SCContentFilter::initWithDisplay_excludingWindows(
                         SCContentFilter::alloc(),
                         &display,
@@ -824,13 +915,7 @@ impl Content {
                     );
                     Ok((filter, display_pixels(&display).0))
                 }
-                PictureSource::Window(id) => {
-                    let sources = self.sources(own);
-                    let listed = sources
-                        .windows
-                        .iter()
-                        .find(|window| window.id == id)
-                        .ok_or(CaptureError::SourceGone)?;
+                (Selection::Window(id), Some(listed)) => {
                     let window = self
                         .content
                         .windows()
@@ -845,6 +930,33 @@ impl Content {
                         &window,
                     );
                     Ok((filter, (listed.width, listed.height)))
+                }
+                (Selection::Window(_), None) => Err(CaptureError::SourceGone),
+                (
+                    Selection::Application {
+                        screen,
+                        application: wanted,
+                    },
+                    _,
+                ) => {
+                    let display = display_of(screen)?;
+                    let application = self
+                        .content
+                        .applications()
+                        .iter()
+                        .find(|application| {
+                            let (id, name) = application_of(application);
+                            id == *wanted && !own.is(id.process_id, &id.bundle_id, &name)
+                        })
+                        .ok_or(CaptureError::SourceGone)?;
+                    let filter =
+                        SCContentFilter::initWithDisplay_includingApplications_exceptingWindows(
+                            SCContentFilter::alloc(),
+                            &display,
+                            &NSArray::from_slice(&[&*application]),
+                            &NSArray::new(),
+                        );
+                    Ok((filter, display_pixels(&display).0))
                 }
             }
         }
@@ -917,10 +1029,23 @@ impl Content {
             move || ended.store(true, Ordering::Release)
         });
         let (filter, source) = self.picture_filter(request.picture, own)?;
+        let sound_filter = match &request.sound {
+            SoundChoice::None => None,
+            SoundChoice::System => Some(self.filter(Selection::Screen(Screen::First), own)?.0),
+            SoundChoice::Application(wanted) => Some(
+                self.filter(
+                    Selection::Application {
+                        screen: Screen::First,
+                        application: wanted,
+                    },
+                    own,
+                )?
+                .0,
+            ),
+        };
         // SAFETY: the content and the objects of its lists are valid. Each filter and each
         // configuration is made and used on this thread.
         unsafe {
-            let displays = self.content.displays();
             let (width, height) = request.quality.resolution.fit(source.0, source.1);
             let configuration = SCStreamConfiguration::new();
             configuration.setWidth(width as usize);
@@ -943,37 +1068,6 @@ impl Content {
                 life.clone(),
             )?;
 
-            let sound_filter = match &request.sound {
-                SoundChoice::None => None,
-                SoundChoice::System => {
-                    let display = displays.iter().next().ok_or(CaptureError::SourceGone)?;
-                    Some(SCContentFilter::initWithDisplay_excludingWindows(
-                        SCContentFilter::alloc(),
-                        &display,
-                        &NSArray::new(),
-                    ))
-                }
-                SoundChoice::Application(wanted) => {
-                    let display = displays.iter().next().ok_or(CaptureError::SourceGone)?;
-                    let application = self
-                        .content
-                        .applications()
-                        .iter()
-                        .find(|application| {
-                            let (id, name) = application_of(application);
-                            id == *wanted && !own.is(id.process_id, &id.bundle_id, &name)
-                        })
-                        .ok_or(CaptureError::SourceGone)?;
-                    Some(
-                        SCContentFilter::initWithDisplay_includingApplications_exceptingWindows(
-                            SCContentFilter::alloc(),
-                            &display,
-                            &NSArray::from_slice(&[&*application]),
-                            &NSArray::new(),
-                        ),
-                    )
-                }
-            };
             let sound = match sound_filter {
                 None => None,
                 Some(filter) => {
@@ -1179,6 +1273,7 @@ mod tests {
             title: format!("Window {id}"),
             layer: 0,
             on_screen: true,
+            origin: (0.0, 0.0),
             size: (800.0, 600.0),
             scale: 2.0,
             application: owner.map(|(id, name)| (id, name.to_owned())),
@@ -1219,7 +1314,16 @@ mod tests {
         let windows = shareable_windows(listed, &own());
         assert_eq!(windows.len(), 1);
         assert_eq!(
-            windows[0],
+            windows[0].1,
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0
+            }
+        );
+        assert_eq!(
+            windows[0].0,
             WindowSource {
                 id: 1,
                 title: "Window 1".to_owned(),

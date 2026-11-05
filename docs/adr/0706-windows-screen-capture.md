@@ -10,7 +10,7 @@ The tests of `crates/media/tests/windows_capture` ran on the Windows machine of 
 
 ADR 0502 requires screen share with sound on Windows and left the sound choices of Windows open until a test had run there. ADR 0736 defines the interface of a capture, and ADR 0751 the delivery of pictures and sound for a capture whose pictures arrive in their own form and whose sound arrives in portions of its own size.
 
-Windows 11 offers Windows Graphics Capture for the picture of one screen or one window. It gives each picture as a Direct3D 11 texture, gives a picture only when the content changes, and tells when the captured window was closed. A desktop application that is not packaged needs no permission for it. The system draws a border around the captured screen or window while the capture runs.
+Windows 11 offers Windows Graphics Capture for the picture of one screen or one window; a share of the windows of one application draws one capture of each window into the picture of one screen (ADR 0738). It gives each picture as a Direct3D 11 texture, gives a picture only when the content changes, and tells when the captured window was closed. A desktop application that is not packaged needs no permission for it. The system draws a border around the captured screen or window while the capture runs.
 
 The audio session API of Windows has process loopback (since Windows 10 build 20348): a capture of the sound that one process and its child processes play, or of all sound except that of one process and its child processes. The client plays the sound of a call from its own process.
 

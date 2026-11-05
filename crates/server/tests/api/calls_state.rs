@@ -7,7 +7,7 @@ use junto_protocol::audit::{AuditEvent, AuditPage};
 use junto_protocol::call::{
     BlockReason, CallInvitation, CallJoin, CallParticipant, CallPlace, InvitationOutcome,
     LeaveReason, MAX_SHARES, MeetingEnd, MicrophoneBlock, SHOWN_SHARES_ATTRIBUTE, ScreenShare,
-    ShareAudio, ShareKind, SoundBlock,
+    ShareAudio, ShareKind, ShareShows, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Event, Level};
@@ -366,6 +366,7 @@ async fn a_screen_share_is_shown_with_its_sound_choice_while_the_media_server_li
     let shown = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at,
     });
@@ -386,6 +387,7 @@ async fn a_screen_share_is_shown_with_its_sound_choice_while_the_media_server_li
     let changed = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::System,
         started_at,
     });
@@ -502,18 +504,25 @@ async fn a_person_runs_up_to_three_shares_and_each_lasts_while_its_named_track_i
     share_in(server, ann, &seat, 1, "window").await;
     let started_at = server.clock.now();
     let shown = participant(server, ben, voice, ann.account_id).await;
-    let share = |slot, kind| ScreenShare {
+    let share = |slot, kind, shows| ScreenShare {
         slot,
         kind: Some(kind),
+        shows: Some(shows),
         audio: ShareAudio::System,
         started_at,
     };
     assert_eq!(
         shown.screen_shares,
-        [share(0, ShareKind::Screen), share(1, ShareKind::Window)]
+        [
+            share(0, ShareKind::Screen, ShareShows::Screen),
+            share(1, ShareKind::Window, ShareShows::Window)
+        ]
     );
     // A client of one share reads the share of the lowest slot.
-    assert_eq!(shown.screen_share, Some(share(0, ShareKind::Screen)));
+    assert_eq!(
+        shown.screen_share,
+        Some(share(0, ShareKind::Screen, ShareShows::Screen))
+    );
     assert_eq!(
         names(&server.call_events(ben, &mut to_ben).await),
         ["call_participant_updated", "call_participant_updated"]
@@ -576,6 +585,77 @@ async fn a_person_runs_up_to_three_shares_and_each_lasts_while_its_named_track_i
         (None, Vec::new())
     );
     assert_eq!(server.count("call_shares").await, 0);
+}
+
+/// A share of every window of one application is reported with `kind` window, which a
+/// server and a client of 0.1.0 read, and `shows` application. Its picture track has the
+/// name of a window share. The server keeps what it shows, and states both fields; a report
+/// of a client of 0.1.0, without `shows`, and a value of a later version keep `kind`
+/// (ADR 0737).
+#[tokio::test]
+async fn a_share_of_an_application_is_kept_and_stated_as_a_window_for_readers_of_0_1_0() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let path = "/api/v1/call/screen-share";
+    server
+        .put(
+            ann,
+            path,
+            &json!({ "audio": "application", "slot": 1, "kind": "window", "shows": "application" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish_named(
+        &seat.room,
+        &seat.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare,
+        &share_track(1, "window"),
+    ));
+    server.check().await;
+    let shown = participant(server, ben, voice, ann.account_id).await;
+    let [share] = shown.screen_shares.as_slice() else {
+        panic!("one share: {:?}", shown.screen_shares);
+    };
+    assert_eq!(
+        (share.slot, share.kind, share.shows, share.shows()),
+        (
+            1,
+            Some(ShareKind::Window),
+            Some(ShareShows::Application),
+            Some(ShareShows::Application)
+        )
+    );
+    let stored: Option<String> = sqlx::query_scalar("select kind from call_shares")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("application"));
+
+    // The same share reported by a client of 0.1.0 states a window; a later value of
+    // `shows` keeps `kind`.
+    for (report, kept) in [
+        (
+            json!({ "audio": "none", "slot": 1, "kind": "window" }),
+            "window",
+        ),
+        (
+            json!({ "audio": "none", "slot": 1, "kind": "screen", "shows": "browser_tab" }),
+            "screen",
+        ),
+    ] {
+        server
+            .put(ann, path, &report)
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let stored: Option<String> = sqlx::query_scalar("select kind from call_shares")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(kept));
+    }
 }
 
 /// Each answer that gives a place states the number of shares of one person, and a client

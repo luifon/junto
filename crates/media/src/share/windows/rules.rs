@@ -3,7 +3,7 @@
 //! identified, which applications started the client, and how a packet of the sound capture
 //! becomes stereo frames. They run in the ordinary tests of every system (ADR 0706).
 
-use crate::share::listing::{Own, shareable_applications};
+use crate::share::listing::{Bounds, Own, shareable_applications};
 use crate::share::{ApplicationId, ApplicationSource, WindowSource};
 
 /// A window is listed when each side has at least this many pixels. Smaller ones are parts
@@ -42,8 +42,14 @@ pub(crate) struct ListedWindow {
     pub no_activate: bool,
     /// The window has an owner window: it is a dialog or a pop-up of another window.
     pub owned: bool,
+    /// The top left corner of the visible frame in pixels, in the coordinates of the
+    /// screens.
+    pub origin: (i32, i32),
     /// The size of the visible frame in pixels.
     pub size: (u32, u32),
+    /// The process of the application of the window: the process of its inner window for a
+    /// frame of the Windows store; zero when it could not be read.
+    pub process_id: u32,
     /// The application and its name, when the program of the window could be read.
     pub application: Option<(ApplicationId, String)>,
 }
@@ -58,6 +64,14 @@ fn switchable(window: &ListedWindow) -> bool {
 /// The windows that a person can share: visible application windows of another application
 /// than the client, on the present virtual desktop, not minimized.
 pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<WindowSource> {
+    placed_windows(listed, own)
+        .into_iter()
+        .map(|(window, _)| window)
+        .collect()
+}
+
+/// [`shareable_windows`], each with its visible frame in pixels, in the order of the list.
+pub(crate) fn placed_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<(WindowSource, Bounds)> {
     listed
         .into_iter()
         .filter(|window| window.visible && !window.cloaked && !window.minimized)
@@ -74,14 +88,50 @@ pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<Win
             ) {
                 return None;
             }
-            Some(WindowSource {
-                id: window.id,
-                title: window.title,
-                application,
-                application_name,
-                width: window.size.0,
-                height: window.size.1,
-            })
+            let bounds = Bounds {
+                x: f64::from(window.origin.0),
+                y: f64::from(window.origin.1),
+                width: f64::from(window.size.0),
+                height: f64::from(window.size.1),
+            };
+            Some((
+                WindowSource {
+                    id: window.id,
+                    title: window.title,
+                    application,
+                    application_name,
+                    width: window.size.0,
+                    height: window.size.1,
+                },
+                bounds,
+            ))
+        })
+        .collect()
+}
+
+/// One window in the picture of a shared application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Layer {
+    pub window: u32,
+    /// The place of the top left corner of the window in the picture, which can lie outside
+    /// it.
+    pub at: (i32, i32),
+}
+
+/// The windows of a shared application as its picture draws them (ADR 0738): the windows
+/// that are listed from the front to the back, as the window manager lists them, that show
+/// a part of the shared screen, from the back to the front, each at its place on the screen.
+pub(crate) fn application_layers(front_to_back: &[(u32, Bounds)], screen: Bounds) -> Vec<Layer> {
+    front_to_back
+        .iter()
+        .rev()
+        .filter(|(_, bounds)| bounds.overlap(&screen) > 0.0)
+        .map(|(window, bounds)| Layer {
+            window: *window,
+            at: (
+                (bounds.x - screen.x).round() as i32,
+                (bounds.y - screen.y).round() as i32,
+            ),
         })
         .collect()
 }
@@ -367,7 +417,9 @@ mod tests {
             app_window: false,
             no_activate: false,
             owned: false,
+            origin: (0, 0),
             size: (1600, 1200),
+            process_id,
             application: Some(application(process_id, path, None)),
         }
     }
@@ -677,5 +729,36 @@ mod tests {
         }));
         assert!(out.is_empty());
         assert!(packet_frames(None, 0, false, |frame| out.push(frame)));
+    }
+
+    #[test]
+    fn the_picture_of_an_application_draws_its_windows_on_the_screen_from_the_back() {
+        let bounds = |x: f64, y: f64, width: f64, height: f64| Bounds {
+            x,
+            y,
+            width,
+            height,
+        };
+        let screen = bounds(1920.0, 0.0, 1920.0, 1080.0);
+        let front_to_back = [
+            (1, bounds(2000.0, 100.0, 800.0, 600.0)),
+            // On another screen: not drawn.
+            (2, bounds(0.0, 0.0, 800.0, 600.0)),
+            // Across the left edge of the shared screen.
+            (3, bounds(1800.0, -20.0, 400.0, 300.0)),
+        ];
+        assert_eq!(
+            application_layers(&front_to_back, screen),
+            [
+                Layer {
+                    window: 3,
+                    at: (-120, -20)
+                },
+                Layer {
+                    window: 1,
+                    at: (80, 100)
+                },
+            ]
+        );
     }
 }

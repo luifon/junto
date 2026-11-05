@@ -536,6 +536,177 @@ fn a_screen_share_has_the_display_size_and_stops_when_dropped() {
     assert!(pictures.ended.lock().unwrap().is_empty());
 }
 
+/// The middles of the quarters of an area of a screen in a picture of the whole screen.
+fn screen_places(
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+) -> impl Fn(&PictureFrame) -> [(f64, f64); 4] {
+    move |picture: &PictureFrame| {
+        let x = f64::from(picture.width) / f64::from(screen.0);
+        let y = f64::from(picture.height) / f64::from(screen.1);
+        quarters((
+            f64::from(area.0) * x,
+            f64::from(area.1) * y,
+            f64::from(area.2) * x,
+            f64::from(area.3) * y,
+        ))
+    }
+}
+
+/// Waits until the newest picture is black at a place of the picture.
+fn until_black(pictures: &Pictures, at: (f64, f64), what: &str) {
+    let started = Instant::now();
+    loop {
+        if let Some(picture) = pictures.latest.lock().unwrap().as_ref()
+            && picture
+                .pixel(at.0 as u32, at.1 as u32)
+                .is_some_and(|pixel| near(pixel, (0, 0, 0)))
+        {
+            return;
+        }
+        assert!(started.elapsed() < PATIENCE, "{what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A share of an application (ADR 0738) lists the program of the fixture on the screen of its
+/// window, shows that window at its place in a picture of the size of the screen and black
+/// where the application has no window, follows the window when its colours and its size
+/// change, and goes on when the window closes. Its preview draws the window in the same way.
+#[test]
+fn an_application_share_draws_its_window_at_its_place_follows_it_and_outlives_it() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    assert!(sources.application_capture);
+    let process = fixture.child.id() as i32;
+    let listed = sources
+        .application_pictures
+        .iter()
+        .find(|listed| listed.application.process_id == process)
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture is not listed: {:?}",
+                sources.application_pictures
+            )
+        });
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (listed.display, listed.windows, listed.width, listed.height),
+        (fixture.screen, 1, display.width, display.height)
+    );
+    let screen = (display.width, display.height);
+
+    let preview = runtime
+        .block_on(capture.preview(PictureSource::Application(process), (640, 360)))
+        .unwrap();
+    let places = screen_places(fixture.area, screen)(&preview);
+    for (quarter, (x, y)) in places.iter().enumerate() {
+        let pixel = preview.pixel(*x as u32, *y as u32).unwrap();
+        assert!(
+            near(pixel, COLOURS[quarter]),
+            "the preview shows {pixel:?} in quarter {quarter}"
+        );
+    }
+
+    let pictures = Arc::new(Pictures::default());
+    let stream = runtime
+        .block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Application(process),
+                sound: SoundChoice::None,
+                quality: ShareQuality {
+                    resolution: Resolution::Source,
+                    frame_rate: 30,
+                },
+                dialog_parent: None,
+            },
+            pictures.clone(),
+        ))
+        .unwrap();
+    assert_eq!(
+        (stream.width, stream.height),
+        Resolution::Source.fit(display.width, display.height)
+    );
+    until_colours(
+        &pictures,
+        0,
+        screen_places(fixture.area, screen),
+        "the application share",
+    );
+    // A corner of the screen far from the window shows no other application.
+    let far = {
+        let area = fixture.area;
+        let x = if area.0 + area.2 > display.width as i32 {
+            4.0
+        } else {
+            f64::from(display.width) - 4.0
+        };
+        let y = if area.1 + area.3 > display.height as i32 {
+            4.0
+        } else {
+            f64::from(display.height) - 4.0
+        };
+        (x, y)
+    };
+    until_black(&pictures, far, "the screen outside the window is not black");
+    fixture.send("turn");
+    until_colours(
+        &pictures,
+        1,
+        screen_places(fixture.area, screen),
+        "the application share after a turn",
+    );
+    let area = fixture.resize((420, 280));
+    until_colours(
+        &pictures,
+        1,
+        screen_places(area, screen),
+        "the application share after a change of size",
+    );
+
+    // The window closes: its place turns black, and the share goes on.
+    let middle = screen_places(area, screen);
+    fixture.send("close");
+    let started = Instant::now();
+    loop {
+        let black = pictures
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|picture| {
+                middle(picture).iter().all(|(x, y)| {
+                    picture
+                        .pixel(*x as u32, *y as u32)
+                        .is_some_and(|pixel| near(pixel, (0, 0, 0)))
+                })
+            });
+        if black {
+            break;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the place of the closed window did not turn black"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        pictures.ended.lock().unwrap().is_empty(),
+        "{:?}",
+        pictures.ended.lock().unwrap()
+    );
+    runtime.block_on(stream.stop()).unwrap();
+    assert!(pictures.ended.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_share_with_the_sound_of_one_application_or_of_the_system_starts_and_gives_stereo_at_48_khz() {
     let fixture = Fixture::open();

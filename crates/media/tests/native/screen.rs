@@ -164,6 +164,17 @@ pub async fn capture(audio_only: bool) {
         .expect("fixture is a shareable external window");
     let application = window.application.clone();
     assert!(application.bundle_id.ends_with(".A"));
+    // The share of the application of the fixture shows the screen of its window (ADR 0738).
+    let listed = sources
+        .application_pictures
+        .iter()
+        .find(|listed| listed.application == application)
+        .expect("the application of the fixture is listed for a share of its windows");
+    assert_eq!(
+        (listed.display, listed.windows),
+        (fixture.geometry.display, 1)
+    );
+    assert!(sources.application_capture);
     let display = sources
         .displays
         .iter()
@@ -221,12 +232,15 @@ pub async fn capture(audio_only: bool) {
         let marker = u32::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
         for (index, picture) in [
             PictureSource::Display(display.id),
+            PictureSource::Application(application.process_id),
             PictureSource::Window(window.id),
         ]
         .into_iter()
         .enumerate()
         {
-            let display = index == 0;
+            // A share of a screen and of an application has the size of the screen, with the
+            // window of the fixture at its place.
+            let display = index < 2;
             local.calls.start_share(CaptureRequest {
                 picture,
                 sound: SoundChoice::None,
@@ -281,6 +295,34 @@ pub async fn capture(audio_only: bool) {
                     started.elapsed()
                 );
             }
+            if matches!(picture, PictureSource::Application(_)) {
+                // The share of the application draws no other application: the corner of
+                // the screen farthest from the window of the fixture is black.
+                let g = &fixture.geometry;
+                let far = (
+                    if g.x + g.width / 2 > g.display_width / 2 {
+                        0.02
+                    } else {
+                        0.98
+                    },
+                    if g.y + g.height / 2 > g.display_height / 2 {
+                        0.02
+                    } else {
+                        0.98
+                    },
+                );
+                let frame = native_pictures.borrow().clone().expect("a native picture");
+                let pixel = frame
+                    .pixel(
+                        (far.0 * f64::from(frame.width)) as u32,
+                        (far.1 * f64::from(frame.height)) as u32,
+                    )
+                    .expect("the corner is in the picture");
+                assert!(
+                    pixel.0 < 40 && pixel.1 < 40 && pixel.2 < 40,
+                    "the share of the application shows {pixel:?} outside its window"
+                );
+            }
             if display {
                 local.calls.stop_share(None);
             } else {
@@ -299,7 +341,7 @@ pub async fn capture(audio_only: bool) {
             .unwrap();
         }
         println!(
-            "S1/S2 passed content, close and sink release; system stop completion is not exposed by the capture interface"
+            "S1/S2 passed content of a screen, an application and a window, close and sink release; system stop completion is not exposed by the capture interface"
         );
     } else {
         let mut second = Fixture::launch("B").await;

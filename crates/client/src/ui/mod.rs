@@ -46,7 +46,7 @@ pub use area::{COVER, KEPT, area, cover};
 pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
-pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
+pub use controls::{LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use fit::Fit;

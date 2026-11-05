@@ -1169,10 +1169,18 @@ fn the_share_dialog_shows_a_picture_of_each_screen_and_window(cx: &mut TestAppCo
     });
     window.settle();
     window.click("call-share");
-    window.until("the screens and the window have their pictures", |window| {
+    window.until("the screens have their pictures", |window| {
         window.shows("share-preview-image:display:1")
             && window.shows("share-preview-image:display:2")
-            && window.shows("share-preview-image:window:11")
+    });
+    // Each tab shows the pictures of its sources (ADR 0738).
+    window.click("share-tab-window");
+    window.until("the window has its picture", |window| {
+        window.shows("share-preview-image:window:11")
+    });
+    window.click("share-tab-application");
+    window.until("the application has its picture", |window| {
+        window.shows("share-preview-image:application:4001")
     });
     use junto_media::share::PictureSource;
     assert_eq!(
@@ -1181,11 +1189,122 @@ fn the_share_dialog_shows_a_picture_of_each_screen_and_window(cx: &mut TestAppCo
             PictureSource::Display(1),
             PictureSource::Display(2),
             PictureSource::Window(11),
+            PictureSource::Application(junto_media::share::synthetic::PLAYER),
         ]
     );
     window.click("share-cancel");
     assert!(!window.shows("share-picker"));
     assert!(window.capture.started().is_empty());
+}
+
+/// The dialog of a share lists its sources in the tabs Screen, Window and Application
+/// (ADR 0738). The Tab key reaches the open tab, the arrow keys move the focus between the
+/// tabs and round the row, and Enter or Space opens the focused tab; a press opens a tab
+/// too. An application that is shared has its own sound unless the person chose another.
+#[gpui::test]
+fn the_tabs_of_the_share_dialog_are_opened_by_the_keyboard_and_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    use junto_media::share::synthetic::{PLAYER, SyntheticCapture};
+    use junto_media::share::{PictureSource, SoundChoice};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    let media = junto_client::state::view::MediaSnapshot {
+        calls: junto_media::calls::CallsView {
+            call: Some(call),
+            ..junto_media::calls::CallsView::default()
+        },
+        can_share: true,
+        ..junto_client::state::view::MediaSnapshot::default()
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_media_fixture(media, cx));
+    });
+    window.settle();
+    window.click("call-share");
+    window.until("the dialog lists the sources", |window| {
+        window.shows("share-display:1")
+    });
+    let focused_on = |window: &mut Window, selector: &'static str| {
+        let wanted = window
+            .cx
+            .debug_bounds(selector)
+            .map(|bounds| bounds.center());
+        wanted.is_some()
+            && window
+                .cx
+                .debug_bounds("focus-report")
+                .map(|bounds| bounds.center())
+                == wanted
+    };
+    let tab_of = |window: &mut Window| {
+        window.in_shell(|shell, _, _| shell.share_picker_tabs().map(|(open, _)| open))
+    };
+    use junto_client::shell::share::ShareTab;
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Screen));
+    assert!(!window.shows("share-window:11"));
+
+    // The keyboard: the arrow keys move the focus, Enter and Space open the focused tab.
+    window.tab_to("share-tab-screen");
+    window.press("right");
+    assert!(focused_on(&mut window, "share-tab-window"));
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Screen));
+    window.press("enter");
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Window));
+    assert!(window.shows("share-window:11"));
+    assert!(!window.shows("share-display:1"));
+    window.press("right");
+    assert!(focused_on(&mut window, "share-tab-application"));
+    window.press("space");
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Application));
+    assert!(window.shows("share-application-picture:4001"));
+    window.press("right");
+    assert!(focused_on(&mut window, "share-tab-screen"));
+    window.press("left");
+    assert!(focused_on(&mut window, "share-tab-application"));
+    window.press("home");
+    assert!(focused_on(&mut window, "share-tab-screen"));
+    window.press("end");
+    assert!(focused_on(&mut window, "share-tab-application"));
+    // Tab leaves the row: the closed tabs are not in the order of the Tab key.
+    window.press("tab");
+    assert!(!focused_on(&mut window, "share-tab-screen"));
+    assert!(!focused_on(&mut window, "share-tab-window"));
+    assert!(!focused_on(&mut window, "share-tab-application"));
+
+    // The pointer, and a choice that another tab ends. The rows of a fixture call are
+    // chosen through the shell; the window live tests press them.
+    window.click("share-tab-window");
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Window));
+    window.in_shell(|shell, _, cx| shell.pick_share_picture(PictureSource::Window(11), cx));
+    window.click("share-tab-screen");
+    assert_eq!(tab_of(&mut window), Some(ShareTab::Screen));
+    assert!(window.shows("share-display:1"));
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.share_picker_choice()),
+        None
+    );
+    window.click("share-tab-application");
+    window
+        .in_shell(|shell, _, cx| shell.pick_share_picture(PictureSource::Application(PLAYER), cx));
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.share_picker_sound_help()),
+        Some(junto_client::text::sound_of_shared_application("Player").into())
+    );
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.share_picker_choice()),
+        Some((
+            PictureSource::Application(PLAYER),
+            SoundChoice::Application(SyntheticCapture::player())
+        ))
+    );
+    window.click("share-cancel");
 }
 
 /// ADR 0793: without a graphics processor the window takes the pictures of the cameras at

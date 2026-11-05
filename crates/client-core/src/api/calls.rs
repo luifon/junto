@@ -6,7 +6,7 @@ use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
     ReportCallState, ReportScreenShare, ReportSpeaking, SetVoiceChannelStatus, ShareAudio,
-    ShareKind, UpdateCallSettings,
+    ShareShows, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
@@ -108,17 +108,19 @@ impl ServerApi {
     /// Reports the share of this device in `slot`, with what it shows and its sound.
     /// `share_id` names the share that was started in the slot: another one is a new share
     /// (ADR 0510).
+    /// `kind` is the value that a server of 0.1.0 reads, `shows` the full one (ADR 0737).
     pub async fn report_screen_share(
         &self,
         slot: u8,
-        kind: Option<ShareKind>,
+        shows: Option<ShareShows>,
         audio: ShareAudio,
         share_id: Option<Uuid>,
     ) -> Result<(), ApiError> {
         let report = ReportScreenShare {
             audio,
             slot,
-            kind,
+            kind: shows.and_then(ShareShows::kind),
+            shows,
             share_id,
         };
         self.put("/call/screen-share".to_owned(), &report).await

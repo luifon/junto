@@ -3463,21 +3463,26 @@ fn share_stage(
             .iter()
             .map(|seen| {
                 let id = ShareId::of(seen.account_id, seen.slot);
+                let reported = call
+                    .and_then(|call| call.participant(seen.account_id))
+                    .and_then(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .find(|share| share.slot == seen.slot)
+                    });
                 ShareCard {
                     id,
                     account_id: seen.account_id,
                     name: name_of(seen.account_id),
-                    kind: seen.kind,
+                    // The track of a share of an application has the name of a window share,
+                    // and the state of the server states the application (ADR 0737).
+                    kind: reported
+                        .and_then(|share| share.shows())
+                        .and_then(shown_kind)
+                        .or(seen.kind),
                     number: None,
-                    sound: call
-                        .and_then(|call| call.participant(seen.account_id))
-                        .and_then(|participant| {
-                            participant
-                                .shares()
-                                .iter()
-                                .find(|share| share.slot == seen.slot)
-                        })
-                        .map(|share| share.audio),
+                    sound: reported.map(|share| share.audio),
                     sound_held: false,
                     sound_setting: active.share_sounds.get(&id).copied().unwrap_or_else(|| {
                         known.media.voice.share_sound(server_id, seen.account_id)
@@ -3533,6 +3538,18 @@ fn share_stage(
             share.sound_setting.volume
         });
     (!shares.is_empty()).then_some(ShareStage { shares, volume })
+}
+
+/// What a share shows as the window names it, from the state of the server. A value of a
+/// later version states nothing.
+fn shown_kind(shows: junto_client_core::protocol::call::ShareShows) -> Option<ShareKind> {
+    use junto_client_core::protocol::call::ShareShows;
+    match shows {
+        ShareShows::Screen => Some(ShareKind::Screen),
+        ShareShows::Window => Some(ShareKind::Window),
+        ShareShows::Application => Some(ShareKind::Application),
+        ShareShows::Unknown => None,
+    }
 }
 
 /// The shares of this device for the menu of the share button, in the order of their slots.

@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 use super::rules::{self, Creators, FRAME_HOST, ListedProcess, ListedWindow};
-use crate::share::listing::Own;
+use crate::share::listing::{Bounds, Own, application_pictures};
 use crate::share::{ApplicationId, DisplaySource, ShareSources, WindowSource};
 
 fn wide(text: &str) -> Vec<u16> {
@@ -241,7 +241,7 @@ fn read_window(window: HWND) -> ListedWindow {
         .is_ok()
             && cloaked != 0;
         let mut bounds = RECT::default();
-        let size = if DwmGetWindowAttribute(
+        let (origin, size) = if DwmGetWindowAttribute(
             window,
             DWMWA_EXTENDED_FRAME_BOUNDS,
             (&mut bounds as *mut RECT).cast(),
@@ -250,11 +250,14 @@ fn read_window(window: HWND) -> ListedWindow {
         .is_ok()
         {
             (
-                (bounds.right - bounds.left).max(0) as u32,
-                (bounds.bottom - bounds.top).max(0) as u32,
+                (bounds.left, bounds.top),
+                (
+                    (bounds.right - bounds.left).max(0) as u32,
+                    (bounds.bottom - bounds.top).max(0) as u32,
+                ),
             )
         } else {
-            (0, 0)
+            ((0, 0), (0, 0))
         };
         let length = GetWindowTextLengthW(window).max(0) as usize;
         let mut title = vec![0u16; length + 1];
@@ -280,14 +283,20 @@ fn read_window(window: HWND) -> ListedWindow {
             app_window: style & WS_EX_APPWINDOW.0 != 0,
             no_activate: style & WS_EX_NOACTIVATE.0 != 0,
             owned: GetWindow(window, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()),
+            origin,
             size,
-            application: if process == 0 {
-                None
-            } else {
-                application_of(process)
-            },
+            process_id: process,
+            application: None,
         }
     }
+}
+
+/// The application of a listed window, read from its process.
+fn with_application(mut window: ListedWindow) -> ListedWindow {
+    if window.process_id != 0 {
+        window.application = application_of(window.process_id);
+    }
+    window
 }
 
 /// The top-level windows in the order of the window manager, from the front.
@@ -305,14 +314,47 @@ fn top_level_windows() -> Vec<HWND> {
 
 /// The windows that a person can share now.
 pub(super) fn windows(own: &Own) -> Vec<WindowSource> {
-    let listed = top_level_windows().into_iter().map(read_window).collect();
-    rules::shareable_windows(listed, own)
+    placed_windows(own)
+        .into_iter()
+        .map(|(window, _)| window)
+        .collect()
+}
+
+/// The windows that a person can share now, each with its frame, from the front to the
+/// back.
+pub(super) fn placed_windows(own: &Own) -> Vec<(WindowSource, Bounds)> {
+    let listed = top_level_windows()
+        .into_iter()
+        .map(|window| with_application(read_window(window)))
+        .collect();
+    rules::placed_windows(listed, own)
+}
+
+/// The windows of one application that a person can share now, each with its frame, from
+/// the front to the back. The program of a window of another process is not read, so the
+/// list costs little enough to be read again while the application is shared (ADR 0738).
+pub(super) fn application_windows(
+    own: &Own,
+    application: &(ApplicationId, String),
+) -> Vec<(WindowSource, Bounds)> {
+    let listed = top_level_windows()
+        .into_iter()
+        .map(read_window)
+        .filter(|window| window.process_id == application.0.process_id as u32)
+        .map(|mut window| {
+            window.application = Some(application.clone());
+            window
+        })
+        .collect();
+    rules::placed_windows(listed, own)
 }
 
 /// A screen with its handle.
 pub(super) struct Display {
     pub source: DisplaySource,
     pub monitor: HMONITOR,
+    /// The area of the screen in pixels, in the coordinates of the screens.
+    pub bounds: Bounds,
 }
 
 unsafe extern "system" fn collect_monitor(
@@ -379,6 +421,7 @@ pub(super) fn displays() -> Vec<Display> {
                 {
                     return None;
                 }
+                let area = info.monitorInfo.rcMonitor;
                 Some(Display {
                     source: DisplaySource {
                         id,
@@ -386,6 +429,12 @@ pub(super) fn displays() -> Vec<Display> {
                         height: mode.dmPelsHeight,
                     },
                     monitor,
+                    bounds: Bounds {
+                        x: f64::from(area.left),
+                        y: f64::from(area.top),
+                        width: f64::from(area.right - area.left),
+                        height: f64::from(area.bottom - area.top),
+                    },
                 })
             })
             .collect()
@@ -395,15 +444,20 @@ pub(super) fn displays() -> Vec<Display> {
 /// What a person can share now. Process loopback, which carries both choices of sound,
 /// exists on every version of Windows 11 (ADR 0705, ADR 0706).
 pub(super) fn sources(own: &Own) -> ShareSources {
-    let windows = windows(own);
+    let placed = placed_windows(own);
+    let displays: Vec<(DisplaySource, Bounds)> = displays()
+        .into_iter()
+        .map(|display| (display.source, display.bounds))
+        .collect();
+    let application_pictures = application_pictures(&placed, &displays);
+    let windows: Vec<WindowSource> = placed.into_iter().map(|(window, _)| window).collect();
     let creators = ancestors(own);
     let (applications, started_the_client) = rules::sound_choices(&windows, own, &creators);
     ShareSources {
-        displays: displays()
-            .into_iter()
-            .map(|display| display.source)
-            .collect(),
+        displays: displays.into_iter().map(|(display, _)| display).collect(),
         windows,
+        application_capture: true,
+        application_pictures,
         applications,
         portal: Vec::new(),
         system_sound: true,

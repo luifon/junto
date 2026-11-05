@@ -536,6 +536,7 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     sharing.screen_share = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::None,
         started_at: time(),
     });
@@ -1155,6 +1156,7 @@ pub(super) mod calls {
         listed.screen_share = Some(ScreenShare {
             slot: 0,
             kind: None,
+            shows: None,
             audio: ShareAudio::None,
             started_at: time(),
         });
@@ -2015,6 +2017,7 @@ pub(super) mod calls {
         participant.screen_share = Some(ScreenShare {
             slot: 0,
             kind: None,
+            shows: None,
             audio,
             started_at: time(),
         });
@@ -2173,6 +2176,7 @@ pub(super) mod calls {
         let shared = |slot, audio| ScreenShare {
             slot,
             kind: None,
+            shows: None,
             audio,
             started_at: at,
         };
@@ -2289,6 +2293,56 @@ pub(super) mod calls {
             ]
         );
         assert!(occupant(&view, "Daily", ana).sharing);
+    }
+
+    /// The picture track of a share of an application has the name of a window share, which
+    /// a client of 0.1.0 reads; the card names the application from the state of the server,
+    /// and the track when the server states nothing (ADR 0737).
+    #[test]
+    fn a_share_of_an_application_is_named_from_the_state_of_the_server() {
+        use junto_client_core::protocol::call::{ShareKind as ReportedKind, ShareShows};
+        let mut scene = scene();
+        let ana = AccountId::generate();
+        let (own, daily) = (scene.own, scene.daily);
+        let mut ana_row = participant(ana);
+        let shared = |slot, shows: Option<ShareShows>| ScreenShare {
+            slot,
+            kind: Some(ReportedKind::Window),
+            shows,
+            audio: ShareAudio::Application,
+            started_at: time(),
+        };
+        ana_row.screen_shares = vec![
+            shared(0, None),
+            shared(1, Some(ShareShows::Application)),
+            shared(2, Some(ShareShows::Unknown)),
+        ];
+        ana_row.screen_share = ana_row.screen_shares.first().cloned();
+        scene.call(daily, vec![ana_row, participant(own)]);
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let mut call = active(target(&server, &scene, daily));
+        call.shares = vec![
+            seen_in(ana, 0, ShareKind::Window),
+            seen_in(ana, 1, ShareKind::Window),
+            seen_in(ana, 2, ShareKind::Window),
+        ];
+        let view = derive(servers, &selected(&server, &scene, daily), &in_call(call));
+        let stage = panel(&view).stage.unwrap();
+        let kinds: Vec<_> = stage.shares.iter().map(|share| share.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(ShareKind::Window),
+                Some(ShareKind::Application),
+                Some(ShareKind::Window)
+            ]
+        );
+        assert!(
+            crate::text::share_title(&stage.shares[1], false).ends_with("'s application"),
+            "{}",
+            crate::text::share_title(&stage.shares[1], false)
+        );
     }
 
     #[test]
