@@ -272,6 +272,7 @@ impl AuditGroup {
             | AuditEvent::ServerPersonPermissionsSet { .. } => Self::Roles,
             AuditEvent::WorkspaceCreated { .. }
             | AuditEvent::WorkspaceRenamed { .. }
+            | AuditEvent::WorkspaceLogoChanged { .. }
             | AuditEvent::WorkspaceDeleted { .. }
             | AuditEvent::CategoryCreated { .. }
             | AuditEvent::CategoryUpdated { .. }
@@ -330,7 +331,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 81] = [
+pub const ACTIONS: [(&str, AuditGroup); 82] = [
     ("workspace_afk_set", AuditGroup::Calls),
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
@@ -371,6 +372,7 @@ pub const ACTIONS: [(&str, AuditGroup); 81] = [
     ("server_person_permissions_set", AuditGroup::Roles),
     ("workspace_created", AuditGroup::Structure),
     ("workspace_renamed", AuditGroup::Structure),
+    ("workspace_logo_changed", AuditGroup::Structure),
     ("workspace_deleted", AuditGroup::Structure),
     ("category_created", AuditGroup::Structure),
     ("category_updated", AuditGroup::Structure),
@@ -1265,6 +1267,7 @@ mod tests {
             id,
             name: name.to_owned(),
             is_default,
+            logo: None,
         };
         Scene {
             server_id: ServerId::generate(),
@@ -1535,6 +1538,7 @@ mod tests {
             AuditEvent::ServerPersonPermissionsSet { .. } => 79,
             AuditEvent::VoiceChannelStatusUpdated { .. } => 80,
             AuditEvent::WorkspaceAfkSet { .. } => 81,
+            AuditEvent::WorkspaceLogoChanged { .. } => 82,
         }
     }
 
@@ -1749,6 +1753,13 @@ mod tests {
                     name: "Laboratory".to_owned(),
                 },
                 vec!["“Laboratory”"],
+            ),
+            (
+                AuditEvent::WorkspaceLogoChanged {
+                    workspace_id: scene.lab,
+                    logo: None,
+                },
+                vec!["logo", "“Lab”", "removed"],
             ),
             (
                 AuditEvent::WorkspaceRoleCreated {

@@ -180,6 +180,8 @@ pub struct Known {
     pub preset_picture: Option<Arc<RenderImage>>,
     /// The logos of the servers that have one (ADR 0101).
     pub logos: super::logo::ShownLogos,
+    /// The logos of the workspaces that have one (ADR 0122).
+    pub workspace_logos: super::logo::ShownLogos<super::logo::WorkspaceKey>,
     /// The servers that refused the picture of the profile preset for the account that
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
@@ -667,6 +669,9 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
 pub struct WorkspaceRow {
     pub id: WorkspaceId,
     pub name: String,
+    /// The image of the logo of the workspace, when the window holds it (ADR 0122). Without
+    /// it the window draws the generated picture of the workspace.
+    pub logo: Option<Arc<RenderImage>>,
     pub selected: bool,
     /// What the channels of the workspace hold that the person has not read.
     pub unread: Unread,
@@ -4315,6 +4320,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                             unread: workspace_unread(workspace, unreads),
                             id: workspace.workspace.id,
                             name: workspace.workspace.name.clone(),
+                            logo: known
+                                .workspace_logos
+                                .image((server.id, workspace.workspace.id)),
                             selected: selected
                                 && shown.is_some_and(|shown| {
                                     shown.workspace.id == workspace.workspace.id

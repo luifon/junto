@@ -132,6 +132,7 @@ fn fixture() -> Fixture {
                 id: workspace_id,
                 name: "Calls".into(),
                 is_default: true,
+                logo: None,
             },
             own_role_ids: vec![],
             roles: vec![],

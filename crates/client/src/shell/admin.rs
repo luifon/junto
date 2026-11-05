@@ -72,6 +72,8 @@ pub enum Mode {
     Days(AskKind),
     /// The question before the removal of the logo of the server.
     RemoveLogo,
+    /// The question before the removal of the logo of a workspace.
+    RemoveWorkspaceLogo(WorkspaceId),
     /// A new term of the glossary (ADR 0616).
     AddTerm,
     /// The new text of the term at this position of the glossary.
@@ -103,7 +105,7 @@ impl Mode {
             Self::ArchiveChannel(_) => done::CHANNEL_ARCHIVED,
             Self::MoveChannel(_) => done::CHANNEL_MOVED,
             Self::Days(_) => done::DAYS_SAVED,
-            Self::RemoveLogo => done::LOGO_REMOVED,
+            Self::RemoveLogo | Self::RemoveWorkspaceLogo(_) => done::LOGO_REMOVED,
             Self::AddTerm => done::TERM_ADDED,
             Self::ChangeTerm(_) => done::TERM_SAVED,
             Self::RemoveTerm(_) => done::TERM_REMOVED,

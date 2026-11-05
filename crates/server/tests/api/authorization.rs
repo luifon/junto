@@ -112,6 +112,16 @@ async fn world() -> World {
         .await
         .ok(StatusCode::CREATED);
     let outsider = server.join_into(&owner, "Outsider", &[closed.id]).await;
+    // A logo of the closed workspace, which its members read (ADR 0122).
+    server
+        .put_bytes(
+            &owner,
+            &format!("/api/v1/workspaces/{}/logo", closed.id),
+            None,
+            junto_server::image::samples::png(8, 8),
+        )
+        .await
+        .ok::<junto_protocol::account::Avatar>(StatusCode::OK);
     server
         .put_bytes(
             &outsider,
@@ -324,6 +334,27 @@ async fn world() -> World {
             &[],
             none.clone(),
             &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/logo",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/logo",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/logo",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
         ),
         operation(
             Method::GET,
@@ -1883,7 +1914,12 @@ async fn send(
     operation: &Operation,
     token: Option<&str>,
 ) -> crate::support::Reply {
-    if operation.method == Method::PUT && operation.template == "/api/v1/server/logo" {
+    if operation.method == Method::PUT
+        && matches!(
+            operation.template,
+            "/api/v1/server/logo" | "/api/v1/workspaces/{workspace_id}/logo"
+        )
+    {
         let mut request = reqwest::Client::new()
             .put(format!("{}{}", server.base, operation.path))
             .body(junto_server::image::samples::png(8, 8));

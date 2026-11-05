@@ -11,6 +11,10 @@ pub struct Workspace {
     pub name: String,
     /// True for the workspace that an invite or an approval grants when it names none.
     pub is_default: bool,
+    /// The logo of the workspace, when an administrator set one: its hash, format, bytes and
+    /// size. The image is read from `/api/v1/workspaces/{workspace_id}/logo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<crate::account::Avatar>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

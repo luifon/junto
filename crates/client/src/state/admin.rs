@@ -198,6 +198,9 @@ pub enum AskKind {
     /// A file is read and sent as the logo of the server (ADR 0101).
     SetLogo,
     RemoveLogo,
+    /// A file is read and sent as the logo of a workspace (ADR 0122).
+    SetWorkspaceLogo(WorkspaceId),
+    RemoveWorkspaceLogo(WorkspaceId),
     /// A term is added at the end of the glossary of the shown workspace (ADR 0616).
     AddTerm,
     /// The term at this position of the glossary is changed, removed, or moved by one

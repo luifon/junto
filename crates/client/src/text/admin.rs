@@ -223,13 +223,23 @@ pub const DEFAULT_WORKSPACE_HELP: &str = "The default workspace is the one that 
 pub const SHOWN_WORKSPACE: &str = "Shown in the window";
 pub const NOT_A_MEMBER: &str = "You are not a member";
 pub const CREATE_WORKSPACE_NEEDS: &str = "You do not have the “create workspace” permission.";
-pub const MANAGE_WORKSPACE_NEEDS: &str = "Only an administrator can rename or delete a workspace.";
+pub const MANAGE_WORKSPACE_NEEDS: &str =
+    "Only an administrator can rename or delete a workspace, or set its logo.";
+pub const WORKSPACE_LOGO: &str = "Logo";
+pub const REMOVE_LOGO: &str = "Remove logo";
 pub const ENTER_CODE: &str = "Enter an invite code";
 pub const ENTER_CODE_HELP: &str =
     "An invite code for this server adds your account to the workspaces that the code names.";
 pub const INVITE_CODE: &str = "Invite code";
 pub const ENTER: &str = "Enter";
 pub const CODE_EMPTY: &str = "Type the invite code.";
+
+pub fn remove_workspace_logo_question(name: &str) -> String {
+    format!(
+        "Remove the logo of the workspace “{name}”? The workspace list shows its generated \
+         picture again."
+    )
+}
 
 pub fn delete_workspace_question(name: &str) -> String {
     format!(
@@ -482,7 +492,13 @@ const fn is_moderation(what: AskKind) -> bool {
 }
 
 const fn is_logo_ask(what: AskKind) -> bool {
-    matches!(what, AskKind::SetLogo | AskKind::RemoveLogo)
+    matches!(
+        what,
+        AskKind::SetLogo
+            | AskKind::RemoveLogo
+            | AskKind::SetWorkspaceLogo(_)
+            | AskKind::RemoveWorkspaceLogo(_)
+    )
 }
 
 /// Why the server did not do a request of the administration.

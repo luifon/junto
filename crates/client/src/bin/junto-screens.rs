@@ -229,6 +229,7 @@ fn workspace(number: u32, name: &str, is_default: bool) -> WorkspaceState {
             id: id(number),
             name: name.to_owned(),
             is_default,
+            logo: None,
         },
         own_role_ids: Vec::new(),
         roles: Vec::new(),

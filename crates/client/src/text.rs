@@ -2691,6 +2691,7 @@ pub const fn picture_refusal(refusal: crate::picture::Refusal) -> &'static str {
 pub const PICTURE_CROP_ACCOUNT: &str = "Picture of your account";
 pub const PICTURE_CROP_PRESET: &str = "Picture of new accounts";
 pub const PICTURE_CROP_LOGO: &str = "Logo of the server";
+pub const PICTURE_CROP_WORKSPACE_LOGO: &str = "Logo of the workspace";
 pub const PICTURE_CROP_HELP: &str =
     "Drag the picture to place it in the square, and zoom with the slider or the wheel.";
 pub const PICTURE_ZOOM: &str = "Zoom";

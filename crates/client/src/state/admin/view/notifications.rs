@@ -68,6 +68,7 @@ mod tests {
                 id: WorkspaceId::generate(),
                 name: "Studio".to_owned(),
                 is_default: true,
+                logo: None,
             },
             own_role_ids: Vec::new(),
             roles: Vec::new(),

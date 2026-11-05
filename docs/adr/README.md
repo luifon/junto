@@ -60,6 +60,7 @@ Status values:
 | [0119](0119-account-profile-and-avatar.md) | Account profile: display name and avatar | Accepted | An account sets its name and an avatar of at most 2 MiB and 1024 by 1024 pixels, a still PNG, JPEG or WebP recognized by its bytes and stored in the database; a profile is served to the account, to fellow members, to every account for an administrator of the server, and to moderators. |
 | [0120](0120-private-moderation-notices.md) | Private moderation notices and their retention | Accepted | Private reasons and retained device readers for 30 days; own snapshots and an opaque device proof, without restoring access. |
 | [0121](0121-leaving-a-workspace-and-deleting-an-account.md) | Leaving a workspace and deleting one's own account | Accepted | A person leaves a workspace, becomes inactive after the last one and returns to the same account with an invite or an approved request, or deletes the account for good; content and audit entries stay with the name marked for the members who shared a workspace or a conversation with the person, a direct conversation with a departed account stays readable, and the owner hands over the server first. |
+| [0122](0122-workspace-logos.md) | A logo for each workspace | Accepted | An administrator sets or removes the logo of a workspace, a still image under the limits of an avatar; the people who see the workspace read it, and the workspace list of the client draws it in the square of the workspace. |
 
 ## 0201–0299 API and automation
 

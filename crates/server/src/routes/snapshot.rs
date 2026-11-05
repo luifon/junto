@@ -120,6 +120,8 @@ pub async fn get_snapshot(
             sqlx::query_as("select id, name from workspaces where deleted_at is null order by id")
                 .fetch_all(&mut *connection)
                 .await?;
+        let ids: Vec<WorkspaceId> = rows.iter().map(|(id, _)| *id).collect();
+        let mut logos = super::workspace_logos::logos(connection, &ids).await?;
         let mut workspaces = Vec::new();
         for (id, name) in rows {
             let scope = access.workspace(connection, id).await?;
@@ -146,6 +148,7 @@ pub async fn get_snapshot(
                     id,
                     name,
                     is_default: id == default_workspace,
+                    logo: logos.remove(&id),
                 },
                 own_role_ids: workspace_roles::role_ids_of(connection, id, access.account_id)
                     .await?,

@@ -88,6 +88,7 @@ mod transcripts;
 mod typing;
 mod upgrades;
 mod voice_status;
+mod workspace_logos;
 
 mod call_lines;
 mod messages;

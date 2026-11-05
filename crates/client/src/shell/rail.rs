@@ -547,6 +547,7 @@ impl Shell {
                 workspace.name.clone(),
                 workspace.id.as_uuid().as_u128(),
             )
+            .logo(workspace.logo.clone())
             .selected(workspace.selected)
             .unread(super::channels::unread_sign(workspace.unread))
             .open(open_menu == Some(workspace_id))
@@ -944,6 +945,7 @@ impl Shell {
                 workspace.name.clone(),
                 workspace.id.as_uuid().as_u128(),
             )
+            .logo(workspace.logo.clone())
             .selected(workspace.selected)
             .unread(super::channels::unread_sign(workspace.unread))
             .in_menu()

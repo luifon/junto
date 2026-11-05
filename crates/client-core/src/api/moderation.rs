@@ -249,6 +249,40 @@ impl ServerApi {
                 .await,
         )
     }
+
+    /// Sets the logo of a workspace, under the bounds of an avatar. The caller is an
+    /// administrator with a session (ADR 0122).
+    pub async fn set_workspace_logo(
+        &self,
+        workspace_id: WorkspaceId,
+        image: Vec<u8>,
+    ) -> Result<Avatar, ApiError> {
+        let kind = profile::check_avatar(&image)?;
+        let body = RequestBody::image(kind, SecretBytes::from_vec(image));
+        let path = format!("/workspaces/{workspace_id}/logo");
+        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+    }
+
+    pub async fn remove_workspace_logo(&self, workspace_id: WorkspaceId) -> Result<(), ApiError> {
+        self.act(Method::Delete, format!("/workspaces/{workspace_id}/logo"))
+            .await
+    }
+
+    /// The logo of a workspace that the account sees. Absent: the workspace has none.
+    pub async fn workspace_logo(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<AvatarImage>, ApiError> {
+        logo_or_none(
+            self.call(
+                Method::Get,
+                format!("/workspaces/{workspace_id}/logo"),
+                Vec::new(),
+                None,
+            )
+            .await,
+        )
+    }
 }
 
 #[cfg(test)]

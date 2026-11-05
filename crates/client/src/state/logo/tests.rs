@@ -155,7 +155,7 @@ fn a_logo_that_the_server_book_names_is_read_once() {
     assert!(scene.logos.exists(scene.server));
     assert_eq!(scene.image(), None);
     let ask = scene.next(false).unwrap();
-    assert_eq!(ask.server_id, scene.server);
+    assert_eq!(ask.key, scene.server);
     let read = logo(1);
     scene.logos.answered(&ask, Answer::Read(Some(read.clone())));
     assert_eq!(scene.image(), Some(read.image));

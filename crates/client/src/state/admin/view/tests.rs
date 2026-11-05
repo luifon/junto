@@ -94,6 +94,7 @@ fn scene() -> Scene {
         id,
         name: name.to_owned(),
         is_default,
+        logo: None,
     };
     let snapshot = Snapshot {
         cursor: Cursor {

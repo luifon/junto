@@ -1067,6 +1067,13 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         E::WorkspaceCreated { workspace_id, .. }
         | E::WorkspaceRenamed { workspace_id, .. }
         | E::WorkspaceDeleted { workspace_id, .. } => vec![pair("workspace", workspace_id)],
+        E::WorkspaceLogoChanged { workspace_id, logo } => {
+            let hash = match logo {
+                Some(logo) => shown(&logo.hash),
+                None => "none".to_owned(),
+            };
+            vec![pair("workspace", workspace_id), pair("logo", hash)]
+        }
         E::WorkspaceRoleCreated { role_id, .. }
         | E::WorkspaceRoleUpdated { role_id, .. }
         | E::WorkspaceRoleDeleted { role_id, .. }
@@ -2294,6 +2301,7 @@ mod tests {
             id: WorkspaceId::generate(),
             name: "Acme\u{1b}[2J".to_owned(),
             is_default: true,
+            logo: None,
         };
         assert_eq!(
             workspace_line(&workspace),
