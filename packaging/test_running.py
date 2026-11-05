@@ -19,8 +19,9 @@ def lsappinfo(listed, described):
 
 class Running(unittest.TestCase):
     def test_an_installed_junto_that_runs_ends_the_check_with_its_description(self):
-        run, calls = lsappinfo("ASN:0x0-0x1d01d:\n", {
-            "ASN:0x0-0x1d01d:": '"LSDisplayName"="Junto"\n"pid"=4242\n"LSBundlePath"="/Applications/Junto.app"\n'})
+        # The form of lsappinfo on macOS: the display name in quotes after the number.
+        run, calls = lsappinfo('ASN:0x0-0x1d01d-"Junto":\n', {
+            'ASN:0x0-0x1d01d-"Junto":': '"LSDisplayName"="Junto"\n"pid"=4242\n"LSBundlePath"="/Applications/Junto.app"\n'})
         with self.assertRaises(SystemExit) as ended:
             running.refuse_when_running(run=run, system=lambda: "Darwin")
         message = str(ended.exception)
@@ -29,6 +30,13 @@ class Running(unittest.TestCase):
         self.assertIn("/Applications/Junto.app", message)
         self.assertIn("Quit Junto", message)
         self.assertEqual(calls[0], [running.LSAPPINFO, "find", "bundleid=org.junto.app"])
+
+    def test_a_display_name_with_spaces_is_one_application(self):
+        listed = 'ASN:0x0-0x1d01d-"Junto Test":\nASN:0x0-0x2e02e-"Junto":\n'
+        run, calls = lsappinfo(listed, {
+            'ASN:0x0-0x1d01d-"Junto Test":': '"pid"=1\n', 'ASN:0x0-0x2e02e-"Junto":': '"pid"=2\n'})
+        self.assertEqual(running.running(run=run, system=lambda: "Darwin"), ['"pid"=1', '"pid"=2'])
+        self.assertEqual([call[-1] for call in calls[1:]], ['ASN:0x0-0x1d01d-"Junto Test":', 'ASN:0x0-0x2e02e-"Junto":'])
 
     def test_no_application_of_the_identifier_lets_the_check_run(self):
         run, calls = lsappinfo("", {})

@@ -7,10 +7,14 @@ check printed nothing within its time limit or ended without output. The bundles
 keep the identifier of the release, because the update and the login item of the client check
 it, so the checks cannot use an identifier of their own."""
 import platform
+import re
 import subprocess
 
 IDENTIFIER = "org.junto.app"
 LSAPPINFO = "/usr/bin/lsappinfo"
+# One application in the output of `lsappinfo find`: `ASN:0x0-0x1c01c-"Finder":`, its display
+# name in quotes, which can hold spaces, or without a name.
+ASN = re.compile(r'ASN:0x[0-9a-fA-F]+-0x[0-9a-fA-F]+(?:-"(?:[^"\\]|\\.)*")?:')
 
 
 def running(identifier=IDENTIFIER, run=subprocess.run, system=platform.system):
@@ -23,9 +27,7 @@ def running(identifier=IDENTIFIER, run=subprocess.run, system=platform.system):
         raise RuntimeError(f"lsappinfo could not list the applications of {identifier}: "
                            f"{found.stderr.strip() or found.returncode}")
     described = []
-    for application in found.stdout.split():
-        if not application.startswith("ASN:"):
-            continue
+    for application in ASN.findall(found.stdout):
         info = run([LSAPPINFO, "info", "-only", "name", "-only", "pid", "-only", "bundlepath", application],
                    capture_output=True, text=True, timeout=30)
         described.append(" ".join(info.stdout.split()) or application)
@@ -34,7 +36,7 @@ def running(identifier=IDENTIFIER, run=subprocess.run, system=platform.system):
 
 def refuse_when_running(identifier=IDENTIFIER, run=subprocess.run, system=platform.system):
     """Ends the check with a message when an application of `identifier` runs. When lsappinfo
-    cannot answer, as outside a login session, the check states it and runs."""
+    fails, the check states it and runs."""
     try:
         applications = running(identifier, run, system)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
