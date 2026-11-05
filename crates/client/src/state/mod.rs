@@ -613,7 +613,7 @@ pub struct AppState {
     reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
-    asked_quotes: HashMap<(ServerId, MessageId), u64>,
+    asked_quotes: HashMap<(ServerId, MessageId), messages::QuoteRead>,
     quote_asks: u64,
     /// The account that uploaded the files that wait for a message, by server.
     upload_owners: HashMap<ServerId, AccountId>,
@@ -2186,7 +2186,7 @@ impl AppState {
         self.invalidate_profiles(server_id, cx);
         self.invalidate_switcher(server_id, cx);
         *self.reloads.entry(server_id).or_default() += 1;
-        self.forget_quotes(server_id, None, cx);
+        self.read_quotes_again(server_id);
         self.search_after_reload(server_id, cx);
         self.reaction_people_changed(server_id, None, cx);
         self.changed(cx);

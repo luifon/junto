@@ -23,6 +23,36 @@ use crate::text;
 
 /// How many reads of quoted messages are on their way at one time.
 const QUOTE_READS: usize = 8;
+/// How often a quoted message is read while each read fails for a time (ADR 0747).
+const QUOTE_ATTEMPTS: u32 = 6;
+/// The wait after the first read of a quoted message that failed for a time. Each further
+/// wait is twice as long, up to [`LONGEST_QUOTE_WAIT`].
+const FIRST_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const LONGEST_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Where the read of one quoted or forwarded message is (ADR 0747).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuoteRead {
+    /// The read with this number is on its way. `attempt` counts the reads of the message
+    /// before it that failed for a time.
+    Flying { number: u64, attempt: u32 },
+    /// A read failed for a time: the next one waits for the timer of the read with this
+    /// number.
+    Waiting { number: u64, attempt: u32 },
+    /// The message is read at the next look. What the window held of it stays shown until
+    /// the answer.
+    Due { attempt: u32 },
+    /// The answer is in the quoted messages of the window.
+    Answered,
+}
+
+/// The wait before the read that follows `attempt` reads that failed for a time.
+fn quote_wait(attempt: u32, asked: Option<std::time::Duration>) -> std::time::Duration {
+    let doubled = FIRST_QUOTE_WAIT.saturating_mul(1 << attempt.saturating_sub(1).min(8));
+    doubled
+        .max(asked.unwrap_or_default())
+        .min(LONGEST_QUOTE_WAIT)
+}
 
 /// Why a file was not attached to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,12 +302,17 @@ impl AppState {
         self.asked_quotes.retain(|key, _| named.contains(key));
         let flying = self
             .asked_quotes
-            .keys()
-            .filter(|key| !self.known.quoted.contains_key(key))
+            .values()
+            .filter(|read| matches!(read, QuoteRead::Flying { .. }))
             .count();
         let mut missing: Vec<_> = named
             .into_iter()
-            .filter(|key| !self.asked_quotes.contains_key(key))
+            .filter(|key| {
+                matches!(
+                    self.asked_quotes.get(key),
+                    None | Some(QuoteRead::Due { .. })
+                )
+            })
             .collect();
         missing.sort_unstable();
         missing.truncate(QUOTE_READS.saturating_sub(flying));
@@ -289,14 +324,19 @@ impl AppState {
                 continue;
             };
             let key = (server_id, message_id);
+            let attempt = match self.asked_quotes.get(&key) {
+                Some(QuoteRead::Due { attempt }) => *attempt,
+                _ => 0,
+            };
             self.quote_asks += 1;
             let number = self.quote_asks;
-            self.asked_quotes.insert(key, number);
+            self.asked_quotes
+                .insert(key, QuoteRead::Flying { number, attempt });
             let api = server.api_for(owner.account_id);
             cx.spawn(async move |this, cx| {
                 let read = api.message(message_id).await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.asked_quotes.get(&key) != Some(&number)
+                    if this.asked_quotes.get(&key) != Some(&QuoteRead::Flying { number, attempt })
                         || this.owner(server_id) != Some(owner)
                     {
                         return;
@@ -312,16 +352,61 @@ impl AppState {
                             Some(quoted) => {
                                 this.known.quoted.insert(key, quoted);
                             }
-                            None => {
-                                this.asked_quotes.remove(&key);
+                            None if attempt + 1 < QUOTE_ATTEMPTS => {
+                                this.wait_for_quote(key, number, attempt + 1, &error, cx);
                                 return;
+                            }
+                            // The reads failed for a time each: what the window held stays,
+                            // and a message that it never held is not read again until an
+                            // event names it or the state is loaded again.
+                            None => {
+                                this.known
+                                    .quoted
+                                    .entry(key)
+                                    .or_insert(feed::Quoted::NotHeld);
                             }
                         },
                     }
+                    this.asked_quotes.insert(key, QuoteRead::Answered);
                     this.changed(cx);
                 });
             })
             .detach();
+        }
+    }
+
+    /// The read of a quoted message with this number failed for a time: it is read again
+    /// after a wait of its own, without another change of the state (ADR 0747).
+    fn wait_for_quote(
+        &mut self,
+        key: (ServerId, MessageId),
+        number: u64,
+        attempt: u32,
+        error: &ApiError,
+        cx: &mut Context<Self>,
+    ) {
+        self.asked_quotes
+            .insert(key, QuoteRead::Waiting { number, attempt });
+        let wait = quote_wait(attempt, error.retry_after());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.asked_quotes.get(&key) == Some(&QuoteRead::Waiting { number, attempt }) {
+                    this.asked_quotes.insert(key, QuoteRead::Due { attempt });
+                    this.changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The state of a server was loaded again: every quoted message of the server is read
+    /// again, and what the window holds of it stays shown until the answer (ADR 0747).
+    pub(super) fn read_quotes_again(&mut self, server_id: ServerId) {
+        for (key, read) in &mut self.asked_quotes {
+            if key.0 == server_id && !matches!(read, QuoteRead::Waiting { .. }) {
+                *read = QuoteRead::Due { attempt: 0 };
+            }
         }
     }
 
