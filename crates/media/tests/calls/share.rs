@@ -2385,6 +2385,151 @@ async fn on_macos_the_own_share_and_camera_are_encoded_by_the_hardware_of_the_sy
     .await;
 }
 
+/// On macOS a shared window that starts within the level of H.264 is encoded in H.264; when
+/// it grows beyond that level its picture track is published again in VP8 under the same
+/// share and slot (ADR 0737, ADR 0773). The viewer keeps watching the share across the change
+/// of the track, lists it once, hears its sound, and receives the new size.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_window_that_grows_beyond_the_level_of_h264_is_published_again_in_vp8() {
+    use livekit::webrtc::stats::RtcStats;
+
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        let share = ShareId::of(ann_id, 0);
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1280, 720);
+        ann.calls.start_share(window(player()));
+        ann.until_sharing().await;
+        ben.until_width_stays(ann_id, 1280).await;
+        ben.until_heard_tone(PLAYER.0).await;
+        // The codec of the encoding of the pictures of this width.
+        let codec_of = |width: u32| {
+            let ann = &ann;
+            async move {
+                let stats = ann.calls.statistics().await.ok()?;
+                let codec_id = stats.publisher_stats.iter().find_map(|stat| match stat {
+                    RtcStats::OutboundRtp(stat)
+                        if stat.stream.kind == "video"
+                            && stat.outbound.frame_width == width
+                            && stat.outbound.frames_encoded > 0 =>
+                    {
+                        Some(stat.stream.codec_id.clone())
+                    }
+                    _ => None,
+                })?;
+                stats.publisher_stats.iter().find_map(|stat| match stat {
+                    RtcStats::Codec(codec) if codec.rtc.id == codec_id => {
+                        Some(codec.codec.mime_type.to_lowercase())
+                    }
+                    _ => None,
+                })
+            }
+        };
+        // Every encoding of pictures: its width, its codec and its encoded pictures.
+        let encodings = || {
+            let ann = &ann;
+            async move {
+                let Ok(stats) = ann.calls.statistics().await else {
+                    return Vec::new();
+                };
+                let codec = |id: &str| {
+                    stats.publisher_stats.iter().find_map(|stat| match stat {
+                        RtcStats::Codec(codec) if codec.rtc.id == id => {
+                            Some(codec.codec.mime_type.to_lowercase())
+                        }
+                        _ => None,
+                    })
+                };
+                stats
+                    .publisher_stats
+                    .iter()
+                    .filter_map(|stat| match stat {
+                        RtcStats::OutboundRtp(stat) if stat.stream.kind == "video" => Some((
+                            stat.outbound.frame_width,
+                            codec(&stat.stream.codec_id),
+                            stat.outbound.frames_encoded,
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let until_codec = |width: u32, wanted: &'static str| {
+            let codec_of = &codec_of;
+            let encodings = &encodings;
+            async move {
+                let started = tokio::time::Instant::now();
+                loop {
+                    let codec = codec_of(width).await;
+                    if codec.as_deref() == Some(wanted) {
+                        return;
+                    }
+                    if started.elapsed() >= PATIENCE {
+                        panic!(
+                            "after {PATIENCE:?} the pictures of {width} pixels are encoded in \
+                             {codec:?}, not in {wanted}; the encodings (width, codec, \
+                             pictures): {:?}",
+                            encodings().await
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        };
+        until_codec(1280, "video/h264").await;
+        // From now on the viewer watches the share and lists it once in every view.
+        let mut views = ben.calls.watch();
+        // Each view in which the viewer did not watch the share, or did not list it once.
+        type Lost = Vec<(Option<ShareId>, usize)>;
+        let lost: std::sync::Arc<std::sync::Mutex<Lost>> = std::sync::Arc::default();
+        let found = lost.clone();
+        let watching = tokio::spawn(async move {
+            while views.changed().await.is_ok() {
+                let view = views.borrow_and_update().clone();
+                let call = view.call.as_ref();
+                let listed = call.map_or(0, |call| {
+                    call.shares
+                        .iter()
+                        .filter(|seen| ShareId::of(seen.account_id, seen.slot) == share)
+                        .count()
+                });
+                let watched = call.and_then(|call| call.watched);
+                if watched != Some(share) || listed != 1 {
+                    found.lock().unwrap().push((watched, listed));
+                }
+            }
+        });
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1920, 1080);
+        ben.until_width_stays(ann_id, 1920).await;
+        until_codec(1920, "video/vp8").await;
+        ann.until("the share states the new size", |view| {
+            view.call.as_ref().is_some_and(|call| {
+                matches!(call.own_shares.get(&0), Some(ShareState::Running(info)) if info.size == (1920, 1080))
+            })
+        })
+        .await;
+        ben.until_heard_tone(PLAYER.0).await;
+        watching.abort();
+        let lost = lost.lock().unwrap().clone();
+        assert!(
+            lost.is_empty(),
+            "the viewer did not watch the share, or listed it not once, across the change of \
+             its track: {lost:?}"
+        );
+    })
+    .await;
+}
+
 /// A share of a display larger than the levels of H.264 (5120 × 2880 at its source size) is
 /// sent in VP8 on every system and arrives at its size: the hardware encoder of macOS encodes
 /// H.264 only within level 5.2, and the share keeps its full size (ADR 0737, ADR 0773).

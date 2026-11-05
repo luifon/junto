@@ -59,12 +59,17 @@ pub(super) fn encoder(hardware_h264: bool, size: (u32, u32), frame_rate: u32) ->
 
 /// The options of an own track of `size` pixels at `frame_rate` pictures per second with the
 /// codec and the encoder of [`encoder`]. Every system decodes both codecs (ADR 0737).
+/// The encoder of a picture of this size at this frame rate on this system.
+pub(super) fn encoder_of(size: (u32, u32), frame_rate: u32) -> Encoder {
+    encoder(HARDWARE_H264, size, frame_rate)
+}
+
 pub(super) fn encoded(
     options: TrackPublishOptions,
     size: (u32, u32),
     frame_rate: u32,
 ) -> TrackPublishOptions {
-    let (video_codec, video_encoder) = match encoder(HARDWARE_H264, size, frame_rate) {
+    let (video_codec, video_encoder) = match encoder_of(size, frame_rate) {
         Encoder::HardwareH264 => (VideoCodec::H264, VideoEncoderBackend::VideoToolbox),
         Encoder::Vp8 => (VideoCodec::VP8, VideoEncoderBackend::Auto),
     };

@@ -252,6 +252,19 @@ impl FakeMedia {
         }
     }
 
+    /// Withdraws the track with this identifier, as a device does that publishes a track
+    /// again under the same name.
+    pub fn unpublish_id(&self, room: &str, identity: &str, id: &str) {
+        let mut state = self.state();
+        if let Some(participant) = state
+            .rooms
+            .get_mut(room)
+            .and_then(|room| room.iter_mut().find(|other| other.identity == identity))
+        {
+            participant.tracks.retain(|track| track.id != id);
+        }
+    }
+
     pub fn unpublish(&self, room: &str, identity: &str, source: TrackSource) {
         let mut state = self.state();
         if let Some(participant) = state

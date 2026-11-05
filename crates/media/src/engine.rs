@@ -324,6 +324,10 @@ enum Internal {
     ShareEnded(u64, CaptureError),
     /// The pictures of the capture of a share have a new size.
     ShareSized(u64),
+    /// The media server answered the publication again of the picture track of a share in
+    /// the codec of its new size: the generation of the share and the number of the
+    /// publication.
+    ShareReplacementPublished(u64, u64, Result<LocalTrackPublication, String>),
     ShareStopFailed(CaptureNotice),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
@@ -534,6 +538,7 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             share_generation: 0,
+            replacements: 0,
             permissions: None,
             permissions_told: None,
             permissions_sent: 0,
@@ -864,6 +869,9 @@ struct Actor {
     share_ended: Option<CaptureNotice>,
     /// Counts the shares that were started. The result of an earlier one is not used.
     share_generation: u64,
+    /// The number of the last publication again of the picture track of a share in another
+    /// codec (ADR 0737).
+    replacements: u64,
     remote_pictures: HashMap<TrackSid, RemotePicture>,
     remote_sounds: HashMap<TrackSid, RemoteSound>,
     share_order: u64,
@@ -1236,6 +1244,9 @@ impl Actor {
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
             Internal::ShareSized(generation) => self.share_sized(generation),
+            Internal::ShareReplacementPublished(generation, number, result) => {
+                self.share_replacement_published(generation, number, result);
+            }
             Internal::ShareStopFailed(error) => {
                 self.share_ended = Some(error);
                 self.tell_shares();
