@@ -24,6 +24,10 @@
 #
 # /keys/down records a link that is down across these restarts: the time the link went down,
 # the number of restarts, and whether the notice of the loss was delivered.
+#
+# The shell ends at a fork that fails. The forwarders together take at most the limit of
+# processes of the container less RESERVE, and a pass of the loop forks only while SPARE
+# processes are free; otherwise it waits without a fork and keeps its state (ADR 0003).
 set -eu
 umask 077
 
@@ -86,6 +90,25 @@ wg "$@"
 ip address add "$LINK_ADDRESS/32" peer "$LINK_PEER_ADDRESS/32" dev wg0
 ip link set wg0 mtu 1420 up
 
+# The limit of processes of the container (cgroup v2), or "max".
+limit() {
+    read -r tasks_limit 2>/dev/null < /sys/fs/cgroup/pids.max || tasks_limit=max
+    case "$tasks_limit" in ''|*[!0-9]*) tasks_limit=max ;; esac
+}
+RESERVE=256
+SPARE=32
+limit
+count=0
+for forward in ${LINK_FORWARDS:-}; do count=$((count + 1)); done
+children=1000
+if [ "$tasks_limit" != max ] && [ "$count" -gt 0 ]; then
+    children=$(((tasks_limit - RESERVE) / count))
+    if [ "$children" -lt 1 ]; then
+        echo "link: the limit of processes $tasks_limit leaves no connection for $count forwarders" >&2
+        kill "$tunnel" 2>/dev/null
+        exit 2
+    fi
+fi
 forwarders=""
 for forward in ${LINK_FORWARDS:-}; do
     listen=${forward%%=*}
@@ -97,7 +120,7 @@ for forward in ${LINK_FORWARDS:-}; do
         kill "$tunnel" 2>/dev/null
         exit 2
     fi
-    socat "TCP-LISTEN:$listen_port,bind=$listen_address,fork,reuseaddr,keepalive,nodelay,su=nobody" \
+    socat "TCP-LISTEN:$listen_port,bind=$listen_address,fork,max-children=$children,reuseaddr,keepalive,nodelay,su=nobody" \
         "TCP:$target,connect-timeout=5,keepalive,nodelay" &
     forwarders="$forwarders $!"
 done
@@ -140,6 +163,22 @@ down_text() {
     echo "Junto link of the $LINK_NAME is down since $(utc "$down_since"): no WireGuard handshake with the other host for $LINK_RESTART_AFTER seconds. The link restarts every $LINK_RESTART_AFTER seconds until the other host answers."
 }
 
+# A wait of one second without a fork: a read with a time limit from a pipe that nobody
+# writes to.
+mkfifo /var/run/wireguard/tick
+exec 3<> /var/run/wireguard/tick
+pause() {
+    read -r -t 1 _ <&3 || true
+}
+# Whether the container has SPARE free processes for the forks of a pass.
+room() {
+    limit
+    [ "$tasks_limit" != max ] || return 0
+    read -r tasks 2>/dev/null < /sys/fs/cgroup/pids.current || return 0
+    [ "$((tasks + SPARE))" -le "$tasks_limit" ]
+}
+crowded=0
+
 started=$(date +%s)
 next_notice=$started
 # The latest handshake of the last read of wg that answered with a number; 0: none yet. A read
@@ -159,6 +198,13 @@ while :; do
             exit 1
         fi
     done
+    if ! room; then
+        [ "$crowded" -eq 1 ] || echo "link: fewer than $SPARE processes are free in the container; the link waits and keeps its state" >&2
+        crowded=1
+        pause
+        continue
+    fi
+    crowded=0
     now=$(date +%s)
     if answer=$(wg show wg0 latest-handshakes 2>/dev/null); then
         answer=$(printf '%s\n' "$answer" | awk '{ print $2; exit }')
@@ -196,5 +242,5 @@ while :; do
         kill $tunnel $forwarders 2>/dev/null
         exit 1
     fi
-    sleep 1
+    pause
 done

@@ -231,9 +231,11 @@ wait_for 200 "the public host sends the notice that its link is up" at_least 1 n
 expect_notices "$public_down" 1 "the public host sends one notice for its loss"
 public up -d --no-deps --wait --wait-timeout 200 link
 data up -d --no-deps --wait --wait-timeout 200 link
-if [ "$(notices "$data_down")" -gt "$data_down_before" ]; then
+# The counts are read into variables first: a failed read ends the test under set -e.
+data_down_after=$(notices "$data_down")
+if [ "$data_down_after" -gt "$data_down_before" ]; then
     wait_for 200 "the data host sends the notice that its link is up after the loss on the public host" \
-        at_least "$(notices "$data_down")" notices "$data_up"
+        at_least "$data_down_after" notices "$data_up"
 fi
 echo "ok    the link of the public host starts again without the route that dropped its packets, and sends its two notices"
 if [ "$(docker exec "$receiver" grep -c -v '^text/plain ' /notices)" != 0 ]; then

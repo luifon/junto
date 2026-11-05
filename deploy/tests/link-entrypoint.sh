@@ -5,7 +5,9 @@
 # - a restart writes the state of the loss and sends no notice; the next start sends it;
 # - a loss ends at a renewal of the keys after the first handshake of a start, not at that
 #   first handshake;
-# - the address of the notices is not in the arguments of curl.
+# - the address of the notices is not in the arguments of curl;
+# - the forwarders together leave the loop a reserve of the limit of processes, and a link at
+#   that limit waits without a fork and keeps running.
 # Takes about a minute. Everything is removed at the end.
 #
 #   deploy/tests/link-entrypoint.sh [<name prefix>]
@@ -64,6 +66,12 @@ echo "$count" > /state/count
 echo "$*" > "/state/arguments-$count"
 cat > "/state/notice-$count"
 EOF
+# socat: keeps the options of each listener and runs the real program.
+cat > "$work/fake/socat" <<'EOF'
+#!/bin/sh
+case "$1" in TCP-LISTEN:*) echo "$1" >> /state/listeners ;; esac
+exec /usr/bin/socat "$@"
+EOF
 chmod 755 "$work/fake/"*
 
 check() {
@@ -78,10 +86,11 @@ check() {
 now() { date +%s; }
 offset() { echo "$1" > "$work/state/offset"; }
 handshake() { echo "$1" > "$work/state/handshake"; }
+# start [<options of docker run>...]
 start() {
     docker rm -f "$container" > /dev/null 2>&1 || true
     rm -f "$work/state/read"
-    docker run -d --name "$container" --user "$(id -u):$(id -g)" --network none --read-only \
+    docker run -d --name "$container" --user "$(id -u):$(id -g)" --network none --read-only "$@" \
         --tmpfs /var/run/wireguard:mode=1777 \
         -v "$work/fake:/fake:ro" -v "$work/state:/state" -v "$work/keys:/keys" \
         -e PATH=/fake:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -133,6 +142,39 @@ reach "the link reads again after the read that fails" 10 looping
 check "a read of wg that fails does not end a link that works" "running && [ ! -e $work/keys/down ]"
 check "it sends no notice" '[ "$(notices)" = 0 ]'
 
+# Three forwarders in a container with the limit of processes of the compose files.
+docker rm -f "$container" > /dev/null
+pids=$(awk '/^  link:/ { link = 1 } link && /pids_limit:/ { print $2; exit }' "$deploy/base.yaml")
+start --pids-limit "$pids" \
+    -e LINK_FORWARDS="127.0.0.1:7001=127.0.0.1:9 127.0.0.1:7002=127.0.0.1:9 127.0.0.1:7003=127.0.0.1:9"
+reach "the link with three forwarders reads its handshake" 10 looping
+bounded() {
+    [ "$(grep -c max-children= "$work/state/listeners")" -eq 3 ] || return 1
+    total=0
+    for children in $(sed -n 's/.*,max-children=\([0-9]*\),.*/\1/p' "$work/state/listeners"); do
+        total=$((total + children))
+    done
+    [ "$((total + 256))" -le "$pids" ]
+}
+check "the forwarders take at most the limit of $pids processes less 256" bounded
+
+# A link at the limit of its processes: no fork, no read of wg, no end.
+docker rm -f "$container" > /dev/null
+offset 0
+handshake "$(now)"
+start --pids-limit "$pids"
+reach "the link reads its handshake before its limit is lowered" 10 looping
+docker update --pids-limit 2 "$container" > /dev/null
+reach "the link states that it waits at its limit of processes" 10 \
+    sh -c "docker logs $container 2>&1 | grep -q 'processes are free in the container; the link waits'"
+rm -f "$work/state/read"
+until_true 5 false || true
+check "a link at its limit of processes keeps running without a read of wg" \
+    "running && [ ! -e $work/state/read ] && [ ! -e $work/keys/down ]"
+docker update --pids-limit "$pids" "$container" > /dev/null
+check "it reads wg again when processes are free" "until_true 10 looping"
+rm -f "$work/keys/down"
+
 # No handshake for longer than the bound: the process ends, writes the state, sends nothing.
 docker rm -f "$container" > /dev/null
 offset 0
@@ -152,7 +194,11 @@ handshake "$(now)"
 start
 check "the next start sends the notice of the loss" "until_true 10 sh -c '[ \"\$(cat $work/state/count 2>/dev/null)\" = 1 ]'"
 check "the notice states the loss" "grep -q 'link of the data host is down since' $work/state/notice-1"
-sleep 3
+# Two passes of the loop with the first handshake.
+for pass in 1 2; do
+    rm -f "$work/state/read"
+    reach "the link reads the first handshake (pass $pass)" 10 looping
+done
 check "the first handshake of a start does not end the loss" '[ "$(notices)" = 1 ] && [ -s "$work/keys/down" ]'
 handshake "$(($(now) + 1))"
 check "a renewal of the keys ends the loss with a notice" "until_true 10 sh -c '[ \"\$(cat $work/state/count 2>/dev/null)\" = 2 ]'"
