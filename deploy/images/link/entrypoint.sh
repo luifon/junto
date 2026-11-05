@@ -19,7 +19,8 @@
 #   LINK_RESTART_AFTER     seconds without a handshake after which the process ends, so that
 #                          Docker starts the link again; at least 180 (ADR 0003)
 #   LINK_NOTICE_URL        optional; receives an HTTP POST with a plain text body when the
-#                          link goes down and when it is up again
+#                          link goes down and when it is up again, a renewal of the keys
+#                          after a handshake
 #
 # /keys/down records a link that is down across these restarts: the time the link went down,
 # the number of restarts, and whether the notice of the loss was delivered.
@@ -101,14 +102,23 @@ for forward in ${LINK_FORWARDS:-}; do
     forwarders="$forwarders $!"
 done
 
+# Sends a notice: an HTTP POST with the text as its body. The address and the text reach curl
+# through its configuration on standard input, so that the address, which can hold the secret
+# of the notice, is not in the argument list that the process list of the host shows.
 notice() {
     [ -n "${LINK_NOTICE_URL:-}" ] || return 0
-    if wget -q -T 10 -O /dev/null --header "Content-Type: text/plain" --post-data "$1" "$LINK_NOTICE_URL"; then
+    if printf 'url = "%s"\ndata-binary = "%s"\nheader = "Content-Type: text/plain"\n' \
+        "$(quoted "$LINK_NOTICE_URL")" "$(quoted "$1")" \
+        | curl --silent --show-error --fail --max-time 20 --output /dev/null --config -; then
         echo "link: notice delivered: $1"
     else
         echo "link: the notice was not delivered to LINK_NOTICE_URL: $1" >&2
         return 1
     fi
+}
+# A value in double quotes of a curl configuration.
+quoted() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 utc() {
     date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC'
@@ -132,6 +142,12 @@ down_text() {
 
 started=$(date +%s)
 next_notice=$started
+# The latest handshake of the last read of wg that answered with a number; 0: none yet. A read
+# that fails leaves it as it was, so it never counts as a handshake that is missing.
+handshake=0
+# The first handshake of this process. A loss ends at a newer one, a renewal of the keys, so a
+# path that passes one handshake after each start and then no packet is still down.
+first=0
 # shellcheck disable=SC2086
 trap 'kill $tunnel $forwarders 2>/dev/null; exit 0' TERM INT
 while :; do
@@ -144,10 +160,13 @@ while :; do
         fi
     done
     now=$(date +%s)
-    handshake=$(wg show wg0 latest-handshakes 2>/dev/null | awk '{ print $2; exit }')
-    case "$handshake" in ''|*[!0-9]*) handshake=0 ;; esac
-    if [ -n "$down_since" ] && [ "$handshake" -gt 0 ] && [ "$now" -ge "$next_notice" ]; then
-        if notice "Junto link of the $LINK_NAME is up again since $(utc "$handshake"). It was down since $(utc "$down_since"). Restarts while it was down: $down_restarts."; then
+    if answer=$(wg show wg0 latest-handshakes 2>/dev/null); then
+        answer=$(printf '%s\n' "$answer" | awk '{ print $2; exit }')
+        case "$answer" in ''|*[!0-9]*) ;; *) handshake=$answer ;; esac
+    fi
+    [ "$first" -gt 0 ] || first=$handshake
+    if [ -n "$down_since" ] && [ "$handshake" -gt "$first" ] && [ "$now" -ge "$next_notice" ]; then
+        if notice "Junto link of the $LINK_NAME is up again since $(utc "$first"). It was down since $(utc "$down_since"). Restarts while it was down: $down_restarts."; then
             rm -f /keys/down
             down_since=""
         else
@@ -171,9 +190,7 @@ while :; do
             down_notified=0
         fi
         down_restarts=$((down_restarts + 1))
-        if [ "$down_notified" -eq 0 ] && notice "$(down_text)"; then
-            down_notified=1
-        fi
+        # The state is written before anything that can wait; the next start sends the notice.
         save_down
         # shellcheck disable=SC2086
         kill $tunnel $forwarders 2>/dev/null

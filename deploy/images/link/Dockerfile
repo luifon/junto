@@ -8,10 +8,12 @@ ARG WIREGUARD_GO_VERSION=0.0.20250515-r5
 ARG WIREGUARD_TOOLS_VERSION=1.0.20250521-r0
 ARG SOCAT_VERSION=1.8.1.3-r0
 ARG IPROUTE2_VERSION=6.15.0-r0
+ARG CURL_VERSION=8.14.1-r4
 RUN apk add --no-cache \
       "wireguard-go=${WIREGUARD_GO_VERSION}" \
       "wireguard-tools-wg=${WIREGUARD_TOOLS_VERSION}" \
       "socat=${SOCAT_VERSION}" \
-      "iproute2-minimal=${IPROUTE2_VERSION}"
+      "iproute2-minimal=${IPROUTE2_VERSION}" \
+      "curl=${CURL_VERSION}"
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

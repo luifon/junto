@@ -1,0 +1,165 @@
+#!/bin/sh
+# Tests the decisions of the start script of the link (deploy/images/link/entrypoint.sh) in the
+# link image, with stand-ins for wireguard-go, wg, ip, date and curl (ADR 0003):
+# - a read of wg that fails while a handshake exists does not end a link that works;
+# - a restart writes the state of the loss and sends no notice; the next start sends it;
+# - a loss ends at a renewal of the keys after the first handshake of a start, not at that
+#   first handshake;
+# - the address of the notices is not in the arguments of curl.
+# Takes about a minute. Everything is removed at the end.
+#
+#   deploy/tests/link-entrypoint.sh [<name prefix>]
+set -eu
+prefix=${1:-junto-link-entrypoint}
+deploy=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d "${TMPDIR:-/tmp}/$prefix.XXXXXX")
+image=$prefix-image
+container=$prefix-link
+failures=0
+remove() {
+    code=$?
+    docker rm -f "$container" > /dev/null 2>&1 || true
+    docker image rm "$image" > /dev/null 2>&1 || true
+    rm -rf "$work"
+    exit "$code"
+}
+trap remove EXIT
+trap 'exit 130' INT TERM
+
+docker build -q -t "$image" "$deploy/images/link" > /dev/null
+mkdir -p "$work/fake" "$work/state" "$work/keys"
+chmod 777 "$work/state" "$work/keys"
+echo "a-private-key" > "$work/keys/private"
+cat > "$work/fake/wireguard-go" <<'EOF'
+#!/bin/sh
+mkdir -p /var/run/wireguard
+exec socat UNIX-LISTEN:/var/run/wireguard/wg0.sock,fork,unlink-early /dev/null
+EOF
+# wg: "show" prints the handshake of /state/handshake, and fails once while /state/fail exists.
+cat > "$work/fake/wg" <<'EOF'
+#!/bin/sh
+case "$1" in
+    show)
+        touch /state/read
+        if [ -e /state/fail ]; then rm -f /state/fail; echo "failed" > /state/failed; exit 1; fi
+        printf 'peer-key\t%s\n' "$(cat /state/handshake)" ;;
+esac
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$work/fake/ip"
+# date: the time of the system plus /state/offset seconds.
+cat > "$work/fake/date" <<'EOF'
+#!/bin/sh
+if [ "$*" = "+%s" ]; then
+    echo $(($(/bin/date +%s) + $(cat /state/offset)))
+else
+    exec /bin/date "$@"
+fi
+EOF
+# curl: keeps its arguments and its configuration, one notice per file.
+cat > "$work/fake/curl" <<'EOF'
+#!/bin/sh
+count=$(($(cat /state/count 2>/dev/null || echo 0) + 1))
+echo "$count" > /state/count
+echo "$*" > "/state/arguments-$count"
+cat > "/state/notice-$count"
+EOF
+chmod 755 "$work/fake/"*
+
+check() {
+    if eval "$2"; then
+        echo "ok    $1"
+    else
+        echo "FAIL  $1"
+        docker logs --tail 5 "$container" 2>&1 | sed 's/^/      /'
+        failures=$((failures + 1))
+    fi
+}
+now() { date +%s; }
+offset() { echo "$1" > "$work/state/offset"; }
+handshake() { echo "$1" > "$work/state/handshake"; }
+start() {
+    docker rm -f "$container" > /dev/null 2>&1 || true
+    rm -f "$work/state/read"
+    docker run -d --name "$container" --user "$(id -u):$(id -g)" --network none --read-only \
+        --tmpfs /var/run/wireguard:mode=1777 \
+        -v "$work/fake:/fake:ro" -v "$work/state:/state" -v "$work/keys:/keys" \
+        -e PATH=/fake:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        -e LINK_ADDRESS=10.99.0.2 -e LINK_PEER_ADDRESS=10.99.0.1 -e LINK_PEER_PUBLIC_KEY=peer-key \
+        -e LINK_NAME="data host" -e LINK_RESTART_AFTER=180 \
+        -e LINK_NOTICE_URL="https://ntfy.example.test/secret-topic" \
+        "$image" > /dev/null
+}
+running() { [ "$(docker inspect -f '{{.State.Running}}' "$container")" = true ]; }
+# The script has passed its start and read wg once.
+looping() { test -e "$work/state/read"; }
+# until_true <seconds> <command...>: runs the command every half second until it succeeds.
+until_true() {
+    limit=$1
+    shift
+    deadline=$(($(date +%s) + limit))
+    until "$@"; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 0.5
+    done
+}
+notices() { cat "$work/state/count" 2>/dev/null || echo 0; }
+# reach <description> <seconds> <command...>: a step that the later checks need; the test
+# ends with a failure when it is not reached.
+reach() {
+    description=$1
+    shift
+    if ! until_true "$@"; then
+        echo "FAIL  $description"
+        docker logs --tail 5 "$container" 2>&1 | sed 's/^/      /'
+        exit 1
+    fi
+}
+
+# A link that has run longer than its bound, with a handshake 5 seconds old, and one read of
+# wg that fails.
+offset 0
+handshake "$(now)"
+start
+reach "the link reads its handshake" 10 looping
+handshake "$(($(now) + 995))"
+offset 1000
+rm -f "$work/state/read"
+reach "the link reads its new handshake" 10 looping
+touch "$work/state/fail"
+reach "the link meets the read that fails" 10 test -e "$work/state/failed"
+rm -f "$work/state/read"
+reach "the link reads again after the read that fails" 10 looping
+check "a read of wg that fails does not end a link that works" "running && [ ! -e $work/keys/down ]"
+check "it sends no notice" '[ "$(notices)" = 0 ]'
+
+# No handshake for longer than the bound: the process ends, writes the state, sends nothing.
+docker rm -f "$container" > /dev/null
+offset 0
+handshake 0
+start
+reach "the link without a handshake reads wg" 10 looping
+offset 200
+check "a link without a handshake for its bound ends" "until_true 10 sh -c '! docker inspect -f {{.State.Running}} $container | grep -q true'"
+check "its process ends with 1" '[ "$(docker inspect -f "{{.State.ExitCode}}" "$container")" = 1 ]'
+check "it writes the loss, not yet notified, and sends no notice" \
+    '[ "$(cut -d " " -f 2,3 "$work/keys/down")" = "1 0" ] && [ "$(notices)" = 0 ]'
+
+# The next start sends the notice of the loss; the first handshake does not end the loss, a
+# renewal does.
+offset 0
+handshake "$(now)"
+start
+check "the next start sends the notice of the loss" "until_true 10 sh -c '[ \"\$(cat $work/state/count 2>/dev/null)\" = 1 ]'"
+check "the notice states the loss" "grep -q 'link of the data host is down since' $work/state/notice-1"
+sleep 3
+check "the first handshake of a start does not end the loss" '[ "$(notices)" = 1 ] && [ -s "$work/keys/down" ]'
+handshake "$(($(now) + 1))"
+check "a renewal of the keys ends the loss with a notice" "until_true 10 sh -c '[ \"\$(cat $work/state/count 2>/dev/null)\" = 2 ]'"
+check "the notice states the return" "grep -q 'link of the data host is up again since' $work/state/notice-2"
+check "the state of the loss is removed" "until_true 5 sh -c '[ ! -e $work/keys/down ]'"
+check "the address is in the configuration of curl and not in its arguments" \
+    "grep -q 'url = \"https://ntfy.example.test/secret-topic\"' $work/state/notice-1 && ! grep -q secret-topic $work/state/arguments-1"
+check "the notice is plain text" "grep -q 'header = \"Content-Type: text/plain\"' $work/state/notice-1"
+
+if [ "$failures" -eq 0 ]; then echo "all checks passed"; else echo "$failures check(s) failed"; exit 1; fi

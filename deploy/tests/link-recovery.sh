@@ -10,7 +10,9 @@
 # 2. The link of the public host drops every packet to the data host (a route in its own
 #    network namespace). Its link ends after its bound, Docker starts it again without the
 #    route, and it sends its two notices.
-# A bound below 180 seconds is refused. The run takes about 15 minutes. The networks are
+# Before that, both ends stay up for longer than both bounds without a start. The receiver
+# refuses the first notice, which must arrive later once, and every notice is plain text.
+# A bound below 180 seconds is refused. The run takes about 20 minutes. The networks are
 # 172.31.250.0/24 to 172.31.252.0/24, and the UDP port of the link is
 # JUNTO_TEST_LINK_PORT (default 51821). Everything is removed at the end.
 #
@@ -115,15 +117,26 @@ data up -d --no-deps --wait --wait-timeout 120 link
 public up -d --no-deps --wait --wait-timeout 60 link
 echo "ok    both ends of the link are healthy"
 
-# The receiver appends the body of each POST to /notices, one line per notice.
+# The receiver refuses the first POST with 503, so that a notice must be sent again, and
+# appends each later one to /notices as one line: its content type and its body.
+mkdir "$work/cgi-bin"
+cat > "$work/cgi-bin/notice" <<'EOF'
+#!/bin/sh
+body=$(head -c "$CONTENT_LENGTH")
+posts=$(($(cat /posts 2>/dev/null || echo 0) + 1))
+echo "$posts" > /posts
+if [ "$posts" = 1 ]; then
+    echo "$CONTENT_TYPE $body" >> /refused
+    printf 'Status: 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nbusy\n'
+    exit 0
+fi
+echo "$CONTENT_TYPE $body" >> /notices
+printf 'Content-Type: text/plain\r\n\r\nok\n'
+EOF
+chmod 755 "$work/cgi-bin/notice"
 docker run -d --name "$receiver" --network "$prefix-data_backend" --network-alias receiver \
-    --memory 32m "$tools_image" sh -c '
-        mkdir -p /www/cgi-bin
-        printf "%s\n" "#!/bin/sh" "head -c \"\$CONTENT_LENGTH\" >> /notices" "echo >> /notices" \
-            "printf \"Content-Type: text/plain\\r\\n\\r\\nok\\n\"" > /www/cgi-bin/notice
-        chmod 755 /www/cgi-bin/notice
-        touch /notices
-        exec httpd -f -p 8080 -h /www' > /dev/null
+    --memory 32m -v "$work/cgi-bin:/www/cgi-bin:ro" "$tools_image" \
+    sh -c 'touch /notices /refused && exec httpd -f -p 8080 -h /www' > /dev/null
 docker network connect --alias receiver "$prefix-public_backend" "$receiver"
 
 container() {
@@ -132,8 +145,14 @@ container() {
 restarts() {
     docker inspect --format '{{.RestartCount}}' "$(container "$1")"
 }
+# The number of accepted notices that hold a text. The test fails when the receiver cannot
+# be read.
 notices() {
-    docker exec "$receiver" grep -c "$1" /notices || true
+    count=$(docker exec "$receiver" sh -c 'grep -c -F "$1" /notices; true' sh "$1") || count=""
+    case "$count" in
+        ''|*[!0-9]*) echo "FAIL  the receiver of the notices cannot be read" >&2; exit 1 ;;
+    esac
+    echo "$count"
 }
 # wait_for <seconds> <description> <command...>: runs the command every 2 seconds until it
 # succeeds, and fails the test after the given time.
@@ -150,10 +169,11 @@ wait_for() {
     done
 }
 at_least() {
-    [ "$("$2" "$3")" -ge "$1" ]
+    value=$("$2" "$3") || exit 1
+    [ "$value" -ge "$1" ]
 }
 expect_notices() {
-    count=$(notices "$1")
+    count=$(notices "$1") || exit 1
     if [ "$count" -ne "$2" ]; then
         echo "FAIL  $3: $count notices \"$1\", expected $2"
         exit 1
@@ -165,10 +185,27 @@ data_up="link of the data host is up again"
 public_down="link of the public host is down"
 public_up="link of the public host is up again"
 
+# Both ends that work stay up for longer than both bounds: the handshakes are renewed about
+# every 2 minutes, and no end starts again.
+started=$(date +%s)
+while [ $(($(date +%s) - started)) -lt $((public_limit + 60)) ]; do sleep 10; done
+if [ "$(restarts data)" != 0 ] || [ "$(restarts public)" != 0 ]; then
+    echo "FAIL  a link that works started again: data $(restarts data), public $(restarts public)"
+    exit 1
+fi
+expect_notices "Junto link" 0 "a link that works sends no notice"
+echo "ok    both ends that work stay up for $((public_limit + 60)) seconds without a start and without a notice"
+
 public stop link
 wait_for $((data_limit * 2 + 120)) "the link of the data host starts again twice while the public host is stopped" \
     at_least 2 restarts data
 expect_notices "$data_down" 1 "the data host stays down across two restarts"
+refused=$(docker exec "$receiver" cat /refused)
+case "$refused" in
+    "text/plain Junto $data_down"*) ;;
+    *) echo "FAIL  the first notice, which the receiver refused, is not the loss of the data host: $refused"; exit 1 ;;
+esac
+echo "ok    the notice that the receiver refused first arrived later once"
 expect_notices "$data_up" 0 "the data host is not up while the public host is stopped"
 echo "ok    the link of the data host starts again without a handshake, and sends one notice for the loss"
 
@@ -199,4 +236,9 @@ if [ "$(notices "$data_down")" -gt "$data_down_before" ]; then
         at_least "$(notices "$data_down")" notices "$data_up"
 fi
 echo "ok    the link of the public host starts again without the route that dropped its packets, and sends its two notices"
+if [ "$(docker exec "$receiver" grep -c -v '^text/plain ' /notices)" != 0 ]; then
+    echo "FAIL  a notice is not plain text: $(docker exec "$receiver" cat /notices)"
+    exit 1
+fi
+echo "ok    every notice is plain text"
 echo "all checks passed"
