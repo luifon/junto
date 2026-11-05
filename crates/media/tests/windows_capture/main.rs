@@ -1683,3 +1683,122 @@ fn the_graphics_memory_of_a_window_share_does_not_grow_with_its_pictures() {
         "the graphics memory grew by {grown} bytes"
     );
 }
+
+/// The processor time of this process in milliseconds, read by PowerShell, so that the test
+/// needs no call of the system of its own.
+fn processor_milliseconds() -> f64 {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "(Get-Process -Id {}).TotalProcessorTime.TotalMilliseconds",
+                std::process::id()
+            ),
+        ])
+        .output()
+        .expect("PowerShell runs");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace(',', ".")
+        .parse()
+        .expect("PowerShell states the processor time")
+}
+
+/// A sink that only counts the pictures, so that the measured time is the time of the
+/// capture and its delivery.
+#[derive(Default)]
+struct Counted {
+    pictures: AtomicUsize,
+}
+
+impl CaptureSink for Counted {
+    fn picture(&self, _: Arc<dyn VideoBuffer>) {
+        self.pictures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn sound(&self, _: &[f32], _: Format) {}
+
+    fn ended(&self, error: CaptureError) {
+        panic!("the measured share ended: {error:?}");
+    }
+}
+
+/// The processor time of this process over `seconds` while the fixture turns its colours
+/// ten times a second: the time in milliseconds per second, and the pictures per second.
+fn measured(fixture: &mut Fixture, sink: &Counted, seconds: u64) -> (f64, f64) {
+    let pictures = sink.pictures.load(Ordering::Relaxed);
+    let before = processor_milliseconds();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(seconds) {
+        fixture.send("turn");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let time = (processor_milliseconds() - before) / elapsed;
+    let rate = (sink.pictures.load(Ordering::Relaxed) - pictures) as f64 / elapsed;
+    (time, rate)
+}
+
+/// The processor time of a window share and of an application share of one and of three
+/// windows, at the size of the screen and 30 pictures a second, against the same process
+/// without a share (ADR 0738, ADR 0914). It prints a table and checks nothing; it runs only
+/// with `JUNTO_TEST_SHARE_COST=1`.
+#[test]
+fn the_processor_time_of_an_application_share() {
+    if std::env::var_os("JUNTO_TEST_SHARE_COST").is_none() {
+        return;
+    }
+    const SECONDS: u64 = 20;
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let process = fixture.child.id() as i32;
+    let idle = Counted::default();
+    let (idle_time, _) = measured(&mut fixture, &idle, SECONDS);
+    println!("| Share | Windows | Pictures a second | Processor ms a second |");
+    println!("|---|---|---|---|");
+    println!("| none | 0 | 0 | {idle_time:.1} |");
+    let mut share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
+        let sink = Arc::new(Counted::default());
+        let stream = runtime
+            .block_on(capture.start(
+                CaptureRequest {
+                    picture,
+                    sound: SoundChoice::None,
+                    quality: ShareQuality {
+                        resolution: Resolution::Source,
+                        frame_rate: 30,
+                    },
+                    dialog_parent: None,
+                },
+                sink.clone(),
+            ))
+            .unwrap();
+        // The first pictures, before the measured interval.
+        std::thread::sleep(Duration::from_secs(2));
+        let (time, rate) = measured(fixture, &sink, SECONDS);
+        runtime.block_on(stream.stop()).unwrap();
+        println!("| {name} | {windows} | {rate:.1} | {time:.1} |");
+    };
+    share(
+        "window",
+        1,
+        PictureSource::Window(fixture.window),
+        &mut fixture,
+    );
+    share(
+        "application",
+        1,
+        PictureSource::Application(process),
+        &mut fixture,
+    );
+    fixture.answer("open dialog", "opened dialog ");
+    fixture.answer("open window", "opened window ");
+    share(
+        "application",
+        3,
+        PictureSource::Application(process),
+        &mut fixture,
+    );
+}
