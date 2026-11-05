@@ -70,99 +70,169 @@ async fn telemetry_bypasses_environment_proxies() {
     assert_both_signals(&collector.requests.lock().await);
 }
 
-#[tokio::test]
-async fn telemetry_https_requires_trusted_ca() {
+/// A collector of OpenTelemetry data over HTTPS on a local port, with the certificate of the
+/// test certificate authority of the client core tests for `127.0.0.1`.
+struct TlsCollector {
+    endpoint: Endpoint,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TlsCollector {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+const TEST_AUTHORITY: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../client-core/tests/data/stream-tls/authority.der"
+));
+
+/// The test certificate authority as a PEM file, removed when it is dropped.
+fn authority_file(name: &str) -> TestCa {
     use base64::Engine;
-    use tokio_rustls::rustls::{
-        self,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    };
-    let authority = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../client-core/tests/data/stream-tls/authority.der"
-    ));
-    let certificate = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../client-core/tests/data/stream-tls/server.der"
-    ));
-    let key = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../client-core/tests/data/stream-tls/server-key.der"
-    ));
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![CertificateDer::from(certificate.to_vec())],
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
-    )
-    .unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = Endpoint::parse(&format!("https://{}", listener.local_addr().unwrap())).unwrap();
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let received = requests.clone();
-    let task = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            tokio::select! {
-                accepted = listener.accept() => {
-                    let (socket, _) = accepted.unwrap();
-                    let acceptor = acceptor.clone();
-                    let received = received.clone();
-                    connections.spawn(async move {
-                        let Ok(mut stream) = acceptor.accept(socket).await else { return };
-                        let (line, body) = read_request(&mut stream).await.unwrap();
-                        received.lock().await.push((line, serde_json::from_slice::<Value>(&body).unwrap()));
-                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
-                        stream.shutdown().await.unwrap();
-                    });
-                }
-                Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
-            }
-        }
-    });
-    let telemetry = Telemetry::start(Some(endpoint.clone()))
-        .await
+    let file = TestCa(std::env::temp_dir().join(format!("{name}-{}.pem", uuid::Uuid::new_v4())));
+    let pem = format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(TEST_AUTHORITY)
+    );
+    std::fs::write(&file.0, pem).unwrap();
+    file
+}
+
+impl TlsCollector {
+    async fn start() -> Self {
+        use tokio_rustls::rustls::{
+            self,
+            pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+        };
+        let certificate = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client-core/tests/data/stream-tls/server.der"
+        ));
+        let key = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client-core/tests/data/stream-tls/server-key.der"
+        ));
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
         .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(certificate.to_vec())],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
+        )
         .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint =
+            Endpoint::parse(&format!("https://{}", listener.local_addr().unwrap())).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let received = requests.clone();
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (socket, _) = accepted.unwrap();
+                        let acceptor = acceptor.clone();
+                        let received = received.clone();
+                        connections.spawn(async move {
+                            let Ok(mut stream) = acceptor.accept(socket).await else { return };
+                            let (line, body) = read_request(&mut stream).await.unwrap();
+                            received.lock().await.push((line, serde_json::from_slice::<Value>(&body).unwrap()));
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                            stream.shutdown().await.unwrap();
+                        });
+                    }
+                    Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
+                }
+            }
+        });
+        Self {
+            endpoint,
+            requests,
+            task,
+        }
+    }
+
+    /// Both signals arrived, each at its path.
+    async fn assert_both_exports(&self) {
+        let exports = self.requests.lock().await;
+        assert!(
+            exports
+                .iter()
+                .any(|(path, body)| path.contains("/v1/traces") && body["resourceSpans"].is_array()),
+            "{exports:?}"
+        );
+        assert!(
+            exports
+                .iter()
+                .any(|(path, body)| path.contains("/v1/metrics")
+                    && body["resourceMetrics"].is_array()),
+            "{exports:?}"
+        );
+    }
+}
+
+async fn export_once(endpoint: Endpoint) {
+    let telemetry = Telemetry::start(Some(endpoint)).await.unwrap().unwrap();
     telemetry.instruments.tracer.start("request").end();
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
+}
+
+#[tokio::test]
+async fn telemetry_https_requires_trusted_ca() {
+    let collector = TlsCollector::start().await;
+    export_once(collector.endpoint.clone()).await;
     assert!(
-        requests.lock().await.is_empty(),
+        collector.requests.lock().await.is_empty(),
         "the test CA is not in the system trust store"
     );
-    let file =
-        TestCa(std::env::temp_dir().join(format!("junto-otel-ca-{}.pem", uuid::Uuid::new_v4())));
-    let pem = format!(
-        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
-        base64::engine::general_purpose::STANDARD.encode(authority)
-    );
-    std::fs::write(&file.0, pem).unwrap();
-    let telemetry = Telemetry::start(Some(endpoint.with_ca_file(file.0.clone())))
-        .await
-        .unwrap()
-        .unwrap();
+    let file = authority_file("junto-otel-ca");
+    let telemetry = Telemetry::start(Some(
+        collector.endpoint.clone().with_ca_file(file.0.clone()),
+    ))
+    .await
+    .unwrap()
+    .unwrap();
     drop(file);
     telemetry.instruments.tracer.start("request").end();
     telemetry.instruments.requests.add(1, &[]);
     telemetry.shutdown().await;
-    let exports = requests.lock().await;
-    assert!(
-        exports
-            .iter()
-            .any(|(path, body)| path.contains("/v1/traces") && body["resourceSpans"].is_array())
-    );
-    assert!(
-        exports
-            .iter()
-            .any(|(path, body)| path.contains("/v1/metrics") && body["resourceMetrics"].is_array())
-    );
-    task.abort();
+    collector.assert_both_exports().await;
+}
+
+/// The export over HTTPS trusts the certificate authorities of the system store, without
+/// `JUNTO_OTEL_CA_FILE`. The test runs the export in a process of its own whose system store
+/// is the test certificate authority: the loader of the store reads the file that
+/// `SSL_CERT_FILE` names in place of the store of the system, on every system.
+#[tokio::test]
+async fn telemetry_https_trusts_the_system_certificate_store() {
+    const CHILD: &str = "JUNTO_TEST_OTEL_SYSTEM_STORE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let file = authority_file("junto-otel-system-store");
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "telemetry::tests::transport::telemetry_https_trusts_the_system_certificate_store",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("SSL_CERT_FILE", &file.0)
+            .env_remove("SSL_CERT_DIR")
+            .kill_on_drop(true);
+        run_child(command).await;
+        return;
+    }
+    let collector = TlsCollector::start().await;
+    export_once(collector.endpoint.clone()).await;
+    collector.assert_both_exports().await;
 }
 
 struct TestCa(std::path::PathBuf);

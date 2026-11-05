@@ -111,7 +111,10 @@ Server export:
   at least one per signal. One test forces a collection before shutdown so that it
   checks more than one metric export, and it checks the histogram boundaries.
   An API test checks
-  the running server and its final export on shutdown.
+  the running server and its final export on shutdown. One test exports over HTTPS
+  with the system trust store alone, in a child process whose `SSL_CERT_FILE` names the
+  test certificate authority, so the trust of the store is checked without
+  `JUNTO_OTEL_CA_FILE`.
 
 No telemetry:
 
