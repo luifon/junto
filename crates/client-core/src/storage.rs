@@ -431,30 +431,32 @@ impl Dir {
             None
         } else {
             // A thread of this process waits for another thread of it while that thread
-            // holds the file, for the few milliseconds of its change. While that thread still
-            // waits for another program, a try answers at once that the data is held.
+            // takes or holds the file, for the few milliseconds of its change. While that
+            // thread waits for another program, a try answers at once that the data is held.
             let Some(process) = InProcess::take(self.identity, wait) else {
                 return Err(StorageError::Held { path });
             };
+            #[cfg(test)]
+            pause_after_take(self.identity);
             let file = self
                 .handle
                 .open_lock(LOCK_NAME)
                 .map_err(|error| StorageError::io("lock", &path, error))?;
-            if wait {
-                file.lock()
-                    .map_err(|error| StorageError::io("lock", &path, error))?;
-            } else {
-                match file.try_lock() {
-                    Ok(()) => {}
-                    Err(std::fs::TryLockError::WouldBlock) => {
-                        return Err(StorageError::Held { path });
-                    }
-                    Err(std::fs::TryLockError::Error(error)) => {
-                        return Err(StorageError::io("lock", &path, error));
-                    }
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) if wait => {
+                    process.set(Hold::WaitingForAnotherProgram);
+                    file.lock()
+                        .map_err(|error| StorageError::io("lock", &path, error))?;
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(StorageError::Held { path });
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(StorageError::io("lock", &path, error));
                 }
             }
-            process.has_file();
+            process.set(Hold::File);
             Some((file, process))
         };
         HELD.with_borrow_mut(|held| held.push(self.identity));
@@ -497,12 +499,23 @@ pub fn refuse_locks_while(refused: fn() -> bool) {
     let _ = LOCKS_REFUSED.set(refused);
 }
 
-/// The directories whose lock a thread of this process holds or waits for, each with
-/// whether that thread has the lock of the file yet, and the wait of the other threads of
-/// the process for them. The lock of a file belongs to its open handle, so two threads of
-/// one process with their own handles would refuse each other as two processes do
-/// (ADR 0710).
-static TAKEN: std::sync::Mutex<Vec<(Identity, bool)>> = std::sync::Mutex::new(Vec::new());
+/// What the thread that took a directory among the threads of this process does with the
+/// lock of its file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// It opens the file and takes its lock, for a moment.
+    Taking,
+    /// Another program holds the file, and the thread waits for it, for as long as it takes.
+    WaitingForAnotherProgram,
+    /// It holds the file for its change, for a few milliseconds.
+    File,
+}
+
+/// The directories that a thread of this process took, with what that thread does with the
+/// file, and the wait of the other threads of the process for them. The lock of a file
+/// belongs to its open handle, so two threads of one process with their own handles would
+/// refuse each other as two processes do (ADR 0710).
+static TAKEN: std::sync::Mutex<Vec<(Identity, Hold)>> = std::sync::Mutex::new(Vec::new());
 static FREED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// The lock of one directory among the threads of this process, given back when dropped.
@@ -518,10 +531,9 @@ impl InProcess {
             .any(|(held, _)| *held == directory)
     }
 
-    /// Takes the directory among the threads of this process. A thread that holds it with
-    /// the lock of its file gives it back within its change, so the caller waits for that.
-    /// A thread that holds it and still waits for another program can wait long: then a
-    /// caller that does not wait gets `None` at once.
+    /// Takes the directory among the threads of this process. A caller waits while another
+    /// thread takes the file or holds it, which ends within its change. While another thread
+    /// waits for another program, a caller that does not wait gets `None` at once.
     fn take(directory: Identity, wait: bool) -> Option<Self> {
         let mut taken = TAKEN
             .lock()
@@ -529,7 +541,7 @@ impl InProcess {
         loop {
             match taken.iter().find(|(held, _)| *held == directory) {
                 None => break,
-                Some((_, false)) if !wait => return None,
+                Some((_, Hold::WaitingForAnotherProgram)) if !wait => return None,
                 Some(_) => {
                     taken = FREED
                         .wait(taken)
@@ -537,18 +549,48 @@ impl InProcess {
                 }
             }
         }
-        taken.push((directory, false));
+        taken.push((directory, Hold::Taking));
         Some(Self(directory))
     }
 
-    /// The holder has the lock of the file now.
-    fn has_file(&self) {
+    fn set(&self, hold: Hold) {
         let mut taken = TAKEN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(held) = taken.iter_mut().find(|(held, _)| *held == self.0) {
-            held.1 = true;
+            held.1 = hold;
         }
+        drop(taken);
+        FREED.notify_all();
+    }
+}
+
+/// A pause of the next thread that takes this directory, between the entry among the
+/// threads and the lock of the file: it tells `paused` and waits for `resume`.
+#[cfg(test)]
+type Pause = (
+    Identity,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(test)]
+static PAUSE: std::sync::Mutex<Option<Pause>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn pause_after_take(directory: Identity) {
+    let pause = {
+        let mut pause = PAUSE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pause.as_ref().is_some_and(|(held, ..)| *held == directory) {
+            pause.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, paused, resume)) = pause {
+        let _ = paused.send(());
+        let _ = resume.recv();
     }
 }
 
@@ -1172,6 +1214,45 @@ mod tests {
         waiter.join().unwrap();
         trying.join().unwrap();
         assert_eq!(held, Ok(true), "the try waited for the other program");
+    }
+
+    /// A thread has taken the directory among the threads of the process and is taking the
+    /// file. A `try_lock` of another thread waits for it, as for a change of a few
+    /// milliseconds, and then takes the lock: no other program holds the file.
+    #[test]
+    fn a_try_waits_for_a_thread_that_is_taking_the_file() {
+        let (_directory, private) = private();
+        let path = private.path().to_owned();
+        let (paused, has_paused) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        *PAUSE.lock().unwrap() = Some((private.identity, paused, resumed));
+        let taking_path = path.clone();
+        let taker = std::thread::spawn(move || {
+            let taking = Dir::open(&taking_path).unwrap();
+            drop(taking.lock().unwrap());
+        });
+        has_paused
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let trying_path = path.clone();
+        let trying = std::thread::spawn(move || {
+            let trying = Dir::open(&trying_path).unwrap();
+            sender.send(trying.try_lock().map(drop)).unwrap();
+        });
+        // The try waits while the other thread takes the file.
+        assert!(
+            receiver
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+        resume.send(()).unwrap();
+        let answer = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        taker.join().unwrap();
+        trying.join().unwrap();
+        assert!(answer.is_ok(), "{answer:?}");
     }
 
     #[test]
