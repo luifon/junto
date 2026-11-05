@@ -60,10 +60,18 @@ jobs:
       matrix:
         system: [macos-15, windows-2025]
     runs-on: ${{ matrix.system }}
-    timeout-minutes: 90
+    # The Windows runner took 73 minutes in one run; in three others the limit of 90 minutes
+    # ended it in its last step, the window tests with PostgreSQL, after 25 to 29 minutes of
+    # that step (ADR 0905).
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
+      # The image of the Windows runner checks out with core.autocrlf true, and the tests that
+      # read files of the checkout then see CR LF; the project's Windows machine checks out
+      # with it false (tools/ci/run-jobs.sh).
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

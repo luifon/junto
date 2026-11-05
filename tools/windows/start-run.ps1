@@ -122,8 +122,12 @@ function Get-Session {
         throw "the sessions cannot be read: $([ComponentModel.Win32Exception]::new().Message)"
     }
     try {
-        # WTS_SESSION_INFOW: SessionId, pWinStationName, State; 24 bytes on x64.
-        $ids = for ($index = 0; $index -lt $count; $index++) { $marshal::ReadInt32($list, 24 * $index) }
+        # WTS_SESSION_INFOW: SessionId, pWinStationName, State; 24 bytes on x64. A listener
+        # (State WTSListen, 6), such as the RDP listener 65536 of a hosted runner, is no
+        # session of an account, and its WTSINFOEX has another form.
+        $ids = for ($index = 0; $index -lt $count; $index++) {
+            if ($marshal::ReadInt32($list, 24 * $index + 16) -ne 6) { $marshal::ReadInt32($list, 24 * $index) }
+        }
     } finally {
         [JuntoCi.Native]::WTSFreeMemory($list)
     }
