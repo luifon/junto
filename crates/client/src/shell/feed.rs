@@ -3245,11 +3245,13 @@ impl Shell {
 
     /// The files of a message: a picture inline, every other file as a row with its size
     /// and the state of its download.
+    /// The files of a message. `from_pins`: the message is a row of the pins of the side
+    /// panel, so a viewer opened from it closes when the pins no longer hold the message.
     pub(super) fn attachments(
         &mut self,
-        server_id: ServerId,
-        place_id: PlaceId,
+        (server_id, place_id): (ServerId, PlaceId),
         message: &Message,
+        from_pins: bool,
         window: &mut Window,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -3326,6 +3328,9 @@ impl Shell {
                                     window,
                                     cx,
                                 );
+                                if from_pins {
+                                    this.viewer_opened_from_pins();
+                                }
                             }
                         };
                         let by_key = open.clone();
@@ -4250,7 +4255,14 @@ impl Shell {
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed.server_id, feed.place, message, window, &theme, cx));
+            body.extend(self.attachments(
+                (feed.server_id, feed.place),
+                message,
+                bare,
+                window,
+                &theme,
+                cx,
+            ));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {

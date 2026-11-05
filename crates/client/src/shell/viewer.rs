@@ -53,9 +53,9 @@ pub(crate) struct PictureViewer {
     area: Rc<Cell<Option<Size<Pixels>>>>,
     /// The size of that place in pixels of the device, at most [`LONGEST_SIDE`].
     fit: (u32, u32),
-    /// The loaded pins of the channel held the message when the viewer opened. A deleted
-    /// message leaves the pins, so its absence from them tells the deletion also when no list
-    /// of the window holds it.
+    /// The viewer was opened from the pins of the side panel, which held the message then.
+    /// A deleted message leaves the pins, so its absence from them tells the deletion also
+    /// when no list of the window holds it; an unpin closes the viewer too.
     in_pins: bool,
 }
 
@@ -88,14 +88,25 @@ impl PictureViewer {
         }
     }
 
-    /// The server left the server book, or a list of the window shows the message without
-    /// the shown file: the message was deleted, or the retention removed its files. The
+    /// The server left the server book, the client core found the message gone, or a list
+    /// of the window shows the message without the shown file: the message was deleted, or
+    /// the retention removed its files. The
     /// pins of the channel no longer hold a message that they held: it was deleted or
     /// unpinned. The call window lists no servers, so the server book is read in the state.
     pub(super) fn is_stale(&self, view: &ShellView, state: &AppState) -> bool {
-        if state
-            .server(self.server_id)
-            .is_none_or(|server| server.owner() != self.owner)
+        let Some(server) = state.server(self.server_id) else {
+            return true;
+        };
+        if server.owner() != self.owner {
+            return true;
+        }
+        // A message deleted without a reply leaves no row in a list; the client core states
+        // that its read found it gone, whichever list or link opened the viewer.
+        if server
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.is_gone(self.message_id))
         {
             return true;
         }
@@ -169,7 +180,7 @@ fn device_fit(window: &Window, place: Size<Pixels>) -> (u32, u32) {
 }
 
 impl Shell {
-    /// Opens the viewer on the picture at `shown` among the pictures of a message.
+    /// Opens the viewer on the picture at `shown` among the pictures of a message of a list.
     pub fn open_picture_viewer(
         &mut self,
         server_id: ServerId,
@@ -195,12 +206,20 @@ impl Shell {
             large: None,
             area: Rc::new(Cell::new(None)),
             fit: device_fit(window, place(window, None)),
-            in_pins: (self.view.as_ref())
-                .and_then(loaded_pins)
-                .is_some_and(|rows| rows.iter().any(|row| row.message.id == message_id)),
+            in_pins: false,
         };
         self.open_layer(Layer::Picture(Box::new(viewer)), window, cx);
         self.read_viewer_picture(cx);
+    }
+
+    /// The open viewer was opened from the pins of the side panel: it closes when the loaded
+    /// pins no longer hold its message, which a deletion and an unpin do.
+    pub(crate) fn viewer_opened_from_pins(&mut self) {
+        if let Layer::Picture(viewer) = &mut self.layer {
+            viewer.in_pins = (self.view.as_ref())
+                .and_then(loaded_pins)
+                .is_some_and(|rows| rows.iter().any(|row| row.message.id == viewer.message_id));
+        }
     }
 
     /// Shows the picture `step` places after the shown one. After the last picture comes the

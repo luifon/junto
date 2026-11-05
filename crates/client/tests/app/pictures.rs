@@ -1259,7 +1259,7 @@ fn many_large_pictures_are_held_at_the_size_that_the_list_draws(cx: &mut TestApp
 
 /// The viewer of a picture of a pinned message, opened from the panel of pins, closes when
 /// the message is deleted, also when the list of the channel does not hold that message: a
-/// deleted message leaves the pins.
+/// deleted message leaves the pins. An unpin does not close a viewer opened from the list.
 #[gpui::test]
 fn the_viewer_of_a_pinned_picture_closes_when_its_message_is_deleted(cx: &mut TestAppContext) {
     let world = World::new();
@@ -1318,6 +1318,57 @@ fn the_viewer_of_a_pinned_picture_closes_when_its_message_is_deleted(cx: &mut Te
             junto_client::state::feed::FeedRow::Message(row) if row.message.id == pinned.id))),
         "the list of the channel holds the pinned message"
     );
+
+    // A viewer opened from the list of the channel stays open when another member unpins
+    // its message: the message and its file are still there.
+    let sketch = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The sketch",
+        vec![("sketch.png", png(48, 32))],
+    );
+    world
+        .run(admin.handle.api().pin_message(sketch.id))
+        .unwrap();
+    let pinned_rows = |window: &mut Window| match window
+        .view()
+        .workspace()
+        .and_then(|workspace| workspace.pins.clone())
+        .map(|pins| pins.state)
+    {
+        Some(junto_client::state::view::PinsState::Loaded(rows)) => {
+            rows.iter().map(|row| row.message.id).collect::<Vec<_>>()
+        }
+        _ => Vec::new(),
+    };
+    window.until("the pins hold the second picture", |window| {
+        pinned_rows(window).contains(&sketch.id)
+    });
+    let server_id = window.view().selected.unwrap().id;
+    window.in_shell(|shell, window, cx| {
+        shell.open_picture_viewer(
+            server_id,
+            sketch.id,
+            sketch.attachments.clone(),
+            0,
+            window,
+            cx,
+        )
+    });
+    assert!(window.shows("picture-viewer"));
+    world
+        .run(admin.handle.api().unpin_message(sketch.id))
+        .unwrap();
+    window.until("the pins no longer hold the second picture", |window| {
+        !pinned_rows(window).contains(&sketch.id)
+    });
+    assert!(
+        window.shows("picture-viewer"),
+        "an unpin closed a viewer opened from the list"
+    );
+    window.press("escape");
+    assert!(!window.shows("picture-viewer"));
     window.click_named(format!("picture:{id}"));
     window.until("the viewer opens", |window| window.shows("picture-viewer"));
     world
