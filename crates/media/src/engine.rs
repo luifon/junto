@@ -508,6 +508,7 @@ impl Engine {
             input_held: false,
             input_used: None,
             camera_wait: (0, false),
+            #[cfg(feature = "test-support")]
             camera_answers: 0,
             frames,
             source,
@@ -814,7 +815,9 @@ struct Actor {
     /// The wait of a camera for a media connection: its number, and whether its time
     /// runs. A connection ends the wait.
     camera_wait: (u64, bool),
-    /// The answers of the media server to publications of the camera that were taken.
+    /// The answers of the media server to publications of the camera that were taken. Only
+    /// the camera check of the tests reads it.
+    #[cfg(feature = "test-support")]
     camera_answers: u64,
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,

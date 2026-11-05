@@ -344,7 +344,10 @@ impl Actor {
         round: u64,
         result: Result<LocalTrackPublication, String>,
     ) {
-        self.camera_answers += 1;
+        #[cfg(feature = "test-support")]
+        {
+            self.camera_answers += 1;
+        }
         if attempt != self.attempt {
             return;
         }
