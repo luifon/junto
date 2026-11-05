@@ -173,7 +173,7 @@ impl RenderOnce for Dialog {
                     )
                     .child(scroll_bar(&scroll, false, cx)),
             )
-            .child(measure_panel(placed.clone()))
+            .child(measure_panel(placed.clone(), scroll.clone()))
             .focus_trap("dialog-trap", &self.focus);
         div()
             .id("dialog-cover")
@@ -191,8 +191,9 @@ impl RenderOnce for Dialog {
             })
             .child(
                 // The panel is centred at its first drawing and keeps its top after it, so a
-                // late result that makes it taller moves no control above the result. A new
-                // size of the window centres it again.
+                // late result that makes it taller moves no control above the result while it
+                // fits below that top; a taller step moves it up as far as it needs. A new size
+                // of the window centres it again.
                 div()
                     .relative()
                     .size_full()
@@ -202,8 +203,10 @@ impl RenderOnce for Dialog {
                         Some(_) => room.items_start(),
                         None => room.items_center(),
                     })
-                    .child(panel)
-                    .child(measure_room(placed, size)),
+                    // The room is measured before the panel, so that the panel keeps its top
+                    // from the first drawing in a new size of the window.
+                    .child(measure_room(placed, size))
+                    .child(panel),
             )
             .children(crate::shell::title_bar::layer_band(window, cx))
     }
@@ -245,14 +248,27 @@ fn measure_room(
     .size_full()
 }
 
-fn measure_panel(placed: std::rc::Rc<std::cell::Cell<Placed>>) -> impl IntoElement {
+fn measure_panel(
+    placed: std::rc::Rc<std::cell::Cell<Placed>>,
+    scroll: ScrollHandle,
+) -> impl IntoElement {
     gpui::canvas(
-        move |bounds, _, _| {
+        move |bounds, window, _| {
             let mut now = placed.get();
             if now.top.is_none() && now.window.is_some() {
                 // The canvas lies inside the border of the panel, which is 1 pixel wide.
                 now.top = Some(bounds.top() - gpui::px(1.0) - now.room_top);
                 placed.set(now);
+            } else if let Some(top) = now.top {
+                // A later step that is taller than the room below the kept top takes the
+                // empty room above it before its content scrolls.
+                let overflow = scroll.max_offset().y;
+                if overflow > gpui::px(0.0) && top > gpui::px(0.0) {
+                    now.top = Some((top - overflow).max(gpui::px(0.0)));
+                    placed.set(now);
+                    // A refresh during a drawing draws nothing; the next frame draws again.
+                    window.request_animation_frame();
+                }
             }
         },
         |_, (), _, _| {},
@@ -292,11 +308,13 @@ mod tests {
         /// The button that is disabled.
         disabled: Option<usize>,
         pressed: Vec<usize>,
+        /// The number of buttons that the dialog holds.
+        shown: usize,
     }
 
     impl Render for Host {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let buttons = (0..BUTTONS).map(|index| {
+            let buttons = (0..self.shown).map(|index| {
                 let selector: &'static str = Box::leak(format!("b{index}").into_boxed_str());
                 div().py(px(4.0)).child(
                     Button::new(("b", index))
@@ -332,6 +350,7 @@ mod tests {
             trap: cx.focus_handle(),
             disabled: None,
             pressed: Vec::new(),
+            shown: BUTTONS,
         });
         settle(cx);
         let trap = host.read_with(cx, |host, _| host.trap.clone());
@@ -377,6 +396,51 @@ mod tests {
                 Ok(())
             }
             button => Err(format!("{button:?} in {view:?}")),
+        }
+    }
+
+    /// A dialog that grows after its first drawing keeps its top while it fits below it, and
+    /// moves up into the empty room above it before its content scrolls.
+    #[gpui::test]
+    fn a_dialog_that_grows_moves_up_before_its_content_scrolls(cx: &mut TestAppContext) {
+        let (host, cx) = open(cx);
+        host.update(cx, |host, cx| {
+            host.shown = 2;
+            cx.notify();
+        });
+        // A new size of the window places the dialog again, centred for two buttons.
+        cx.simulate_resize(gpui::size(px(1000.0), px(700.0)));
+        settle(cx);
+        let first = cx.debug_bounds("dialog-content").unwrap();
+        host.update(cx, |host, cx| {
+            host.shown = 3;
+            cx.notify();
+        });
+        settle(cx);
+        let second = cx.debug_bounds("dialog-content").unwrap();
+        assert_eq!(
+            second.top(),
+            first.top(),
+            "a dialog that still fits below its top keeps it"
+        );
+        // Enough buttons that the content passes the bottom of the window at the kept top.
+        let button = second.size.height - first.size.height;
+        // The host is 400 pixels high.
+        let below = px(400.0) - first.top();
+        let mut shown = 3;
+        while second.size.height + button * (shown - 3) as f32 <= below {
+            shown += 1;
+        }
+        assert!(shown < BUTTONS);
+        host.update(cx, |host, cx| {
+            host.shown = shown;
+            cx.notify();
+        });
+        settle(cx);
+        let grown = cx.debug_bounds("dialog-content").unwrap();
+        assert!(grown.top() < first.top(), "{grown:?} against {first:?}");
+        for index in 0..shown {
+            in_view(cx, index).unwrap_or_else(|bounds| panic!("button {index}: {bounds}"));
         }
     }
 
