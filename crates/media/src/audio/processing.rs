@@ -1,12 +1,13 @@
-//! Echo cancellation, noise suppression and gain control: the audio processing module of
-//! the call library, shared by the microphone side and the playout side (ADR 0701,
-//! ADR 0733). Sending follows the voice settings. A separate echo filter receives copies
-//! of both sides for the muted-speech notice.
+//! Echo cancellation and gain control: the audio processing module of the call library,
+//! shared by the microphone side and the playout side (ADR 0701, ADR 0733), and noise
+//! suppression by the suppressor of `denoise` after it. Sending follows the voice settings.
+//! A separate echo filter receives copies of both sides for the muted-speech notice.
 
 use std::sync::{Mutex, PoisonError};
 
 use livekit::webrtc::native::apm::AudioProcessingModule;
 
+use super::denoise::Denoiser;
 use super::{FRAME_SAMPLES, PLAYOUT_CHANNELS, SAMPLE_RATE};
 
 /// The processing of the microphone that a person can turn off.
@@ -43,6 +44,8 @@ struct Module {
     settings: Processing,
     /// Absent while every part is off: the frames pass unchanged.
     apm: Option<AudioProcessingModule>,
+    /// The noise suppressor, while noise suppression is on.
+    denoiser: Option<Box<Denoiser>>,
     /// A failure of the module is logged once per module.
     failed: bool,
 }
@@ -56,12 +59,14 @@ impl Module {
                 // The high-pass filter removes the hum below speech. The module applies
                 // it together with its other parts.
                 true,
-                settings.noise_suppression,
+                // The suppressor of `denoise` replaces the one of the module (ADR 0733).
+                false,
             )
         });
         Self {
             settings,
             apm,
+            denoiser: settings.noise_suppression.then(Box::default),
             failed: false,
         }
     }
@@ -97,16 +102,27 @@ impl Processor {
         }
     }
 
-    /// Processes one mono frame of 10 ms of the microphone in place.
+    /// Processes one mono frame of 10 ms of the microphone in place: the echo canceller, the
+    /// high-pass filter and the gain control of the module, then the noise suppressor.
     pub fn capture(&self, frame: &mut [i16]) {
         let mut module = self.lock();
-        let Module { apm, failed, .. } = &mut *module;
+        let Module {
+            apm,
+            denoiser,
+            failed,
+            ..
+        } = &mut *module;
         if let Some(apm) = apm
             && let Err(error) = apm.process_stream(frame, SAMPLE_RATE as i32, 1)
             && !*failed
         {
             *failed = true;
             tracing::warn!(error = %error.message, "the audio processing of the microphone failed");
+        }
+        if let (Some(denoiser), Ok(frame)) =
+            (denoiser, <&mut [i16; FRAME_SAMPLES]>::try_from(frame))
+        {
+            denoiser.process(frame);
         }
     }
 
@@ -151,6 +167,7 @@ impl Processor {
             apm,
             failed,
             settings,
+            ..
         } = &mut *module;
         if !settings.echo_cancellation {
             return;
@@ -283,7 +300,12 @@ mod tests {
 
     #[test]
     fn the_module_takes_frames_of_both_sides_and_keeps_a_voice_band_tone() {
-        let processor = Processor::new(Processing::default());
+        // A steady tone is noise for the noise suppressor (`denoise`), so it is off here.
+        let settings = Processing {
+            noise_suppression: false,
+            ..Processing::default()
+        };
+        let processor = Processor::new(settings);
         let mut last = Vec::new();
         for index in 0..200 {
             let mut played = vec![0i16; FRAME_SAMPLES * PLAYOUT_CHANNELS];
@@ -292,9 +314,9 @@ mod tests {
             processor.capture(&mut frame);
             last = frame;
         }
-        // Gain control and noise suppression change the level and do not remove a signal.
+        // Gain control changes the level and does not remove a signal.
         assert!(dbfs(&last) > -40.0, "{}", dbfs(&last));
-        assert_eq!(processor.settings(), Processing::default());
+        assert_eq!(processor.settings(), settings);
 
         processor.set(Processing::OFF);
         let mut frame = tone(0, 440.0, 0.25);

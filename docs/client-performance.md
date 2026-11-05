@@ -88,6 +88,10 @@ The Rust allocations fell by about 18 MiB: the BGRA pictures of the view and the
 
 The processing module of WebRTC worked at 32 kHz inside, the default of its version: it resampled each frame of the microphone and of the playout from 48 kHz to 32 kHz and back, and removed everything above 16 kHz from the microphone. It now works at 48 kHz (ADR 0733). Measured on 2026-10-23 with `timing::the_processing_of_one_frame_of_each_direction` of the media engine on an x86-64 Linux machine in the test build, with one program for each rate run in turn three times, a frame of the playout and a frame of the microphone with the echo canceller, the noise suppression and the gain control took medians of 202.7, 186.2 and 199.9 µs at 32 kHz and 187.2, 174.7 and 179.4 µs at 48 kHz (each over six rounds of 3,000 frames). At 48 kHz the module has no resamplers, which saves more than its third band costs: about 16 µs for each 10 ms, 0.16 % of one core less.
 
+### The noise suppressor of the microphone
+
+The microphone goes through RNNoise (`nnnoiseless` 0.5.2) and a gate on its probability of voice while "Noise suppression" is on, in place of the noise suppressor of the WebRTC module (ADR 0733). Measured on 2026-11-05 on one core of an x86-64 Linux machine, in a release build of a program that runs the suppressor over clips of 39.3 s at 48 kHz mono, as processor time of the process per second of audio: 6.1 to 6.9 ms with the gate (0.6 to 0.7 % of one core), over speech alone and speech with typing, clicks, a fan and a second voice. On an Apple M1 Pro with macOS 26.6.1, in the same way: 3.8 to 4.2 ms (0.4 % of one core). DeepFilterNet 3, measured in the same way for the choice, took 50 to 158 ms and 16.6 to 48.2 ms. The suppressor of the WebRTC module that it replaces is off, so the module itself does less.
+
 ### The scale of a received picture reads its planes where they are
 
 A received picture in planes that is drawn smaller is scaled from its planes where they are, without a copy of them first (ADR 0774). Measured on 2026-10-23 with `timing::the_scale_of_a_picture_with_and_without_a_copy_of_its_planes` on an x86-64 Linux machine in the test build, in two runs, a picture of 1920 × 1080 scaled to 1128 × 634 took medians of 2.81 and 3.28 ms with the copy and 1.81 and 1.95 ms without it (each over six rounds of 1,000 pictures). A run on a Mac with Apple silicon on 2026-10-22, of which no record was kept, gave 1.36 ms and 1.25 ms; the copy allocates 3 MiB for each picture.
@@ -113,6 +117,7 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 - Share: the VP8 encoder of the own share holds about 38 MiB and takes about half of the busy samples on three threads, although the share is published as screen content. The decoder of the watched share holds about 17 MiB of frame buffers. Before the change of the watched share, the client held the watched picture converted to BGRA at the size of the view (about 13.5 MiB over 5 pictures), a copy of it as an image of the window (about 9 MiB), and the textures on the GPU (about 11 MiB).
 
 ## Open points
+
 
 - The modes have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
 - A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes (ADR 0774). The cost on the receiving side is not measured.

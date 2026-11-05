@@ -69,6 +69,8 @@ webrtc-sys = "=0.3.48"
 cpal = "0.18.2"
 # The bounded hand-over of captured sound on Linux and Windows (ADR 0751, ADR 0706).
 rtrb = "0.3.5"
+# The noise suppressor of the microphone, RNNoise in Rust (ADR 0733).
+nnnoiseless = { version = "=0.5.2", default-features = false }
 futures-util = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
