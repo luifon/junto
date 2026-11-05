@@ -132,29 +132,5 @@ impl Layout {
     }
 }
 
-/// Version 9 of the server book also held named personal sections in each layout. Version 10
-/// holds only the favourites: the sections go, and their channels return to the grouping of
-/// the server (ADR 0775). A layout that held only sections goes with them.
-pub(crate) fn without_sections(layouts: &mut serde_json::Value) {
-    let Some(accounts) = layouts.as_object_mut() else {
-        return;
-    };
-    for workspaces in accounts.values_mut() {
-        if let Some(workspaces) = workspaces.as_object_mut() {
-            for layout in workspaces.values_mut() {
-                if let Some(layout) = layout.as_object_mut() {
-                    layout.remove("sections");
-                }
-            }
-            workspaces.retain(|_, layout| {
-                serde_json::from_value::<Layout>(layout.clone())
-                    .ok()
-                    .is_none_or(|layout| !layout.is_empty())
-            });
-        }
-    }
-    accounts.retain(|_, workspaces| workspaces.as_object().is_none_or(|held| !held.is_empty()));
-}
-
 #[cfg(test)]
 mod tests;

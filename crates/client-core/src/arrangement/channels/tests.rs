@@ -91,35 +91,3 @@ fn invalid_or_excessive_changes_are_atomic_and_stored_data_is_checked() {
     );
     assert_eq!(layout, before);
 }
-
-#[test]
-fn the_named_sections_of_version_9_go_and_a_layout_of_only_sections_goes_with_them() {
-    let (account, other, workspace, kept, favourite, placed) = (
-        "0191a0f0-0000-7000-8000-000000000001",
-        "0191a0f0-0000-7000-8000-000000000002",
-        "0191a0f0-0000-7000-8000-000000000003",
-        "0191a0f0-0000-7000-8000-000000000004",
-        ChannelId::generate(),
-        ChannelId::generate(),
-    );
-    let section = serde_json::json!({
-        "id": "0191a0f0-0000-7000-8000-000000000005",
-        "name": "Projects",
-        "collapsed": true,
-        "channels": [placed],
-    });
-    let mut layouts = serde_json::json!({
-        account: {
-            workspace: {"favourites": [favourite], "favourites_collapsed": true, "sections": [section]},
-            kept: {"sections": [section]},
-        },
-        other: {workspace: {"sections": [section]}},
-    });
-    without_sections(&mut layouts);
-    assert_eq!(
-        layouts,
-        serde_json::json!({
-            account: {workspace: {"favourites": [favourite], "favourites_collapsed": true}},
-        })
-    );
-}

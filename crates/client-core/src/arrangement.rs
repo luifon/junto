@@ -481,9 +481,19 @@ impl Arrangement {
             .servers
             .iter()
             .filter(|place| known.contains(&place.server_id))
-            .map(|place| ServerPlace {
-                group: place.group.filter(|group| groups.contains(group)),
-                ..place.clone()
+            .map(|place| {
+                // A layout that holds nothing goes, as one that held only the named personal
+                // sections of 0.1.0 does after a read (ADR 0775).
+                let mut channel_layouts = place.channel_layouts.clone();
+                for workspaces in channel_layouts.values_mut() {
+                    workspaces.retain(|_, layout| !layout.is_empty());
+                }
+                channel_layouts.retain(|_, workspaces| !workspaces.is_empty());
+                ServerPlace {
+                    group: place.group.filter(|group| groups.contains(group)),
+                    channel_layouts,
+                    ..place.clone()
+                }
             })
             .filter(|place| !place.is_default())
             .collect();

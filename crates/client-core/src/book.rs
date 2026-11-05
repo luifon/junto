@@ -12,22 +12,14 @@ use crate::arrangement::{ArrangeError, Arrangement, Change};
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 10;
+pub const BOOK_FORMAT_VERSION: u32 = 9;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
     migrations: &[
-        unchanged,
-        unchanged,
-        unchanged,
-        unchanged,
-        unchanged,
-        unchanged,
-        unchanged,
-        unchanged,
-        without_personal_sections,
+        unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged, unchanged,
     ],
     limit: 4 * 1024 * 1024,
 };
@@ -42,28 +34,6 @@ const BOOK: Versioned = Versioned {
 /// client that it cannot read the file, so that it does not drop the field or the entry
 /// when it writes the book.
 fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
-    Ok(value)
-}
-
-/// Version 10 keeps the favourites of each account and workspace and drops the named
-/// personal sections of version 9. It also adds the collapsed direct messages of each
-/// account, initially none (ADR 0775).
-fn without_personal_sections(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
-    let places = value
-        .get_mut("arrangement")
-        .and_then(|arrangement| arrangement.get_mut("servers"))
-        .and_then(serde_json::Value::as_array_mut);
-    for place in places.into_iter().flatten() {
-        let Some(place) = place.as_object_mut() else {
-            continue;
-        };
-        if let Some(layouts) = place.get_mut("channel_layouts") {
-            crate::arrangement::channels::without_sections(layouts);
-            if layouts.as_object().is_some_and(serde_json::Map::is_empty) {
-                place.remove("channel_layouts");
-            }
-        }
-    }
     Ok(value)
 }
 
@@ -1477,7 +1447,7 @@ mod tests {
         assert!(serde_json::from_str::<EventCursor>("\"\"").is_err());
     }
     #[test]
-    fn a_book_of_version_9_keeps_the_favourites_and_drops_the_named_sections() {
+    fn a_book_with_named_sections_keeps_the_favourites_and_drops_the_sections() {
         use junto_protocol::ids::{ChannelId, WorkspaceId};
         let (_directory, data_dir, book) = book();
         let entry = book
@@ -1535,6 +1505,107 @@ mod tests {
                 workspace.to_string(): {"favourites": [favourite], "favourites_collapsed": false},
             }})
         );
+    }
+
+    /// The restore of 0.1.0 after an update reads the book that 0.2.0 wrote (ADR 0710): the
+    /// version is 9, and every field is one that the book types of 0.1.0 (3616c8f4) read, or
+    /// `directs_collapsed`, which they ignore, as none of them refuses an unknown field.
+    #[test]
+    fn a_book_that_this_client_writes_has_only_fields_that_0_1_0_reads_or_ignores() {
+        use crate::arrangement::channels::{Change as PersonalChange, Location};
+        use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId};
+        let (_directory, data_dir, book) = book();
+        let entry = book
+            .add(entry("https://studio.example.test", "Studio"))
+            .unwrap();
+        let account = AccountId::generate();
+        for change in [
+            Change::PersonalChannels {
+                server: entry.server_id,
+                account,
+                workspace: WorkspaceId::generate(),
+                change: PersonalChange::Place {
+                    channel: ChannelId::generate(),
+                    to: Location::Favourites,
+                    before: None,
+                },
+            },
+            Change::CollapseCategory {
+                server: entry.server_id,
+                account,
+                category: CategoryId::generate(),
+                collapsed: true,
+            },
+            Change::CollapseDirects {
+                server: entry.server_id,
+                account,
+                collapsed: true,
+            },
+            Change::CollapseWorkspaces {
+                server: entry.server_id,
+                collapsed: true,
+            },
+            Change::NewGroup {
+                server: entry.server_id,
+                name: "Clients".to_owned(),
+            },
+        ] {
+            book.arrange(change).unwrap();
+        }
+        let written: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(written["format_version"], 9);
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value
+                .as_object()
+                .map(|object| object.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let within = |found: Vec<String>, known: &[&str], what: &str| {
+            for key in found {
+                assert!(known.contains(&key.as_str()), "{what} has the field {key}");
+            }
+        };
+        within(
+            keys(&written),
+            &["format_version", "servers", "kept_keys", "arrangement"],
+            "the book",
+        );
+        let arrangement = &written["arrangement"];
+        within(keys(arrangement), &["groups", "servers"], "the arrangement");
+        for group in arrangement["groups"].as_array().unwrap() {
+            within(
+                keys(group),
+                &["id", "name", "colour", "collapsed"],
+                "a group",
+            );
+        }
+        let places = arrangement["servers"].as_array().unwrap();
+        assert_eq!(places.len(), 1);
+        within(
+            keys(&places[0]),
+            &[
+                "server_id",
+                "group",
+                "workspaces_collapsed",
+                "workspace_order",
+                "collapsed_categories",
+                "channel_layouts",
+                // Ignored by 0.1.0.
+                "directs_collapsed",
+            ],
+            "the record of a server",
+        );
+        assert!(places[0]["directs_collapsed"].is_array());
+        for workspaces in places[0]["channel_layouts"].as_object().unwrap().values() {
+            for layout in workspaces.as_object().unwrap().values() {
+                within(
+                    keys(layout),
+                    &["favourites", "favourites_collapsed", "sections"],
+                    "a layout",
+                );
+            }
+        }
     }
 
     #[test]
