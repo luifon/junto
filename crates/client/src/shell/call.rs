@@ -100,19 +100,11 @@ pub(crate) fn tile_marks(occupant: &Occupant) -> (Vec<TileMark>, String) {
         marks.push(TileMark::Sharing);
         words.push(text::SHARING_SCREEN.to_owned());
     }
-    // A closed microphone with the sound off is one mark in the place of the microphone.
-    let both_off = occupant.sound_off && occupant.microphone == Microphone::Closed;
     if occupant.sound_off {
-        if !both_off {
-            marks.push(TileMark::SoundOff);
-        }
+        marks.push(TileMark::SoundOff);
         words.push(text::SOUND_OFF.to_owned());
     }
     match occupant.microphone {
-        Microphone::Closed if both_off => {
-            marks.push(TileMark::MicrophoneAndSoundOff);
-            words.push(text::MICROPHONE_CLOSED.to_owned());
-        }
         Microphone::Held(reason) => {
             marks.push(TileMark::MicrophoneHeld);
             words.push(text::microphone_held(reason).to_owned());
@@ -147,12 +139,7 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
     if occupant.sharing {
         states.push((Icon::Screen, text::SHARING_SCREEN.into()));
     }
-    let both_off = occupant.sound_off && occupant.microphone == Microphone::Closed;
     states.push(match occupant.microphone {
-        Microphone::Closed if both_off => (
-            Icon::MicrophoneAndSoundOff,
-            text::MUTED_AND_SOUND_OFF.into(),
-        ),
         Microphone::Held(reason) => (
             Icon::MicrophoneHeld,
             text::closed_by(reason, occupant.held_by.as_deref()).into(),
@@ -161,7 +148,7 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
         Microphone::Open { speaking: true } => (Icon::Microphone, text::SPEAKING.into()),
         Microphone::Open { speaking: false } => (Icon::Microphone, text::MICROPHONE_ON.into()),
     });
-    if occupant.sound_off && !both_off {
+    if occupant.sound_off {
         states.push((Icon::PhonesOff, text::SOUND_IS_OFF.into()));
     }
     if occupant.hand_raised {
@@ -1384,10 +1371,6 @@ impl Shell {
             let mark: AnyElement = match occupant.microphone {
                 Microphone::Held(_) => {
                     icon(Icon::MicrophoneHeld, 14.0, colors.terracotta_deep).into_any_element()
-                }
-                Microphone::Closed if occupant.sound_off => {
-                    icon(Icon::MicrophoneAndSoundOff, 14.0, colors.terracotta_deep)
-                        .into_any_element()
                 }
                 Microphone::Closed => {
                     icon(Icon::MicrophoneOff, 14.0, colors.terracotta_deep).into_any_element()
@@ -2688,54 +2671,6 @@ fn share_visible(phase: Phase) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_closed_microphone_with_the_sound_off_is_one_mark_on_the_tile_and_one_state() {
-        let mut occupant = Occupant {
-            account_id: junto_client_core::protocol::ids::AccountId::generate(),
-            name: Some("Bruno".to_owned()),
-            is_self: false,
-            microphone: Microphone::Closed,
-            held_by: None,
-            sharing: false,
-            hand_raised: false,
-            sound_off: true,
-            sound_blocked: false,
-            level: None,
-            presence: Presence::Here,
-            volume: 100,
-        };
-        assert_eq!(
-            tile_marks(&occupant),
-            (
-                vec![TileMark::MicrophoneAndSoundOff],
-                format!("Bruno, {}, {}", text::SOUND_OFF, text::MICROPHONE_CLOSED)
-            )
-        );
-        assert_eq!(
-            member_states(&occupant),
-            [(
-                Icon::MicrophoneAndSoundOff,
-                SharedString::from(text::MUTED_AND_SOUND_OFF)
-            )]
-        );
-        occupant.microphone =
-            Microphone::Held(junto_client_core::protocol::call::BlockReason::Moderator);
-        assert_eq!(
-            tile_marks(&occupant).0,
-            [TileMark::SoundOff, TileMark::MicrophoneHeld]
-        );
-        assert_eq!(
-            member_states(&occupant)
-                .into_iter()
-                .map(|(icon, _)| icon)
-                .collect::<Vec<_>>(),
-            [Icon::MicrophoneHeld, Icon::PhonesOff]
-        );
-        occupant.microphone = Microphone::Closed;
-        occupant.sound_off = false;
-        assert_eq!(tile_marks(&occupant).0, [TileMark::MicrophoneOff]);
-    }
 
     #[test]
     fn a_reconnecting_call_does_not_show_its_retained_share() {

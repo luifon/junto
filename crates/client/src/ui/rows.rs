@@ -724,8 +724,6 @@ pub enum OccupantMark {
     Sharing(SharedString),
     HandRaised(SharedString),
     SoundOff(SharedString),
-    /// The person closed the microphone and turned the sound off: one mark for both.
-    MicrophoneAndSoundOff(SharedString),
     /// The level of an open microphone, as lit segments of five.
     Level {
         lit: usize,
@@ -743,7 +741,6 @@ impl OccupantMark {
             | Self::Sharing(label)
             | Self::HandRaised(label)
             | Self::SoundOff(label)
-            | Self::MicrophoneAndSoundOff(label)
             | Self::Status(label)
             | Self::Level { label, .. } => label,
         }
@@ -859,10 +856,6 @@ impl RenderOnce for OccupantRow {
                 }
                 OccupantMark::SoundOff(_) => {
                     icon(Icon::PhonesOff, 14.0, colors.terracotta_deep).into_any_element()
-                }
-                OccupantMark::MicrophoneAndSoundOff(_) => {
-                    icon(Icon::MicrophoneAndSoundOff, 14.0, colors.terracotta_deep)
-                        .into_any_element()
                 }
                 OccupantMark::Level { lit, .. } => Meter::new(lit).into_any_element(),
                 OccupantMark::Status(text) => div()

@@ -107,7 +107,6 @@ icons! {
     List => "lucide/list",
     Lock => "lucide/lock",
     Microphone => "lucide/mic",
-    MicrophoneAndSoundOff => "headset-off",
     MicrophoneHeld => "mic-held",
     MicrophoneOff => "lucide/mic-off",
     Minus => "lucide/minus",

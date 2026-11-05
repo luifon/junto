@@ -2330,34 +2330,6 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::call("call-own-microphone-and-sound-off", muted),
         show_daily_tab(CallTab::Members),
     )?;
-    // One mark for a closed microphone with the sound off: Bruno and Luca have both off,
-    // Marta only a closed microphone (ADR 0739).
-    let both_off = || {
-        let mut media = in_call(Phase::Connected);
-        media.calls.muted = true;
-        media.calls.deafened = true;
-        media
-    };
-    let bruno_deafened = || {
-        vec![
-            acme_with_luca(|call| {
-                for participant in &mut call.participants {
-                    if participant.account_id == person("Bruno") {
-                        participant.deafened = true;
-                    }
-                }
-            }),
-            harbor(),
-        ]
-    };
-    studio.draw(
-        Screen::call("call-microphone-and-sound-off", both_off()).servers(bruno_deafened()),
-        show_daily,
-    )?;
-    studio.draw(
-        Screen::call("call-microphone-and-sound-off-members", both_off()).servers(bruno_deafened()),
-        show_daily_tab(CallTab::Members),
-    )?;
     studio.draw(
         Screen::call("call-reconnecting", in_call(Phase::Reconnecting)),
         show_daily,
@@ -3032,10 +3004,6 @@ impl gpui::Render for Components {
                             TileMark::SoundOff,
                             TileMark::MicrophoneHeld,
                         ]),
-                    )
-                    .child(
-                        PersonTile::new("tile-both-off", "Bruno", 4241, "Bruno")
-                            .marks(vec![TileMark::MicrophoneAndSoundOff]),
                     ),
             )
             .child(
@@ -3104,25 +3072,6 @@ impl gpui::Render for Components {
                                     .icon(Icon::Speaker)
                                     .label("Join call"),
                             ),
-                    )
-                    .child(
-                        row()
-                            .child(label("Marks at 13 and 14 px, and at 48 px"))
-                            .children([13.0, 14.0].into_iter().flat_map(|size| {
-                                [
-                                    Icon::MicrophoneOff,
-                                    Icon::PhonesOff,
-                                    Icon::MicrophoneAndSoundOff,
-                                ]
-                                .map(|drawn| {
-                                    junto_client::ui::icon(drawn, size, colors.terracotta_deep)
-                                })
-                            }))
-                            .child(junto_client::ui::icon(
-                                Icon::MicrophoneAndSoundOff,
-                                48.0,
-                                colors.ink,
-                            )),
                     )
                     .child(
                         row()

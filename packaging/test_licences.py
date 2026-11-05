@@ -82,7 +82,7 @@ class ClientLicenceTests(unittest.TestCase):
             labels = found[licences.normal(licence.read_bytes())]
             self.assertTrue(labels[0].endswith(f": {licence.name}"), labels)
         [icons] = found[licences.normal((licences.LUCIDE / "LICENSE").read_bytes())]
-        self.assertTrue(icons.startswith("Lucide icons ") and icons.endswith(", mic-held and headset-off: LICENSE"), icons)
+        self.assertTrue(icons.startswith("Lucide icons ") and icons.endswith(", and mic-held: LICENSE"), icons)
         for drawing in licences.LUCIDE.glob("*.svg"):
             self.assertIn(f" {drawing.stem},", icons)
         apache = licences.normal((licences.ROOT / "LICENSE").read_bytes())

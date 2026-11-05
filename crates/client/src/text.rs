@@ -173,7 +173,6 @@ pub const SPEAKING: &str = "Speaking";
 pub const SHARING_SCREEN: &str = "Sharing a screen";
 pub const HAND_RAISED: &str = "Hand raised";
 pub const SOUND_OFF: &str = "Sound off";
-pub const MUTED_AND_SOUND_OFF: &str = "Muted and sound off";
 
 pub fn microphone_held(reason: BlockReason) -> &'static str {
     match reason {
