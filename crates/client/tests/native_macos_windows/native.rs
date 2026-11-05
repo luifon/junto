@@ -94,31 +94,25 @@ fn windows() -> Vec<Retained<NSWindow>> {
 
 /// The main window draws its content up to its top edge, and its headers act as the title bar
 /// (ADR 0703): the client asks gpui for a transparent title bar, for the window controls at
-/// `MAIN_WINDOW_CONTROLS` and for the move of the window by the application; the native window
+/// `MAIN_WINDOW_CONTROLS` and for the move of the window by the application (the options that
+/// `open_main_window` gave gpui, `app::OpenedTitleBar`); the native window
 /// has a content view of its full size with a transparent title bar, its close button at that
 /// place, and the content of the window reaches the band of the title bar.
 ///
 /// That the content view takes the presses in the title bar (`app_owns_titlebar_drag`) is
 /// answered by a private method of AppKit (`_opaqueRectForWindowMoveWhenInTitlebar`), which
 /// only an untyped message, unsafe code, can call; the test reads that setting in the options
-/// that the client gives gpui.
-fn title_bar(window: &NSWindow, reaches: bool) -> Result<(), String> {
-    let options = app::main_window_options(
-        WindowBounds::Windowed(gpui::Bounds::default()),
-        None,
-        gpui::Size::default(),
-        false,
-    );
-    let titlebar = options
-        .titlebar
-        .ok_or("the main window has no title bar options")?;
+/// that `open_main_window` gave gpui.
+fn title_bar(window: &NSWindow, opened: app::OpenedTitleBar, reaches: bool) -> Result<(), String> {
     let controls = app::MAIN_WINDOW_CONTROLS;
-    if !options.app_owns_titlebar_drag
-        || !titlebar.appears_transparent
-        || titlebar.traffic_light_position
+    if !opened.app_owns_titlebar_drag
+        || !opened.appears_transparent
+        || opened.traffic_light_position
             != Some(gpui::point(gpui::px(controls.0), gpui::px(controls.1)))
     {
-        return Err("the main window does not ask for its own title bar".into());
+        return Err(format!(
+            "the main window was opened without its own title bar: {opened:?}"
+        ));
     }
     if !window
         .styleMask()
@@ -142,11 +136,12 @@ fn title_bar(window: &NSWindow, reaches: bool) -> Result<(), String> {
     let close = window
         .standardWindowButton(NSWindowButton::CloseButton)
         .ok_or("the main window has no close button")?;
-    let place = close.frame().origin.x;
-    if (place - f64::from(controls.0)).abs() > 1.0 {
+    let place = close.frame().origin;
+    if (place.x - f64::from(controls.0)).abs() > 1.0
+        || (place.y - f64::from(controls.1)).abs() > 1.0
+    {
         return Err(format!(
-            "the close button of the main window is at {place}, not at {}",
-            controls.0
+            "the close button of the main window is at {place:?}, not at {controls:?}"
         ));
     }
     if !reaches {
@@ -198,8 +193,19 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
     let directory = directory.to_owned();
     let application = gpui_platform::application().with_assets(Assets);
     application.on_reopen(|cx| junto_client::notify::bring_to_front(None, cx));
+    let ended = outcome.clone();
     application.run(move |cx| {
         app::init(cx).unwrap();
+        // `quit` ends the process inside AppKit with exit code 0, and the client quits when its
+        // last window closes: an end before the result is a failure.
+        cx.on_app_quit(move |_| {
+            if ended.borrow().is_none() {
+                eprintln!("native_macos_windows: the application ended before the native checks");
+                std::process::exit(1);
+            }
+            async {}
+        })
+        .detach();
         let client = Client::open(ClientOptions::new(directory.join("profile"))).unwrap();
         junto_client::panics::record_into(client.data_dir().root());
         let start = WindowStart {
@@ -223,13 +229,15 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                 .await?;
                 let main_native = windows().pop().unwrap();
                 if !restoring {
-                    let reaches = cx.update(|cx| {
-                        main.update(cx, |_, window, cx| {
-                            junto_client::shell::title_bar::reaches_title_bar(window, cx)
-                        })
-                        .unwrap()
+                    let (reaches, opened) = cx.update(|cx| {
+                        let reaches = main
+                            .update(cx, |_, window, cx| {
+                                junto_client::shell::title_bar::reaches_title_bar(window, cx)
+                            })
+                            .unwrap();
+                        (reaches, *cx.global::<app::OpenedTitleBar>())
                     });
-                    title_bar(&main_native, reaches)?;
+                    title_bar(&main_native, opened, reaches)?;
                 }
                 cx.update(|cx| detached::open(state.clone(), cx));
                 until(cx, "the detached call window appears", |_| {

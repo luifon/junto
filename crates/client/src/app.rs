@@ -243,6 +243,19 @@ pub fn main_window_options(
 /// Where macOS draws the window controls of the main window, from its top left corner.
 pub const MAIN_WINDOW_CONTROLS: (f32, f32) = (12.0, 13.0);
 
+/// The title bar options that `open_main_window` gave gpui last, for the native test of the
+/// title bar (`native_macos_windows`).
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy)]
+pub struct OpenedTitleBar {
+    pub app_owns_titlebar_drag: bool,
+    pub appears_transparent: bool,
+    pub traffic_light_position: Option<gpui::Point<gpui::Pixels>>,
+}
+
+#[cfg(feature = "test-support")]
+impl gpui::Global for OpenedTitleBar {}
+
 /// Opens the main window.
 pub fn open_main_window(
     state: Entity<AppState>,
@@ -257,40 +270,50 @@ pub fn open_main_window(
         &cx.displays(),
         cx.primary_display().map(|display| display.id()),
     );
-    let window = cx.open_window(
-        main_window_options(
-            if saved.maximized {
-                WindowBounds::Maximized(restored.bounds)
-            } else {
-                WindowBounds::Windowed(restored.bounds)
-            },
-            restored.display,
-            restored.minimum,
-            start.activate,
-        ),
-        move |window, cx| {
-            window.set_rem_size(theme::rem_size(scale));
-            #[cfg(target_os = "macos")]
-            crate::shell::title_bar::content_reaches_title_bar(window, cx);
-            #[cfg(windows)]
-            crate::taskbar::identify(window);
-            let held = state.clone();
-            window.on_window_should_close(cx, move |window, cx| {
-                main_window_closing(&held, cx);
-                #[cfg(windows)]
-                crate::taskbar::forget(window);
-                #[cfg(not(windows))]
-                let _ = window;
-                true
-            });
-            let shell = cx.new(|cx| {
-                let mut shell = Shell::new(state, window, cx);
-                shell.observe_placement(false, window, cx);
-                shell
-            });
-            cx.new(|cx| Root::new(shell, window, cx))
+    let options = main_window_options(
+        if saved.maximized {
+            WindowBounds::Maximized(restored.bounds)
+        } else {
+            WindowBounds::Windowed(restored.bounds)
         },
-    )?;
+        restored.display,
+        restored.minimum,
+        start.activate,
+    );
+    #[cfg(feature = "test-support")]
+    cx.set_global(OpenedTitleBar {
+        app_owns_titlebar_drag: options.app_owns_titlebar_drag,
+        appears_transparent: options
+            .titlebar
+            .as_ref()
+            .is_some_and(|titlebar| titlebar.appears_transparent),
+        traffic_light_position: options
+            .titlebar
+            .as_ref()
+            .and_then(|titlebar| titlebar.traffic_light_position),
+    });
+    let window = cx.open_window(options, move |window, cx| {
+        window.set_rem_size(theme::rem_size(scale));
+        #[cfg(target_os = "macos")]
+        crate::shell::title_bar::content_reaches_title_bar(window, cx);
+        #[cfg(windows)]
+        crate::taskbar::identify(window);
+        let held = state.clone();
+        window.on_window_should_close(cx, move |window, cx| {
+            main_window_closing(&held, cx);
+            #[cfg(windows)]
+            crate::taskbar::forget(window);
+            #[cfg(not(windows))]
+            let _ = window;
+            true
+        });
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(state, window, cx);
+            shell.observe_placement(false, window, cx);
+            shell
+        });
+        cx.new(|cx| Root::new(shell, window, cx))
+    })?;
     cx.set_global(MainWindow(window));
     if !cx.has_global::<WindowLifecycle>() {
         cx.on_window_closed(|cx, _| {

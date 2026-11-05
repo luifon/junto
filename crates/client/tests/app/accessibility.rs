@@ -124,3 +124,79 @@ fn every_list_item_has_a_name_and_the_administration_lists_their_places(cx: &mut
         "the archived channels do not state their places in a list of three: {archived:?}"
     );
 }
+
+/// The items of the administration list drawn now, with their place, the size of their list
+/// and their name: the list items that state a place.
+fn listed(window: &mut crate::harness::Window) -> Vec<(u64, u64, Option<String>)> {
+    window.settle();
+    let Some(json) = window.cx.update(|window, _| window.debug_a11y_tree_json()) else {
+        return Vec::new();
+    };
+    let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut items: Vec<_> = nodes(&tree)
+        .into_iter()
+        .filter(|node| node.0 == "ListItem")
+        .filter_map(|(_, label, position, size)| Some((position?, size?, label)))
+        .collect();
+    items.sort();
+    items
+}
+
+/// TG-16: the lists of people, invites, access tokens, roles and audit entries of the
+/// administration name each of their items and state its place and the size of the list.
+#[gpui::test]
+fn the_items_of_the_administration_lists_have_names_and_places(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::access_token::{CreateAccessToken, TokenAction};
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let mut devices = Vec::new();
+    for name in ["Bea", "Cai"] {
+        let code = crate::admin_pages::invite(&world, &owner, Vec::new());
+        devices.push(crate::admin_pages::joined(&world, &server, &code, name));
+    }
+    for _ in 0..2 {
+        crate::admin_pages::invite(&world, &owner, Vec::new());
+    }
+    for name in ["Deploy", "Backup"] {
+        world
+            .run(owner.api().create_access_token(&CreateAccessToken {
+                name: name.to_owned(),
+                actions: vec![TokenAction::ReadStructure],
+                expires_at: time::OffsetDateTime::now_utc() + time::Duration::days(7),
+            }))
+            .unwrap();
+    }
+    assert!(
+        window.activate_accessibility(),
+        "the window gave no accessibility callbacks"
+    );
+    window.open_administration();
+    for (page, least) in [
+        ("admin-nav-people", 3),
+        ("admin-nav-invites", 2),
+        ("admin-nav-tokens", 2),
+        ("admin-nav-roles", 1),
+        ("admin-nav-audit", 1),
+    ] {
+        crate::admin_pages::open_page(&mut window, page, |window| listed(window).len() >= least);
+        let items = listed(&mut window);
+        let count = items.len() as u64;
+        for (position, size, label) in &items {
+            assert!(
+                label
+                    .as_deref()
+                    .is_some_and(|label| !label.trim().is_empty()),
+                "{page}: item {position} of {size} has no name"
+            );
+            assert_eq!(*size, count, "{page}: item {position} states another size");
+        }
+        assert_eq!(
+            items.iter().map(|item| item.0).collect::<Vec<_>>(),
+            (1..=count).collect::<Vec<_>>(),
+            "{page}: the places are not 1 to {count}"
+        );
+    }
+    drop(devices);
+}
