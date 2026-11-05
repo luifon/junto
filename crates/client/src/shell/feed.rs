@@ -3096,6 +3096,13 @@ impl Shell {
             .shown_frames(&attachment_id.to_string())
     }
 
+    /// How often the animations of the pictures of messages drew the window. A test uses
+    /// it.
+    #[cfg(feature = "test-support")]
+    pub fn animation_draws(&self) -> usize {
+        self.message_pictures.playback.woken()
+    }
+
     /// True while an animation will draw the window again. A test uses it.
     #[cfg(feature = "test-support")]
     pub fn animation_waits(&self) -> bool {

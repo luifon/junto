@@ -925,6 +925,15 @@ fn frames(window: &mut Window, id: AttachmentId) -> Vec<usize> {
     frames
 }
 
+/// How often the animations drew the window, after it has no work left for a frame of the
+/// display.
+fn animation_draws(window: &mut Window) -> usize {
+    window.until("the window has no work for a frame", |window| {
+        window.frame() == 0
+    });
+    window.in_shell(|shell, _, _| shell.animation_draws())
+}
+
 /// How often the window was drawn, after it has no work left for a frame of the display:
 /// the scrollbars of the list ask for frames for a time after a scroll (ADR 0793).
 fn draws(window: &mut Window) -> usize {
@@ -997,12 +1006,14 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     window.settle();
     assert_eq!(frames(&mut window, id), [0]);
 
-    // The window is not active: the animation stays at its first frame.
-    let before = draws(&mut window);
+    // The window is not active: the animation stays at its first frame. The drawings that
+    // the animation asks for are counted: the window is also drawn for the changes of the
+    // state that the server sends in real time, as the reads that the window reports.
+    let before = animation_draws(&mut window);
     wait_for(&mut window, 300);
     assert_eq!(frames(&mut window, id), [0]);
     assert_eq!(
-        draws(&mut window),
+        animation_draws(&mut window),
         before,
         "a window that is not active was drawn"
     );
@@ -1011,7 +1022,7 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     window.settle();
     for frame in [0, 1, 2, 3, 0, 1] {
         assert_eq!(frames(&mut window, id), [frame]);
-        let before = draws(&mut window);
+        let before = animation_draws(&mut window);
         wait_for(&mut window, 99);
         assert_eq!(
             frames(&mut window, id),
@@ -1019,13 +1030,13 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
             "a frame ended before its delay"
         );
         assert_eq!(
-            draws(&mut window),
+            animation_draws(&mut window),
             before,
             "the window was drawn within a frame"
         );
         wait_for(&mut window, 1);
         assert!(
-            draws(&mut window) > before,
+            animation_draws(&mut window) > before,
             "the end of a frame drew nothing"
         );
     }
@@ -1034,10 +1045,10 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     // With reduced motion the animation stops, and plays while the pointer is over it.
     window.cx.update(|_, cx| cx.set_reduce_motion(true));
     window.settle();
-    let before = draws(&mut window);
+    let before = animation_draws(&mut window);
     wait_for(&mut window, 500);
     assert_eq!(frames(&mut window, id), [2]);
-    assert_eq!(draws(&mut window), before);
+    assert_eq!(animation_draws(&mut window), before);
     window.hover_named(format!("picture:{id}"));
     wait_for(&mut window, 100);
     assert_eq!(frames(&mut window, id), [3]);
@@ -1067,10 +1078,10 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     });
     wait_for(&mut window, 200);
     assert!(!window.in_shell(|shell, _, _| shell.animation_waits()));
-    let before = draws(&mut window);
+    let before = animation_draws(&mut window);
     wait_for(&mut window, 1_000);
     assert_eq!(
-        draws(&mut window),
+        animation_draws(&mut window),
         before,
         "an animation out of view drew the window"
     );
