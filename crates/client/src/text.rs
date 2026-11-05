@@ -1845,6 +1845,9 @@ pub fn flow_error(error: &FlowError) -> String {
         FlowError::Storage(reason) => {
             format!("A file of the data directory could not be used: {reason}.")
         }
+        FlowError::DataHeld => "Another program is changing the data of Junto on this device, \
+             so the change was not saved. Try again when it has finished, or close it."
+            .to_owned(),
         FlowError::Stopped => "Junto is shutting down.".to_owned(),
     }
 }
@@ -3570,6 +3573,7 @@ mod tests {
                 total: 3,
             },
             FlowError::Storage("the file is locked".to_owned()),
+            FlowError::DataHeld,
             FlowError::Stopped,
         ];
         all.extend(ErrorCode::ALL.iter().map(|code| FlowError::Refused {
@@ -3624,10 +3628,11 @@ mod tests {
                 FlowError::InvalidBundle(_) => "invalid bundle",
                 FlowError::Incomplete { .. } => "incomplete",
                 FlowError::Storage(_) => "storage",
+                FlowError::DataHeld => "data held",
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 25);
     }
 
     #[test]

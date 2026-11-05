@@ -2007,6 +2007,10 @@ impl Server {
             )
         };
         let written = membership.clone();
+        // The actions run on the runtime of the client, whose threads do not wait for
+        // another program that holds the data directory: the action fails with that reason,
+        // and the entry stays unsaved for the next action (ADR 0710).
+        let _held = self.core.data_dir.try_lock()?;
         #[cfg(test)]
         {
             let pause = lock(&self.core.before_write).clone();

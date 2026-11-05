@@ -4843,3 +4843,59 @@ async fn token_search_capabilities_use_server_discovery_and_reject_another_serve
     ));
 }
 
+/// Another program holds the lock of the data directory while the person logs in after a
+/// logout of the person, whose end is written to the book first. The login fails at once
+/// and says so, and no thread of the runtime of the client waits for the other program
+/// (ADR 0710). The client runs on a runtime of its own, as in the application.
+#[test]
+fn a_login_while_another_program_holds_the_data_directory_says_so_at_once() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+
+    let login = handle.dispatch(AccessAction::LogIn);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(login));
+    });
+    let answered = receiver.recv_timeout(Duration::from_secs(30));
+    other_program.unlock().unwrap();
+    assert_eq!(
+        answered.expect("the login waited for the other program"),
+        Err(FlowError::DataHeld)
+    );
+    let view = handle.access();
+    assert!(matches!(view.state, AccessState::LoggedOutByPerson { .. }));
+    assert_eq!(view.error, Some(FlowError::DataHeld));
+    assert!(handle.entry().logged_out);
+
+    driver
+        .block_on(handle.dispatch(AccessAction::LogIn))
+        .unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    let book = device.reopened(&network);
+    assert!(!book.servers()[0].entry().logged_out);
+}

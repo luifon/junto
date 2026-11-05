@@ -55,6 +55,10 @@ pub enum StorageError {
     UnexpectedKind { path: PathBuf },
     #[error("{path} is larger than {limit} bytes")]
     TooLarge { path: PathBuf, limit: u64 },
+    /// Another program holds the lock of the data directory, and the caller does not wait
+    /// for it (ADR 0710).
+    #[error("another program holds the lock {path}")]
+    Held { path: PathBuf },
 }
 
 impl StorageError {
@@ -403,6 +407,18 @@ impl Dir {
     /// through this handle or through another handle of the same directory: the lock is
     /// known by the identity of the directory, not by the path that was used to open it.
     pub(crate) fn lock(&self) -> Result<DirectoryLock, StorageError> {
+        self.lock_waiting(true)
+    }
+
+    /// Takes the lock as [`Directory::lock`] does when no other program holds it, and
+    /// answers [`StorageError::Held`] at once when one does. A task of the runtime of the
+    /// client uses it, so that no thread of the runtime waits for another program
+    /// (ADR 0710).
+    pub(crate) fn try_lock(&self) -> Result<DirectoryLock, StorageError> {
+        self.lock_waiting(false)
+    }
+
+    fn lock_waiting(&self, wait: bool) -> Result<DirectoryLock, StorageError> {
         #[cfg(feature = "test-support")]
         assert!(
             !LOCKS_REFUSED.get().is_some_and(|refused| refused()),
@@ -417,8 +433,21 @@ impl Dir {
             let file = self
                 .handle
                 .open_lock(LOCK_NAME)
-                .and_then(|file| file.lock().map(|()| file))
                 .map_err(|error| StorageError::io("lock", &path, error))?;
+            if wait {
+                file.lock()
+                    .map_err(|error| StorageError::io("lock", &path, error))?;
+            } else {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        return Err(StorageError::Held { path });
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => {
+                        return Err(StorageError::io("lock", &path, error));
+                    }
+                }
+            }
             Some(file)
         };
         HELD.with_borrow_mut(|held| held.push(self.identity));
