@@ -493,18 +493,37 @@ def font_section():
 
 
 LUCIDE = ROOT / "crates/client/assets/icons/lucide"
+TRAY = ROOT / "packaging/icon/tray"
+# The signs of the tray pictures (ADR 0759) and the Lucide icons that each is drawn from. The sign
+# junto, three rings, is part of Junto.
+TRAY_SOURCES = {
+    "headphones-off": "headphone-off",
+    "microphone": "mic",
+    "microphone-and-headphones-off": "headset and headphone-off",
+    "microphone-held": "mic-off and lock",
+    "microphone-off": "mic-off",
+}
+TRAY_OWN = {"junto"}
 
 
 def icon_section():
     icons = sorted(path.stem for path in LUCIDE.glob("*.svg"))
     if not icons:
         raise ValueError(f"no icon in {LUCIDE}")
+    signs = {path.stem for path in TRAY.glob("*.svg")}
+    if signs - TRAY_OWN != set(TRAY_SOURCES):
+        raise ValueError(f"the tray signs {sorted(signs - TRAY_OWN)} differ from the named ones {sorted(TRAY_SOURCES)}")
+    drawn = "; ".join(f"{sign} from {source}" for sign, source in sorted(TRAY_SOURCES.items()))
     return Section("Icons", [
         "The icons of Lucide that are compiled into junto, unchanged, under the ISC licence of Lucide. The icons "
         "that Lucide derived from the Feather project, which its licence file names, are also under the MIT "
         "licence of Feather. The icon mic-held of junto is drawn from the Lucide icons mic-off and lock and is "
-        "under the same licences."],
-        [(f"Lucide icons {', '.join(icons)}, and mic-held: LICENSE", (LUCIDE / "LICENSE").read_bytes())])
+        "under the same licences.",
+        "The signs of the tray icon of junto are drawn from Lucide icons, with a wider stroke and with the "
+        f"strokes cut where the line across a sign meets them, and are under the same licences: {drawn}. The "
+        "sign of the tray icon outside a call, three rings, is part of Junto."],
+        [(f"Lucide icons {', '.join(icons)}, and mic-held: LICENSE", (LUCIDE / "LICENSE").read_bytes()),
+         (f"Tray signs {', '.join(sorted(TRAY_SOURCES))}: LICENSE-lucide", (TRAY / "LICENSE-lucide").read_bytes())])
 
 
 def normal(text):
@@ -528,7 +547,8 @@ def document(version, triple, build, extra=(), workspace=ROOT, product=CLIENT):
         texts[numbers[key] - 1][1].append(label)
         return numbers[key]
 
-    pictures = ("; the pictures of the programs are part of Junto, except the icons that the section Icons names"
+    pictures = ("; the pictures of the programs are part of Junto, except the icons and the tray signs that the "
+                "section Icons names"
                 if product.fonts else "")
     lines = [f"Junto {version} for {triple}: third-party licences", "",
              f"This file names the third-party code in {product.holder} and gives its licence texts. Junto is "
