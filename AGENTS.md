@@ -146,7 +146,7 @@ Run each heavy command through `tools/serial.sh` when other work shares the mach
       cargo test -p junto-media -- --ignored
   ```
 
-  On Linux: `tools/linux-container.sh cargo test -p junto-media --no-fail-fast -- --ignored`. It includes the TURN TLS trust test and the tests with virtual sound devices, which need `JUNTO_TEST_VIRTUAL_AUDIO=1`; the container sets it. Do not set it on a desktop session.
+  On Linux: `tools/linux-container.sh cargo test -p junto-media --no-fail-fast -- --ignored`. It includes the TURN TLS trust test and the tests with virtual sound devices, which need `JUNTO_TEST_VIRTUAL_AUDIO=1`; the container sets it. Do not set it on a desktop session. The test `share::a_watched_share_arrives_at_the_full_rate_that_its_sharer_chose` needs 4 processors (the default `JUNTO_LINUX_CPUS` of the container) and fails at its start on fewer (ADR 0773).
 
 - **Server live tier.** The server against LiveKit with the participants of `spikes/test-participant`, and a tier with the real transcription worker (`transcriber_real::`). The commands are in `crates/server/README.md`, section "Tests".
 
