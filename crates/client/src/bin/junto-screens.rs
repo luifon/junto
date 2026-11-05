@@ -793,6 +793,8 @@ impl Studio {
         let mut areas = None;
         let mut controls = Vec::new();
         let mut settled = false;
+        // The areas of the frame before the last one, which an error states against the last.
+        let mut before = Vec::new();
         for _ in 0..SETTLE_FRAMES {
             junto_client::ui::record_areas();
             junto_client::ui::record_controls();
@@ -806,13 +808,18 @@ impl Studio {
                 settled = true;
                 break;
             }
+            if let Some(previous) = areas.take() {
+                before = previous;
+            }
             areas = Some(drawn);
         }
         let areas = areas.unwrap_or_default();
         if !settled {
+            let changed: Vec<_> = areas.iter().filter(|area| !before.contains(area)).collect();
+            let gone: Vec<_> = before.iter().filter(|area| !areas.contains(area)).collect();
             return Err(format!(
                 "{name}: the screen did not settle: its areas changed in each of \
-                 {SETTLE_FRAMES} frames"
+                 {SETTLE_FRAMES} frames; in the last frame {changed:?}, before {gone:?}"
             ));
         }
         let unsettled = junto_client::ui::take_unsettled();
