@@ -55,6 +55,10 @@ pub enum AddServerAction {
     /// Deletes the key that was created for the other address. The device loses the
     /// account that the key belongs to, and can then add the server as a new device.
     DiscardKey,
+    /// Deletes that key without telling the server, for a server that cannot be told: one
+    /// that does not answer the withdrawal of a join request, or a release without the route
+    /// (ADR 0712). A request of the key that waits stays on the server.
+    DiscardKeyHere,
     /// Returns to the entry of an address.
     Reset,
 }
@@ -64,6 +68,7 @@ pub enum AddServerActionKind {
     Fetch,
     Save,
     DiscardKey,
+    DiscardKeyHere,
     Reset,
 }
 
@@ -73,6 +78,7 @@ impl AddServerAction {
             Self::Fetch { .. } => AddServerActionKind::Fetch,
             Self::Save { .. } => AddServerActionKind::Save,
             Self::DiscardKey => AddServerActionKind::DiscardKey,
+            Self::DiscardKeyHere => AddServerActionKind::DiscardKeyHere,
             Self::Reset => AddServerActionKind::Reset,
         }
     }
@@ -83,7 +89,7 @@ pub fn actions(state: &AddServerState) -> &'static [AddServerActionKind] {
     match state {
         AddServerState::EnterAddress => &[K::Fetch],
         AddServerState::Preview(_) => &[K::Save, K::Fetch, K::Reset],
-        AddServerState::KeyOfOtherAddress { .. } => &[K::DiscardKey, K::Reset],
+        AddServerState::KeyOfOtherAddress { .. } => &[K::DiscardKey, K::DiscardKeyHere, K::Reset],
         AddServerState::Saved { .. } => &[],
     }
 }
@@ -160,7 +166,7 @@ impl AddServerFlow {
                 Err(error) => Outcome::failed(error),
             },
             (
-                AddServerAction::DiscardKey,
+                action @ (AddServerAction::DiscardKey | AddServerAction::DiscardKeyHere),
                 AddServerState::KeyOfOtherAddress {
                     preview,
                     key_address,
@@ -177,7 +183,9 @@ impl AddServerFlow {
                     Ok(None) => {}
                     Err(error) => return Outcome::failed(error),
                 }
-                if let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await {
+                if action == AddServerAction::DiscardKey
+                    && let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await
+                {
                     return Outcome::failed(error);
                 }
                 let discarded = core.book.lock().map_err(FlowError::from).and_then(|_lock| {
@@ -217,9 +225,12 @@ impl AddServerFlow {
                     Err(error) => Outcome::failed(error),
                 }
             }
-            (AddServerAction::Save { .. } | AddServerAction::DiscardKey, _) => {
-                Outcome::failed(FlowError::NotAvailable)
-            }
+            (
+                AddServerAction::Save { .. }
+                | AddServerAction::DiscardKey
+                | AddServerAction::DiscardKeyHere,
+                _,
+            ) => Outcome::failed(FlowError::NotAvailable),
         }
     }
 

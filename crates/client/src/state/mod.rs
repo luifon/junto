@@ -3311,6 +3311,22 @@ impl AppState {
     /// When the request was approved meanwhile, the device has its account and nothing is
     /// removed. Every other failure is told in [`Pending::remove_failed`].
     pub fn cancel_request(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.give_up_request(server_id, AccessAction::ForgetAccount, cx);
+    }
+
+    /// Gives up a request that waits without telling the server, after the server could
+    /// not be told: it cannot be reached, or its release has no withdrawal route
+    /// (ADR 0712). The request stays on the server.
+    pub fn cancel_request_here(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.give_up_request(server_id, AccessAction::ForgetAccountHere, cx);
+    }
+
+    fn give_up_request(
+        &mut self,
+        server_id: ServerId,
+        action: AccessAction,
+        cx: &mut Context<Self>,
+    ) {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
@@ -3322,7 +3338,7 @@ impl AppState {
         self.pending.remove_failed.remove(&server_id);
         self.waiting.remove(&server_id);
         let client = self.client.clone();
-        let forgetting = server.dispatch_when_free(AccessAction::ForgetAccount);
+        let forgetting = server.dispatch_when_free(action);
         cx.spawn(async move |this, cx| {
             let forgotten = forgetting.await;
             let removed = match &forgotten {

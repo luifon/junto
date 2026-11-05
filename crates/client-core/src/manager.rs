@@ -1437,6 +1437,7 @@ impl Server {
                 }
                 self.forget_account()
             }
+            AccessAction::ForgetAccountHere => self.forget_account(),
             AccessAction::Join {
                 code,
                 name,

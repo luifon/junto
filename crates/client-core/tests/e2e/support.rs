@@ -622,7 +622,7 @@ pub struct Seen {
 
 #[derive(Default)]
 struct ProxyState {
-    json_answers: Vec<(String, String, Vec<u8>)>,
+    json_answers: Vec<(String, String, u16, Vec<u8>)>,
     faults: Vec<(String, Vec<Fault>)>,
     /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
@@ -733,13 +733,21 @@ impl FaultProxy {
 
     #[allow(dead_code)]
     pub fn answer_json(&self, method: &str, end: &str, body: Vec<u8>) {
+        self.answer_with(method, end, 200, body);
+    }
+
+    /// From now on the proxy answers every request with `method` whose path ends with `end`
+    /// itself, with this status and JSON body, as a server of a release without the route
+    /// answers 404.
+    #[allow(dead_code)]
+    pub fn answer_with(&self, method: &str, end: &str, status: u16, body: Vec<u8>) {
         let mut state = self.state.lock().unwrap();
         state
             .json_answers
-            .retain(|(of, path, _)| of != method || path != end);
+            .retain(|(of, path, ..)| of != method || path != end);
         state
             .json_answers
-            .push((method.to_owned(), end.to_owned(), body));
+            .push((method.to_owned(), end.to_owned(), status, body));
     }
 
     /// Ends every connection of the event stream that passes through the proxy, without a
@@ -1088,14 +1096,14 @@ async fn serve(
         .unwrap()
         .json_answers
         .iter()
-        .find(|(of, end, _)| *of == method && bare.ends_with(end.as_str()))
-        .map(|(_, _, body)| body.clone());
-    if let Some(body) = json_answer {
+        .find(|(of, end, ..)| *of == method && bare.ends_with(end.as_str()))
+        .map(|(_, _, status, body)| (*status, body.clone()));
+    if let Some((status, body)) = json_answer {
         let head = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            "HTTP/1.1 {status} Answer\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         );
-        answered(200, &body);
+        answered(status, &body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(&body).await?;
         return client.shutdown().await;

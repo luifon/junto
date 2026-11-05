@@ -1614,6 +1614,13 @@ pub const ADD_TO_SERVER_BOOK: &str = "Add to the server book";
 pub const KEY_OF_OTHER_ADDRESS_TITLE: &str =
     "This device holds a key of this server for another address";
 pub const DISCARD_KEY: &str = "Discard the stored key";
+pub const DISCARD_KEY_HERE: &str = "Discard on this device only";
+pub const CANCEL_REQUEST_HERE: &str = "Cancel on this device only";
+/// Said beside the actions that give up a request without telling the server, after the
+/// server could not be told (ADR 0712).
+pub const SERVER_NOT_TOLD: &str = "The server was not told. If you continue on this device \
+     only, the server keeps the request until it expires, and an approval of it makes an \
+     account that no device of yours can open.";
 pub const SAVING: &str = "Saving…";
 pub const CODE_MISSING: &str = "Type the code that the administrator gave you.";
 pub const NAME_MISSING: &str = "Choose a name in the settings first.";

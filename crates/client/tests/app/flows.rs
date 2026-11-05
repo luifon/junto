@@ -383,6 +383,55 @@ fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(cx: &m
     window.until_ready();
 }
 
+/// A server of a release without the withdrawal route answers 404 to it, so "Cancel request"
+/// fails each time. The window then offers to cancel on this device only and says that the
+/// server was not told; that removes the server and its key, and the request stays on the
+/// server (ADR 0712).
+#[gpui::test]
+fn a_request_that_the_server_cannot_be_told_to_withdraw_is_cancelled_on_this_device(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&proxy.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    assert!(!window.shows("cancel-request-here"));
+    let server_id = window.view().servers[0].id;
+    proxy.answer_with(
+        "POST",
+        "/join-requests/withdrawal",
+        404,
+        br#"{"error":{"code":"not_found","message":"no such route"}}"#.to_vec(),
+    );
+    window.click("cancel-request");
+    window.until("the cancellation fails", |window| {
+        window.shows("cancel-request-here") && window.shows("server-not-told")
+    });
+    assert_eq!(window.view().servers.len(), 1);
+    let key_file = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().key_file(server_id)
+    });
+    assert!(key_file.exists());
+
+    window.click("cancel-request-here");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        !state.pending().remove_failed.contains_key(&server_id)
+    }));
+    assert!(!key_file.exists());
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
 #[gpui::test]
 fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut TestAppContext) {
     let world = World::new();

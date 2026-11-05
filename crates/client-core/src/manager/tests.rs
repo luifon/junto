@@ -789,6 +789,78 @@ async fn a_kept_key_of_another_address_withdraws_its_request_before_it_is_discar
     assert!(matches!(flow.view().state, AddServerState::Preview(_)));
 }
 
+/// A server that cannot be reached, or a release without the withdrawal route, refuses the
+/// withdrawal every time. The person can still forget the account on this device; the
+/// server is not told, and its request stays (ADR 0712).
+#[tokio::test(start_paused = true)]
+async fn an_account_is_forgotten_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+
+    server.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+    assert!(
+        handle
+            .access()
+            .actions
+            .contains(&ActionKind::ForgetAccountHere)
+    );
+    server.set_down(true);
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    handle
+        .dispatch(AccessAction::ForgetAccountHere)
+        .await
+        .unwrap();
+    server.set_down(false);
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount { notice: None }
+    );
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+    assert_eq!(server.waiting_requests().len(), 1);
+    assert_eq!(server.waiting_requests()[0].1, key);
+    assert_eq!(server.count("/join-requests/withdrawal"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_of_another_address_is_discarded_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let real = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    real.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    real.set_down(false);
+
+    network.plug("moved", real.clone());
+    let flow = device.client.add_server();
+    let fetch = AddServerAction::Fetch {
+        address: "moved.example.test".to_owned(),
+    };
+    assert!(flow.dispatch(fetch).await.is_err());
+    real.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(flow.dispatch(AddServerAction::DiscardKey).await.is_err());
+    assert!(device.client.data_dir().key_file(real.server_id()).exists());
+
+    flow.dispatch(AddServerAction::DiscardKeyHere)
+        .await
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(real.server_id()).exists());
+    assert!(matches!(flow.view().state, AddServerState::Preview(_)));
+    assert_eq!(real.waiting_requests().len(), 1);
+    assert_eq!(real.count("/join-requests/withdrawal"), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_that_already_waits_is_shown_with_the_name_that_the_server_holds() {
     let network = Arc::new(Network::default());
@@ -2084,7 +2156,11 @@ async fn a_key_without_a_book_entry_is_not_used_at_another_address() {
     ));
     assert_eq!(
         view.actions,
-        [AddServerActionKind::DiscardKey, AddServerActionKind::Reset]
+        [
+            AddServerActionKind::DiscardKey,
+            AddServerActionKind::DiscardKeyHere,
+            AddServerActionKind::Reset
+        ]
     );
     assert_eq!(
         flow.dispatch(AddServerAction::Save {
@@ -4766,3 +4842,4 @@ async fn token_search_capabilities_use_server_discovery_and_reject_another_serve
         Err(ApiError::InvalidResponse { status: 200, .. })
     ));
 }
+
