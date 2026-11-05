@@ -2309,6 +2309,11 @@ impl Shell {
                             .role(Role::Alert)
                             .aria_label(sentence.clone())
                             .track_focus(&focus)
+                            // Only the keyboard gives the line the focus: a press of the
+                            // pointer leaves it in the input, where the person writes.
+                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
                             .tooltip(crate::ui::tooltip(sentence.clone()))
                             .min_w_0()
                             .truncate()

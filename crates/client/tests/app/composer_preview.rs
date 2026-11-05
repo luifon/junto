@@ -289,4 +289,16 @@ fn the_problem_line_shows_its_whole_sentence_while_it_holds_the_focus(cx: &mut T
     assert_eq!(window.cx.debug_bounds("send-message").unwrap(), send);
     window.press("tab");
     assert!(!window.shows("focused-tooltip"));
+
+    // A press of the pointer on the line leaves the focus in the input.
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    let written = window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx));
+    window.click("compose-problem");
+    assert!(!window.shows("focused-tooltip"));
+    window.press("x");
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        format!("{written}x"),
+        "a press on the line of the problem took the focus from the input"
+    );
 }
