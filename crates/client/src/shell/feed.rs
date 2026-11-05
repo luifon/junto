@@ -1349,16 +1349,6 @@ impl CodeTokens {
         tokens
     }
 
-    /// The number of coloured parts of a drawn code block, without counting a use of them.
-    #[cfg(feature = "test-support")]
-    fn drawn(&self, code: &str, language: &str) -> Option<usize> {
-        let rules = highlight::rules_of(language)?;
-        self.held
-            .get(rules)?
-            .get(code)
-            .map(|(tokens, _)| tokens.len())
-    }
-
     fn drop_oldest(&mut self) {
         let oldest = self
             .held
@@ -1398,17 +1388,9 @@ fn code_block(
         Token::Value => colors.code_value,
         Token::Comment => colors.code_comment,
     };
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = tokens
+    let colours: Vec<(Range<usize>, Hsla)> = tokens
         .iter()
-        .map(|(range, token)| {
-            (
-                range.clone(),
-                HighlightStyle {
-                    color: Some(colour(*token).into()),
-                    ..HighlightStyle::default()
-                },
-            )
-        })
+        .map(|(range, token)| (range.clone(), colour(*token).into()))
         .collect();
     let copy = code.to_owned();
     div()
@@ -1463,7 +1445,7 @@ fn code_block(
                         ),
                 ),
         )
-        .child(StyledText::new(code.to_owned()).with_highlights(highlights))
+        .child(crate::ui::code_text(code.to_owned().into(), colours))
         .into_any_element()
 }
 
@@ -1660,13 +1642,6 @@ impl Shell {
             offset_in_item: px(0.0),
         });
         cx.notify();
-    }
-
-    /// How many coloured parts the window drew for a code block in this language. Absent
-    /// when it drew no such block.
-    #[cfg(feature = "test-support")]
-    pub fn code_colours(&self, code: &str, language: &str) -> Option<usize> {
-        self.code_tokens.drawn(code, language)
     }
 
     /// Shows the end of the history of a pane: the list goes there, and the latest page
