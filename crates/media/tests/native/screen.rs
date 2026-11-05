@@ -322,6 +322,48 @@ pub async fn capture(audio_only: bool) {
                     pixel.0 < 40 && pixel.1 < 40 && pixel.2 < 40,
                     "the share of the application shows {pixel:?} outside its window"
                 );
+                // A window that the application opens during the share is shown at its
+                // place, and follows it when it moves (ADR 0738).
+                let magenta = (204u8, 26u8, 204u8);
+                let (display_width, display_height) = (g.display_width, g.display_height);
+                let at = move |place: (u32, u32, u32, u32), frame: &PictureFrame| {
+                    frame.pixel(
+                        ((f64::from(place.0) + f64::from(place.2) / 2.0) * f64::from(frame.width)
+                            / f64::from(display_width)) as u32,
+                        ((f64::from(place.1) + f64::from(place.3) / 2.0) * f64::from(frame.height)
+                            / f64::from(display_height)) as u32,
+                    )
+                };
+                let opened = fixture.open_second();
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    native_pictures.wait_for(|picture| {
+                        picture.as_ref().is_some_and(|frame| {
+                            at(opened, frame)
+                                .is_some_and(|pixel| super::colors::matches(pixel, magenta))
+                        })
+                    }),
+                )
+                .await
+                .expect("the window that opened during the share is shown")
+                .unwrap();
+                let moved = fixture.move_second(200, 150);
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    native_pictures.wait_for(|picture| {
+                        picture.as_ref().is_some_and(|frame| {
+                            at(moved, frame)
+                                .is_some_and(|pixel| super::colors::matches(pixel, magenta))
+                                && at(opened, frame).is_some_and(|pixel| {
+                                    pixel.0 < 40 && pixel.1 < 40 && pixel.2 < 40
+                                })
+                        })
+                    }),
+                )
+                .await
+                .expect("the moved window is shown at its new place")
+                .unwrap();
+                println!("S2 application: a window opened and moved during the share");
             }
             if display {
                 local.calls.stop_share(None);

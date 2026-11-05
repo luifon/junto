@@ -24,7 +24,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    IsWindowVisible, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
@@ -283,6 +284,7 @@ fn read_window(window: HWND) -> ListedWindow {
             app_window: style & WS_EX_APPWINDOW.0 != 0,
             no_activate: style & WS_EX_NOACTIVATE.0 != 0,
             owned: GetWindow(window, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()),
+            click_through: style & WS_EX_LAYERED.0 != 0 && style & WS_EX_TRANSPARENT.0 != 0,
             origin,
             size,
             process_id: process,
@@ -334,21 +336,37 @@ pub(super) fn placed_windows(own: &Own) -> Vec<(WindowSource, Bounds)> {
 /// store, read once for each process while the share runs.
 pub(super) type FrameHosts = std::collections::HashMap<u32, bool>;
 
+/// Whether a process draws the frames of store applications, read once for each process.
+fn frame_host(process: u32, hosts: &mut FrameHosts) -> bool {
+    *hosts.entry(process).or_insert_with(|| {
+        process_path(process).is_some_and(|path| rules::program_identity(&path).1 == FRAME_HOST)
+    })
+}
+
+/// Whether the application of the process `process_id` is a store application: a frame of
+/// the process that draws store applications holds a window of it.
+pub(super) fn is_store_application(process_id: u32, hosts: &mut FrameHosts) -> bool {
+    top_level_windows().into_iter().any(|window| {
+        let process = process_of(window);
+        frame_host(process, hosts) && inner_process(window, process) == Some(process_id)
+    })
+}
+
 /// The windows that a share of the application of the process `process_id` draws, each with
 /// its frame, from the front to the back (`rules::application_windows`). The process of each
-/// window is read first, and only a window of that process, or of a process that draws the
-/// frames of store applications, is read further, so the list can be read again several times
-/// a second while the application is shared (ADR 0738).
-pub(super) fn application_windows(process_id: u32, hosts: &mut FrameHosts) -> Vec<(u32, Bounds)> {
+/// window is read first, and only a window of that process, and for a store application a
+/// window of the process that draws its frames, is read further, so the list can be read
+/// again several times a second while the application is shared (ADR 0738).
+pub(super) fn application_windows(
+    process_id: u32,
+    store: bool,
+    hosts: &mut FrameHosts,
+) -> Vec<(u32, Bounds)> {
     let listed = top_level_windows()
         .into_iter()
         .filter(|window| {
             let process = process_of(*window);
-            process == process_id
-                || *hosts.entry(process).or_insert_with(|| {
-                    process_path(process)
-                        .is_some_and(|path| rules::program_identity(&path).1 == FRAME_HOST)
-                })
+            process == process_id || (store && frame_host(process, hosts))
         })
         .map(read_window)
         .collect();

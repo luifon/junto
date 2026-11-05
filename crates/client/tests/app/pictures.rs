@@ -934,15 +934,6 @@ fn animation_draws(window: &mut Window) -> usize {
     window.in_shell(|shell, _, _| shell.animation_draws())
 }
 
-/// How often the window was drawn, after it has no work left for a frame of the display:
-/// the scrollbars of the list ask for frames for a time after a scroll (ADR 0793).
-fn draws(window: &mut Window) -> usize {
-    window.until("the window has no work for a frame", |window| {
-        window.frame() == 0
-    });
-    window.in_shell(|shell, _, _| shell.draws().0)
-}
-
 /// An animation with frames of 20 ms draws the window at most once in 50 ms, its least
 /// interval, and passes over the frames between: each drawing renders the whole window
 /// (review M5). It still moves.
@@ -965,13 +956,15 @@ fn a_fast_animation_draws_the_window_at_most_once_in_its_least_interval(cx: &mut
     until_picture_read(&mut window, id);
     window.cx.update(|window, _| window.activate_window());
     window.settle();
-    let before = draws(&mut window);
+    // The drawings that the animation asks for are counted: the window also draws for the
+    // changes of the state that the server sends in real time after it became active.
+    let before = animation_draws(&mut window);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..100 {
         wait_for(&mut window, 10);
         seen.extend(frames(&mut window, id));
     }
-    let drawn = draws(&mut window) - before;
+    let drawn = animation_draws(&mut window) - before;
     assert!(
         drawn <= 22,
         "one second of an animation with frames of 20 ms drew the window {drawn} times"

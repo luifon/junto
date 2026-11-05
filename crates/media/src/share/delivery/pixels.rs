@@ -93,8 +93,9 @@ impl Frame {
 
     /// The picture of a shared application (ADR 0738): a black picture of `size` pixels with
     /// each layer drawn at its place, in the order of the list, so that a later layer covers
-    /// an earlier one. A pixel that a layer leaves fully transparent shows what lies under
-    /// it, and the parts of a layer outside the picture are left out.
+    /// an earlier one. A layer with transparency is drawn over what lies under it by its
+    /// alpha, with premultiplied colours; a fully transparent pixel leaves what lies under
+    /// it. The parts of a layer outside the picture are left out.
     #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
     pub fn compose(size: (u32, u32), layers: &[(&Self, (i32, i32))]) -> Result<Self, CaptureError> {
         let (width, height) = size;
@@ -122,7 +123,8 @@ impl Frame {
                 for x in columns.0..columns.1 {
                     let source = (from + (x - i64::from(*left)) as usize) * 4;
                     let pixel = &layer.packed[source..source + 4];
-                    if transparent && pixel[3] == 0 {
+                    let alpha = if transparent { pixel[3] } else { 255 };
+                    if alpha == 0 {
                         continue;
                     }
                     let target = (to + x as usize) * 4;
@@ -131,7 +133,21 @@ impl Frame {
                     } else {
                         (pixel[0], pixel[2])
                     };
-                    packed[target..target + 4].copy_from_slice(&[blue, pixel[1], red, 255]);
+                    // The colours of a layer are premultiplied by its alpha, as Windows
+                    // Graphics Capture gives them: the picture under it keeps the part that
+                    // the layer leaves.
+                    let under = &packed[target..target + 3];
+                    let blend = |over: u8, under: u8| {
+                        let kept = u16::from(under) * u16::from(255 - alpha) / 255;
+                        (u16::from(over) + kept).min(255) as u8
+                    };
+                    let blended = [
+                        blend(blue, under[0]),
+                        blend(pixel[1], under[1]),
+                        blend(red, under[2]),
+                        255,
+                    ];
+                    packed[target..target + 4].copy_from_slice(&blended);
                 }
             }
         }
@@ -326,6 +342,16 @@ mod tests {
         // A layer wholly outside the picture changes nothing.
         let empty = Frame::compose((2, 2), &[(&back, (5, 5)), (&back, (-9, 0))]).unwrap();
         assert_eq!(empty.packed, [0, 0, 0, 255].repeat(4));
+        // A shadow with an alpha of 51 (premultiplied black) over the back window keeps
+        // four fifths of it, and over the black ground stays black.
+        let shadow = solid(2, 1, [0, 0, 0, 51], Format::Bgra);
+        let shaded = Frame::compose((4, 1), &[(&back, (0, 0)), (&shadow, (2, 0))]).unwrap();
+        assert_eq!(&shaded.packed[8..12], &[8, 16, 24, 255]);
+        assert_eq!(&shaded.packed[12..16], &[0, 0, 0, 255]);
+        // A glow of a premultiplied light colour adds to what lies under it.
+        let glow = solid(1, 1, [40, 40, 40, 102], Format::Bgra);
+        let glowing = Frame::compose((1, 1), &[(&back, (0, 0)), (&glow, (0, 0))]).unwrap();
+        assert_eq!(&glowing.packed[..], &[46, 52, 58, 255]);
     }
 
     #[test]

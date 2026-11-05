@@ -42,6 +42,9 @@ pub(crate) struct ListedWindow {
     pub no_activate: bool,
     /// The window has an owner window: it is a dialog or a pop-up of another window.
     pub owned: bool,
+    /// `WS_EX_LAYERED` and `WS_EX_TRANSPARENT`: a layered window that the pointer passes
+    /// through, as the shadow of a menu or the glow around a window.
+    pub click_through: bool,
     /// The top left corner of the visible frame in pixels, in the coordinates of the
     /// screens.
     pub origin: (i32, i32),
@@ -114,7 +117,9 @@ pub(crate) fn placed_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<(Windo
 /// dialogs, menus, tool windows and pop-ups without a title are drawn too, which the list of
 /// the Window tab leaves out, because the person sees them on the screen. A window without a
 /// size, a minimised window, a window that the window manager hides (on another virtual
-/// desktop) and a window of the shell draw nothing.
+/// desktop) and a window of the shell draw nothing. A layered window that the pointer passes
+/// through is left out: such windows draw the shadow of a menu or a glow around a window, and
+/// each would cost a capture of its own and a capture border on the screen of the person.
 pub(crate) fn application_windows(
     listed: Vec<ListedWindow>,
     process_id: u32,
@@ -125,6 +130,7 @@ pub(crate) fn application_windows(
         .filter(|window| window.visible && !window.cloaked && !window.minimized)
         .filter(|window| window.size.0 > 0 && window.size.1 > 0)
         .filter(|window| !SHELL_CLASSES.contains(&window.class.as_str()))
+        .filter(|window| !window.click_through)
         .map(|window| {
             let bounds = Bounds {
                 x: f64::from(window.origin.0),
@@ -180,6 +186,13 @@ pub(crate) fn follow(captured: &[u32], ended: &[u32], refused: &[u32], now: &[La
         start,
         refused: kept_refused,
     }
+}
+
+/// Whether a new reading of the windows of a shared application draws the picture anew:
+/// a window opened, closed, moved or changed its place in the stacking order. A window that
+/// only moves sends no new picture of itself, so its place decides (ADR 0738).
+pub(crate) fn redraw(before: &[Layer], now: &[Layer]) -> bool {
+    before != now
 }
 
 /// One window in the picture of a shared application.
@@ -490,6 +503,7 @@ mod tests {
             app_window: false,
             no_activate: false,
             owned: false,
+            click_through: false,
             origin: (0, 0),
             size: (1600, 1200),
             process_id,
@@ -858,6 +872,11 @@ mod tests {
         let mut shell = window(9, 7, player);
         shell.class = "Shell_TrayWnd".to_owned();
         let other = window(10, 8, r"C:\Program Files\Other\Other.exe");
+        let mut shadow = window(11, 7, player);
+        shadow.class = "SysShadow".to_owned();
+        shadow.title = String::new();
+        shadow.no_activate = true;
+        shadow.click_through = true;
         let listed = vec![
             menu.clone(),
             window(1, 7, player),
@@ -869,6 +888,7 @@ mod tests {
             empty,
             shell,
             other,
+            shadow,
         ];
         let drawn: Vec<u32> = application_windows(listed.clone(), 7)
             .into_iter()
@@ -919,7 +939,7 @@ mod tests {
         // so the picture is drawn anew.
         let moved = layers(&[(2, at(600.0, 200.0)), (1, at(900.0, 500.0))]);
         assert_eq!(follow(&[1, 2], &[], &[], &moved), Followed::default());
-        assert_ne!(moved, opened);
+        assert!(redraw(&opened, &moved));
         // The layers run from the back: window 1 is behind window 2.
         assert_eq!((moved[0].window, moved[0].at), (1, (900, 500)));
 
@@ -946,5 +966,23 @@ mod tests {
         );
         assert_eq!(follow(&[1], &[], &[2], &first).refused, Vec::<u32>::new());
         assert_eq!(follow(&[1], &[], &[], &opened).start, [2]);
+    }
+
+    #[test]
+    fn the_picture_of_an_application_is_drawn_anew_when_a_window_moves_or_changes_its_order() {
+        let layer = |window, x, y| Layer { window, at: (x, y) };
+        let before = [layer(1, 0, 0), layer(2, 100, 100)];
+        assert!(!redraw(&before, &before));
+        // A window moves without a new picture of its own.
+        assert!(redraw(&before, &[layer(1, 0, 0), layer(2, 120, 100)]));
+        // The stacking order changes.
+        assert!(redraw(&before, &[layer(2, 100, 100), layer(1, 0, 0)]));
+        // A window opens and a window closes.
+        assert!(redraw(
+            &before,
+            &[layer(1, 0, 0), layer(2, 100, 100), layer(3, 5, 5)]
+        ));
+        assert!(redraw(&before, &[layer(1, 0, 0)]));
+        assert!(redraw(&[], &[layer(1, 0, 0)]));
     }
 }
