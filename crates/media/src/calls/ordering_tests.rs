@@ -240,6 +240,7 @@ fn fixture() -> Fixture {
         probes: Vec::new(),
         speaking: false,
         inputs_replaced_seen: 0,
+        replacements_for_test: None,
         timing,
     };
     Fixture {
@@ -3165,6 +3166,78 @@ async fn an_open_on_its_way_or_a_held_key_counts_as_open_for_the_sound_off() {
     assert_eq!(
         release, recorded,
         "the release opens after the count of the sound off"
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_close_right_after_the_close_of_a_hold_is_not_given_to_its_release() {
+    let f = fixture();
+    let (calls, mut taken) = active_calls(&f);
+    // A grant of meeting mode closes the setting between the close of the hold and the
+    // moment the hold gives its count.
+    *f.session.inner.after_close.lock().unwrap() = Some(Box::new(|inner: &Inner| {
+        let mut shared = inner.shared();
+        shared.muted = true;
+        shared.closes += 1;
+    }));
+    let held = calls.mute_for_hold();
+    assert_eq!(
+        held + 1,
+        f.session.inner.shared().closes,
+        "the hold gave the count of the close after its own"
+    );
+    calls.release_hold(Some(&seat(&f)), held);
+    assert_eq!(
+        taken_unmute(&mut taken),
+        None,
+        "the release opened after the grant"
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_replacement_refuses_the_open_that_a_held_key_took_from_the_sound_on() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&f);
+    let held = calls.mute_for_hold();
+    calls.sound_off_muting(Some(held));
+    let release = calls
+        .sound_on_reopening(Some(&seat(&f)), true)
+        .expect("the sound on gave its open to the key");
+    let mut state = f.session.engine.state().borrow().clone();
+    state.inputs_replaced_while_muted += 1;
+    f.session.engine_changed(&state);
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged)
+    );
+    calls.release_hold(Some(&seat(&f)), release);
+    assert_eq!(
+        taken_unmute(&mut taken),
+        None,
+        "the release opened the device that replaced the chosen one"
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_replacement_before_the_session_takes_a_queued_open_refuses_it() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&f);
+    calls.sound_off_muting(None);
+    calls.sound_on_reopening(Some(&seat(&f)), false);
+    let (sent, closes) = taken_unmute(&mut taken).expect("the sound on queued its open");
+    // The engine opened another device before the session read that state.
+    f.session.replacements_for_test = Some(1);
+    f.session.command(SessionCommand::Unmute(sent, closes));
+    assert!(
+        f.session.inner.shared().muted,
+        "the queued open opened the device that replaced the chosen one"
+    );
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged)
     );
     f.session.engine.close().await;
 }
