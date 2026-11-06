@@ -86,13 +86,20 @@ class JobSteps(unittest.TestCase):
                         commands.index(f"{DATABASE['macos']} --fetch"))
         self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
 
-    def test_both_systems_run_the_file_storage_checks_and_keep_their_failure(self):
+    def test_both_systems_run_the_library_and_the_api_tests_of_the_server_with_postgresql(self):
+        wrapped = {"macos": DATABASE["macos"],
+                   "windows": f"{DATABASE['windows']} python3 tools/with_native_ffmpeg.py"}
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)
             self.assertEqual(status, 0, output)
-            self.assertIn("cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::", commands)
-            status, _, _ = self.run_job(system, fail_on="recordings::files::")
-            self.assertNotEqual(status, 0, system)
+            library = f"{wrapped[system]} cargo test --no-fail-fast --locked -p junto-server --lib"
+            api = f"{wrapped[system]} cargo test --no-fail-fast --locked --workspace --test api"
+            self.assertIn(library, commands, system)
+            self.assertIn(api, commands, system)
+            self.assertFalse([c for c in commands if "-p junto-server --lib" in c and c != library], system)
+            status, _, output = self.run_job(system, fail_on="--workspace --test api")
+            self.assertEqual(status, 1, system)
+            self.assertIn("Server tests with PostgreSQL (exit 1)", output, system)
 
     def test_both_systems_measure_the_emoji_of_their_fonts(self):
         for system in SYSTEMS:

@@ -101,15 +101,8 @@ if [ "$system" = macos ]; then
     step "Media unit tests on macOS"
     run cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions
 fi
-# The tests that need PostgreSQL run on Linux only, except the window tests on Windows and
-# on macOS.
 step "Tests that need no database"
 run cargo test --no-fail-fast --locked -p junto-authz -p junto-protocol
-# The reading of the free space of a directory, which differs between Unix and Windows
-# (ADR 0605).
-run cargo test --no-fail-fast --locked -p junto-server --lib storage::
-# Directory-relative files on Unix and the Windows test store (ADR 0606, ADR 0912).
-run cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::
 run cargo test --no-fail-fast --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"
 run python3 -m unittest discover -s packaging -p "test_*.py"
@@ -151,6 +144,11 @@ if [ "$system" = macos ]; then
     run python3 tools/with_native_postgres.py --fetch
     step "Window tests with PostgreSQL"
     run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
+    # The library and the API tests of the server against the same PostgreSQL. The API tests
+    # with --workspace, as in the build step, so that Cargo builds nothing again.
+    step "Server tests with PostgreSQL"
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked -p junto-server --lib
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test api
     finish
 fi
 
@@ -197,6 +195,12 @@ step "Window tests with PostgreSQL"
 run python3 -m unittest discover -s tools/windows -p "test_*.py"
 run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
     cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
+# The library and the API tests of the server against the same PostgreSQL and FFmpeg.
+step "Server tests with PostgreSQL"
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked -p junto-server --lib
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked --workspace --test api
 # The window tests of calls against the LiveKit release for Windows of the version of the image
 # of the other jobs, every socket of it on the loopback address (tools/with_native_livekit.py).
 step "Window tests with PostgreSQL and LiveKit"
