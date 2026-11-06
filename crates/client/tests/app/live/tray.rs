@@ -196,6 +196,35 @@ fn turning_the_sound_off_mutes_the_microphone_and_turning_it_on_returns_it(
         !window.view().controls.sound_off && microphone(window) == MicrophoneButton::Open
     });
 
+    // The sound off and on while the key is still held: the microphone stays closed until
+    // the release.
+    window.state.update(&mut window.cx, |state, _| {
+        state.hold_action(None, KeyAction::PushToMute, true);
+    });
+    window.until("the held key closed the microphone", |window| {
+        microphone(window) == MicrophoneButton::Muted
+    });
+    press(&mut window, text::TURN_SOUND_OFF);
+    window.until("the sound is off", |window| {
+        window.view().controls.sound_off
+    });
+    press(&mut window, text::TURN_SOUND_ON);
+    window.until("the sound is on", |window| {
+        !window.view().controls.sound_off
+    });
+    window.settle();
+    assert_eq!(
+        microphone(&mut window),
+        MicrophoneButton::Muted,
+        "the sound on opened the microphone while the key was held"
+    );
+    window.state.update(&mut window.cx, |state, _| {
+        state.hold_action(None, KeyAction::PushToMute, false);
+    });
+    window.until("the release opened the microphone", |window| {
+        microphone(window) == MicrophoneButton::Open
+    });
+
     // The setting off: the sound off keeps the microphone, and the tray shows both apart.
     press(&mut window, text::MUTE_MICROPHONE);
     press(&mut window, text::TURN_SOUND_OFF);

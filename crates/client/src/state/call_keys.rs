@@ -185,14 +185,16 @@ impl AppState {
         let calls = self.calls.view();
         let Some(call) = &calls.call else {
             self.mute_holds.clear();
-            self.muted_by_hold = false;
+            self.muted_by_hold = None;
             return;
         };
         if !self.mute_holds.is_empty() && !calls.muted {
-            self.calls.mute();
-            self.muted_by_hold = true;
-        } else if self.mute_holds.is_empty() && std::mem::take(&mut self.muted_by_hold) {
-            self.calls.unmute_in(Some(&call.seat()));
+            self.muted_by_hold = Some(self.calls.mute_for_hold());
+        } else if self.mute_holds.is_empty()
+            && let Some(closes) = self.muted_by_hold.take()
+        {
+            // A close by a rule of the call during the hold keeps the microphone closed.
+            self.calls.unmute_after(Some(&call.seat()), closes);
         }
     }
 

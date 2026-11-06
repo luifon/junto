@@ -3029,21 +3029,48 @@ fn seat(f: &Fixture) -> Seat {
     }
 }
 
-#[tokio::test]
-async fn the_sound_on_opens_the_microphone_that_the_sound_off_closed() {
-    let mut f = fixture();
+/// The calls of the fixture with an active call whose commands the test takes.
+fn active_calls(f: &Fixture) -> (Calls, mpsc::UnboundedReceiver<SessionCommand>) {
+    let (commands, taken) = mpsc::unbounded_channel();
+    f.session.inner.shared().active = Some(ActiveHandle {
+        key: 1,
+        target: f.session.target,
+        commands,
+        gate: Arc::default(),
+    });
     let calls = Calls {
         inner: f.session.inner.clone(),
     };
+    (calls, taken)
+}
+
+/// The open that the calls sent to the session, if any, after the other commands.
+fn taken_unmute(taken: &mut mpsc::UnboundedReceiver<SessionCommand>) -> Option<(Seat, u64)> {
+    let mut unmute = None;
+    while let Ok(command) = taken.try_recv() {
+        if let SessionCommand::Unmute(seat, closes) = command {
+            unmute = Some((seat, closes));
+        }
+    }
+    unmute
+}
+
+#[tokio::test]
+async fn the_sound_on_opens_the_microphone_that_the_sound_off_closed() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&f);
     assert!(!f.session.inner.shared().muted);
-    calls.sound_off_muting(false);
+    calls.sound_off_muting(None);
     assert!(f.session.inner.shared().muted && f.session.inner.shared().deafened);
-    let closes = f.session.inner.shared().sound_off_reopens;
-    assert_eq!(closes, Some(f.session.inner.shared().closes));
-    calls.sound_on_reopening(Some(&seat(&f)));
-    // Without a running session the open reaches the session here, as its command.
-    f.session
-        .command(SessionCommand::Unmute(seat(&f), closes.unwrap()));
+    let recorded = f.session.inner.shared().closes;
+    assert_eq!(taken_unmute(&mut taken), None);
+    calls.sound_on_reopening(Some(&seat(&f)), false);
+    let (sent, closes) = taken_unmute(&mut taken).expect("the sound on sent no open");
+    assert_eq!(
+        closes, recorded,
+        "the open carries the count of the sound off"
+    );
+    f.session.command(SessionCommand::Unmute(sent, closes));
     assert!(!f.session.inner.shared().muted && !f.session.inner.shared().deafened);
     f.session.engine.close().await;
 }
@@ -3052,23 +3079,20 @@ async fn the_sound_on_opens_the_microphone_that_the_sound_off_closed() {
 async fn a_grant_or_an_unread_end_while_the_sound_is_off_keeps_the_microphone_closed() {
     for unread_end in [false, true] {
         let mut f = fixture();
-        let calls = Calls {
-            inner: f.session.inner.clone(),
-        };
-        calls.sound_off_muting(false);
-        let closes = f.session.inner.shared().sound_off_reopens.unwrap();
+        let (calls, mut taken) = active_calls(&f);
+        calls.sound_off_muting(None);
         if unread_end {
             f.session.close_for_unread_end(46, false);
         } else {
             assert!(f.session.close_for_grant(46, false));
         }
-        calls.sound_on_reopening(Some(&seat(&f)));
-        f.session.command(SessionCommand::Unmute(seat(&f), closes));
-        assert!(
-            f.session.inner.shared().muted,
+        calls.sound_on_reopening(Some(&seat(&f)), false);
+        assert_eq!(
+            taken_unmute(&mut taken),
+            None,
             "the sound on opened a microphone that a rule closed (unread end: {unread_end})"
         );
-        assert!(!f.session.inner.shared().deafened);
+        assert!(f.session.inner.shared().muted && !f.session.inner.shared().deafened);
         f.session.engine.close().await;
     }
 }
@@ -3076,11 +3100,8 @@ async fn a_grant_or_an_unread_end_while_the_sound_is_off_keeps_the_microphone_cl
 #[tokio::test]
 async fn a_device_change_while_the_sound_is_off_cancels_the_open_and_is_told() {
     let mut f = fixture();
-    let calls = Calls {
-        inner: f.session.inner.clone(),
-    };
-    calls.sound_off_muting(false);
-    f.session.controls.muted = true;
+    let (calls, mut taken) = active_calls(&f);
+    calls.sound_off_muting(None);
     let mut state = f.session.engine.state().borrow().clone();
     state.inputs_replaced_while_muted += 1;
     f.session.engine_changed(&state);
@@ -3093,32 +3114,57 @@ async fn a_device_change_while_the_sound_is_off_cancels_the_open_and_is_told() {
     f.session.inner.view.send_modify(|view| view.closed = None);
     f.session.engine_changed(&state);
     assert_eq!(f.session.inner.view.borrow().closed, None);
-    calls.sound_on_reopening(Some(&seat(&f)));
+    calls.sound_on_reopening(Some(&seat(&f)), false);
+    assert_eq!(taken_unmute(&mut taken), None);
     assert!(f.session.inner.shared().muted && !f.session.inner.shared().deafened);
     f.session.engine.close().await;
 }
 
-#[test]
-fn an_open_on_its_way_counts_as_open_for_the_sound_off() {
-    let f = fixture();
-    let calls = Calls {
-        inner: f.session.inner.clone(),
-    };
+#[tokio::test]
+async fn an_open_on_its_way_or_a_held_key_counts_as_open_for_the_sound_off() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&f);
     calls.mute();
-    let closes = f.session.inner.shared().closes;
-    f.session.inner.shared().opening = Some(closes);
-    calls.sound_off_muting(false);
+    calls.unmute_in(Some(&seat(&f)));
+    calls.sound_off_muting(None);
     assert!(f.session.inner.shared().sound_off_reopens.is_some());
-    // A microphone that the person closed before the sound off stays closed after it.
-    let g = fixture();
-    let calls = Calls {
-        inner: g.session.inner.clone(),
+    // A refused open ends the open on its way.
+    let (_, stale) = taken_unmute(&mut taken).unwrap();
+    let other = Seat {
+        target: f.session.target,
+        identity: "another seat".into(),
     };
-    calls.mute();
-    calls.sound_off_muting(false);
-    assert_eq!(g.session.inner.shared().sound_off_reopens, None);
-    // Push to mute held: the microphone counts as open.
     calls.set_deafened(false);
-    calls.sound_off_muting(true);
-    assert!(g.session.inner.shared().sound_off_reopens.is_some());
+    f.session.command(SessionCommand::Unmute(other, stale));
+    assert_eq!(f.session.inner.shared().opening, None);
+    calls.sound_off_muting(None);
+    assert_eq!(
+        f.session.inner.shared().sound_off_reopens,
+        None,
+        "a microphone that the person closed before the sound off stays closed after it"
+    );
+    // Push to mute held: the microphone counts as open, unless a close came after the hold.
+    calls.set_deafened(false);
+    let held = calls.mute_for_hold();
+    calls.sound_off_muting(Some(held));
+    assert!(f.session.inner.shared().sound_off_reopens.is_some());
+    calls.set_deafened(false);
+    let held = calls.mute_for_hold();
+    assert!(f.session.close_for_grant(47, false));
+    calls.sound_off_muting(Some(held));
+    assert_eq!(f.session.inner.shared().sound_off_reopens, None);
+    // The sound on while the key is held opens nothing, and gives the count of its release.
+    calls.set_deafened(false);
+    let held = calls.mute_for_hold();
+    calls.sound_off_muting(Some(held));
+    let _ = taken_unmute(&mut taken);
+    let recorded = f.session.inner.shared().sound_off_reopens;
+    assert!(recorded.is_some());
+    let release = calls.sound_on_reopening(Some(&seat(&f)), true);
+    assert_eq!(taken_unmute(&mut taken), None);
+    assert_eq!(
+        release, recorded,
+        "the release opens after the count of the sound off"
+    );
+    f.session.engine.close().await;
 }

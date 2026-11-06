@@ -603,6 +603,14 @@ impl Calls {
         self.inner.set_muted(true);
     }
 
+    /// Closes the microphone for a held key of push to mute, and gives the count of closes
+    /// after that close: the release opens it only when no close came after
+    /// ([`Calls::unmute_after`]).
+    pub fn mute_for_hold(&self) -> u64 {
+        self.inner.set_muted(true);
+        self.inner.shared().closes
+    }
+
     /// Opens the microphone of the person for the seat that the person saw when the action
     /// was made: `None` when the device was in no call, and the setting is then the one of
     /// the next call. When the device is in another call or at another seat by now, the
@@ -615,7 +623,7 @@ impl Calls {
 
     /// Opens the microphone as [`Calls::unmute_in`] does, unless it was closed after the
     /// count `closes`.
-    fn unmute_after(&self, seat: Option<&Seat>, closes: u64) {
+    pub fn unmute_after(&self, seat: Option<&Seat>, closes: u64) {
         let mut shared = self.inner.shared();
         if shared.closes != closes {
             return;
@@ -671,11 +679,14 @@ impl Calls {
 
     /// Turns the sound off and closes the microphone with it (ADR 0739). The sound on
     /// ([`Calls::sound_on_reopening`]) opens it again when it was open, or an open of the
-    /// person was on its way, or `held_open`: only a held key of push to mute closed it.
-    pub fn sound_off_muting(&self, held_open: bool) {
+    /// person was on its way, or only a held key of push to mute closed it: `held` is the
+    /// count of closes after that close, which holds when no close came after it.
+    pub fn sound_off_muting(&self, held: Option<u64>) {
         {
             let mut shared = self.inner.shared();
-            let open = held_open || !shared.muted || shared.opening == Some(shared.closes);
+            let open = held == Some(shared.closes)
+                || !shared.muted
+                || shared.opening == Some(shared.closes);
             shared.muted = true;
             shared.closes += 1;
             if let Some(active) = &shared.active {
@@ -694,13 +705,17 @@ impl Calls {
     /// Turns the sound on after [`Calls::sound_off_muting`], and opens the microphone at
     /// `seat` again when the sound off closed it. A close by the person or by a rule of the
     /// call after the sound off keeps it closed, and so does a change of its input device,
-    /// which the calls tell (ADR 0794).
-    pub fn sound_on_reopening(&self, seat: Option<&Seat>) {
+    /// which the calls tell (ADR 0794). While a key of push to mute is `held` the microphone
+    /// stays closed, and the count of closes that its release opens after is given.
+    pub fn sound_on_reopening(&self, seat: Option<&Seat>, held: bool) -> Option<u64> {
         let reopens = self.inner.shared().sound_off_reopens.take();
         self.set_deafened(false);
-        if let Some(closes) = reopens {
-            self.unmute_after(seat, closes);
+        match reopens {
+            Some(closes) if held => return Some(closes),
+            Some(closes) => self.unmute_after(seat, closes),
+            None => {}
         }
+        None
     }
 
     /// Forgets that the sound off closed the microphone: the sound on opens nothing.
@@ -2808,6 +2823,7 @@ impl Session {
                 .is_some_and(|active| active.key == key)
             {
                 shared.active = None;
+                shared.opening = None;
             }
         }
         inner.view.send_modify(|view| {
@@ -3095,12 +3111,15 @@ impl Session {
                 self.apply_controls();
             }
             SessionCommand::Unmute(seat, closes) => {
+                {
+                    let mut shared = self.inner.shared();
+                    if shared.opening == Some(closes) {
+                        shared.opening = None;
+                    }
+                }
                 if self.holds(&seat, Unused::Microphone) {
                     let opened = {
                         let mut shared = self.inner.shared();
-                        if shared.opening == Some(closes) {
-                            shared.opening = None;
-                        }
                         // A close that the person or a rule made after this open holds.
                         let opened = shared.closes == closes;
                         if opened {

@@ -417,3 +417,58 @@ async fn a_chosen_microphone_that_is_there_again_is_used_and_the_setting_stays_o
     })
     .await;
 }
+
+/// The sound off closes the microphone, and its input device is lost at the same moment: the
+/// engine opens the default device before or after it has taken the close. Either way the
+/// person is told, and the sound on does not open the device that took the place of the
+/// chosen one (ADR 0739, ADR 0794).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_device_replaced_around_the_sound_off_is_not_opened_by_the_sound_on() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        room.member(&ann_at, &ben, "Ben").await;
+        ann.host
+            .add_input("desk", "Desk microphone", Tone::new(660.0));
+        let mut voice = plain_voice();
+        voice.input_device = id("desk");
+        ann.calls.set_voice(voice);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ben.until_level(660.0, "the tone of the desk microphone", |level| {
+            level > HEARD_DBFS
+        })
+        .await;
+        let opened = ann.host.opened_inputs().len();
+        ann.calls.sound_off_muting(None);
+        ann.host.remove_input("desk");
+        ann.host.break_input(AudioError::NoDevice);
+        until("the default microphone is opened", || {
+            ann.host.opened_inputs().len() == opened + 1
+        })
+        .await;
+        let view = ann
+            .until("the change of the device is told", |view| {
+                view.closed == Some(MicrophoneClosed::DeviceChanged)
+            })
+            .await;
+        assert!(view.muted && view.deafened);
+        let seat = view.call.unwrap().seat();
+        ben.host.clear_played();
+        ann.calls.sound_on_reopening(Some(&seat), false);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(
+            ann.calls.view().muted,
+            "the sound on opened the replaced microphone"
+        );
+        let (played, rate) = ben.host.played_since_clear();
+        let heard = junto_media::audio::synthetic::tone_level(&played, rate, 440.0);
+        assert!(
+            heard < ABSENT_DBFS,
+            "the default microphone was sent: {heard} dBFS"
+        );
+    })
+    .await;
+}

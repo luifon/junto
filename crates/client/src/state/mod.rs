@@ -466,7 +466,8 @@ pub struct AppState {
     /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
     /// keys of push to mute, and whether their hold closed the microphone.
     mute_holds: HashSet<Option<gpui::EntityId>>,
-    muted_by_hold: bool,
+    /// The hold closed the microphone, with the count of closes after its close.
+    muted_by_hold: Option<u64>,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -1034,7 +1035,7 @@ impl AppState {
             keybind_boundary: 0,
             keybind_global_ready: true,
             mute_holds: HashSet::new(),
-            muted_by_hold: false,
+            muted_by_hold: None,
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,
@@ -2520,15 +2521,24 @@ impl AppState {
     /// microphone, and turning it on returns the microphone to its state before.
     pub fn set_sound_off(&mut self, off: bool) {
         let deafened = self.calls.view().deafened;
-        if !self.known.media.voice.sound_off_mutes || off == deafened {
+        if !self.known.media.voice.sound_off_mutes {
             self.calls.set_deafened(off);
+        } else if off == deafened {
+            // A control drawn before the last change asks for the state that holds already.
         } else if off {
             // The sound off takes the place of a held key of push to mute: its release
             // opens nothing, and the sound on opens the microphone that the key closed.
-            let held = std::mem::take(&mut self.muted_by_hold);
+            let held = self.muted_by_hold.take();
             self.calls.sound_off_muting(held);
         } else {
-            self.calls.sound_on_reopening(self.calls.seat().as_ref());
+            // While the key is still held, its release opens the microphone.
+            let held = !self.mute_holds.is_empty();
+            if let Some(closes) = self
+                .calls
+                .sound_on_reopening(self.calls.seat().as_ref(), held)
+            {
+                self.muted_by_hold = Some(closes);
+            }
         }
     }
 

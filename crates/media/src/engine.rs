@@ -1055,9 +1055,15 @@ impl Actor {
             Command::Controls(controls, stops) => {
                 let before = std::mem::replace(&mut self.controls, controls);
                 if controls.muted && self.input_held {
-                    // The person's own setting is closed: it holds the microphone now.
+                    // The person's own setting is closed: it holds the microphone now. The
+                    // replacement came before the close; it counts as one while the setting
+                    // is closed, so a microphone that the close keeps closed is not opened
+                    // again on that device (ADR 0739).
                     self.input_held = false;
-                    self.change(|state| state.input_replaced = false);
+                    self.change(|state| {
+                        state.input_replaced = false;
+                        state.inputs_replaced_while_muted += 1;
+                    });
                 }
                 if before.microphone_blocked != controls.microphone_blocked {
                     self.sync_microphone();
