@@ -189,28 +189,57 @@ impl Layer {
     /// pictures. A menu or a list at a control lies over a part only, and the pictures beside
     /// it stay in view.
     pub(crate) fn covers_content(&self) -> bool {
-        !matches!(
-            self,
+        // Every layer is named, so that a new one is classified before it compiles.
+        match self {
             Layer::None
-                | Layer::ServerMenu
-                | Layer::DeviceMenu(_)
-                | Layer::ShareMenu
-                | Layer::PersonMenu(_)
-                | Layer::AccountMenu(_)
-                | Layer::CallMoveMenu(_)
-                | Layer::ThreadMenu(_)
-                | Layer::MessageMenu(_)
-                | Layer::ComposerMenu(_)
-                | Layer::NoticeMenu(..)
-                | Layer::ChannelMenu(_)
-                | Layer::GroupMenu(_)
-                | Layer::WorkspaceMenu(..)
-                | Layer::DirectMenu(_)
-                | Layer::SearchFilter(_)
-                | Layer::RecordingFiles(_)
-                | Layer::RecordingParts(_)
-                | Layer::RecordLanguage
-        )
+            | Layer::ServerMenu
+            | Layer::DeviceMenu(..)
+            | Layer::ShareMenu
+            | Layer::PersonMenu(..)
+            | Layer::AccountMenu(..)
+            | Layer::CallMoveMenu(..)
+            | Layer::ThreadMenu(..)
+            | Layer::MessageMenu(..)
+            | Layer::ComposerMenu(..)
+            | Layer::NoticeMenu(..)
+            | Layer::ChannelMenu(..)
+            | Layer::GroupMenu(..)
+            | Layer::WorkspaceMenu(..)
+            | Layer::GroupChoice(..)
+            | Layer::DirectMenu(..)
+            | Layer::SearchFilter(..)
+            | Layer::RecordingFiles(..)
+            | Layer::RecordingParts(..)
+            | Layer::RecordLanguage => false,
+            Layer::Welcome
+            | Layer::Settings
+            | Layer::Prejoin(..)
+            | Layer::Join(..)
+            | Layer::Presence(..)
+            | Layer::Profile
+            | Layer::ConfirmRemove(..)
+            | Layer::ConfirmForget(..)
+            | Layer::SharePicker(..)
+            | Layer::Forward(..)
+            | Layer::ReactionPeople(..)
+            | Layer::ConfirmDelete(..)
+            | Layer::Emoji(..)
+            | Layer::Fork(..)
+            | Layer::RenameGroup(..)
+            | Layer::PersonalSection(..)
+            | Layer::VoiceStatus(..)
+            | Layer::Notify
+            | Layer::ConfirmRemoveRecording(..)
+            | Layer::Admin
+            | Layer::Account
+            | Layer::LinkAll
+            | Layer::NewDirect
+            | Layer::QuickSwitcher
+            | Layer::GroupConversation
+            | Layer::GroupMemberships
+            | Layer::Picture(..)
+            | Layer::FileLink(..) => true,
+        }
     }
 }
 
@@ -2413,4 +2442,35 @@ fn pressed_combo(keystroke: &gpui::Keystroke) -> Option<KeyCombo> {
         keys.push(key);
     }
     KeyCombo::new(keys).ok()
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::Layer;
+    use junto_client_core::protocol::ids::{ChannelId, ServerId};
+
+    /// A menu or a list at a control leaves the pictures of the list in view; a dialog and
+    /// the viewer cover them.
+    #[test]
+    fn only_a_layer_that_covers_the_content_stops_the_pictures() {
+        let server = ServerId::generate();
+        for menu in [
+            Layer::None,
+            Layer::ServerMenu,
+            Layer::ShareMenu,
+            Layer::GroupChoice(server),
+            Layer::ChannelMenu(ChannelId::generate()),
+            Layer::RecordLanguage,
+        ] {
+            assert!(!menu.covers_content());
+        }
+        for dialog in [
+            Layer::Settings,
+            Layer::ConfirmRemove(server),
+            Layer::Notify,
+            Layer::QuickSwitcher,
+        ] {
+            assert!(dialog.covers_content());
+        }
+    }
 }
