@@ -265,6 +265,8 @@ pub(super) struct Searched {
 pub(super) struct Done {
     token: SecretToken,
     outcome: Outcome,
+    /// The ticket of the command that started the request.
+    counted: crate::live::Ticket,
 }
 
 /// A list that is read again after every event of a kind. The limit of the server for
@@ -1528,7 +1530,8 @@ impl Client {
                 (*place, mark.wanted, api.clone(), self.done.clone());
             let token = token.clone();
             let guarded = self.server_events.is_some_and(|revision| revision >= 4);
-            let request = tokio::spawn(async move {
+            let counted = self.ticket.clone();
+            let request = tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                 let result = match place {
                     PlaceId::Thread { root_id, .. } => if guarded {
                         api.mark_thread_read_at_revision(root_id, position, revision)
@@ -1550,15 +1553,20 @@ impl Client {
                     position,
                     result,
                 };
-                let _ = done.send(Done { token, outcome });
-            });
+                let _ = done.send(Done {
+                    token,
+                    outcome,
+                    counted,
+                });
+            }));
             mark.flying = Some(request.abort_handle());
             mark.overtaken = false;
             mark.next_at = Some(now + MARK_INTERVAL);
         }
     }
 
-    pub(super) fn done(&mut self, done: Done) {
+    pub(super) fn done(&mut self, mut done: Done) {
+        self.answered.push(std::mem::take(&mut done.counted));
         // An ended session of a request that an earlier session carried is known already.
         let current = self.token().is_some_and(|token| token == done.token);
         match done.outcome {
@@ -1764,11 +1772,16 @@ impl Client {
                 let after = pending.after;
                 sending.searching = Some((place, Vec::new()));
                 sending.search_overtaken = false;
-                tokio::spawn(async move {
+                let counted = self.ticket.clone();
+                tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                     let result = history_after(&api, place, after).await;
                     let outcome = Outcome::Searched { id, result };
-                    let _ = done.send(Done { token, outcome });
-                })
+                    let _ = done.send(Done {
+                        token,
+                        outcome,
+                        counted,
+                    });
+                }))
             } else {
                 let Some(attachments) = pending.attachment_ids() else {
                     continue;
@@ -1779,14 +1792,19 @@ impl Client {
                     reply_to: pending.reply_to,
                     attachments,
                 };
-                tokio::spawn(async move {
+                let counted = self.ticket.clone();
+                tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                     let result = api
                         .send_message_with_receipt(place, &message)
                         .await
                         .map(Box::new);
                     let outcome = Outcome::Sent { id, result };
-                    let _ = done.send(Done { token, outcome });
-                })
+                    let _ = done.send(Done {
+                        token,
+                        outcome,
+                        counted,
+                    });
+                }))
             };
             sending.request = Some(request.abort_handle());
         }

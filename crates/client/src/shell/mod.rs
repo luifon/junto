@@ -60,6 +60,7 @@ mod presence;
 mod profile;
 mod rail;
 mod recorded;
+mod release_notes;
 pub mod room;
 mod search;
 mod server_menu;
@@ -105,6 +106,8 @@ pub(crate) enum Layer {
     /// The first start: the person chooses a name.
     Welcome,
     Settings,
+    /// The release notes after an update or from the settings (ADR 0727).
+    ReleaseNotes(Box<release_notes::ReleaseNotesDialog>),
     Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
     ServerMenu,
@@ -148,7 +151,6 @@ pub(crate) enum Layer {
     GroupChoice(ServerId),
     /// The dialog that names a group.
     RenameGroup(junto_client_core::arrangement::GroupId),
-    PersonalSection(personal::SectionDialog),
     VoiceStatus(voice_status::Editor),
     /// The menu of a direct conversation, at its row.
     DirectMenu(junto_client_core::protocol::ids::ConversationId),
@@ -347,6 +349,9 @@ pub struct Shell {
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
     thread_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
+    /// Where the open menu of a message was drawn first: it stays there while the message
+    /// grows, such as with its first reaction (ADR 0730).
+    message_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
     profile: profile::ProfileUi,
@@ -368,6 +373,11 @@ pub struct Shell {
     pub(crate) hover_menu: Option<(ServerId, bool)>,
     hover_menu_focus: FocusHandle,
     hover_menu_close: Option<Task<()>>,
+    /// The server icon and whether the open hover menu are under the pointer.
+    hover_menu_pointer: (Option<ServerId>, bool),
+    /// A press of the pointer on this icon closed its menu: the pointer opens it again
+    /// only after it left the icon.
+    hover_menu_pressed: Option<ServerId>,
     /// The press of the pointer that closed the menu of the server was on the button of
     /// that menu: the click that follows does not open the menu again.
     pub(crate) server_menu_closed_by_press: bool,
@@ -476,10 +486,10 @@ pub struct Shell {
     /// rows that it holds.
     pub(crate) members_list: gpui::ListState,
     pub(crate) member_rows: Option<std::rc::Rc<Vec<crate::state::view::MemberRow>>>,
-    /// The member list of the panel of a call, which lays out only the rows in view, and
-    /// the people that it lists.
-    pub(crate) call_members_list: gpui::ListState,
-    pub(crate) call_member_rows: Option<call::CallMemberRows>,
+    /// The member lists of the panel of a call, one for each server, account and workspace
+    /// (and one for the direct calls of an account), so that each keeps its own scroll
+    /// position (ADR 0735).
+    pub(crate) call_members: HashMap<call::CallMembersScope, call::CallMembersList>,
     pub(crate) call_settings_scroll: ScrollHandle,
 
     // The fields of the layers.
@@ -665,18 +675,6 @@ impl Shell {
                 |this: &mut Self, event, window, cx| match event {
                     FieldEvent::Submitted => this.save_voice_status(false, window, cx),
                     FieldEvent::Changed => this.voice_status_changed(cx),
-                },
-            ),
-            Field::observe(
-                &arrange.section_name,
-                window,
-                cx,
-                |this: &mut Self, event, window, cx| match event {
-                    FieldEvent::Submitted => this.save_personal_section(window, cx),
-                    FieldEvent::Changed => {
-                        this.arrange.section_invalid = false;
-                        cx.notify();
-                    }
                 },
             ),
             cx.on_release(move |this: &mut Self, cx| {
@@ -912,6 +910,7 @@ impl Shell {
             focus: cx.focus_handle(),
             layer_focus: cx.focus_handle(),
             thread_menu_placement: Default::default(),
+            message_menu_placement: Default::default(),
             layer: Layer::None,
             switcher,
             profile: profile::ProfileUi::default(),
@@ -924,6 +923,8 @@ impl Shell {
             hover_menu: None,
             hover_menu_focus: cx.focus_handle(),
             hover_menu_close: None,
+            hover_menu_pointer: (None, false),
+            hover_menu_pressed: None,
             server_menu_closed_by_press: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
@@ -992,8 +993,7 @@ impl Shell {
             directs_scroll: ScrollHandle::new(),
             members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
             member_rows: None,
-            call_members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
-            call_member_rows: None,
+            call_members: HashMap::new(),
             call_settings_scroll: ScrollHandle::new(),
             name,
             name_error: None,
@@ -1076,9 +1076,16 @@ impl Shell {
                 .state
                 .update(cx, |state, cx| state.set_window_active(active, cx));
         }
+        let notes = shell.state.read(cx).release_notes_due().to_vec();
         if !detached && shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
+        } else if !detached && !notes.is_empty() {
+            // The notes of the versions since the one that started last, once.
+            shell
+                .state
+                .update(cx, |state, _| state.release_notes_shown());
+            shell.open_release_notes(&notes, false, window, cx);
         } else {
             // The window holds the keyboard focus from its start, so that the key of
             // push-to-talk reaches it before the first click.
@@ -1536,6 +1543,9 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(layer, Layer::MessageMenu(_)) {
+            self.message_menu_placement = Default::default();
+        }
         let reaction = match &layer {
             Layer::ReactionPeople(dialog) => {
                 self.reaction_menu = None;
@@ -1740,6 +1750,9 @@ impl Shell {
     ) {
         self.hover_menu_close = None;
         let already = self.hover_menu.map(|(open, _)| open) == Some(server_id);
+        if !already {
+            self.hover_menu_pointer.1 = false;
+        }
         let keeps_focus = self.hover_menu.is_some_and(|(_, keyboard)| keyboard);
         if already && (keeps_focus || !by_keyboard) {
             return;
@@ -1752,28 +1765,78 @@ impl Shell {
         cx.notify();
     }
 
-    /// The pointer left the icon or the menu: the menu closes after a short time unless
-    /// the pointer enters one of them again. A menu that the keyboard opened stays.
-    pub(crate) fn leave_hover_menu(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.hover_menu, Some((_, false))) {
+    /// The pointer entered or left the icon of a server of the collapsed server book. The
+    /// pointer opens its menu.
+    pub(crate) fn hover_server_icon(
+        &mut self,
+        server_id: ServerId,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if hovered {
+            self.hover_menu_pointer.0 = Some(server_id);
+            if self.hover_menu_pressed != Some(server_id) {
+                self.open_hover_menu(server_id, false, window, cx);
+            }
+        } else {
+            if self.hover_menu_pointer.0 == Some(server_id) {
+                self.hover_menu_pointer.0 = None;
+            }
+            if self.hover_menu_pressed == Some(server_id) {
+                self.hover_menu_pressed = None;
+            }
+        }
+        self.linger_hover_menu(cx);
+    }
+
+    /// The pointer pressed the icon of a server: it selects the server, and the menu of the
+    /// icon closes, as the menu of a server in Discord does, until the pointer comes to the
+    /// icon again.
+    pub(crate) fn press_server_icon(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.hover_menu_pressed = Some(server_id);
+        if matches!(self.hover_menu, Some((open, false)) if open == server_id) {
+            self.close_hover_menu(cx);
+        }
+        self.state
+            .update(cx, |state, cx| state.select_server(server_id, cx));
+    }
+
+    /// The pointer entered or left the open hover menu.
+    pub(crate) fn hover_in_hover_menu(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.hover_menu_pointer.1 = hovered;
+        self.linger_hover_menu(cx);
+    }
+
+    /// A menu that the pointer opened closes a short time after the pointer left both the
+    /// icon and the menu, unless it enters one of them again. A menu that the keyboard
+    /// opened stays. gpui tells the icon and the menu of one move in either order: the
+    /// menu that the pointer enters can hear of it before the icon hears that the pointer
+    /// left it.
+    fn linger_hover_menu(&mut self, cx: &mut Context<Self>) {
+        let (icon, menu) = self.hover_menu_pointer;
+        if icon.is_some() || menu {
+            self.hover_menu_close = None;
+            return;
+        }
+        if !matches!(self.hover_menu, Some((_, false))) || self.hover_menu_close.is_some() {
             return;
         }
         self.hover_menu_close = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOVER_MENU_LINGER).await;
             let _ = this.update(cx, |this, cx| {
-                this.hover_menu = None;
                 this.hover_menu_close = None;
-                cx.notify();
+                if this.hover_menu_pointer == (None, false) {
+                    this.hover_menu = None;
+                    cx.notify();
+                }
             });
         }));
     }
 
-    pub(crate) fn stay_in_hover_menu(&mut self) {
-        self.hover_menu_close = None;
-    }
-
     pub(crate) fn close_hover_menu(&mut self, cx: &mut Context<Self>) {
         self.hover_menu_close = None;
+        self.hover_menu_pointer.1 = false;
         if self.hover_menu.take().is_some() {
             cx.notify();
         }
@@ -2237,7 +2300,6 @@ impl Shell {
                 .lists()
                 .is_none_or(|lists| !lists.directs.iter().any(|row| row.id == *conversation_id)),
             // The group, the server or the workspace of the menu is no longer listed.
-            Layer::PersonalSection(dialog) => !self.personal_dialog_current(*dialog, cx),
             Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
                 !view.groups.iter().any(|row| row.id == *group)
             }
@@ -2318,6 +2380,7 @@ impl Shell {
             Layer::None
             | Layer::Welcome
             | Layer::Settings
+            | Layer::ReleaseNotes(_)
             | Layer::LinkAll
             | Layer::QuickSwitcher => false,
         };
@@ -2384,12 +2447,12 @@ impl Shell {
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
+            Layer::ReleaseNotes(_) => self.render_release_notes(cx),
             Layer::Prejoin(prejoin) => self.render_prejoin(**prejoin, cx),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
             Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
-            Layer::PersonalSection(dialog) => self.render_personal_section(*dialog, cx),
             Layer::VoiceStatus(_) => self.render_voice_status(cx),
             Layer::ConfirmRemove(server_id) => self
                 .render_confirm_remove(*server_id, view, window, cx)

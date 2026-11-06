@@ -239,6 +239,7 @@ fn fixture() -> Fixture {
         moving: None,
         probes: Vec::new(),
         speaking: false,
+        inputs_replaced_seen: 0,
         timing,
     };
     Fixture {
@@ -3022,4 +3023,106 @@ async fn a_dropped_afk_disable_notice_refreshes_the_same_seat_without_accepting_
     );
     assert_eq!(f.session.place.identity(), "seat");
     f.session.engine.close().await;
+}
+
+/// The seat of the session of the fixture.
+fn seat(f: &Fixture) -> Seat {
+    Seat {
+        target: f.session.target,
+        identity: "seat".into(),
+    }
+}
+
+#[tokio::test]
+async fn the_sound_on_opens_the_microphone_that_the_sound_off_closed() {
+    let mut f = fixture();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    assert!(!f.session.inner.shared().muted);
+    calls.sound_off_muting(false);
+    assert!(f.session.inner.shared().muted && f.session.inner.shared().deafened);
+    let closes = f.session.inner.shared().sound_off_reopens;
+    assert_eq!(closes, Some(f.session.inner.shared().closes));
+    calls.sound_on_reopening(Some(&seat(&f)));
+    // Without a running session the open reaches the session here, as its command.
+    f.session
+        .command(SessionCommand::Unmute(seat(&f), closes.unwrap()));
+    assert!(!f.session.inner.shared().muted && !f.session.inner.shared().deafened);
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_grant_or_an_unread_end_while_the_sound_is_off_keeps_the_microphone_closed() {
+    for unread_end in [false, true] {
+        let mut f = fixture();
+        let calls = Calls {
+            inner: f.session.inner.clone(),
+        };
+        calls.sound_off_muting(false);
+        let closes = f.session.inner.shared().sound_off_reopens.unwrap();
+        if unread_end {
+            f.session.close_for_unread_end(46, false);
+        } else {
+            assert!(f.session.close_for_grant(46, false));
+        }
+        calls.sound_on_reopening(Some(&seat(&f)));
+        f.session.command(SessionCommand::Unmute(seat(&f), closes));
+        assert!(
+            f.session.inner.shared().muted,
+            "the sound on opened a microphone that a rule closed (unread end: {unread_end})"
+        );
+        assert!(!f.session.inner.shared().deafened);
+        f.session.engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_device_change_while_the_sound_is_off_cancels_the_open_and_is_told() {
+    let mut f = fixture();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    calls.sound_off_muting(false);
+    f.session.controls.muted = true;
+    let mut state = f.session.engine.state().borrow().clone();
+    state.inputs_replaced_while_muted += 1;
+    f.session.engine_changed(&state);
+    assert_eq!(f.session.inner.shared().sound_off_reopens, None);
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged)
+    );
+    // The same state again tells nothing more, and the sound on opens nothing.
+    f.session.inner.view.send_modify(|view| view.closed = None);
+    f.session.engine_changed(&state);
+    assert_eq!(f.session.inner.view.borrow().closed, None);
+    calls.sound_on_reopening(Some(&seat(&f)));
+    assert!(f.session.inner.shared().muted && !f.session.inner.shared().deafened);
+    f.session.engine.close().await;
+}
+
+#[test]
+fn an_open_on_its_way_counts_as_open_for_the_sound_off() {
+    let f = fixture();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    calls.mute();
+    let closes = f.session.inner.shared().closes;
+    f.session.inner.shared().opening = Some(closes);
+    calls.sound_off_muting(false);
+    assert!(f.session.inner.shared().sound_off_reopens.is_some());
+    // A microphone that the person closed before the sound off stays closed after it.
+    let g = fixture();
+    let calls = Calls {
+        inner: g.session.inner.clone(),
+    };
+    calls.mute();
+    calls.sound_off_muting(false);
+    assert_eq!(g.session.inner.shared().sound_off_reopens, None);
+    // Push to mute held: the microphone counts as open.
+    calls.set_deafened(false);
+    calls.sound_off_muting(true);
+    assert!(g.session.inner.shared().sound_off_reopens.is_some());
 }

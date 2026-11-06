@@ -336,6 +336,7 @@ fn a_colour_tray_picture_is_a_disc_of_its_state_with_a_white_sign() {
             TrayState::Muted,
             TrayState::Held,
             TrayState::SoundOff,
+            TrayState::MutedAndSoundOff,
         ] {
             let picture = tray(state, false, TrayStyle::Colour, side).unwrap();
             let disc = hex(state.disc().unwrap());
@@ -402,6 +403,58 @@ fn a_template_tray_picture_is_its_sign_in_black_on_transparent() {
             .unwrap()
             .starts_with(PNG_SIGNATURE)
     );
+}
+
+#[test]
+fn a_closed_microphone_with_the_sound_off_is_crossed_headphones_with_a_microphone_badge() {
+    let sign = TrayState::MutedAndSoundOff.sign();
+    assert_ne!(sign, TrayState::Muted.sign());
+    assert_ne!(sign, TrayState::SoundOff.sign());
+    // The headphones of the sound off, and a disc in the lower right corner from which the
+    // crossed microphone is cut.
+    assert!(sign.contains("M9.128 3.47A9 9 0 0 1 21 12v3.343"));
+    assert!(sign.contains("<circle cx=\"17.25\" cy=\"17.25\" r=\"6.5\""));
+    // At each side of each style the disc is drawn below the stand of the microphone, and
+    // the picture differs from the two signs that it combines.
+    let sides = [
+        (TrayStyle::Template, MENU_BAR[0]),
+        (TrayStyle::Template, MENU_BAR[1]),
+        (TrayStyle::Colour, TRAY[0]),
+        (TrayStyle::Colour, 32),
+    ];
+    for (style, side) in sides {
+        let picture = tray(TrayState::MutedAndSoundOff, false, style, side).unwrap();
+        // A point of the disc under the stand, in the grid of the sign: the colour style
+        // draws the sign at three quarters inside its disc.
+        let (x, y) = match style {
+            TrayStyle::Template => (17.25, 22.9),
+            TrayStyle::Colour => (3.0 + 17.25 * 0.75, 3.0 + 22.9 * 0.75),
+        };
+        let at = |unit: f32| (unit * side as f32 / 24.0) as u32;
+        let disc = picture.pixel(at(x), at(y));
+        match style {
+            TrayStyle::Template => assert!(disc[3] > 128, "{side}: {disc:?}"),
+            TrayStyle::Colour => {
+                // Nearer white than the disc of the state, also where the edge is smoothed.
+                let distance = |wanted: [u8; 3]| -> u32 {
+                    (0..3)
+                        .map(|channel| u32::from(disc[channel].abs_diff(wanted[channel])))
+                        .sum()
+                };
+                assert!(
+                    distance([255, 255, 255]) < distance(hex(CLOSED_RED)),
+                    "{side}: {disc:?}"
+                );
+            }
+        }
+        for other in [TrayState::Muted, TrayState::SoundOff] {
+            assert_ne!(
+                tray(other, false, style, side).unwrap().rgba,
+                picture.rgba,
+                "{other:?} {side}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -84,7 +84,7 @@ pub(super) fn picture(
         return picture.into_any_element();
     }
     div()
-        .id((place, index))
+        .id((place, row.id.as_uuid().as_u128() as u64))
         .role(Role::Image)
         .aria_label(text::logo_of(&row.name))
         .debug_selector(move || format!("{place}-{index}"))
@@ -442,7 +442,7 @@ impl Shell {
                 .into_any_element(),
         };
         let head = div()
-            .id(("server", index))
+            .id(("server", row.id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(super::book::head_label(row))
             .aria_selected(row.selected)
@@ -757,7 +757,7 @@ impl Shell {
             row.name.clone()
         };
         let icon = div()
-            .id(("server", index))
+            .id(("server", server_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(label)
             .aria_selected(row.selected)
@@ -779,20 +779,15 @@ impl Shell {
                     .child(selection_mark(cx))
             })
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
-                if *hovered {
-                    this.open_hover_menu(server_id, false, window, cx);
-                } else {
-                    this.leave_hover_menu(cx);
-                }
+                this.hover_server_icon(server_id, *hovered, window, cx);
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // The keyboard opens the menu and moves into it. The pointer selects the
-                // server; its menu is open already.
+                // server and closes the menu that its hover opened.
                 if matches!(event, ClickEvent::Keyboard(_)) {
                     this.open_hover_menu(server_id, true, window, cx);
                 } else {
-                    this.state
-                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                    this.press_server_icon(server_id, cx);
                 }
             }))
             .focus_visible(move |style| style.shadow(focused_ring))
@@ -980,7 +975,10 @@ impl Shell {
             text::book::COLLAPSE_WORKSPACES
         };
         let toggle = div()
-            .id(("menu-workspaces-toggle", index))
+            .id((
+                "menu-workspaces-toggle",
+                server_id.as_uuid().as_u128() as u64,
+            ))
             .role(Role::MenuItem)
             .aria_label(toggle_label)
             .aria_expanded(!collapsed)
@@ -1007,20 +1005,16 @@ impl Shell {
             .child(toggle_label);
         let empty = row.workspaces.is_empty();
         div()
-            .id(("hover-menu", index))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.stay_in_hover_menu();
-                } else {
-                    this.leave_hover_menu(cx);
-                }
-            }))
+            .id(("hover-menu", server_id.as_uuid().as_u128() as u64))
             .child(
                 Menu::new(
                     "server-hover-menu",
                     row.name.clone(),
                     self.hover_menu_focus(),
                 )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.hover_in_hover_menu(*hovered, cx);
+                }))
                 .dark()
                 .selector("server-hover-menu")
                 .on_close(Self::handler(cx, |this, window, cx| {

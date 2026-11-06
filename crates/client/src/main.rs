@@ -499,7 +499,7 @@ fn main() -> ExitCode {
             cx.quit();
             return;
         }
-        let state = app::state(client, start, cx);
+        let state = app::state(client, start.clone(), cx);
         cx.spawn(async move |cx| {
             while let Some(activation) = activations.recv().await {
                 cx.update(|cx| {

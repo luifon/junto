@@ -49,6 +49,7 @@ mod copying;
 mod data_directory;
 mod departures;
 mod device_checks;
+mod direct_collapse;
 mod drafts;
 mod emoji_completion;
 mod event_alerts;
@@ -71,6 +72,7 @@ mod typing;
 mod voice_status;
 // The rate of growth of the long use of `tests/endurance/`, tested here because that
 // target runs without the test runner.
+mod favourites;
 #[path = "../rehearsal/growth.rs"]
 mod growth;
 mod growth_tests;
@@ -93,14 +95,15 @@ mod panel_widths;
 mod panics;
 mod people;
 mod permissions;
-mod personal_sections;
 mod pictures;
 mod presence;
+mod presses;
 mod profile_cards;
 mod reaction_people;
 mod reconnect;
 mod recordings;
 mod recovery;
+mod release_notes;
 mod reply_quotes;
 mod review_corrections;
 mod system_lines;

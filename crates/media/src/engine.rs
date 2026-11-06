@@ -190,6 +190,10 @@ pub struct EngineState {
     /// device than before. It sends nothing from it until the person's own setting was
     /// closed once: the person did not choose that device for the call (ADR 0794).
     pub input_replaced: bool,
+    /// How often the engine opened the microphone on another device than before while the
+    /// person's setting was closed. A microphone that the sound off closed is not opened
+    /// again on such a device (ADR 0739, ADR 0794).
+    pub inputs_replaced_while_muted: u64,
     pub output: OutputState,
     pub output_device: Option<DeviceInfo>,
     /// The shares of this device by their slots.
@@ -455,6 +459,7 @@ impl Engine {
             published: false,
             input_device: None,
             input_replaced: false,
+            inputs_replaced_while_muted: 0,
             output: OutputState::Closed,
             output_device: None,
             own_shares: BTreeMap::new(),
@@ -1652,11 +1657,13 @@ impl Actor {
                     replaces(used.as_ref(), &device.id, self.config.input_device.as_ref());
                 self.input_held |= replaced && !self.controls.muted;
                 let held = self.input_held;
+                let muted = replaced && self.controls.muted;
                 self.capture = Some(stream);
                 self.change(|state| {
                     state.microphone = MicrophoneState::Running;
                     state.input_device = Some(device);
                     state.input_replaced = held;
+                    state.inputs_replaced_while_muted += u64::from(muted);
                 });
                 self.sync_gate();
             }

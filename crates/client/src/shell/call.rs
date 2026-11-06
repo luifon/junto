@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, ServerId, WorkspaceId};
 use junto_client_core::settings::Panel;
 use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
@@ -69,6 +69,17 @@ pub(crate) struct VolumeControl {
 /// A person outside the call in the member list of a call, with the line of the state.
 /// The people that the member list of a call lists: in the call and outside it.
 pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
+
+/// The server, the account and the workspace of a member list of the panel of a call; no
+/// workspace for a direct-message call.
+pub(crate) type CallMembersScope = (ServerId, AccountId, Option<WorkspaceId>);
+
+/// A member list of the panel of a call, which lays out only the rows in view, and the people
+/// that it lists.
+pub(crate) struct CallMembersList {
+    state: gpui::ListState,
+    rows: Option<CallMemberRows>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutsideRow {
@@ -1112,13 +1123,56 @@ impl Shell {
             PanelPlace::Direct(_) => Vec::new(),
         });
         // The list lays out only the rows in view: a call in a workspace of hundreds of
-        // members lists all of them outside the call (open item CD8).
+        // members lists all of them outside the call (open item CD8). Each workspace has a
+        // list of its own, so another one does not open at the scroll position of the last.
+        // A list of another server, account or workspace keeps only its scroll position; the
+        // list of a server whose account changed, and of a workspace that the server does not
+        // list any more, goes.
+        let state = self.state.read(cx);
+        let scope = server_id
+            .zip(view.person.account_id)
+            .map(|(server, account)| {
+                (
+                    server,
+                    account,
+                    panel.channel().and(view.workspace().map(|shown| shown.id)),
+                )
+            });
+        self.call_members
+            .retain(|(server, account, workspace), list| {
+                let held = state
+                    .server(*server)
+                    .filter(|held| held.owner().map(|owner| owner.account_id) == Some(*account));
+                let listed = held.is_some_and(|held| {
+                    workspace.is_none_or(|workspace| {
+                        held.live()
+                            .view()
+                            .model
+                            .is_some_and(|model| model.workspace(workspace).is_some())
+                    })
+                });
+                if Some((*server, *account, *workspace)) != scope {
+                    list.rows = None;
+                }
+                listed
+            });
+        let list = match scope {
+            Some(scope) => self
+                .call_members
+                .entry(scope)
+                .or_insert_with(|| CallMembersList {
+                    state: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+                    rows: None,
+                }),
+            None => return div().into_any_element(),
+        };
         let shape = (people.clone(), outside.clone());
-        if self.call_member_rows.as_ref() != Some(&shape) {
+        if list.rows.as_ref() != Some(&shape) {
             let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
-            super::changed_rows(&self.call_members_list, count);
-            self.call_member_rows = Some(shape);
+            super::changed_rows(&list.state, count);
+            list.rows = Some(shape);
         }
+        let state = list.state.clone();
         let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
             div()
                 .w_full()
@@ -1148,7 +1202,6 @@ impl Shell {
                     .into_any_element()
             })
             .collect();
-        let state = self.call_members_list.clone();
         let list = div()
             .id("call-members")
             .debug_selector(|| "call-members".to_owned())
@@ -1251,7 +1304,7 @@ impl Shell {
         };
         let row = |index: usize, account_id: AccountId, label: SharedString| {
             div()
-                .id(("call-member", index))
+                .id(("call-member", account_id.as_uuid().as_u128() as u64))
                 .role(Role::ListItem)
                 .aria_label(label)
                 .debug_selector(move || format!("call-member:{account_id}"))

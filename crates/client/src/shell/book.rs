@@ -123,7 +123,7 @@ impl Shell {
             crate::text::admin::waiting(AdminPage::JoinRequests, waiting).into();
         Some(
             div()
-                .id(("server-waiting", index))
+                .id(("server-waiting", server_id.as_uuid().as_u128() as u64))
                 .flex_none()
                 .cursor_pointer()
                 .role(Role::Button)

@@ -55,15 +55,18 @@ pub enum TrayState {
     Held,
     /// In a call with the sound off.
     SoundOff,
+    /// In a call with the microphone closed by the person and the sound off.
+    MutedAndSoundOff,
 }
 
 impl TrayState {
-    pub const ALL: [TrayState; 5] = [
+    pub const ALL: [TrayState; 6] = [
         TrayState::Plain,
         TrayState::Call,
         TrayState::Muted,
         TrayState::Held,
         TrayState::SoundOff,
+        TrayState::MutedAndSoundOff,
     ];
 
     /// The name of the state in the names of files.
@@ -74,6 +77,7 @@ impl TrayState {
             TrayState::Muted => "muted",
             TrayState::Held => "held",
             TrayState::SoundOff => "sound-off",
+            TrayState::MutedAndSoundOff => "muted-sound-off",
         }
     }
 
@@ -85,6 +89,9 @@ impl TrayState {
             TrayState::Muted => include_str!("../../../packaging/icon/tray/microphone-off.svg"),
             TrayState::Held => include_str!("../../../packaging/icon/tray/microphone-held.svg"),
             TrayState::SoundOff => include_str!("../../../packaging/icon/tray/headphones-off.svg"),
+            TrayState::MutedAndSoundOff => {
+                include_str!("../../../packaging/icon/tray/microphone-and-headphones-off.svg")
+            }
         }
     }
 
@@ -94,7 +101,9 @@ impl TrayState {
         match self {
             TrayState::Plain => None,
             TrayState::Call => Some(CALL_GREEN),
-            TrayState::Muted | TrayState::SoundOff => Some(CLOSED_RED),
+            TrayState::Muted | TrayState::SoundOff | TrayState::MutedAndSoundOff => {
+                Some(CLOSED_RED)
+            }
             TrayState::Held => Some(HELD_OCHRE),
         }
     }

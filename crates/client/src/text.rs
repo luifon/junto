@@ -1107,6 +1107,9 @@ pub const PUSH_TO_TALK: &str = "Push to talk";
 pub const TALK_KEY: &str = "Key";
 pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
      sends it only while you hold the key.";
+pub const SOUND_OFF_MUTES: &str = "Turning the sound off also mutes the microphone";
+pub const SOUND_OFF_MUTES_HELP: &str =
+    "Turning the sound on returns the microphone to how it was. Unmuting turns the sound on.";
 pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
@@ -1597,6 +1600,7 @@ pub const fn no_account_status(notice: Option<Notice>) -> &'static str {
 // Joining a server.
 pub const JOIN_A_SERVER: &str = "Join a server";
 pub const CLOSE: &str = "Close";
+pub const WHAT_IS_NEW: &str = "What is new";
 pub const CANCEL: &str = "Cancel";
 pub const SERVER_FOUND: &str = "Server found";
 pub const OPERATOR_NOTICE: &str =
@@ -3397,6 +3401,15 @@ pub const VIEW_ORIGINAL: &str = "View original";
 pub const MARK_UNREAD: &str = "Mark unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
+pub const NO_REACTIONS_YET: &str = "No reactions yet";
+
+/// The second line of "Who reacted": how many reactions the message has.
+pub fn reaction_total(count: u64) -> String {
+    match count {
+        1 => "1 reaction".to_owned(),
+        count => format!("{count} reactions"),
+    }
+}
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
 pub const REACTION_PEOPLE_UNAVAILABLE: &str =
     "These reactions are unavailable, or you do not have access to this message.";
@@ -3466,6 +3479,8 @@ pub const STOP_SHARING: &str = "Stop sharing";
 
 pub const COLLAPSE_CATEGORY: &str = "Collapse category";
 pub const EXPAND_CATEGORY: &str = "Expand category";
+pub const COLLAPSE_DIRECTS: &str = "Collapse direct messages";
+pub const EXPAND_DIRECTS: &str = "Expand direct messages";
 pub const CHANNEL_TOPIC: &str = "Topic";
 pub const EDIT_TOPIC: &str = "Edit topic";
 pub const COPY_TOPIC: &str = "Copy topic";
@@ -3479,19 +3494,11 @@ pub const CATEGORY_SETTINGS: &str = "Category settings";
 pub const FAVOURITES: &str = "Favourites";
 pub const ADD_FAVOURITE: &str = "Add to favourites";
 pub const REMOVE_FAVOURITE: &str = "Remove from favourites";
-pub const NEW_SECTION: &str = "New section";
-pub const SECTION_NAME: &str = "Section name";
-pub const SECTION_NAME_INVALID: &str = "Use 1 to 64 characters without control characters.";
-pub const RENAME_SECTION: &str = "Rename section";
-pub const REMOVE_SECTION: &str = "Remove section";
-pub const COLLAPSE_SECTION: &str = "Collapse section";
-pub const EXPAND_SECTION: &str = "Expand section";
-pub const MOVE_TO_SECTION: &str = "Move to";
+pub const COLLAPSE_FAVOURITES: &str = "Collapse favourites";
+pub const EXPAND_FAVOURITES: &str = "Expand favourites";
 pub const RETURN_TO_CHANNEL_LIST: &str = "Return to channel list";
 pub const MOVE_CHANNEL_UP: &str = "Move channel up";
 pub const MOVE_CHANNEL_DOWN: &str = "Move channel down";
-pub const MOVE_SECTION_UP: &str = "Move section up";
-pub const MOVE_SECTION_DOWN: &str = "Move section down";
 
 #[cfg(test)]
 mod tests {

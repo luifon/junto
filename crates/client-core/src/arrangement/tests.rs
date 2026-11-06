@@ -759,3 +759,54 @@ fn personal_channel_layouts_are_isolated_by_account_workspace_and_server() {
             .is_none()
     );
 }
+
+#[test]
+fn direct_messages_collapse_for_one_account_and_server_within_a_bound() {
+    let mut book = Book::new(2);
+    let (server, other_server) = (book.id(0), book.id(1));
+    let (account, other_account) = (AccountId::generate(), AccountId::generate());
+    book.change(Change::CollapseDirects {
+        server,
+        account,
+        collapsed: true,
+    })
+    .unwrap();
+    assert!(book.arrangement.directs_collapsed(server, account));
+    assert!(!book.arrangement.directs_collapsed(server, other_account));
+    assert!(!book.arrangement.directs_collapsed(other_server, account));
+    let read: Arrangement =
+        serde_json::from_slice(&serde_json::to_vec(&book.arrangement).unwrap()).unwrap();
+    assert!(read.directs_collapsed(server, account));
+    assert!(
+        !read
+            .normalised(&[other_server])
+            .directs_collapsed(server, account)
+    );
+    book.change(Change::CollapseDirects {
+        server,
+        account,
+        collapsed: false,
+    })
+    .unwrap();
+    assert!(book.arrangement.is_empty());
+    let mut place = ServerPlace::new(server);
+    place.directs_collapsed = (0..MOST_COLLAPSED_DIRECTS)
+        .map(|_| AccountId::generate())
+        .collect();
+    book.arrangement.servers.push(place.clone());
+    assert!(book.arrangement.check().is_ok());
+    assert_eq!(
+        book.change(Change::CollapseDirects {
+            server,
+            account,
+            collapsed: true,
+        }),
+        Err(ArrangeError::TooManyCollapsedDirects)
+    );
+    place.directs_collapsed.insert(account);
+    let over = Arrangement {
+        groups: Vec::new(),
+        servers: vec![place],
+    };
+    assert!(over.check().is_err());
+}

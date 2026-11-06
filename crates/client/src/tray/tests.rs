@@ -120,10 +120,36 @@ fn a_muted_microphone_offers_to_open_it_at_the_seat_of_the_call() {
 
 #[test]
 fn sound_off_shows_its_own_picture_and_offers_the_sound_again() {
-    let state = derive(&calls(Some(call()), true, true));
+    let state = derive(&calls(Some(call()), false, true));
     assert_eq!(state.picture(), Picture::SoundOff);
     assert_eq!(state.tooltip(), text::IN_A_CALL_SOUND_OFF);
     let menu = state.menu();
+    assert_eq!(menu[0].label, text::MUTE_MICROPHONE);
+    assert_eq!(menu[1].label, text::TURN_SOUND_ON);
+    assert_eq!(menu[1].action, TrayAction::Sound(false));
+}
+
+#[test]
+fn with_the_sound_off_muting_the_microphone_the_sound_off_alone_shows_both() {
+    let mut state = derive(&calls(Some(call()), true, true));
+    if let Some(call) = &mut state.call {
+        call.sound_off_mutes = true;
+    }
+    assert_eq!(state.picture(), Picture::SoundOff);
+    assert_eq!(state.tooltip(), text::IN_A_CALL_SOUND_OFF);
+    assert_eq!(state.menu()[0].label, text::UNMUTE_MICROPHONE);
+}
+
+#[test]
+fn a_closed_microphone_with_the_sound_off_shows_one_picture_that_names_both() {
+    let state = derive(&calls(Some(call()), true, true));
+    assert_eq!(state.picture(), Picture::MutedAndSoundOff);
+    assert_eq!(
+        state.tooltip(),
+        "Junto: in a call, microphone muted and sound off"
+    );
+    let menu = state.menu();
+    assert_eq!(menu[0].label, text::UNMUTE_MICROPHONE);
     assert_eq!(menu[1].label, text::TURN_SOUND_ON);
     assert_eq!(menu[1].action, TrayAction::Sound(false));
 }
@@ -146,9 +172,12 @@ fn a_microphone_that_the_server_holds_shows_muted_and_cannot_be_opened() {
     assert_eq!(closed.picture(), Picture::Held);
     assert_eq!(closed.menu()[0].label, text::UNMUTE_MICROPHONE);
     assert!(!closed.menu()[0].enabled);
-    // The sound off takes precedence over the held microphone.
-    let deaf = derive(&calls(Some(active), true, true));
+    // The sound off takes precedence over the held microphone; with the own microphone
+    // closed too, the picture of both.
+    let deaf = derive(&calls(Some(active.clone()), false, true));
     assert_eq!(deaf.picture(), Picture::SoundOff);
+    let both = derive(&calls(Some(active), true, true));
+    assert_eq!(both.picture(), Picture::MutedAndSoundOff);
 }
 
 #[test]
@@ -157,7 +186,11 @@ fn a_mention_adds_the_mark_to_every_picture_and_its_number_to_the_tooltip() {
         (derive(&calls(None, false, false)), Picture::Plain),
         (derive(&calls(Some(call()), false, false)), Picture::Call),
         (derive(&calls(Some(call()), true, false)), Picture::Muted),
-        (derive(&calls(Some(call()), true, true)), Picture::SoundOff),
+        (derive(&calls(Some(call()), false, true)), Picture::SoundOff),
+        (
+            derive(&calls(Some(call()), true, true)),
+            Picture::MutedAndSoundOff,
+        ),
     ] {
         assert_eq!(
             state.icon(),
@@ -203,6 +236,7 @@ fn the_build_rendered_each_picture() {
         Picture::Muted,
         Picture::Held,
         Picture::SoundOff,
+        Picture::MutedAndSoundOff,
     ];
     for picture in pictures {
         for mention in [false, true] {

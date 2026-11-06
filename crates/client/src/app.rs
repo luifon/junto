@@ -75,13 +75,15 @@ const WINDOW_MIN_SIZE: (f32, f32) = (720.0, 480.0);
 pub const APP_ID: &str = junto_client_core::app_identity::APP_ID;
 
 /// How the main window opens.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WindowStart {
     /// The interface scale of this start. Absent: the stored setting.
     pub scale_percent: Option<u32>,
     /// Bring the window to the front and give it the keyboard focus.
     pub activate: bool,
     pub timing: Timing,
+    /// The release notes that the window shows after an update (ADR 0727).
+    pub release_notes: crate::release_notes::ReleaseNotes,
 }
 
 impl Default for WindowStart {
@@ -90,6 +92,7 @@ impl Default for WindowStart {
             scale_percent: None,
             activate: true,
             timing: Timing::default(),
+            release_notes: Default::default(),
         }
     }
 }
@@ -192,6 +195,9 @@ pub fn state_with_media(
     cx: &mut App,
 ) -> Entity<AppState> {
     let state = cx.new(|cx| AppState::new(client, start.timing, media, cx));
+    state.update(cx, |state, cx| {
+        state.take_release_notes(start.release_notes, cx)
+    });
     if let Some(scale) = start.scale_percent {
         state.update(cx, |state, cx| state.use_scale_for_this_start(scale, cx));
     }

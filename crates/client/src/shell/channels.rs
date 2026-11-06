@@ -415,6 +415,41 @@ impl Shell {
         );
     }
 
+    /// "New category" at the end of the channel list: the form of Administration → Channels
+    /// that creates a server category of the workspace (ADR 0775).
+    pub(super) fn open_category_creation(
+        &mut self,
+        owner: junto_client_core::Owner,
+        workspace: junto_client_core::protocol::ids::WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.read(cx);
+        let view = state.view();
+        if !state
+            .server(owner.entry.server_id)
+            .is_some_and(|server| server.owner() == Some(owner))
+            || view
+                .selected
+                .as_ref()
+                .is_none_or(|server| server.id != owner.entry.server_id)
+            || !view
+                .workspace()
+                .is_some_and(|shown| shown.id == workspace && shown.may_create_category)
+        {
+            return;
+        }
+        self.open_admin(
+            crate::state::admin::AdminOpen::Server {
+                server_id: owner.entry.server_id,
+                page: crate::state::admin::AdminPage::Channels,
+            },
+            window,
+            cx,
+        );
+        self.set_admin_mode(Some(super::admin::Mode::CreateCategory), "", window, cx);
+    }
+
     /// The sections of the channels of a workspace with their threads and the people in
     /// their voice channels, and the entry boxes of its voice channels.
     fn channel_rows(
@@ -449,7 +484,7 @@ impl Shell {
             let title: SharedString = match &section.title {
                 SectionTitle::TextChannels => text::TEXT_CHANNELS.into(),
                 SectionTitle::VoiceChannels => text::VOICE_CHANNELS.into(),
-                SectionTitle::Category(name) | SectionTitle::Personal(name) => name.clone().into(),
+                SectionTitle::Category(name) => name.clone().into(),
                 SectionTitle::Favourites => text::FAVOURITES.into(),
             };
             let key: SharedString = format!(
@@ -464,9 +499,6 @@ impl Shell {
             let selector = match section.personal {
                 Some(junto_client_core::arrangement::channels::Location::Favourites) => {
                     "personal-favourites-header".to_owned()
-                }
-                Some(junto_client_core::arrangement::channels::Location::Section(id)) => {
-                    format!("personal-section-header:{id}")
                 }
                 _ => section
                     .category_id
@@ -613,23 +645,7 @@ impl Shell {
                 },
             );
             let header = match account_owner {
-                Some(owner) => self
-                    .personal_header(header, owner, workspace_id, section, cx)
-                    .action(crate::ui::RowAction::new(
-                        text::NEW_SECTION,
-                        cx.listener(move |this, _, window, cx| {
-                            this.open_personal_section(
-                                super::personal::SectionDialog {
-                                    owner,
-                                    workspace: workspace_id,
-                                    id: None,
-                                    channel: None,
-                                },
-                                window,
-                                cx,
-                            )
-                        }),
-                    )),
+                Some(owner) => self.personal_header(header, owner, workspace_id, section, cx),
                 None => header,
             };
             let frame = div()
@@ -1053,32 +1069,25 @@ impl Shell {
             );
         }
         if let Some(owner) = account_owner {
-            rows.push(
-                div()
-                    .px(u(14.0))
-                    .py(u(8.0))
-                    .child(
-                        Button::new("new-personal-section")
-                            .kind(ButtonKind::Ghost)
-                            .icon(Icon::Plus)
-                            .label(text::NEW_SECTION)
-                            .selector("new-personal-section")
-                            .w_full()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_personal_section(
-                                    super::personal::SectionDialog {
-                                        owner,
-                                        workspace: workspace_id,
-                                        id: None,
-                                        channel: None,
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            })),
-                    )
-                    .into_any_element(),
-            );
+            if workspace.may_create_category {
+                rows.push(
+                    div()
+                        .px(u(14.0))
+                        .py(u(8.0))
+                        .child(
+                            Button::new("channel-list-new-category")
+                                .kind(ButtonKind::Ghost)
+                                .icon(Icon::Plus)
+                                .label(text::admin::NEW_CATEGORY)
+                                .selector("channel-list-new-category")
+                                .w_full()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_category_creation(owner, workspace_id, window, cx)
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
             if cx.has_active_drag() {
                 let target = div()
                     .id("personal-return-target")
@@ -1125,28 +1134,68 @@ impl Shell {
             .filter(|direct| direct.unread.any() && !direct.mute.is_on())
             .map(|direct| direct.unread.messages.max(direct.unread.mentions))
             .sum();
+        // Collapsed, the group keeps the open conversation and its heading shows what the
+        // other conversations hold unread, as a collapsed category does (ADR 0775).
+        let collapsed = lists.directs_collapsed;
+        let owner = self
+            .state
+            .read(cx)
+            .server(server_id)
+            .and_then(|server| server.owner());
+        let header = CategoryHeader::new(text::DIRECT_MESSAGES)
+            .menu_id(format!("directs-menu:{owner:?}"))
+            .action(crate::ui::RowAction::new(
+                text::NEW_DIRECT,
+                cx.listener(move |this, _, window, cx| this.open_new_direct(server_id, window, cx)),
+            ))
+            .when_some(owner, |header, owner| {
+                header.toggle(
+                    collapsed,
+                    crate::ui::RowAction::new(
+                        if collapsed {
+                            text::EXPAND_DIRECTS
+                        } else {
+                            text::COLLAPSE_DIRECTS
+                        },
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.collapse_directs(owner, !collapsed, cx)
+                            })
+                        }),
+                    ),
+                )
+            });
+        let header = if collapsed {
+            header.unread("directs-unread", hidden_directs_sign(&lists.directs))
+        } else {
+            header.count((waiting > 0).then(|| text::unread_count(waiting).into()))
+        };
         let mut rows = vec![
             div()
                 .debug_selector(|| "directs-heading".to_owned())
-                .child(
-                    CategoryHeader::new(text::DIRECT_MESSAGES)
-                        .count((waiting > 0).then(|| text::unread_count(waiting).into())),
-                )
+                .child(header)
                 .into_any_element(),
         ];
         // A new conversation, with an account that the server lists for the person
         // (ADR 0307). It stands before the conversations, so that a conversation that
-        // arrives does not move it.
-        rows.push(
-            ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
-                .selector("new-direct")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_new_direct(server_id, window, cx);
-                }))
-                .into_any_element(),
-        );
+        // arrives does not move it. Collapsed, the menu of the heading holds it.
+        if !collapsed {
+            rows.push(
+                ChannelRow::new("new-direct", Icon::Plus, text::NEW_DIRECT)
+                    .selector("new-direct")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_new_direct(server_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         let mut conversations: Vec<AnyElement> = Vec::new();
-        for (index, direct) in lists.directs.iter().enumerate() {
+        for (index, direct) in lists
+            .directs
+            .iter()
+            .enumerate()
+            .filter(|(_, direct)| !collapsed || direct.selected)
+        {
             let conversation_id = direct.id;
             let name: SharedString = direct
                 .name
@@ -1204,6 +1253,9 @@ impl Shell {
                     .children(menu)
                     .into_any_element(),
             );
+        }
+        if conversations.is_empty() && collapsed {
+            return rows;
         }
         if conversations.is_empty() {
             conversations.push(
@@ -1445,6 +1497,23 @@ pub(crate) fn name_seed(name: &str) -> u128 {
     name.bytes().fold(0x6a75_6e74_6f00_u128, |seed, byte| {
         seed.rotate_left(8) ^ u128::from(byte)
     })
+}
+
+/// What the conversations that a collapsed group of direct messages hides hold unread: the
+/// conversations that are not open and not muted.
+fn hidden_directs_sign(directs: &[crate::state::view::DirectRow]) -> Option<crate::ui::UnreadSign> {
+    let hidden = directs
+        .iter()
+        .filter(|direct| !direct.selected && direct.unread.any() && !direct.mute.is_on())
+        .fold(crate::state::view::Unread::default(), |held, direct| {
+            crate::state::view::Unread {
+                messages: held.messages.saturating_add(direct.unread.messages),
+                mentions: held.mentions.saturating_add(direct.unread.mentions),
+                sign: true,
+                muted: false,
+            }
+        });
+    direct_sign(hidden)
 }
 
 /// The sign of a channel, a workspace or a server that holds what the person has not read.

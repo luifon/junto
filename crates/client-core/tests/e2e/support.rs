@@ -644,6 +644,9 @@ struct ProxyState {
     kept_answer: Option<usize>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
+    /// The numbers of the requests (`Junto-Test-Request`) whose request or answer waits at
+    /// the proxy now.
+    held_numbers: Vec<u64>,
     /// What the server sends on the event stream waits at the proxy.
     events_held: bool,
     /// The event revision that the `hello` of the event stream states in place of the one of
@@ -653,6 +656,27 @@ struct ProxyState {
     unfinished: usize,
     /// The errors of the connections that the proxy served, with their time.
     failures: Vec<(std::time::Instant, String)>,
+}
+
+thread_local! {
+    /// The proxies that the test of this thread started.
+    static PROXIES: std::cell::RefCell<Vec<std::sync::Weak<Mutex<ProxyState>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The numbers of the requests (`Junto-Test-Request`, sent by the counting transport of
+/// the client core) whose request or answer a proxy that the test of this thread started
+/// holds now. A press of a window test waits for the requests that it started, except for
+/// these (ADR 0902).
+#[allow(dead_code)]
+pub fn held_by_proxies() -> Vec<u64> {
+    PROXIES.with_borrow(|proxies| {
+        proxies
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .flat_map(|state| state.lock().unwrap().held_numbers.clone())
+            .collect()
+    })
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -704,6 +728,10 @@ impl FaultProxy {
     fn serve_on(listener: TcpListener, upstream_port: u16) -> Self {
         let port = listener.local_addr().unwrap().port();
         let state = Arc::<Mutex<ProxyState>>::default();
+        PROXIES.with_borrow_mut(|proxies| {
+            proxies.retain(|held| held.strong_count() > 0);
+            proxies.push(Arc::downgrade(&state));
+        });
         let shared = state.clone();
         let cut = watch::Sender::new(0);
         let cuts = cut.clone();
@@ -1009,6 +1037,22 @@ async fn serve(
     let method = first_line.next().unwrap_or_default().to_owned();
     let path = first_line.next().unwrap_or_default().to_owned();
     let body = request[head_end..head_end + length].to_vec();
+    let number = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("junto-test-request")
+            .then(|| value.trim().parse::<u64>().ok())?
+    });
+    let hold = |state: &Mutex<ProxyState>, holding: bool| {
+        if let Some(number) = number {
+            let mut state = state.lock().unwrap();
+            if holding {
+                state.held_numbers.push(number);
+            } else if let Some(at) = state.held_numbers.iter().position(|held| *held == number) {
+                state.held_numbers.remove(at);
+            }
+        }
+    };
 
     let upgrade = head
         .to_ascii_lowercase()
@@ -1117,8 +1161,14 @@ async fn serve(
                 .iter()
                 .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
-    while held(&state.lock().unwrap()) {
-        if released.changed().await.is_err() {
+    if held(&state.lock().unwrap()) {
+        hold(&state, true);
+        let mut open = true;
+        while open && held(&state.lock().unwrap()) {
+            open = released.changed().await.is_ok();
+        }
+        hold(&state, false);
+        if !open {
             return Ok(());
         }
     }
@@ -1200,11 +1250,13 @@ async fn serve(
     };
     if answer_held(&state.lock().unwrap()) {
         state.lock().unwrap().answers_waiting += 1;
+        hold(&state, true);
         let mut open = true;
         while open && answer_held(&state.lock().unwrap()) {
             open = released.changed().await.is_ok();
         }
         state.lock().unwrap().answers_waiting -= 1;
+        hold(&state, false);
         if !open {
             return Ok(());
         }

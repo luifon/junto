@@ -132,6 +132,7 @@ pub async fn logo_at(
     policy: &RetryPolicy,
 ) -> Result<Option<AvatarImage>, ApiError> {
     let request = HttpRequest {
+        test_number: None,
         method: Method::Get,
         url,
         bearer: None,

@@ -43,6 +43,9 @@ impl AppState {
         #[cfg(not(feature = "test-support"))]
         let calls = &self.known.media.calls;
         let mut shown = derive(calls);
+        if let Some(call) = &mut shown.call {
+            call.sound_off_mutes = self.known.media.voice.sound_off_mutes;
+        }
         shown.mentions = self.tray_mentions;
         let told = self.tray_shown.as_ref();
         let same_call = told.map(|told| &told.call) == Some(&shown.call);

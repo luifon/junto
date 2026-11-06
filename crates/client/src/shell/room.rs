@@ -824,7 +824,7 @@ impl Shell {
                     cx,
                 );
                 div()
-                    .id(("invite-row", index))
+                    .id(("invite-row", account_id.as_uuid().as_u128() as u64))
                     .role(Role::ListItem)
                     .aria_label(member.name.clone())
                     .flex()

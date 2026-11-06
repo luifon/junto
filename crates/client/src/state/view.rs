@@ -753,7 +753,6 @@ pub enum SectionTitle {
     VoiceChannels,
     Category(String),
     Favourites,
-    Personal(String),
 }
 
 /// The microphone of a person in a voice channel.
@@ -1261,6 +1260,8 @@ pub struct ServerLists {
     pub workspace: Option<WorkspaceView>,
     /// The direct conversations of the server.
     pub directs: Vec<DirectRow>,
+    /// The group of the direct conversations is collapsed for the account (ADR 0775).
+    pub directs_collapsed: bool,
     /// The direct conversation that the main area shows in place of a channel.
     pub conversation: Option<DirectRow>,
     /// Why the server did not open a direct conversation, with the account asked for.
@@ -1374,6 +1375,8 @@ pub struct WorkspaceView {
     pub id: WorkspaceId,
     pub name: String,
     pub sections: Vec<ChannelSection>,
+    /// The person may create a category of the workspace (ADR 0775).
+    pub may_create_category: bool,
     /// The selected channel, as the main area shows it.
     pub channel: Option<ChannelRow>,
     pub members: Members,
@@ -2532,12 +2535,7 @@ fn sections(
     {
         use junto_client_core::arrangement::channels::Location;
         let mut personal = Vec::new();
-        let placed: HashSet<_> = layout
-            .favourites
-            .iter()
-            .chain(layout.sections.iter().flat_map(|section| &section.channels))
-            .copied()
-            .collect();
+        let placed: HashSet<_> = layout.favourites.iter().copied().collect();
         let mut by_id = HashMap::new();
         for section in &mut made {
             for row in std::mem::take(&mut section.rows) {
@@ -2548,12 +2546,11 @@ fn sections(
                 }
             }
         }
-        let mut rows = |ids: &[ChannelId]| {
-            ids.iter()
-                .filter_map(|id| by_id.remove(id))
-                .collect::<Vec<_>>()
-        };
-        let favourites = rows(&layout.favourites);
+        let favourites: Vec<_> = layout
+            .favourites
+            .iter()
+            .filter_map(|id| by_id.remove(id))
+            .collect();
         if !favourites.is_empty() {
             personal.push(ChannelSection {
                 category_id: None,
@@ -2564,14 +2561,6 @@ fn sections(
                 rows: favourites,
             });
         }
-        personal.extend(layout.sections.iter().map(|section| ChannelSection {
-            category_id: None,
-            collapsed: section.collapsed,
-            may_create: false,
-            personal: Some(Location::Section(section.id)),
-            title: SectionTitle::Personal(section.name.clone()),
-            rows: rows(&section.channels),
-        }));
         personal.extend(made);
         made = personal;
     }
@@ -2889,6 +2878,9 @@ fn server_lists(
             .filter(|_| selection.notices != Some(server_id)),
         workspace: shown,
         directs,
+        directs_collapsed: known
+            .arrangement
+            .directs_collapsed(server_id, model.account.id),
         conversation,
         conversation_refused: known
             .conversation_refused
@@ -3315,6 +3307,7 @@ fn workspace_view(
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
         sections,
+        may_create_category: workspace.holds(WorkspacePermission::ManageChannel),
         channel,
         members: members(server_id, workspace, model, known),
         allowed,

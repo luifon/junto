@@ -1,3 +1,5 @@
+// Modified: this file differs from the published gpui-pre 0.3.8. The test window keeps the
+// accessibility callbacks and can activate them as a screen reader does.
 use crate::{
     AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler,
@@ -56,6 +58,8 @@ pub(crate) struct TestWindowState {
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
+    // Modified: the accessibility callbacks that the window gave the platform.
+    a11y_callbacks: Option<crate::A11yCallbacks>,
 }
 
 #[derive(Clone)]
@@ -116,6 +120,7 @@ impl TestWindow {
             virtual_keyboard_requests: 0,
             virtual_keyboard_dismissals: 0,
             moved_callback: None,
+            a11y_callbacks: None,
             appearance_change_callback: None,
             request_frame_callback: None,
             frame_wake_count: Rc::new(Cell::new(0)),
@@ -257,6 +262,16 @@ impl TestWindow {
         self.0.lock().frame_wake_count.get()
     }
 
+    // Modified: added. A screen reader connects to the window: the window builds its
+    // accessibility tree from the next frame on, as with a platform adapter.
+    /// Activates the accessibility of the window, as a screen reader that connects does.
+    pub fn simulate_a11y_activation(&self) {
+        let lock = self.0.lock();
+        if let Some(callbacks) = &lock.a11y_callbacks {
+            let _ = (callbacks.activation)();
+        }
+    }
+
     /// Delivers a frame request to the window, as the platform's frame source
     /// would.
     pub fn simulate_frame_request(&self, options: RequestFrameOptions) {
@@ -290,6 +305,11 @@ impl TestWindow {
 }
 
 impl PlatformWindow for TestWindow {
+    // Modified: the callbacks are kept for `TestWindow::simulate_a11y_activation`.
+    fn a11y_init(&self, callbacks: crate::A11yCallbacks) {
+        self.0.lock().a11y_callbacks = Some(callbacks);
+    }
+
     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
         let state = self.0.lock();
         state
