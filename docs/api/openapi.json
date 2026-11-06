@@ -345,6 +345,17 @@
         ],
         "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by\n1024 pixels. The server reads the format from the bytes, not from `Content-Type`.",
         "operationId": "set_avatar",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The hash of the picture that the client saw, in lower-case hexadecimal, or `none` when\nthere was none. The server then stores the new picture only while the stored one is\nthat picture or already the new one, and answers `conflict` otherwise: a request that\nis sent again after its connection was cut does not replace a picture that was stored\nin between. Absent: no condition.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "image/jpeg": {
@@ -11457,6 +11468,17 @@
         ],
         "summary": "Sets the public logo. The caller is a server administrator with a session.",
         "operationId": "set_logo",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The hash of the picture that the client saw, in lower-case hexadecimal, or `none` when\nthere was none. The server then stores the new picture only while the stored one is\nthat picture or already the new one, and answers `conflict` otherwise: a request that\nis sent again after its connection was cut does not replace a picture that was stored\nin between. Absent: no condition.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "image/jpeg": {

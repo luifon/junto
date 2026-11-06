@@ -414,6 +414,7 @@ fn conflict(what: AskKind) -> &'static str {
         | AskKind::ChangeTerm(_)
         | AskKind::RemoveTerm(_)
         | AskKind::MoveTerm(_) => glossary::CHANGED_MEANWHILE,
+        AskKind::SetLogo => server::LOGO_CHANGED,
         _ => {
             "The server refused, because its state has changed. Close this page and open it again."
         }

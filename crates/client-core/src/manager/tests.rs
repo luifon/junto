@@ -2698,7 +2698,13 @@ async fn the_avatar_of_the_preset_is_sent_to_an_account_that_this_device_created
     assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
     // The name of the claim stays. The name of the preset is not sent after it.
     assert_eq!(server.name_of(account_id), "Ada");
-    assert_eq!(server.count("/account"), 0);
+    // The upload of the avatar reads the account first (ADR 0119); no name is changed.
+    assert!(
+        !server
+            .seen()
+            .iter()
+            .any(|line| line.starts_with("Patch ") && line.ends_with("/account"))
+    );
     assert_eq!(server.count("/account/avatar"), 1);
     owner.dispatch(AccessAction::Check).await.unwrap();
     assert_eq!(owner.apply_profile().await.unwrap(), ProfileSync::Applied);
@@ -2747,7 +2753,10 @@ async fn a_failed_try_to_send_the_avatar_is_counted_and_repeated_at_the_next_log
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
 
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
     handle.dispatch(join("CODE")).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -2815,7 +2824,10 @@ async fn a_preset_whose_avatar_was_removed_or_replaced_by_other_bytes_sends_noth
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 2);
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
 
     let removed = device(&network);
     removed.client.profile().set_avatar(AVATAR).unwrap();
@@ -2867,7 +2879,7 @@ async fn the_state_of_the_preset_belongs_to_the_account_that_this_device_created
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(join("CODE")).await.unwrap();
     let created = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -2997,7 +3009,7 @@ async fn a_try_that_started_before_a_removal_does_not_send_the_avatar_after_a_re
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(claim()).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -3081,7 +3093,7 @@ async fn two_tries_to_send_the_avatar_at_the_same_time_send_it_once() {
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(join("CODE")).await.unwrap();
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
     assert_eq!(server.count("/account/avatar"), 1);
@@ -3103,7 +3115,10 @@ async fn a_stored_avatar_that_cannot_be_sent_ends_the_waiting_and_another_fault_
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 2);
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
 
     let large = device(&network);
     large.client.profile().set_avatar(AVATAR).unwrap();
@@ -3158,7 +3173,7 @@ async fn the_avatar_is_sent_at_the_login_that_follows_an_approved_join_request()
     assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
     assert_eq!(server.count("/account/avatar"), 0);
     server.decide_request(handle.device_public_key().unwrap(), true);
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(AccessAction::Check).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });

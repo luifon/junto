@@ -206,18 +206,22 @@ impl ServerApi {
             .await
     }
 
-    /// Stores a picture with `PUT`. The server takes the same picture again as no change, so
-    /// the request is also sent again when its connection is cut (ADR 0013, ADR 0714).
+    /// Stores a picture with `PUT`, on the condition that the stored picture is still `seen`,
+    /// the hash of the picture that the client read before (`None`: no picture), or already
+    /// the new one. The request is also sent again when its connection is cut: a repetition
+    /// after the first attempt was stored changes nothing, and one after another picture was
+    /// stored in between gets `conflict` (ADR 0013, ADR 0119, ADR 0714).
     pub(super) async fn call_picture(
         &self,
         path: String,
+        seen: Option<String>,
         body: RequestBody,
     ) -> Result<HttpResponse, ApiError> {
         self.authority
             .send(Outline {
                 method: Method::Put,
                 path,
-                query: Vec::new(),
+                query: vec![("before", seen.unwrap_or_else(|| "none".to_owned()))],
                 body: Some(body),
                 repeat: Repeat::SameResult,
             })
@@ -312,11 +316,14 @@ impl ServerApi {
 
     /// Stores the avatar of the account. The body of the request is the image itself. An
     /// image that no server accepts by its size or its first bytes is not sent.
+    /// A picture of another device of the account that is stored after the avatar was read
+    /// here is not replaced: the answer is `conflict`.
     pub async fn set_avatar(&self, image: Vec<u8>) -> Result<Avatar, ApiError> {
         let kind = profile::check_avatar(&image)?;
+        let seen = self.own_account().await?.avatar.map(|avatar| avatar.hash);
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/account/avatar".to_owned();
-        read_json(&self.call_picture(path, body).await?)
+        read_json(&self.call_picture(path, seen, body).await?)
     }
 
     pub async fn remove_avatar(&self) -> Result<(), ApiError> {

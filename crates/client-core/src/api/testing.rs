@@ -42,6 +42,8 @@ pub(crate) enum Fault {
     LoseAnswer,
     /// Loses the request before any work.
     LoseRequest,
+    /// Makes no connection: the server receives nothing, and no client sends it again.
+    NoConnection,
     /// Does the work and answers with the right status and a body that is not JSON.
     Garble,
 }
@@ -1070,6 +1072,7 @@ impl Transport for FakeServer {
             match fault {
                 Some(Fault::Busy) => Ok(refusal("busy")),
                 Some(Fault::LoseRequest) => lost(TransportErrorKind::Interrupted),
+                Some(Fault::NoConnection) => lost(TransportErrorKind::Connect),
                 Some(Fault::LoseAnswer) => {
                     let _ = world.handle(&request);
                     lost(TransportErrorKind::Timeout)
