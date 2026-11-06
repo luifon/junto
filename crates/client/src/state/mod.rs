@@ -504,8 +504,6 @@ pub struct AppState {
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
-    /// Whether the microphone was muted when the sound was turned off and muted it.
-    muted_before_sound_off: Option<bool>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
     device_checks: Option<device_checks::CheckSession>,
     device_check_sequence: u64,
@@ -1052,7 +1050,6 @@ impl AppState {
             client,
             calls,
             voice_failed,
-            muted_before_sound_off: None,
             camera_devices: Vec::new(),
             device_checks: None,
             device_check_sequence: 0,
@@ -1777,6 +1774,7 @@ impl AppState {
     /// person does this after the presenter of meeting mode removed the block: the
     /// application never opens it by itself.
     pub fn open_microphone(&mut self, seat: &Seat) {
+        self.sound_on_for_microphone();
         self.calls.unmute_in(Some(seat));
     }
 
@@ -2513,30 +2511,32 @@ impl AppState {
     /// "Turning the sound off also mutes the microphone", turning the sound off mutes the
     /// microphone, and turning it on returns the microphone to its state before.
     pub fn set_sound_off(&mut self, off: bool) {
-        let calls = self.calls.view();
-        if self.known.media.voice.sound_off_mutes && off != calls.deafened {
-            if off {
-                self.muted_before_sound_off = Some(calls.muted);
-                self.calls.mute();
-            } else if self.muted_before_sound_off.take() == Some(false) {
-                self.calls.unmute_in(self.calls.seat().as_ref());
-            }
+        let deafened = self.calls.view().deafened;
+        if !self.known.media.voice.sound_off_mutes || off == deafened {
+            self.calls.set_deafened(off);
+        } else if off {
+            // The sound off takes the place of a held key of push to mute: its release
+            // opens nothing, and the sound on opens the microphone that the key closed.
+            let held = std::mem::take(&mut self.muted_by_hold);
+            self.calls.sound_off_muting(held);
+        } else {
+            self.calls.sound_on_reopening(self.calls.seat().as_ref());
         }
-        self.calls.set_deafened(off);
     }
 
     /// Opening the microphone while the sound is off also turns the sound on, with the
     /// setting "Turning the sound off also mutes the microphone".
     fn sound_on_for_microphone(&mut self) {
         if self.known.media.voice.sound_off_mutes && self.calls.view().deafened {
-            self.muted_before_sound_off = None;
             self.calls.set_deafened(false);
         }
     }
 
     pub fn set_sound_off_mutes(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.muted_before_sound_off = None;
+        self.calls.forget_sound_off_close();
         self.change_voice(cx, move |voice| voice.sound_off_mutes = on);
+        // The tray shows both apart, or the sound off for both.
+        self.follow_tray();
     }
 
     /// The push-to-talk key is held or released.

@@ -414,6 +414,29 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the administrator hears the window again", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
+    // With the setting off, the sound off is for this person only: the administrator still
+    // hears the window.
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_sound_off_mutes(false, cx)
+    });
+    window.click("sound-output");
+    window.until("the window plays nothing", |window| {
+        heard(&window.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
+    });
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after the sound of the window was turned off with the setting off",
+    );
+    window.click("sound-output");
+    window.until("the window plays the call again", |window| {
+        heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
+    });
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_sound_off_mutes(true, cx)
+    });
 
     // The members of the call, and the volume of one person: the arrow keys change it.
     window.click("call-tab-members");

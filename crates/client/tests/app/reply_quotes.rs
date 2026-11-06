@@ -389,7 +389,12 @@ fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
     assert_eq!(quote_of(&mut window, original), Some(QuoteText::Unknown));
 
     // The stream connects again: the quote is read again; the seventh answer is lost too,
-    // and the eighth read shows the original.
+    // and the eighth read shows the original. The state is not loaded again meanwhile, so
+    // the rule of the reconnect reads it, and not the reads after a reload.
+    let server_id = window.view().selected.unwrap().id;
+    let reloads = window
+        .state
+        .read_with(&window.cx, |state, _| state.reloads_of(server_id));
     proxy.cut_streams();
     window.until(
         "the quote is read after the stream connected again",
@@ -398,6 +403,13 @@ fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
                 && quote_of(window, original)
                     == Some(QuoteText::Text("the older original".to_owned()))
         },
+    );
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.reloads_of(server_id)),
+        reloads,
+        "the state was loaded again"
     );
 }
 

@@ -664,10 +664,16 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     assert!(scene.window.shows("may-speak-notice") && !scene.window.shows("meeting-bar"));
     scene.window.click_channel(ROOM);
     assert!(!scene.window.shows("may-speak-notice"));
+    // With the sound off, "Unmute" also turns the sound on (ADR 0739).
+    scene.window.click("sound-output");
+    scene.window.until("the sound is off", |window| {
+        window.view().controls.sound_off
+    });
     scene.window.click("may-speak-unmute");
     scene.window.until("the microphone is open", |window| {
         !window.shows("may-speak-unmute")
             && window.view().controls.microphone == MicrophoneButton::Open
+            && !window.view().controls.sound_off
             && own(window).is_some_and(|own| matches!(own.microphone, Microphone::Open { .. }))
     });
     // Ada turns meeting mode off. The person had no block: nothing is told.

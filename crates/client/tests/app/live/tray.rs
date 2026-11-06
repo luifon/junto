@@ -174,9 +174,44 @@ fn turning_the_sound_off_mutes_the_microphone_and_turning_it_on_returns_it(
         |window| !window.view().controls.sound_off && microphone(window) == MicrophoneButton::Open,
     );
 
+    // Push to mute held, then the sound off: the release keeps the microphone closed, and
+    // the sound on opens it.
+    window.state.update(&mut window.cx, |state, _| {
+        state.hold_action(None, KeyAction::PushToMute, true);
+    });
+    window.until("the held key closed the microphone", |window| {
+        microphone(window) == MicrophoneButton::Muted
+    });
+    press(&mut window, text::TURN_SOUND_OFF);
+    window.until("the sound is off", |window| {
+        window.view().controls.sound_off
+    });
+    window.state.update(&mut window.cx, |state, _| {
+        state.hold_action(None, KeyAction::PushToMute, false);
+    });
+    window.settle();
+    assert_eq!(microphone(&mut window), MicrophoneButton::Muted);
+    press(&mut window, text::TURN_SOUND_ON);
+    window.until("the sound on opened the microphone", |window| {
+        !window.view().controls.sound_off && microphone(window) == MicrophoneButton::Open
+    });
+
     // The setting off: the sound off keeps the microphone, and the tray shows both apart.
+    press(&mut window, text::MUTE_MICROPHONE);
+    press(&mut window, text::TURN_SOUND_OFF);
+    window.until("the sound off of both", |window| {
+        window.view().controls.sound_off && tooltip(window) == text::IN_A_CALL_SOUND_OFF
+    });
     window.state.update(&mut window.cx, |state, cx| {
         state.set_sound_off_mutes(false, cx)
+    });
+    // The tray is told the setting at once.
+    window.settle();
+    assert_eq!(tooltip(&mut window), text::IN_A_CALL_MUTED_SOUND_OFF);
+    press(&mut window, text::TURN_SOUND_ON);
+    press(&mut window, text::UNMUTE_MICROPHONE);
+    window.until("the microphone is open", |window| {
+        microphone(window) == MicrophoneButton::Open
     });
     press(&mut window, text::TURN_SOUND_OFF);
     window.until("the sound is off", |window| {

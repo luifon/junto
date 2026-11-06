@@ -519,8 +519,9 @@ def icon_section():
         "that Lucide derived from the Feather project, which its licence file names, are also under the MIT "
         "licence of Feather. The icon mic-held of junto is drawn from the Lucide icons mic-off and lock and is "
         "under the same licences.",
-        "The signs of the tray icon of junto are drawn from Lucide icons, with a wider stroke and with the "
-        f"strokes cut where the line across a sign meets them, and are under the same licences: {drawn}. The "
+        "The signs of the tray icon of junto are drawn from Lucide icons, with a wider stroke, and are under the "
+        f"same licences: {drawn}; the sign microphone-and-headphones-off is the headphones scaled down with a "
+        "disc in a corner from which the microphone is cut. The "
         "sign of the tray icon outside a call, three rings, is part of Junto."],
         [(f"Lucide icons {', '.join(icons)}, and mic-held: LICENSE", (LUCIDE / "LICENSE").read_bytes()),
          (f"Tray signs {', '.join(sorted(TRAY_SOURCES))}: LICENSE-lucide", (TRAY / "LICENSE-lucide").read_bytes())])
