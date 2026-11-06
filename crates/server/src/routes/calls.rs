@@ -11,8 +11,8 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportSpeaking, ReportWatching, SetVoiceChannelStatus, ShareAudio, UpdateCallSettings,
-    ViewerQuery,
+    ReportSpeaking, ReportWatching, SetVoiceChannelStatus, ShareAudio, ShareShows,
+    UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};
@@ -354,7 +354,9 @@ pub async fn report_screen_share(
         .fetch_optional(&mut *connection)
         .await?;
         let audio = body.audio.stored();
-        let kind = body.kind.map(StoredText::stored);
+        // What the share shows, also an application; a client of 0.1.0 states `kind` only
+        // (ADR 0737).
+        let kind = ShareShows::stated(body.shows, body.kind).map(StoredText::stored);
         // A share with another identifier than the one of the slot is a new share: it
         // starts now (ADR 0510).
         let new = match &held {

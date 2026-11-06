@@ -61,6 +61,7 @@ impl Shell {
             PicturePurpose::Account => text::PICTURE_CROP_ACCOUNT,
             PicturePurpose::Preset => text::PICTURE_CROP_PRESET,
             PicturePurpose::Logo(_) => text::PICTURE_CROP_LOGO,
+            PicturePurpose::WorkspaceLogo(..) => text::PICTURE_CROP_WORKSPACE_LOGO,
         };
         // The frame shows the square: one picture pixel is `scale` design pixels.
         let scale = FRAME / crop.crop.side;

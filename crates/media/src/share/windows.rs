@@ -9,6 +9,9 @@
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) mod rules;
 
+/// The share of the windows of one application. It has no unsafe code.
+#[cfg(target_os = "windows")]
+mod application;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod capture;

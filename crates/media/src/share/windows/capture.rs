@@ -12,11 +12,13 @@ use tokio::sync::oneshot;
 use windows::Graphics::Capture::GraphicsCaptureSession;
 use windows::Win32::Foundation::HWND;
 
+use super::application;
 use super::graphics::{Gpu, Session, Target};
 use super::rules::{self, Creators};
 use super::sound::{Capture, Event, Loopback};
 use super::sources;
 use super::still::{self, Still};
+use crate::share::delivery::pixels::Frame;
 use crate::share::delivery::{CAPACITY, Latest, Life, deliver};
 use crate::share::listing::Own;
 use crate::share::picture::PictureFrame;
@@ -32,7 +34,7 @@ const ANSWER_LIMIT: Duration = Duration::from_secs(10);
 /// The threads of a capture use the multithreaded apartment of the process without entering
 /// it: a thread that left the apartment at its end would end it while the system still holds
 /// objects of the capture, and their release would then fail (ADR 0706).
-fn apartment() -> Result<(), CaptureError> {
+pub(super) fn apartment() -> Result<(), CaptureError> {
     crate::com::keep_multithreaded().map_err(CaptureError::Failed)
 }
 
@@ -131,6 +133,9 @@ impl ScreenCapture for SystemCapture {
             tokio::task::spawn_blocking(move || {
                 let still = match source {
                     PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
+                    PictureSource::Application(process_id) => {
+                        return application::preview(&own, process_id, bound);
+                    }
                     PictureSource::Display(id) => Still::Monitor(
                         sources::displays()
                             .into_iter()
@@ -167,26 +172,39 @@ impl ScreenCapture for SystemCapture {
     }
 }
 
-/// The screen or window and the sound of a request, checked against the lists of now: a
-/// share starts only with a source that a person could choose.
+/// What the picture of a share captures.
+enum Picture {
+    /// One screen or one window.
+    One(Target),
+    /// Every window of one application on one screen.
+    Application(application::Shared),
+}
+
+/// The picture and the sound of a request, checked against the lists of now: a share
+/// starts only with a source that a person could choose.
 fn resolve(
     own: &Own,
     request: &CaptureRequest,
-) -> Result<(Target, Option<Loopback>), CaptureError> {
-    let target = match request.picture {
+) -> Result<(Picture, Option<Loopback>), CaptureError> {
+    let picture = match request.picture {
         PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
-        PictureSource::Display(id) => Target::Monitor(
+        PictureSource::Display(id) => Picture::One(Target::Monitor(
             sources::displays()
                 .into_iter()
                 .find(|display| display.source.id == id)
                 .ok_or(CaptureError::SourceGone)?
                 .monitor,
-        ),
+        )),
         PictureSource::Window(id) => {
             if !sources::windows(own).iter().any(|window| window.id == id) {
                 return Err(CaptureError::SourceGone);
             }
-            Target::Window(HWND(rules::window_handle(id) as *mut c_void))
+            Picture::One(Target::Window(
+                HWND(rules::window_handle(id) as *mut c_void),
+            ))
+        }
+        PictureSource::Application(process_id) => {
+            Picture::Application(application::resolve(own, process_id)?)
         }
     };
     let loopback = match &request.sound {
@@ -211,7 +229,7 @@ fn resolve(
             Some(Loopback::Include(id.process_id as u32))
         }
     };
-    Ok((target, loopback))
+    Ok((picture, loopback))
 }
 
 async fn answer<T>(
@@ -254,12 +272,32 @@ async fn start(
     });
     let (mut workers, stopped) = Workers::new(life.clone());
     workers.report_failures_to(sink.clone());
-    let (ready, picture_ready) = oneshot::channel();
-    workers.spawn("share-picture", {
-        let (life, pictures) = (life.clone(), pictures.clone());
-        move || picture(life, target, pictures, ready)
-    })?;
-    let (gpu, size) = answer(picture_ready, &life).await?;
+    type Read = Box<dyn FnMut(()) -> Result<Option<Frame>, CaptureError> + Send>;
+    let (read, size): (Read, (u32, u32)) = match target {
+        Picture::One(target) => {
+            let (ready, picture_ready) = oneshot::channel();
+            workers.spawn("share-picture", {
+                let (life, pictures) = (life.clone(), pictures.clone());
+                move || picture(life, target, pictures, ready)
+            })?;
+            let (gpu, size) = answer(picture_ready, &life).await?;
+            (Box::new(move |()| gpu.read()) as Read, size)
+        }
+        Picture::Application(shared) => {
+            let size = shared.size;
+            let drawn = application::Drawn::default();
+            let (ready, picture_ready) = oneshot::channel();
+            workers.spawn("share-application", {
+                let (life, pictures, drawn) = (life.clone(), pictures.clone(), drawn.clone());
+                move || application::picture(life, shared, pictures, drawn, ready)
+            })?;
+            answer(picture_ready, &life).await?;
+            (
+                Box::new(move |()| application::draw(&drawn, size)) as Read,
+                size,
+            )
+        }
+    };
     let samples = match loopback {
         None => None,
         Some(loopback) => {
@@ -277,17 +315,21 @@ async fn start(
     workers.spawn("share-delivery", {
         let life = life.clone();
         let quality = request.quality;
-        move || deliver(life, sink, pictures, move |()| gpu.read(), samples, quality)
+        move || deliver(life, sink, pictures, read, samples, quality)
     })?;
     let (width, height) = request.quality.resolution.fit(size.0, size.1);
     Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
 }
 
-type Ready<T> = oneshot::Sender<Result<T, CaptureError>>;
+pub(super) type Ready<T> = oneshot::Sender<Result<T, CaptureError>>;
 
 /// A failure is sent as the answer to the start while nobody has an answer yet, so the
 /// start reads the reason and not a closed channel.
-fn finish<T>(life: &Life, ready: &mut Option<Ready<T>>, result: Result<(), CaptureError>) {
+pub(super) fn finish<T>(
+    life: &Life,
+    ready: &mut Option<Ready<T>>,
+    result: Result<(), CaptureError>,
+) {
     if let Err(failure) = result {
         if let Some(ready) = ready.take() {
             let _ = ready.send(Err(failure.clone()));

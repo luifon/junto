@@ -226,6 +226,20 @@ impl Shell {
                     )
                     .children(notifications)
                     .children(self.render_move_items(view, cx))
+                    // An invite of the same server adds further workspaces to the account
+                    // (ADR 0115).
+                    .when(has_content, |menu| {
+                        menu.child(
+                            MenuItem::new("join-with-invite", text::JOIN_WITH_INVITE)
+                                .icon(Icon::Ticket)
+                                .selector("menu-join-with-invite")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                                    this.open_join_for(server_id, window, cx);
+                                })),
+                        )
+                    })
                     .when(server.may_invite_people, |menu| {
                         menu.child(
                             MenuItem::new("invite-people", text::INVITE_PEOPLE)

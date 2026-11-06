@@ -20,7 +20,7 @@ use junto_client_core::model::{
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{Departure, RecoveryNotice};
 use junto_client_core::protocol::call::{
-    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio,
+    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio, ShareShows,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
@@ -194,6 +194,8 @@ pub struct Known {
     pub preset_picture: Option<Arc<RenderImage>>,
     /// The logos of the servers that have one (ADR 0101).
     pub logos: super::logo::ShownLogos,
+    /// The logos of the workspaces that have one (ADR 0122).
+    pub workspace_logos: super::logo::ShownLogos<super::logo::WorkspaceKey>,
     /// The servers that refused the picture of the profile preset for the account that
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
@@ -681,6 +683,9 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
 pub struct WorkspaceRow {
     pub id: WorkspaceId,
     pub name: String,
+    /// The image of the logo of the workspace, when the window holds it (ADR 0122). Without
+    /// it the window draws the generated picture of the workspace.
+    pub logo: Option<Arc<RenderImage>>,
     pub selected: bool,
     /// What the channels of the workspace hold that the person has not read.
     pub unread: Unread,
@@ -3470,21 +3475,31 @@ fn share_stage(
             .iter()
             .map(|seen| {
                 let id = ShareId::of(seen.account_id, seen.slot);
+                let reported = call
+                    .and_then(|call| call.participant(seen.account_id))
+                    .and_then(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .find(|share| share.slot == seen.slot)
+                    });
                 ShareCard {
                     id,
                     account_id: seen.account_id,
                     name: name_of(seen.account_id),
-                    kind: seen.kind,
+                    // The track of a share of an application has the name of a window share,
+                    // and the state of the server states the application (ADR 0737). The
+                    // track is current; the state of the slot can still hold the share before
+                    // it, so it only names a window track an application.
+                    kind: match (seen.kind, reported.and_then(|share| share.shows())) {
+                        (Some(ShareKind::Window), Some(ShareShows::Application)) => {
+                            Some(ShareKind::Application)
+                        }
+                        (Some(kind), _) => Some(kind),
+                        (None, shows) => shows.and_then(shown_kind),
+                    },
                     number: None,
-                    sound: call
-                        .and_then(|call| call.participant(seen.account_id))
-                        .and_then(|participant| {
-                            participant
-                                .shares()
-                                .iter()
-                                .find(|share| share.slot == seen.slot)
-                        })
-                        .map(|share| share.audio),
+                    sound: reported.map(|share| share.audio),
                     sound_held: false,
                     sound_setting: active.share_sounds.get(&id).copied().unwrap_or_else(|| {
                         known.media.voice.share_sound(server_id, seen.account_id)
@@ -3540,6 +3555,17 @@ fn share_stage(
             share.sound_setting.volume
         });
     (!shares.is_empty()).then_some(ShareStage { shares, volume })
+}
+
+/// What a share shows as the window names it, from the state of the server, for a track
+/// whose name states nothing. A value of a later version states nothing.
+fn shown_kind(shows: ShareShows) -> Option<ShareKind> {
+    match shows {
+        ShareShows::Screen => Some(ShareKind::Screen),
+        ShareShows::Window => Some(ShareKind::Window),
+        ShareShows::Application => Some(ShareKind::Application),
+        ShareShows::Unknown => None,
+    }
 }
 
 /// The shares of this device for the menu of the share button, in the order of their slots.
@@ -4301,6 +4327,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                             unread: workspace_unread(workspace, unreads),
                             id: workspace.workspace.id,
                             name: workspace.workspace.name.clone(),
+                            logo: known
+                                .workspace_logos
+                                .image((server.id, workspace.workspace.id)),
                             selected: selected
                                 && shown.is_some_and(|shown| {
                                     shown.workspace.id == workspace.workspace.id

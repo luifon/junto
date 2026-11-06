@@ -20,12 +20,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// The allocator of the system with a count of the bytes of the blocks that are held.
 pub struct Counting {
     held: AtomicUsize,
+    /// The most bytes held since the start or since the last [`Counting::reset_peak`].
+    peak: AtomicUsize,
 }
 
 impl Counting {
     pub const fn new() -> Self {
         Self {
             held: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
         }
     }
 
@@ -33,6 +36,22 @@ impl Counting {
     /// freed yet.
     pub fn held(&self) -> usize {
         self.held.load(Ordering::Relaxed)
+    }
+
+    /// The most bytes that were held at one time since the start or since the last
+    /// [`Counting::reset_peak`].
+    pub fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    /// Starts a new peak at the bytes held now.
+    pub fn reset_peak(&self) {
+        self.peak.store(self.held(), Ordering::Relaxed);
+    }
+
+    fn grew(&self, by: usize) {
+        let held = self.held.fetch_add(by, Ordering::Relaxed) + by;
+        self.peak.fetch_max(held, Ordering::Relaxed);
     }
 }
 
@@ -53,7 +72,7 @@ unsafe impl GlobalAlloc for Counting {
         // contract of `System::alloc`.
         let block = unsafe { System.alloc(layout) };
         if !block.is_null() {
-            self.held.fetch_add(layout.size(), Ordering::Relaxed);
+            self.grew(layout.size());
         }
         block
     }
@@ -62,7 +81,7 @@ unsafe impl GlobalAlloc for Counting {
         // SAFETY: as in `alloc`.
         let block = unsafe { System.alloc_zeroed(layout) };
         if !block.is_null() {
-            self.held.fetch_add(layout.size(), Ordering::Relaxed);
+            self.grew(layout.size());
         }
         block
     }
@@ -78,7 +97,7 @@ unsafe impl GlobalAlloc for Counting {
         // SAFETY: as in `dealloc`; the caller keeps the contract on `new_size`.
         let moved = unsafe { System.realloc(block, layout, new_size) };
         if !moved.is_null() {
-            self.held.fetch_add(new_size, Ordering::Relaxed);
+            self.grew(new_size);
             self.held.fetch_sub(layout.size(), Ordering::Relaxed);
         }
         moved
@@ -102,10 +121,15 @@ mod tests {
         let block = unsafe { counting.realloc(block, layout, 3000) };
         assert!(!block.is_null());
         assert_eq!(counting.held(), 3000);
+        // The new block is counted before the old one is released.
+        assert_eq!(counting.peak(), 4000);
         let grown = Layout::from_size_align(3000, 8).unwrap();
         // SAFETY: the block came from this allocator and now has the layout `grown`.
         unsafe { counting.dealloc(block, grown) };
         assert_eq!(counting.held(), 0);
+        assert_eq!(counting.peak(), 4000);
+        counting.reset_peak();
+        assert_eq!(counting.peak(), 0);
         // SAFETY: as above.
         let zeroed = unsafe { counting.alloc_zeroed(layout) };
         assert!(!zeroed.is_null());

@@ -44,6 +44,10 @@ pub struct Picture {
     pub animated: bool,
     /// The frames of the picture: 1 for a still picture.
     pub frames: u32,
+    /// A client can decode the picture at a smaller size without the whole picture in
+    /// memory: a still PNG without interlacing, or a JPEG of sequential coding with 8-bit
+    /// samples in one or three colour components (ADR 0408).
+    pub reducible: bool,
 }
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -172,8 +176,10 @@ fn png<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
     }
     let width = u32::from_be_bytes(file.take()?);
     let height = u32::from_be_bytes(file.take()?);
-    // The rest of the header and its check value.
-    file.skip(5 + 4)?;
+    // The depth, the colours, the compression, the filter and the interlacing, and the
+    // check value of the header.
+    let [_, _, _, _, interlace] = file.take::<5>()?;
+    file.skip(4)?;
     let mut frames = None;
     let mut quarter = false;
     loop {
@@ -208,6 +214,7 @@ fn png<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
         height,
         animated: frames.is_some(),
         frames: frames.unwrap_or(1),
+        reducible: frames.is_none() && interlace == 0,
     })
 }
 
@@ -228,10 +235,17 @@ fn jpeg<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
             }
             0xd8..=0xda => return None,
             0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
-                // The length of the header and the precision of the samples.
-                file.skip(3)?;
+                // The length of the header, the precision of the samples, the size and the
+                // number of colour components.
+                file.skip(2)?;
+                let [precision] = file.take::<1>()?;
                 let height = be16(file.take()?);
                 let width = be16(file.take()?);
+                let [components] = file.take::<1>()?;
+                // Sequential coding with Huffman tables: the baseline and the extended
+                // process.
+                let reducible =
+                    matches!(marker, 0xc0 | 0xc1) && precision == 8 && matches!(components, 1 | 3);
                 let (width, height) = if quarter == Some(true) {
                     (height, width)
                 } else {
@@ -243,6 +257,7 @@ fn jpeg<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
                     height,
                     animated: false,
                     frames: 1,
+                    reducible,
                 });
             }
             _ => {
@@ -350,6 +365,7 @@ fn webp<R: Read>(file: &mut Source<R>, start: [u8; 4], total: u64) -> Option<Pic
         height,
         animated,
         frames,
+        reducible: false,
     })
 }
 
@@ -405,6 +421,7 @@ fn gif<R: Read>(file: &mut Source<R>, start: [u8; 4]) -> Option<Picture> {
         height,
         animated: false,
         frames,
+        reducible: false,
     })
 }
 
@@ -465,6 +482,18 @@ pub mod samples {
         image
     }
 
+    /// A PNG with interlacing (Adam7).
+    pub fn png_interlaced(width: u32, height: u32) -> Vec<u8> {
+        let mut header = width.to_be_bytes().to_vec();
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, 6, 0, 0, 1]);
+        let mut image = super::PNG_SIGNATURE.to_vec();
+        image.extend(chunk(b"IHDR", &header));
+        image.extend(chunk(b"IDAT", &[0; 16]));
+        image.extend(chunk(b"IEND", &[]));
+        image
+    }
+
     /// A PNG with an animation chunk that states two frames.
     pub fn animated_png(width: u32, height: u32) -> Vec<u8> {
         animated_png_of(width, height, 2)
@@ -490,6 +519,15 @@ pub mod samples {
         image.extend_from_slice(&width.to_be_bytes());
         image.extend_from_slice(&[1, 1, 0x11, 0]);
         image.extend_from_slice(&[0xff, 0xda, 0x00, 0x02, 0xff, 0xd9]);
+        image
+    }
+
+    /// A JPEG of progressive coding.
+    pub fn jpeg_progressive(width: u16, height: u16) -> Vec<u8> {
+        let mut image = jpeg(width, height);
+        if let Some(at) = image.windows(2).position(|pair| pair == [0xff, 0xc0]) {
+            image[at + 1] = 0xc2;
+        }
         image
     }
 
@@ -682,11 +720,33 @@ mod tests {
             height: size.1,
             animated: frames > 1 && kind != PictureKind::Gif,
             frames,
+            reducible: frames == 1 && matches!(kind, PictureKind::Png | PictureKind::Jpeg),
         })
     }
 
     fn of(bytes: &[u8]) -> Option<Picture> {
         picture(bytes, bytes.len() as u64)
+    }
+
+    /// A still PNG without interlacing and a JPEG of sequential coding with 8-bit samples
+    /// in one or three components can be decoded reduced; an interlaced PNG, an animated
+    /// PNG, a JPEG of progressive coding, WebP and GIF cannot (ADR 0408).
+    #[test]
+    fn the_pictures_that_a_client_decodes_reduced_are_marked() {
+        let reducible = |bytes: &[u8]| of(bytes).map(|found| found.reducible);
+        assert_eq!(reducible(&samples::png(64, 48)), Some(true));
+        assert_eq!(reducible(&samples::jpeg(640, 480)), Some(true));
+        assert_eq!(reducible(&samples::png_interlaced(64, 48)), Some(false));
+        assert_eq!(reducible(&samples::animated_png(64, 48)), Some(false));
+        assert_eq!(reducible(&samples::jpeg_progressive(640, 480)), Some(false));
+        assert_eq!(reducible(&samples::webp_lossless(64, 48)), Some(false));
+        assert_eq!(reducible(&samples::gif(64, 48, 1)), Some(false));
+        // Four components (CMYK) are not reduced.
+        let mut cmyk = samples::jpeg(640, 480);
+        if let Some(at) = cmyk.windows(2).position(|pair| pair == [0xff, 0xc0]) {
+            cmyk[at + 9] = 4;
+        }
+        assert_eq!(reducible(&cmyk), Some(false));
     }
 
     #[test]

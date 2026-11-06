@@ -37,7 +37,7 @@ use gpui_base::input::InputState;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::shell::call::CallTab;
-use junto_client::shell::share::SoundKind;
+use junto_client::shell::share::{ShareTab, SoundKind};
 use junto_client::shell::{Open, SettingsSection, Shell};
 use junto_client::state::AppState;
 use junto_client::state::fixtures::from_roles;
@@ -86,8 +86,8 @@ use junto_media::permission::{FixedPermission, MicrophoneAccess};
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::synthetic::SyntheticCapture;
 use junto_media::share::{
-    ApplicationId, ApplicationSource, CaptureError, DisplaySource, NoCapture, PictureSource,
-    ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
+    ApplicationId, ApplicationPicture, ApplicationSource, CaptureError, DisplaySource, NoCapture,
+    PictureSource, ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
 };
 use time::OffsetDateTime;
 
@@ -256,6 +256,7 @@ fn workspace(number: u32, name: &str, is_default: bool) -> WorkspaceState {
             id: id(number),
             name: name.to_owned(),
             is_default,
+            logo: None,
         },
         own_role_ids: Vec::new(),
         roles: Vec::new(),
@@ -329,6 +330,7 @@ fn studio() -> WorkspaceState {
     carla.screen_share = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     });
@@ -622,6 +624,8 @@ struct Screen {
     preset: &'static str,
     /// The screen capture of the screen. It exists only in the program.
     capture: Arc<dyn ScreenCapture>,
+    /// A check of the drawn pixels of the screen: the problem that it finds.
+    check: Option<fn(&image::RgbaImage) -> Option<String>>,
 }
 
 impl Screen {
@@ -634,7 +638,14 @@ impl Screen {
             scale: 100,
             preset: "Luca",
             capture: Arc::new(capture()),
+            check: None,
         }
+    }
+
+    /// Checks the drawn pixels of the screen; a problem fails the run as an empty band does.
+    fn check(mut self, check: fn(&image::RgbaImage) -> Option<String>) -> Self {
+        self.check = Some(check);
+        self
     }
 
     fn capture(mut self, capture: Arc<dyn ScreenCapture>) -> Self {
@@ -770,6 +781,7 @@ impl Studio {
         };
         let name = screen.name;
         let (width, scale) = (screen.size.0, screen.scale);
+        let check = screen.check;
         // The watch names this screen until the guard ends, on every way out of this
         // function, also after an error.
         let _drawing = Noted::new(&self.drawing, name);
@@ -817,6 +829,8 @@ impl Studio {
         let mut areas = None;
         let mut controls = Vec::new();
         let mut settled = false;
+        // The areas of the frame before the last one, which an error states against the last.
+        let mut before = Vec::new();
         for _ in 0..SETTLE_FRAMES {
             junto_client::ui::record_areas();
             junto_client::ui::record_controls();
@@ -830,13 +844,18 @@ impl Studio {
                 settled = true;
                 break;
             }
+            if let Some(previous) = areas.take() {
+                before = previous;
+            }
             areas = Some(drawn);
         }
         let areas = areas.unwrap_or_default();
         if !settled {
+            let changed: Vec<_> = areas.iter().filter(|area| !before.contains(area)).collect();
+            let gone: Vec<_> = before.iter().filter(|area| !areas.contains(area)).collect();
             return Err(format!(
                 "{name}: the screen did not settle: its areas changed in each of \
-                 {SETTLE_FRAMES} frames"
+                 {SETTLE_FRAMES} frames; in the last frame {changed:?}, before {gone:?}"
             ));
         }
         let unsettled = junto_client::ui::take_unsettled();
@@ -855,6 +874,9 @@ impl Studio {
                 .into_iter()
                 .map(|band| format!("{name}: {band}")),
         );
+        if let Some(problem) = check.and_then(|check| check(&image)) {
+            self.bands.push(format!("{name}: {problem}"));
+        }
         self.bands.extend(
             junto_client::ui::outside(&controls, px(width))
                 .into_iter()
@@ -1111,6 +1133,25 @@ fn capture() -> SyntheticCapture {
                 height: 800,
             },
         ],
+        application_capture: true,
+        application_pictures: vec![
+            ApplicationPicture {
+                application: editor.clone(),
+                name: "Editor".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 2,
+            },
+            ApplicationPicture {
+                application: desktop.clone(),
+                name: "Remote Desktop".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
+            },
+        ],
         applications: vec![
             ApplicationSource {
                 id: editor,
@@ -1305,6 +1346,7 @@ fn acme_with_shares(
                         .map(|(_, audio)| ScreenShare {
                             slot: 0,
                             kind: None,
+                            shows: None,
                             audio: *audio,
                             started_at: at(),
                         });
@@ -1624,6 +1666,22 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         Shell::share_picker_is_listed,
     )?;
     studio.draw_after(
+        Screen::call("share-dialog-window-tab", in_call(Phase::Connected)),
+        picker(|shell, cx| shell.pick_share_tab(ShareTab::Window, cx)),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-application-with-its-sound",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_tab(ShareTab::Application, cx);
+            shell.pick_share_picture(PictureSource::Application(502), cx);
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
         Screen::call(
             "share-dialog-screen-with-one-application",
             in_call(Phase::Connected),
@@ -1866,6 +1924,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     let share = || ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     };

@@ -2663,8 +2663,6 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cf698677b253118459f552fe15513858c669d79a25837a94e480db2ae330050"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3823,6 +3821,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
+
+[[package]]
 name = "js-sys"
 version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3866,6 +3870,7 @@ dependencies = [
  "gpui-pre-wgpu",
  "iana-time-zone",
  "image",
+ "jpeg-decoder",
  "junto-alloc-count",
  "junto-client",
  "junto-client-core",
@@ -3875,6 +3880,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "png 0.18.1",
  "proc-macro2",
  "raw-window-handle",
  "serde",

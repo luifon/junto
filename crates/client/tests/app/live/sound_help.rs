@@ -23,6 +23,12 @@ fn selected_help(cx: &mut TestAppContext, picture: &'static str, sound: &'static
     window.until("the share choices are listed", |window| {
         window.shows("share-sources")
     });
+    // A window is listed in the Window tab, an application in the Application tab.
+    if picture.starts_with("share-window:") {
+        window.click("share-tab-window");
+    } else if picture.starts_with("share-application-picture:") {
+        window.click("share-tab-application");
+    }
     window.click(picture);
     window.click(sound);
     if picture == "share-display:1" && sound == "share-sound-2" {
@@ -52,6 +58,18 @@ fn selected_application_sound_warns_that_it_can_include_the_call(cx: &mut TestAp
         "{shown}"
     );
     assert!(!shown.contains("no other one"), "{shown}");
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server"]
+fn a_shared_application_has_its_own_sound_and_warns_that_it_can_include_the_call(
+    cx: &mut TestAppContext,
+) {
+    let shown = selected_help(cx, "share-application-picture:4001", "share-sound-2");
+    assert_eq!(
+        shown,
+        junto_client::text::sound_of_shared_application("Player")
+    );
 }
 
 #[gpui::test]

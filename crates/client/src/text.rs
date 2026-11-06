@@ -50,8 +50,13 @@ pub const WINDOW_RESTORE: &str = "Restore";
 pub const WINDOW_CLOSE: &str = "Close";
 pub const START_AT_LOGIN: &str = "Start Junto at login";
 pub const START_AT_LOGIN_HELP: &str = "Open Junto when you log in to your computer.";
-pub const LOGIN_CUSTOM_PROFILE: &str =
-    "Open Junto with its normal profile to change whether it starts at login.";
+/// The switch of start at login of a profile: the normal profile, or another one by its name.
+pub fn start_at_login(profile: Option<&str>) -> String {
+    match profile {
+        None => START_AT_LOGIN.to_owned(),
+        Some(name) => format!("Start Junto at login with the profile {name}"),
+    }
+}
 pub const LOGIN_SYSTEM_VERSION: &str = "Start at login needs macOS 13 or later.";
 pub const LOGIN_NOT_INSTALLED: &str = "Install Junto to choose whether it starts at login.";
 pub const LOGIN_CHECKING: &str = "Checking the login setting…";
@@ -547,7 +552,11 @@ pub const SHARE_SCREEN: &str = "Share your screen";
 pub const SHARE_STARTING: &str = "Starting your share…";
 pub const SHARE_RUNS: &str = "Stop sharing or share another";
 pub const YOUR_SHARES: &str = "Your shares";
-pub const SHARE_ANOTHER: &str = "Share another screen or window";
+pub const SHARE_ANOTHER: &str = if cfg!(target_os = "linux") {
+    "Share another screen or window"
+} else {
+    "Share another screen, window or application"
+};
 pub const STOP_ALL_SHARES: &str = "Stop every share";
 pub const SHARE_STARTS: &str = "Starts…";
 
@@ -574,15 +583,32 @@ pub fn share_viewer_names(names: &[String]) -> String {
 }
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str = SHARE_UNSUPPORTED;
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
-pub const SHARE_READING: &str = "Reading the screens and windows…";
+pub const SHARE_READING: &str = if cfg!(target_os = "linux") {
+    "Reading the screens and windows…"
+} else {
+    "Reading the screens, windows and applications…"
+};
 /// The desktop portal owns the final source chooser on Linux.
 pub const SHARE_DESKTOP_SCREEN: &str = "Choose a screen with the desktop";
 pub const SHARE_DESKTOP_WINDOW: &str = "Choose a window with the desktop";
 pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you press Share.";
 
-pub const SCREENS: &str = "Screens";
-pub const WINDOWS: &str = "Windows";
+/// The tabs of the dialog of a share (ADR 0738).
+pub const SHARE_TABS: &str = "What kind of thing to share";
+pub const SHARE_TAB_SCREEN: &str = "Screen";
+pub const SHARE_TAB_WINDOW: &str = "Window";
+pub const SHARE_TAB_APPLICATION: &str = "Application";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
+pub const NO_APPLICATION_WINDOWS: &str = "No other application has a window on a screen.";
+/// The line under an application in the dialog of a share: its windows and the screen whose
+/// area is shared.
+pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
+    let windows = match windows {
+        1 => "1 window".to_owned(),
+        count => format!("{count} windows"),
+    };
+    format!("{windows} on screen {screen} · {}", pixels(size))
+}
 /// The accessible names of the picture of a screen or a window in the dialog of a share.
 pub const SHARE_PREVIEW_LOADING: &str = "Loading the preview";
 pub const SHARE_PREVIEW_NONE: &str = "No preview";
@@ -641,6 +667,14 @@ pub fn sound_of_window(application: &str) -> String {
     format!(
         "The people in the call hear the sound of {application}, the application of this \
          window. Its sound may include the sound of this call."
+    )
+}
+
+/// The sound of a shared application when the person chooses the sound of that application.
+pub fn sound_of_shared_application(application: &str) -> String {
+    format!(
+        "The people in the call hear the sound of {application}. Its sound may include the \
+         sound of this call."
     )
 }
 
@@ -709,6 +743,7 @@ pub const WATCHING: &str = "Watching";
 pub const WATCH: &str = "Watch";
 pub const ENTIRE_SCREEN: &str = "Entire screen";
 pub const ONE_WINDOW: &str = "Window";
+pub const ONE_APPLICATION: &str = "Application";
 pub const PICTURE_ARRIVES: &str = "Waiting for the picture…";
 pub const SOUND_FOLLOWS: &str = "You hear only the share you are watching.";
 pub const SHARE_SOUND_HELD: &str = "Its sound is not sent while your microphone is blocked";
@@ -748,6 +783,7 @@ fn share_what(kind: Option<ShareKind>, number: Option<usize>) -> String {
     let what = match kind {
         Some(ShareKind::Screen) => "screen",
         Some(ShareKind::Window) => "window",
+        Some(ShareKind::Application) => "application",
         None => "share",
     };
     match number {
@@ -770,6 +806,7 @@ pub fn share_kind(kind: Option<ShareKind>) -> &'static str {
     match kind {
         Some(ShareKind::Screen) => ENTIRE_SCREEN,
         Some(ShareKind::Window) => ONE_WINDOW,
+        Some(ShareKind::Application) => ONE_APPLICATION,
         None => "",
     }
 }
@@ -2674,6 +2711,7 @@ pub const fn picture_refusal(refusal: crate::picture::Refusal) -> &'static str {
 pub const PICTURE_CROP_ACCOUNT: &str = "Picture of your account";
 pub const PICTURE_CROP_PRESET: &str = "Picture of new accounts";
 pub const PICTURE_CROP_LOGO: &str = "Logo of the server";
+pub const PICTURE_CROP_WORKSPACE_LOGO: &str = "Logo of the workspace";
 pub const PICTURE_CROP_HELP: &str =
     "Drag the picture to place it in the square, and zoom with the slider or the wheel.";
 pub const PICTURE_ZOOM: &str = "Zoom";
@@ -3361,6 +3399,31 @@ pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailabl
 pub const INVITATION_EXISTING_ACCOUNT: &str =
     "Use this invitation with your existing account. It may add you to workspaces on this server.";
 pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+/// The item of the menus of a server that opens the redemption of an invite (ADR 0115).
+pub const JOIN_WITH_INVITE: &str = "Join workspaces with an invite";
+
+/// The refusal of an invite whose workspaces all hold the account already.
+pub const REDEEM_ALREADY_MEMBER: &str =
+    "Your account is already a member of every workspace of this invite. The invite was not used.";
+
+/// What a redemption of an invite added (the server refuses an invite that adds none): the names of the workspaces that the window knows,
+/// and how many more whose names have not arrived yet.
+pub fn redeemed_workspaces(names: &[String], unknown: usize) -> String {
+    let mut parts: Vec<String> = names.iter().map(|name| format!("“{name}”")).collect();
+    match unknown {
+        0 => {}
+        1 if parts.is_empty() => parts.push("1 workspace".to_owned()),
+        1 => parts.push("1 more workspace".to_owned()),
+        count if parts.is_empty() => parts.push(format!("{count} workspaces")),
+        count => parts.push(format!("{count} more workspaces")),
+    }
+    let list = match parts.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    format!("Your account is now a member of {list}.")
+}
 pub const COPY_TARGET_LINK: &str = "Copy link";
 
 pub const EDIT_TEXT_MENU: &str = "Edit text";

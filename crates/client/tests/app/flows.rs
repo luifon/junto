@@ -611,18 +611,16 @@ fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut Tes
         "next.example.test"
     );
 
-    // The address of a saved server is not added twice.
+    // The address of a saved server is not added twice: the dialog of that server opens,
+    // which redeems an invite into its account (ADR 0115).
     window.enter_address(&first.address());
-    window.until("the address is refused", |window| {
-        window.shows("address-help")
-            && window.in_shell(|shell, _, _| shell.address_error().is_some())
+    window.until("the dialog of the saved server opens", |window| {
+        window.shows("join-dialog") && window.shows("redeem-invite")
     });
-    let refused = window.in_shell(|shell, _, _| shell.address_error().map(str::to_owned));
-    assert_eq!(
-        refused.as_deref(),
-        Some("This server is already in your server book.")
-    );
+    assert!(window.in_shell(|shell, _, _| shell.address_error().is_none()));
     assert_eq!(window.view().servers.len(), 2);
+    window.press("escape");
+    assert!(!window.shows("join-dialog"));
 
     // A click on the first server selects it, and its lists are shown.
     window.click("server-0");

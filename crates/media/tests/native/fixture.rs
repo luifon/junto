@@ -95,6 +95,23 @@ impl Fixture {
         self.geometry.width = width;
         self.geometry.height = height;
     }
+    /// Opens the second window of the fixture, of one colour, and gives its place in pixels
+    /// of the screen: left, top, width, height.
+    pub fn open_second(&mut self) -> (u32, u32, u32, u32) {
+        let line = self.command("second");
+        place(
+            line.strip_prefix("second ")
+                .unwrap_or_else(|| panic!("{line}")),
+        )
+    }
+    /// Moves the second window left and up by points and gives its new place.
+    pub fn move_second(&mut self, left: u32, up: u32) -> (u32, u32, u32, u32) {
+        let line = self.command(&format!("move {left} {up}"));
+        place(
+            line.strip_prefix("moved ")
+                .unwrap_or_else(|| panic!("{line}")),
+        )
+    }
     pub fn tone(&mut self, hz: u32) {
         assert_eq!(self.command(&format!("tone {hz}")), format!("tone {hz}"));
     }
@@ -111,4 +128,14 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// A place in pixels written as four numbers.
+fn place(text: &str) -> (u32, u32, u32, u32) {
+    let numbers: Vec<u32> = text
+        .split_whitespace()
+        .map(|number| number.parse().unwrap())
+        .collect();
+    assert_eq!(numbers.len(), 4, "{text}");
+    (numbers[0], numbers[1], numbers[2], numbers[3])
 }

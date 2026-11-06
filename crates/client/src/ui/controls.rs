@@ -1,5 +1,5 @@
 //! The controls of the sound settings and of the call panel: the switch, the box that
-//! opens a list of choices, the tab, and the volume control of a person.
+//! opens a list of choices, the tab and the row of tabs, and the volume control of a person.
 
 use gpui::{
     App, ClickEvent, ElementId, Entity, FocusHandle, Hsla, InteractiveElement, IntoElement,
@@ -413,6 +413,8 @@ pub struct Tab {
     count: Option<SharedString>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
+    /// The focus handle that a [`TabRow`] gives the tab.
+    focus: Option<FocusHandle>,
 }
 
 impl Tab {
@@ -425,6 +427,7 @@ impl Tab {
             count: None,
             selector: None,
             on_click: None,
+            focus: None,
         }
     }
 
@@ -459,7 +462,10 @@ impl RenderOnce for Tab {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-        let focus = super::reveal::handle(&self.id, window, cx);
+        let focus = match self.focus {
+            Some(focus) => focus,
+            None => super::reveal::handle(&self.id, window, cx),
+        };
         let label = match &self.count {
             Some(count) => SharedString::from(format!("{}, {count}", self.label)),
             None => self.label.clone(),
@@ -537,6 +543,90 @@ impl RenderOnce for Tab {
             .when_some(self.count, |tab, count| {
                 tab.child(super::CornerCount::new(count))
             })
+    }
+}
+
+/// A row of tabs with the role of a tab list (ADR 0738). The Tab key enters the row at the
+/// open tab, and leaves it from any tab to the next control after the row. Left and Right move the focus
+/// to the tab before and after the focused one, round the row; Home and End to the first and
+/// the last. Enter, Space and a press open the focused tab, through the press of each tab.
+#[derive(IntoElement)]
+pub struct TabRow {
+    id: ElementId,
+    label: SharedString,
+    tabs: Vec<Tab>,
+}
+
+impl TabRow {
+    /// `label` names the row in the accessibility tree.
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        tabs: impl IntoIterator<Item = Tab>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            tabs: tabs.into_iter().collect(),
+        }
+    }
+}
+
+/// The tab that a key moves the focus to, from the tab `at` of `count` tabs.
+fn tab_after_key(key: &str, at: usize, count: usize) -> Option<usize> {
+    match key {
+        _ if count == 0 => None,
+        "left" => Some((at + count - 1) % count),
+        "right" => Some((at + 1) % count),
+        "home" => Some(0),
+        "end" => Some(count - 1),
+        _ => None,
+    }
+}
+
+impl RenderOnce for TabRow {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus: Vec<FocusHandle> = self
+            .tabs
+            .iter()
+            .map(|tab| super::reveal::inner_handle(&self.id, &tab.id, window, cx))
+            .collect();
+        // One tab of the row is in the order of the Tab key: the focused one while the focus
+        // is in the row, so that Tab and Shift+Tab leave the row from any tab, and the open
+        // one otherwise, so that the Tab key enters the row there.
+        let open = self.tabs.iter().position(|tab| tab.on).unwrap_or(0);
+        let stop = focus
+            .iter()
+            .position(|handle| handle.is_focused(window))
+            .unwrap_or(open);
+        for (index, handle) in focus.iter().enumerate() {
+            let _ = handle.clone().tab_stop(index == stop);
+        }
+        let keys = focus.clone();
+        div()
+            .id(self.id)
+            .role(Role::TabList)
+            .aria_label(self.label)
+            .flex()
+            .flex_none()
+            .items_stretch()
+            .h(u(38.0))
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                let Some(at) = keys.iter().position(|handle| handle.is_focused(window)) else {
+                    return;
+                };
+                if let Some(to) = tab_after_key(&event.keystroke.key, at, keys.len()) {
+                    keys[to].focus(window, cx);
+                    cx.stop_propagation();
+                }
+            })
+            .children(self.tabs.into_iter().zip(focus).map(|(mut tab, handle)| {
+                tab.focus = Some(handle);
+                tab
+            }))
     }
 }
 
@@ -849,5 +939,22 @@ impl RenderOnce for LevelSlider {
                         format!("{} dB", value.round() as i32)
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_after_key;
+
+    #[test]
+    fn the_arrow_keys_move_round_the_row_of_tabs_and_home_and_end_go_to_its_ends() {
+        assert_eq!(tab_after_key("right", 0, 3), Some(1));
+        assert_eq!(tab_after_key("right", 2, 3), Some(0));
+        assert_eq!(tab_after_key("left", 0, 3), Some(2));
+        assert_eq!(tab_after_key("left", 2, 3), Some(1));
+        assert_eq!(tab_after_key("home", 2, 3), Some(0));
+        assert_eq!(tab_after_key("end", 0, 3), Some(2));
+        assert_eq!(tab_after_key("up", 0, 3), None);
+        assert_eq!(tab_after_key("right", 0, 0), None);
     }
 }

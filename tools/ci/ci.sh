@@ -40,6 +40,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # "ci.sh run" names it, and does not decide whether a commit passed.
 linux_jobs="rust-linux licences transcription-worker layout-page"
 linux_optional_jobs="rust-linux-devices"
+windows_optional_jobs="rust-windows-measure"
 macos_jobs="rust-macos deployment"
 windows_jobs="rust-windows"
 runners="linux macos windows"
@@ -47,7 +48,7 @@ jobs_of() {
     case "$1" in linux) echo "$linux_jobs" ;; macos) echo "$macos_jobs" ;; windows) echo "$windows_jobs" ;; esac
 }
 optional_jobs_of() {
-    case "$1" in linux) echo "$linux_optional_jobs" ;; esac
+    case "$1" in linux) echo "$linux_optional_jobs" ;; windows) echo "$windows_optional_jobs" ;; esac
 }
 
 # .env.local of this working tree, or else of the main working tree of the repository.
@@ -511,7 +512,7 @@ run_remote() {
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
-        if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
+        wanted="$wanted $(optional_jobs_of "$runner")"
         for job in "$@"; do
             case " $wanted " in *" ${job%:*} "*) picked="$picked $job" ;; esac
         done

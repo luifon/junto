@@ -89,7 +89,7 @@ The release tooling of the client: the macOS bundle, its disk image and their si
 
 ## Continuous integration: `tools/ci/` (ADR 0905)
 
-- Each job is one script: `rust-linux.sh`, the optional `rust-linux-devices.sh`, `rust-other-systems.sh` (macOS and Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
+- Each job is one script: `rust-linux.sh`, the optional `rust-linux-devices.sh`, `rust-other-systems.sh` (macOS and Windows), the optional `rust-windows-measure.sh` (Windows), `licences.sh`, `layout-page.sh`, `transcription-worker.sh`, `deployment.sh`. The images and tool versions of the jobs are in `tools/ci/pins.sh`.
 - `.github/workflows/ci.yml` calls the same scripts. Each action is named by its commit hash.
 - CI runs on three machines of the project and is started with `tools/ci/ci.sh`:
   - `ci.sh run <commit>` sends the commit to the Linux host and to the Windows machine over SSH and starts their jobs: on Linux `rust-linux`, `licences`, `transcription-worker`, `layout-page`; on Windows `rust-windows`.
@@ -97,6 +97,7 @@ The release tooling of the client: the macOS bundle, its disk image and their si
   - `ci.sh status <commit>` prints `passed` when each job of the three machines passed in the latest run of the commit that has the job, so a run of only the failed jobs completes an earlier run. With `JUNTO_CI_GITHUB_STATUS=<owner>/<name>` in `.env.local`, it also sets the commit status `junto-ci` on GitHub once every job has a result.
   - Without named jobs, `ci.sh run` and `ci.sh local` run only the jobs that the change since the merge base with `main` needs (`tools/ci/changes.py`; `ci.sh select <commit>` prints them, `--all` runs every job).
   - `ci.sh run <commit> rust-linux-devices` explicitly selects media crate checks, the media and window live tiers and a native camera check. It is absent from the default jobs. Only its camera step passes video device nodes into the container; it requires an available camera and saves no captured pictures (ADR 0905, ADR 0913).
+  - `ci.sh run <commit> rust-windows-measure` runs the measurements that need the desktop of the Windows machine and prints them as tables in its log: the processor time of a window share and of an application share (ADR 0738, ADR 0914). It is absent from the default jobs and checks nothing.
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - In the Linux job, `budget.py` adds the processors of the free worker locks and the available memory to each step that compiles, and `lanes.py` runs the test programs and the screens in lanes at the same time when that budget allows. Each step logs its start, end and duration.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
@@ -105,10 +106,10 @@ The release tooling of the client: the macOS bundle, its disk image and their si
 
 ## `vendor/`
 
-Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8, `gpui-pre-linux` 0.3.8 and `gpui-pre-macos` 0.3.8, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
+Copies of the build inputs of `cpal` 0.18.2, `livekit` 0.9.4, `webrtc-sys` 0.3.48 and `webrtc-sys-build` 0.3.19, and of `gpui-pre` 0.3.8, `gpui-pre-scheduler` 0.3.8, `gpui-pre-linux` 0.3.8 and `gpui-pre-macos` 0.3.8, and of the component library `gpui-base` 0.7.1, with corrections. The `[patch.crates-io]` section of `Cargo.toml` uses them, and `spikes/test-participant` uses the three copies of the call library. Each change carries a `Modified:` comment.
 
 - `vendor/README.md`: the checksum of each source archive, the files that were kept, each correction, when to remove it, and the tests to run when a copy is replaced.
-- ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
+- ADR 0733 explains each correction of the call library and its regression checks, ADR 0757 those of gpui and of `gpui-base`. A change of a copy also changes `vendor/README.md` and the ADR of the copy.
 
 ## Build
 

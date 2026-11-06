@@ -32,6 +32,7 @@ Servers, accounts and permissions:
 - Server roles and workspace roles; permissions per role and per person at server, workspace,
   category and channel level; channels synced with their category (ADR 0301, ADR 0304)
 - Several workspaces per server
+- A logo for each workspace, shown in the workspace list of the client
 - The server book
 - A device list per account
 - Audit log

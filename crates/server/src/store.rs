@@ -416,11 +416,11 @@ pub async fn recovery_notices_of(
     ))
 }
 
-type AvatarRow = (Vec<u8>, String, i32, i32, i32);
+pub(crate) type AvatarRow = (Vec<u8>, String, i32, i32, i32);
 
-const AVATAR_COLUMNS: &str = "hash, media_type, octet_length(content), width, height";
+pub(crate) const AVATAR_COLUMNS: &str = "hash, media_type, octet_length(content), width, height";
 
-fn avatar(row: AvatarRow) -> ApiResult<Avatar> {
+pub(crate) fn avatar(row: AvatarRow) -> ApiResult<Avatar> {
     let (hash, media_type, bytes, width, height) = row;
     let media_type = ImageType::ALL
         .iter()

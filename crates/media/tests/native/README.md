@@ -32,7 +32,7 @@ screen, the fixture refuses to start.
 | `a2` | Native playout measured by a BlackHole input probe, volume, sound-off and leave, with microphone publication disabled. |
 | `a3` | Native stop/start and refusal of the engine's default fallback for a missing choice. |
 | `c1` | Native camera dimensions, conversion to the 601 matrix (every frame that is not a native 601 buffer arrives converted), publication, remote progression, stop and reopen. |
-| `s1-s2` | Real display/window marker pixels locally and remotely; the shared window made half as wide, with the pictures, the size of the own share and the size at the other side following it (ADR 0737); source closure and capture-sink release. |
+| `s1-s2` | Real display, application and window marker pixels locally and remotely; the shared window made half as wide, with the pictures, the size of the own share and the size at the other side following it (ADR 0737); an application share black outside the fixture window that shows a second window of the fixture opened and moved during the share; source closure and capture-sink release. |
 | `s3` | Distinct application tones, own-process exclusion, system sound and sound None. |
 | `w1` | The window of the client lists the screens of the system on its own executor, starts a share of the first screen without sound through its dialog, and the other side receives the pictures. |
 

@@ -56,6 +56,8 @@ pub(crate) struct Playback {
     /// The time at which a timer draws the window again for the animations of the last
     /// drawing.
     wake: Rc<Cell<Option<Instant>>>,
+    /// How often a timer of the animations drew the window.
+    woken: Rc<Cell<usize>>,
 }
 
 impl Playback {
@@ -135,17 +137,25 @@ impl Playback {
             return;
         }
         self.wake.set(Some(at));
-        let wake = Rc::clone(&self.wake);
+        let (wake, woken) = (Rc::clone(&self.wake), Rc::clone(&self.woken));
         let wait = at.saturating_duration_since(now);
         window
             .spawn(cx, async move |cx| {
                 cx.background_executor().timer(wait).await;
                 if wake.get() == Some(at) {
                     wake.set(None);
+                    woken.set(woken.get() + 1);
                     let _ = cx.update(|window, _| window.refresh());
                 }
             })
             .detach();
+    }
+
+    /// How often the animations drew the window. A test uses it: the window is also drawn
+    /// for every change of the state, which arrives in real time.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn woken(&self) -> usize {
+        self.woken.get()
     }
 
     /// True while a timer will draw the window for an animation. A test uses it.

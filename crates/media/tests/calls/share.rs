@@ -974,6 +974,121 @@ async fn one_person_shares_two_things_and_the_viewer_hears_only_the_one_watched(
     .await;
 }
 
+/// A share of the windows of one application beside a screen (ADR 0737, ADR 0738): its
+/// capture shows the screen of the application with the sound of the application, its
+/// picture track has the name of a window share in its slot, so the engine of the viewer
+/// reads a window, and the server keeps `kind` window and states `shows` application.
+#[tokio::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_share_of_an_application_is_a_window_track_and_the_server_states_the_application() {
+    use junto_client_core::protocol::call::{ShareKind as ReportedKind, ShareShows};
+    use junto_media::share::synthetic::PLAYER as PLAYER_PROCESS;
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let (ann_id, place) = (account(&ann_at), room.target.place);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+            person.calls.set_muted(true);
+        }
+        let application = PictureSource::Application(PLAYER_PROCESS);
+        ann.capture.set_source_colours(application, GREEN, YELLOW);
+        let (screen_of_ann, application_of_ann) = (ShareId::of(ann_id, 0), ShareId::of(ann_id, 1));
+
+        ann.calls.start_share(screen(SoundChoice::System));
+        ann.until_sharing_in(0).await;
+        ben.until("Ben sees the screen of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 1)
+        })
+        .await;
+        ann.calls.start_share(CaptureRequest {
+            picture: application,
+            sound: player(),
+            quality: ShareQuality::default(),
+            dialog_parent: None,
+        });
+        let info = ann.until_sharing_in(1).await;
+        assert_eq!(
+            (info.kind, info.sound, info.size),
+            (ShareKind::Application, ShareAudio::Application, (1280, 720))
+        );
+
+        // The engine of Ben reads the track of the application as a window share of slot 1,
+        // as a client of 0.1.0 reads it.
+        let view = ben
+            .until("Ben sees the two shares of Ann", |view| {
+                view.call
+                    .as_ref()
+                    .is_some_and(|call| call.shares.len() == 2)
+            })
+            .await;
+        assert_eq!(
+            view.call
+                .unwrap()
+                .shares
+                .iter()
+                .map(|share| (share.account_id, share.slot, share.kind))
+                .collect::<Vec<_>>(),
+            [
+                (ann_id, 0, Some(ShareKind::Screen)),
+                (ann_id, 1, Some(ShareKind::Window))
+            ]
+        );
+        model_when(
+            &ben_at,
+            "the server states the application of Ann",
+            |model| {
+                model.call_at(&place).is_some_and(|call| {
+                    call.participant(ann_id).is_some_and(|ann| {
+                        ann.shares()
+                            .iter()
+                            .map(|share| (share.slot, share.kind, share.shows, share.audio))
+                            .eq([
+                                (
+                                    0,
+                                    Some(ReportedKind::Screen),
+                                    Some(ShareShows::Screen),
+                                    ShareAudio::System,
+                                ),
+                                (
+                                    1,
+                                    Some(ReportedKind::Window),
+                                    Some(ShareShows::Application),
+                                    ShareAudio::Application,
+                                ),
+                            ])
+                    })
+                })
+            },
+        )
+        .await;
+
+        // Ben watches the application: its picture and the sound of its application.
+        ben.calls.watch_share(application_of_ann);
+        let picture = ben.until_shown(application_of_ann, GREEN, YELLOW).await;
+        assert_eq!(picture.frame.source, (1280, 720));
+        ben.until_heard_tone(PLAYER.0).await;
+        ben.until_silent_tone(SYSTEM.0).await;
+        ben.calls.watch_share(screen_of_ann);
+        ben.until_shown(screen_of_ann, RED, BLUE).await;
+        ben.until_heard_tone(SYSTEM.0).await;
+
+        ann.calls.stop_share(None);
+        ben.until("no share of Ann is left", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.is_empty())
+        })
+        .await;
+        assert_eq!(ann.capture.running(), 0);
+    })
+    .await;
+}
+
 /// True when the processor limited an encoding for more than half of its time, as its
 /// durations of each quality limitation state.
 fn mostly_processor(durations: &std::collections::HashMap<String, f64>) -> bool {
@@ -2854,6 +2969,8 @@ async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
                 height: 2880,
             }],
             windows: Vec::new(),
+            application_capture: true,
+            application_pictures: Vec::new(),
             applications: Vec::new(),
             portal: Vec::new(),
             system_sound: false,

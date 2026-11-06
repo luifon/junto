@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use junto_protocol::call::{
     BlockReason, Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall,
     DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, LeaveReason, Meeting, MeetingEnd,
-    MicrophoneBlock, MoveOutcome, OwnCall, ScreenShare, ShareAudio, ShareKind, SoundBlock,
+    MicrophoneBlock, MoveOutcome, OwnCall, ScreenShare, ShareAudio, ShareShows, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
@@ -44,16 +44,19 @@ impl StoredText for ShareAudio {
     }
 }
 
-impl StoredText for ShareKind {
+/// What a share shows, as `call_shares.kind` holds it. A value of a later version, which
+/// this version does not know, is never stored: the report then states `kind` (ADR 0737).
+impl StoredText for ShareShows {
     fn stored(self) -> &'static str {
         match self {
             Self::Screen => "screen",
-            Self::Window => "window",
+            Self::Window | Self::Unknown => "window",
+            Self::Application => "application",
         }
     }
 
     fn from_stored(text: &str) -> Option<Self> {
-        [Self::Screen, Self::Window]
+        [Self::Screen, Self::Window, Self::Application]
             .into_iter()
             .find(|kind| kind.stored() == text)
     }
@@ -732,11 +735,13 @@ pub struct ShareRow {
 
 impl ShareRow {
     fn shown(&self) -> ApiResult<ScreenShare> {
+        let shows = self.kind.as_deref().map(ShareShows::read).transpose()?;
         Ok(ScreenShare {
             slot: u8::try_from(self.slot).map_err(|_| {
                 ApiError::internal(&format_args!("stored share slot {}", self.slot))
             })?,
-            kind: self.kind.as_deref().map(ShareKind::read).transpose()?,
+            kind: shows.and_then(ShareShows::kind),
+            shows,
             audio: ShareAudio::read(&self.audio)?,
             started_at: self.started_at,
         })

@@ -96,6 +96,45 @@ The microphone goes through RNNoise (`nnnoiseless` 0.5.2) while "Noise suppressi
 
 A received picture in planes that is drawn smaller is scaled from its planes where they are, without a copy of them first (ADR 0774). Measured on 2026-10-23 with `timing::the_scale_of_a_picture_with_and_without_a_copy_of_its_planes` on an x86-64 Linux machine in the test build, in two runs, a picture of 1920 × 1080 scaled to 1128 × 634 took medians of 2.81 and 3.28 ms with the copy and 1.81 and 1.95 ms without it (each over six rounds of 1,000 pictures). A run on a Mac with Apple silicon on 2026-10-22, of which no record was kept, gave 1.36 ms and 1.25 ms; the copy allocates 3 MiB for each picture.
 
+### A large photo is decoded at the size at which it is drawn
+
+A still JPEG of sequential coding and a still PNG without interlacing are decoded at the size at which the window draws them, without the whole picture in memory (ADR 0408, ADR 0740); before, every still picture was decoded at its own size and then reduced, and a photo above 33,554,432 pixels or a file above 32 MiB was a file row. Measured on 2026-11-05 with the target `decode_memory` in a release build in the Linux build image (two processors), for the viewer at 2400 × 1300 pixels and a list: the most bytes of Rust allocations that the decoding held beyond the bytes of the file, and its time. The JPEG decoder starts one thread for each colour component of a picture above 128 × 128 pixels, so its time is not the time of one thread. The pictures are generated with smooth colours and fine detail.
+
+| Photo | File | Plan | Decoding | Result | Most memory beyond the file | Time |
+|---|---|---|---|---|---|---|
+| JPEG 6000 × 4000 | 6.4 MiB | viewer | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 576 ms |
+| JPEG 6000 × 4000 | 6.4 MiB | viewer | reduced | 1950 × 1300 | 34.4 MiB | 348 ms |
+| JPEG 9000 × 6000 | 14.3 MiB | viewer | reduced (a file row before) | 1950 × 1300 | 26.6 MiB | 483 ms |
+| JPEG 6000 × 4000 | 6.4 MiB | list | whole, then reduced (before) | 584 × 389 | 75.3 MiB | 401 ms |
+| JPEG 9000 × 6000 | 14.3 MiB | list | reduced (a file row before) | 584 × 389 | 4.8 MiB | 386 ms |
+| PNG 6000 × 4000 | 5.4 MiB | viewer | whole, then reduced (before) | 1950 × 1300 | 85.6 MiB | 351 ms |
+| PNG 6000 × 4000 | 5.4 MiB | viewer | reduced | 1950 × 1300 | 10.2 MiB | 305 ms |
+| PNG 6000 × 4000 | 5.4 MiB | list | reduced | 584 × 389 | 1.3 MiB | 197 ms |
+
+The list plan is the largest picture of a list at the display scale of 2 (584 × 440 pixels). The EXIF orientation of a JPEG is read from the block that the JPEG decoder reads before the frame header: an earlier version read it with a second decoder that copied the whole file, which the reservation of the decoding gate did not count. That copy was not measured; for a list plan it is larger than the reservation of the decoding (4.8 MiB held against a file of 14.3 MiB above), and the bound check of the target fails when a decoding holds more than its reservation besides the file. The JPEG decoder reduces by a power of two to the smallest size that covers the plan: 6000 × 4000 is decoded at 3000 × 2000 for this plan and 9000 × 6000 at 2250 × 1500, which is why the larger photo holds less. The memory figures of a debug build on a Mac were the same. A JPEG of progressive coding and an interlaced PNG are still decoded whole, within 33,554,432 pixels.
+
+### The processor time of an application share on Windows
+
+Measured on 2026-11-06 on the Windows machine of CI with the optional job `rust-windows-measure` (`windows_capture::the_processor_time_of_an_application_share`, ADR 0905), in a release build: the processor time of the test process, read by `Get-Process`, over 20 seconds while the window of the fixture program turns its colours ten times a second. The inner area of the window covers the screen of 1920 × 1080 pixels (1920 × 1061 after the change of size that the test asks for), so that both shares send pictures of about the size of the screen; each share asks for 30 pictures a second at the size of its source, into a sink that only counts the pictures. The columns of the phases are the time of one thread in milliseconds a second, from the start to the end of each phase, so they include waits: the follow of the windows of an application, the read of each window picture from the graphics card into memory (the wait for the lock of its textures, a copy on the card, the map of the copy, and the copy of its rows into a new picture in memory), the composition of the picture of an application, and the conversion for the encoder.
+
+| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |
+|---|---|---|---|---|---|---|---|---|
+| none | 0 | none | 0 | 2.3 | 0.0 | 0.0 | 0.0 | 0.0 |
+| window | 1 | 1922 × 1092 | 30.4 | 290.0 | 0.0 | 274.7 | 0.0 | 155.0 |
+| application | 1 | 1920 × 1080 | 30.5 | 335.4 | 3.1 | 294.4 | 123.9 | 82.4 |
+| application | 3 | 1920 × 1080 | 30.2 | 365.0 | 3.9 | 326.1 | 130.5 | 83.8 |
+
+A run of the same test, on the same day, with the earlier composition, which blended every pixel of each window:
+
+| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |
+|---|---|---|---|---|---|---|---|---|
+| none | 0 | none | 0 | 3.1 | 0.0 | 0.0 | 0.0 | 0.0 |
+| window | 1 | 1922 × 1092 | 30.1 | 298.8 | 0.0 | 268.8 | 0.0 | 156.6 |
+| application | 1 | 1920 × 1080 | 30.4 | 523.1 | 2.4 | 227.8 | 312.9 | 83.9 |
+| application | 3 | 1920 × 1080 | 30.3 | 567.5 | 3.2 | 322.9 | 323.9 | 81.7 |
+
+Both shares read each window picture from the graphics card into memory; the share of an application also composes a picture of the size of the screen (ADR 0738). The conversion of a window share also makes the transparent pixels of the window picture black (`Frame::hide_transparent`), one more pass over the picture that a composed picture of an application does not need; the time of that pass was not measured apart. A build without optimization ran the pixel loops many times slower: the application share then reached 4.3 pictures a second, because the composition took the whole time of the delivery thread. Each table is of one run.
+
 ### The emoji of the fonts are measured once per installation and font set
 
 At a start the client measures which emoji of the table the fonts of the system draw (ADR 0758). It lays out 14 probes on the background executor and reads the kept measurement of `emoji-fonts.json`; only when the key of the fonts differs does it lay out the whole table of 3,944 emoji, and on Linux it does so with a text system of its own, which is dropped afterwards. Measured on 2026-10-25 with the target `emoji_fonts` in a release build, the measurement on a thread other than the main thread:

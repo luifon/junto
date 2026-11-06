@@ -405,6 +405,7 @@ mod tests {
             .map(|slot| ScreenShare {
                 slot: *slot,
                 kind: None,
+                shows: None,
                 audio: ShareAudio::None,
                 started_at: at,
             })

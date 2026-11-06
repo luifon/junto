@@ -168,6 +168,9 @@ fn an_existing_account_confirms_an_invite_into_another_workspace(cx: &mut TestAp
                     .any(|row| row.id == workspace.id)
         },
     );
+    // The dialog lists the workspace that the invitation added, and closes on request.
+    assert!(window.shows("redeemed-workspaces"));
+    window.click("redeem-done");
     assert!(!window.shows("join-dialog"));
     window.in_shell(|shell, window, cx| shell.open_url(&link, window, cx));
     window.click("redeem-invite");

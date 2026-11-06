@@ -273,6 +273,7 @@ fn the_permissions_of_the_account_are_the_lists_that_the_server_stated() {
         id: WorkspaceId::generate(),
         name: "Lab".to_owned(),
         is_default: false,
+        logo: None,
     };
     model.apply(&Event::WorkspaceCreated {
         workspace: lab.clone(),

@@ -301,6 +301,11 @@ pub enum AuditEvent {
     ServerLogoChanged {
         logo: Option<crate::account::Avatar>,
     },
+    /// A person set or removed the logo of a workspace.
+    WorkspaceLogoChanged {
+        workspace_id: WorkspaceId,
+        logo: Option<crate::account::Avatar>,
+    },
     AttachmentLimitsChanged {
         bytes_per_file: u64,
         files_per_message: u32,
@@ -483,6 +488,7 @@ impl AuditEvent {
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
             Self::ServerLogoChanged { .. } => "server_logo_changed",
+            Self::WorkspaceLogoChanged { .. } => "workspace_logo_changed",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
             Self::NotificationDefaultRemoved => "notification_default_removed",
@@ -592,6 +598,10 @@ mod tests {
                 cancelled_invite_ids: vec![InviteId::generate()],
             },
             AuditEvent::ServerLogoChanged { logo: None },
+            AuditEvent::WorkspaceLogoChanged {
+                workspace_id: WorkspaceId::generate(),
+                logo: None,
+            },
             AuditEvent::ChannelDeleted {
                 name: "general".to_owned(),
             },

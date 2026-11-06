@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui::{Context, RenderImage};
 use junto_client_core::profile::{self, CHOSEN_PICTURE_MAX_BYTES};
-use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, ServerId, WorkspaceId};
 
 use super::AppState;
 use crate::picture::{self, Chosen, Crop, Refusal};
@@ -24,6 +24,8 @@ pub enum PicturePurpose {
     Preset,
     /// The logo of a server (ADR 0120).
     Logo(ServerId),
+    /// The logo of a workspace (ADR 0122).
+    WorkspaceLogo(ServerId, WorkspaceId),
 }
 
 /// The cut that is open.
@@ -259,6 +261,9 @@ impl AppState {
                         PicturePurpose::Logo(server_id) => {
                             this.send_server_logo(server_id, bytes, cx)
                         }
+                        PicturePurpose::WorkspaceLogo(server_id, workspace_id) => {
+                            this.send_workspace_logo(server_id, workspace_id, bytes, cx)
+                        }
                     },
                     Err(refusal) => {
                         this.picture_refused(purpose, crate::text::picture_refusal(refusal), cx)
@@ -283,6 +288,9 @@ impl AppState {
             PicturePurpose::Account => self.account_picture_refused(reason),
             PicturePurpose::Preset => self.preset_picture_refused(reason),
             PicturePurpose::Logo(_) => self.server_logo_refused(reason),
+            PicturePurpose::WorkspaceLogo(_, workspace_id) => {
+                self.workspace_logo_refused(workspace_id, reason)
+            }
         }
         cx.notify();
     }

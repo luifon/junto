@@ -22,7 +22,7 @@ use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
     Call, CallJoin, CallMove, CallPlace, LeaveReason, MicrophoneBlock, MoveOutcome, OwnCall,
-    ShareAudio, ShareKind as ReportedKind, SoundBlock,
+    ShareAudio, ShareShows as ReportedKind, SoundBlock,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::{Cursor, Event};
@@ -1842,10 +1842,13 @@ impl<T: PartialEq + Clone> Reporter<T> {
 /// shows. Another share in the same slot is reported anew (ADR 0510).
 type ToldShare = (Uuid, ShareAudio, ReportedKind);
 
+/// What a share shows as the server is told it. The report also states the value that a
+/// server of 0.1.0 reads, a window for an application (ADR 0737).
 fn reported_kind(kind: ShareKind) -> ReportedKind {
     match kind {
         ShareKind::Screen => ReportedKind::Screen,
         ShareKind::Window => ReportedKind::Window,
+        ShareKind::Application => ReportedKind::Application,
     }
 }
 

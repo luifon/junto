@@ -321,7 +321,10 @@ linux_container() {
 # the programs of Git for Windows and of Windows, and no other program of the machine. The
 # PostgreSQL download, the Cargo registry and the target directory stay in the CI directory
 # from one run to the next; the temporary directory is emptied before and after the job.
+# Runs a script of the Windows runner with the tools of the setup: rust-other-systems.sh for
+# the job rust-windows, rust-windows-measure.sh for the optional measurements.
 rust_windows() {
+    script=$1
     tools=$(cygpath -u "$directory")
     windows=$(cygpath -u -W)
     git=$(dirname -- "$(command -v git)")
@@ -334,7 +337,7 @@ rust_windows() {
     status=0
     # --no-self-update: rustup stays at the version of the setup (ADR 0905).
     rustup toolchain install "$version" --no-self-update --profile minimal --component rustfmt --component clippy \
-        && tools/ci/rust-other-systems.sh || status=$?
+        && "$script" || status=$?
     rm -rf "$directory/tmp"
     return "$status"
 }
@@ -385,7 +388,9 @@ job() {
         macos:deployment)
             tools/ci/deployment.sh ;;
         windows:rust-windows)
-            rust_windows ;;
+            rust_windows tools/ci/rust-other-systems.sh ;;
+        windows:rust-windows-measure)
+            rust_windows tools/ci/rust-windows-measure.sh ;;
         *)
             echo "no job $1 on the $runner runner" >&2
             return 2 ;;

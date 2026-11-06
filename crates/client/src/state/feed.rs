@@ -1429,6 +1429,7 @@ mod tests {
                     id: workspace_id,
                     name: "Studio".to_owned(),
                     is_default: true,
+                    logo: None,
                 },
                 own_role_ids: vec![role],
                 roles: Vec::new(),

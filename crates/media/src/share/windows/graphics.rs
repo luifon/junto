@@ -136,6 +136,15 @@ impl Gpu {
 
     /// Reads the newest picture into memory.
     pub(super) fn read(&self) -> Result<Option<Frame>, CaptureError> {
+        #[cfg(feature = "test-support")]
+        let started = std::time::Instant::now();
+        let read = self.read_now();
+        #[cfg(feature = "test-support")]
+        crate::share::phases::add(crate::share::phases::Phase::Read, started);
+        read
+    }
+
+    fn read_now(&self) -> Result<Option<Frame>, CaptureError> {
         let mut textures = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let Some((latest, size)) = textures.latest.clone() else {
             return Ok(None);

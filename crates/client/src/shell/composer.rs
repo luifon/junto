@@ -11,6 +11,8 @@ use gpui::{
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder, px,
 };
+mod formatting;
+
 use gpui_base::input::{
     self, InlineToken, InputContent, InputEditorStyle, InputEvent, InputState, Textarea,
     TextareaState,
@@ -134,6 +136,8 @@ pub(crate) struct Composer {
     attaching: VecDeque<Attaching>,
     next_attaching: u64,
     pub(crate) mention: Option<MentionPicker>,
+    /// The formatting of the text while the person writes it (ADR 0740).
+    formatting: formatting::Formatting,
     emoji_completion: Option<EmojiCompletion>,
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
@@ -169,9 +173,8 @@ fn token_target(id: &str) -> Option<MentionTarget> {
 }
 
 /// The text of the input with its tokens as the mentions of [`compose`].
-fn mentions_of(content: &InputContent) -> Vec<Mention> {
-    content
-        .tokens()
+fn mentions_of(tokens: &[input::InlineTokenSpan]) -> Vec<Mention> {
+    tokens
         .iter()
         .filter_map(|span| {
             Some(Mention {
@@ -372,6 +375,7 @@ impl Composer {
             attaching: VecDeque::new(),
             next_attaching: 0,
             mention: None,
+            formatting: formatting::Formatting::default(),
             emoji_completion: None,
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
@@ -1396,9 +1400,14 @@ impl Shell {
         match &self.pen(pane).editing {
             Some(editing) => {
                 let (original, shown) = editing.original.as_ref();
-                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
+                compose::parse_edit(
+                    original,
+                    shown,
+                    content.text(),
+                    &mentions_of(content.tokens()),
+                )
             }
-            None => compose::parse(content.text(), &mentions_of(&content)),
+            None => compose::parse(content.text(), &mentions_of(content.tokens())),
         }
     }
 
@@ -2919,6 +2928,36 @@ impl Shell {
         )
     }
 
+    /// Follows every change of the text area of the composer, of its text and of its
+    /// selection, to show the formatting of the text (ADR 0740).
+    pub(crate) fn observe_formatting(
+        pane: Pane,
+        input: &Entity<TextareaState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Subscription {
+        cx.observe_in(input, window, move |this, _, _, cx| {
+            this.show_formatting(pane, cx);
+        })
+    }
+
+    /// Shows the formatting of the text of a composer: the parts are read again after a
+    /// change of the text, and their marks are dimmed or not after a move of the selection.
+    pub(crate) fn show_formatting(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let colors = theme(cx).colors;
+        let pen = self.pen_mut(pane);
+        let input = pen.input.read(cx);
+        // The tokens without a copy of the text: the input also notifies at each blink of
+        // its caret.
+        let mentions = mentions_of(input.tokens());
+        let selection = input.selected_range();
+        let text = input.text().clone();
+        if let Some(decorations) = pen.formatting.update(&text, mentions, selection, colors) {
+            pen.input
+                .update(cx, |input, cx| input.set_text_decorations(decorations, cx));
+        }
+    }
+
     /// Moves the keyboard focus into the composer.
     pub fn focus_composer(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         self.pen_mut(pane)
@@ -2963,6 +3002,22 @@ impl Shell {
     /// The text that the composer holds.
     pub fn composer_text(&self, pane: Pane, cx: &gpui::App) -> String {
         self.pen(pane).input.read(cx).value().to_string()
+    }
+
+    /// The style that the text area of the composer gives each byte range of its text, as
+    /// the formatting of the text sets it (ADR 0740).
+    pub fn composer_formatting(
+        &self,
+        pane: Pane,
+        cx: &gpui::App,
+    ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
+        self.pen(pane)
+            .input
+            .read(cx)
+            .text_decorations()
+            .iter()
+            .map(|decoration| (decoration.range.clone(), decoration.style))
+            .collect()
     }
 
     /// Why the composer did not send its text.

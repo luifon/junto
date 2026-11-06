@@ -436,9 +436,6 @@ impl Shell {
         let startup = self.state.read(cx).startup().clone();
         let unavailable = match startup.status {
             Some(junto_client_core::startup::Status::Unavailable(
-                junto_client_core::startup::Unavailable::CustomProfile,
-            )) => Some(text::LOGIN_CUSTOM_PROFILE),
-            Some(junto_client_core::startup::Status::Unavailable(
                 junto_client_core::startup::Unavailable::SystemVersion,
             )) => Some(text::LOGIN_SYSTEM_VERSION),
             Some(junto_client_core::startup::Status::Unavailable(_)) => {
@@ -450,7 +447,7 @@ impl Shell {
             group_label(text::INTERFACE, theme).into_any_element(),
             Toggle::new(
                 "start-at-login",
-                text::START_AT_LOGIN,
+                text::start_at_login(startup.profile.as_deref()),
                 startup
                     .status
                     .is_some_and(junto_client_core::startup::Status::requested),

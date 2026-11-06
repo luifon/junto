@@ -2,23 +2,26 @@
 //! workspace, a new name, the deletion, and the invite code that enters a further
 //! workspace.
 
+use std::path::PathBuf;
+
 use super::list::Row;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, PathPromptOptions,
+    SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
-use junto_client_core::protocol::ids::WorkspaceId;
+use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
 use super::{
     Form, FormField, Mode, Question, group_label, line, line_text, named, page_title, refusal,
     row_action, sentence,
 };
 use crate::shell::Shell;
+use crate::state::admin::AdminOpen;
 use crate::state::admin::view::{AdminView, WorkspaceLine, WorkspacesPage};
 use crate::state::admin::{AskKind, Made};
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, Mosaic, MosaicKind, Notice};
+use crate::ui::{Avatar, Button, Notice};
 
 fn detail(row: &WorkspaceLine) -> Option<SharedString> {
     let mut parts = Vec::new();
@@ -35,6 +38,64 @@ fn detail(row: &WorkspaceLine) -> Option<SharedString> {
 }
 
 impl Shell {
+    /// The server whose page of the workspaces is open, with its owner.
+    fn workspaces_page_owner(
+        &self,
+        cx: &gpui::App,
+    ) -> Option<(ServerId, junto_client_core::Owner)> {
+        let state = self.state.read(cx);
+        match state.admin_open() {
+            Some(AdminOpen::Server {
+                server_id,
+                page: crate::state::admin::AdminPage::Workspaces,
+            }) => state.owner(server_id).map(|owner| (server_id, owner)),
+            _ => None,
+        }
+    }
+
+    /// Asks the person for a file, and sends it as the logo of a workspace of the page.
+    fn choose_workspace_logo(&mut self, workspace_id: WorkspaceId, cx: &mut Context<Self>) {
+        let Some(asked) = self.workspaces_page_owner(cx) else {
+            return;
+        };
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = chosen.await
+                && let Some(file) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    // The dialog does not stop the window: the file is sent only while the
+                    // page of the workspaces of the same owner is still open (ADR 0746).
+                    if this.workspaces_page_owner(cx) == Some(asked) {
+                        this.use_workspace_logo(workspace_id, file, cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Sends the file at this path as the logo of a workspace of the open page of the
+    /// workspaces, as the file dialog does. Nothing is sent when the person left that page.
+    pub fn use_workspace_logo(
+        &mut self,
+        workspace_id: WorkspaceId,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((server_id, _)) = self.workspaces_page_owner(cx) else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            state.set_workspace_logo(server_id, workspace_id, file, cx);
+        });
+    }
+
     /// Sends the form of the open row of the page of the workspaces.
     pub(crate) fn submit_workspace_form(
         &mut self,
@@ -108,6 +169,25 @@ impl Shell {
                     cx,
                 )
                 .into_any_element(),
+            Some(Mode::RemoveWorkspaceLogo(id)) if id == workspace_id && row.has_logo => self
+                .render_row_question(
+                    Question {
+                        sentence: text::admin::remove_workspace_logo_question(&row.name).into(),
+                        confirm: text::admin::REMOVE_LOGO,
+                        confirm_selector: "workspace-logo-remove-confirm",
+                        cancel_selector: "workspace-logo-remove-cancel",
+                        sending: view.sending(AskKind::RemoveWorkspaceLogo(workspace_id)),
+                    },
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.admin_sent(AskKind::RemoveWorkspaceLogo(workspace_id));
+                        this.state.update(cx, |state, cx| {
+                            state.remove_workspace_logo(server_id, workspace_id, cx);
+                        });
+                    },
+                )
+                .into_any_element(),
             Some(Mode::DeleteWorkspace(id)) if id == workspace_id => self
                 .render_row_question(
                     Question {
@@ -138,11 +218,58 @@ impl Shell {
                     .min_w_0()
                     .items_center()
                     .gap(u(8.0))
-                    .child(
-                        Mosaic::new(MosaicKind::Small, workspace_id.as_uuid().as_u128(), 22.0)
-                            .radius(2.0),
-                    )
+                    .child({
+                        let logo = self
+                            .state
+                            .read(cx)
+                            .workspace_logo_image(server_id, workspace_id);
+                        let shown = logo.is_some();
+                        let picture = Avatar::new(workspace_id.as_uuid().as_u128(), 22.0)
+                            .small_pattern()
+                            .radius(2.0)
+                            .image(logo);
+                        if shown {
+                            div()
+                                .id(SharedString::from(format!("workspace-logo-{workspace_id}")))
+                                .role(gpui::Role::Image)
+                                .aria_label(text::logo_of(&row.name))
+                                .debug_selector(move || format!("workspace-logo-{workspace_id}"))
+                                .flex_none()
+                                .child(picture)
+                                .into_any_element()
+                        } else {
+                            picture.into_any_element()
+                        }
+                    })
                     .child(line_text(row.name.clone(), detail(row), theme))
+                    .child(row_action(
+                        ("workspace-logo", workspace_id.as_uuid().as_u128() as u64),
+                        text::admin::WORKSPACE_LOGO,
+                        format!("workspace-logo-choose-{workspace_id}"),
+                        manage,
+                        cx.listener(move |this, _, _, cx| {
+                            this.choose_workspace_logo(workspace_id, cx);
+                        }),
+                    ))
+                    .children(row.has_logo.then(|| {
+                        row_action(
+                            (
+                                "workspace-logo-remove",
+                                workspace_id.as_uuid().as_u128() as u64,
+                            ),
+                            text::admin::REMOVE_LOGO,
+                            format!("workspace-logo-remove-{workspace_id}"),
+                            manage,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::RemoveWorkspaceLogo(workspace_id)),
+                                    "",
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                    }))
                     .child(row_action(
                         ("workspace-rename", workspace_id.as_uuid().as_u128() as u64),
                         text::admin::RENAME,
@@ -176,7 +303,9 @@ impl Shell {
         };
         let refused = view
             .refused(AskKind::RenameWorkspace(workspace_id))
-            .or(view.refused(AskKind::DeleteWorkspace(workspace_id)));
+            .or(view.refused(AskKind::DeleteWorkspace(workspace_id)))
+            .or(view.refused(AskKind::SetWorkspaceLogo(workspace_id)))
+            .or(view.refused(AskKind::RemoveWorkspaceLogo(workspace_id)));
         div()
             .id(SharedString::from(format!(
                 "workspace-result-{workspace_id}"
@@ -189,6 +318,7 @@ impl Shell {
                     &[
                         Mode::RenameWorkspace(workspace_id),
                         Mode::DeleteWorkspace(workspace_id),
+                        Mode::RemoveWorkspaceLogo(workspace_id),
                     ],
                     named(
                         format!("workspace-row-{workspace_id}"),

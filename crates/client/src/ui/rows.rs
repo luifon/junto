@@ -8,8 +8,8 @@ use gpui::{
 };
 
 use super::{
-    Avatar, Badge, ContextMenuExt, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt,
-    focus_ring_inside, icon, selection_mark, tooltip, unread_dot,
+    Avatar, Badge, ContextMenuExt, Meter, RecordingMark, StyleExt, focus_ring_inside, icon,
+    selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
 use crate::theme::{theme, u};
@@ -31,6 +31,9 @@ pub struct WorkspaceRow {
     /// The menu of the workspace is open at the row.
     open: bool,
     on_menu: Option<MenuHandler>,
+    /// The image of the logo of the workspace (ADR 0122). Without it the row draws the
+    /// generated picture of the workspace.
+    logo: Option<std::sync::Arc<gpui::RenderImage>>,
 }
 
 /// The sign of what a place holds that the person has not read: a count of mentions, or
@@ -69,7 +72,14 @@ impl WorkspaceRow {
             on_click: None,
             open: false,
             on_menu: None,
+            logo: None,
         }
+    }
+
+    /// The logo of the workspace, drawn in its square in place of the generated picture.
+    pub fn logo(mut self, logo: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
+        self.logo = logo;
+        self
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
@@ -184,7 +194,26 @@ impl RenderOnce for WorkspaceRow {
             .when_some(self.on_click, |row, handler| {
                 row.on_click(move |event, window, cx| handler(event, window, cx))
             })
-            .child(Mosaic::new(MosaicKind::Small, self.seed, 15.0).radius(2.0))
+            .child({
+                let seed = self.seed;
+                let has_logo = self.logo.is_some();
+                // The image fills the square and is cut at its edges (`ObjectFit::Cover`
+                // paints within the bounds of the element), so a logo of other proportions
+                // stays inside it.
+                let picture = super::Avatar::new(seed, 15.0)
+                    .small_pattern()
+                    .radius(2.0)
+                    .image(self.logo);
+                if has_logo {
+                    div()
+                        .flex_none()
+                        .debug_selector(move || format!("workspace-row-logo-{seed}"))
+                        .child(picture)
+                        .into_any_element()
+                } else {
+                    picture.into_any_element()
+                }
+            })
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .children(sign)
     }

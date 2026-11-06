@@ -3024,6 +3024,7 @@ impl Shell {
                     width,
                     height,
                     frames: 1,
+                    reducible: false,
                 };
                 decode::decode(bytes, stated, decode::plan(stated, None, LIST_FRAME_BYTES))
             })
@@ -3112,6 +3113,13 @@ impl Shell {
         self.message_pictures
             .playback
             .shown_frames_outside(moving::VIEWER_SLOT, &attachment_id.to_string())
+    }
+
+    /// How often the animations of the pictures of messages drew the window. A test uses
+    /// it.
+    #[cfg(feature = "test-support")]
+    pub fn animation_draws(&self) -> usize {
+        self.message_pictures.playback.woken()
     }
 
     /// True while an animation will draw the window again. A test uses it.

@@ -23,7 +23,15 @@ Adding directly:
 
 - A person with the administrator permission adds an active account to a workspace with `PUT /api/v1/workspaces/{workspace_id}/members/{account_id}`.
 - The route is idempotent. The audit log of the workspace gets the entry `workspace_member_added` when the membership is new.
-- A banned or removed account is refused with `conflict`.
+- An account that is not active (banned, removed, inactive or deleted, ADR 0121) is refused with `conflict`.
+
+Redeeming in the desktop client:
+
+- The server menu ("Join workspaces with an invite") and the hover menu of a server in the collapsed server book (the same item) open the redemption of the account of that server: the dialog of the server with the field "Invite code" and "Join invited workspaces".
+- An invite link of a server of the server book opens the same redemption with its code typed (ADR 0732). "Add server" with the address of a server of the server book opens the dialog of that server in place of a refusal: the redemption for an account, the ways in of ADR 0732 for a server without an account. A `junto://` link pasted into "Add server" opens as the link does, and the code of an invite link that names the server under another of its addresses is typed into the dialog.
+- After a redemption the dialog names the added workspaces ("Your account is now a member of “Lab” and “Studio”."), with a count for the workspaces whose names have not arrived yet, and closes when the person presses "Close". The `conflict` of an invite that adds nothing is stated as "Your account is already a member of every workspace of this invite. The invite was not used."
+- Administration → "Workspaces" keeps "Enter an invite code" for a person who is already there.
+- Window tests: `workspace_invites::a_member_joins_further_workspaces_from_the_menus_of_the_server` and `workspace_invites::add_server_with_a_saved_server_redeems_into_its_account`; `links::an_existing_account_confirms_an_invite_into_another_workspace` for the link.
 
 ## Consequences
 

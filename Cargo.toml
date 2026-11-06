@@ -16,6 +16,8 @@ exclude = [
 [patch.crates-io]
 # cpal enters no apartment of COM on threads that it does not own (ADR 0733).
 cpal = { path = "vendor/cpal-0.18.2" }
+# A textarea keeps text decorations, so the composer shows the formatting of its text (ADR 0757, ADR 0740).
+gpui-base = { path = "vendor/gpui-base-0.7.1" }
 # A panic in a callback of the platform stops in gpui, and gpui puts its state back (ADR 0757).
 gpui-pre = { path = "vendor/gpui-pre-0.3.8" }
 gpui-pre-scheduler = { path = "vendor/gpui-pre-scheduler-0.3.8" }

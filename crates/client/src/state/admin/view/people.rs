@@ -845,6 +845,7 @@ mod tests {
                 id,
                 name: name.to_owned(),
                 is_default,
+                logo: None,
             },
             own_role_ids: Vec::new(),
             roles: Vec::new(),

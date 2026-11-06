@@ -29,10 +29,17 @@ const EVERY_SYSTEM: &[(&str, &[Drawing])] = &[
     ("\u{1f600}\u{200d}\u{1f600}", &[Drawing::Broken]),
 ];
 
+/// The flag of England: the black flag and the tags of "gbeng".
+const ENGLAND: &str = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+
 /// Segoe UI Emoji has no country flags: a flag is two letters. It draws the chequered flag.
+/// It draws the black flag of a subdivision flag and ignores its tags, so the flag of
+/// England is a plain black flag.
 #[cfg(target_os = "windows")]
 const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
     ("\u{1f1e7}\u{1f1f7}", &[Drawing::Broken]),
+    (ENGLAND, &[Drawing::Broken]),
+    ("\u{1f3f4}", &[Drawing::Colour]),
     ("\u{1f3c1}", &[Drawing::Colour]),
     ("\u{1f44d}\u{1f3fd}", &[Drawing::Colour]),
     ("\u{2764}\u{fe0f}", &[Drawing::Colour]),
@@ -47,6 +54,7 @@ const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
 #[cfg(target_os = "macos")]
 const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
     ("\u{1f600}", &[Drawing::Colour]),
+    (ENGLAND, &[Drawing::Colour]),
     ("\u{1f1e7}\u{1f1f7}", &[Drawing::Colour]),
     ("\u{1f44d}\u{1f3fd}", &[Drawing::Colour]),
     ("\u{a9}\u{fe0f}", &[Drawing::Colour, Drawing::Text]),
@@ -64,6 +72,7 @@ const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
 #[cfg(target_os = "linux")]
 const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
     ("\u{1f1e7}\u{1f1f7}", &[Drawing::Colour]),
+    (ENGLAND, &[Drawing::Colour]),
     ("\u{1f44d}\u{1f3fd}", &[Drawing::Colour]),
     ("\u{1f44d}", &[Drawing::Colour]),
     ("\u{1f634}", &[Drawing::Text]),

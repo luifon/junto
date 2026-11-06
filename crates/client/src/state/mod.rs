@@ -572,6 +572,9 @@ pub struct AppState {
     /// The images of the logos of the servers, and where the read of each stands
     /// (ADR 0101).
     logos: logo::Logos,
+    /// The images of the logos of the workspaces, and where the read of each stands
+    /// (ADR 0122).
+    workspace_logos: logo::Logos<logo::WorkspaceKey>,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
@@ -1097,6 +1100,7 @@ impl AppState {
             preset_picture: people::PresetPicture::default(),
             people_followed: people::Followed::default(),
             logos: logo::Logos::default(),
+            workspace_logos: logo::Logos::default(),
             members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
@@ -3026,6 +3030,7 @@ impl AppState {
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
+        self.keep_workspace_logos(cx);
         self.follow_updates();
         self.follow_arrangement();
         self.follow_call_keys(&snapshots);

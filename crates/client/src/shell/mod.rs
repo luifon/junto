@@ -19,6 +19,8 @@ mod contacts;
 mod context_targets;
 mod copying;
 mod decode;
+#[cfg(feature = "test-support")]
+pub use decode::decode_still;
 pub mod detached;
 mod device_checks;
 mod direct;
@@ -694,6 +696,12 @@ impl Shell {
             switcher.observe(window, cx),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
+            Self::observe_formatting(Pane::Main, &composer.input, window, cx),
+            Self::observe_formatting(Pane::Thread, &thread_composer.input, window, cx),
+            cx.observe_global_in::<crate::theme::ActiveTheme>(window, |this, _, cx| {
+                this.show_formatting(Pane::Main, cx);
+                this.show_formatting(Pane::Thread, cx);
+            }),
             Field::observe(
                 &contact_part,
                 window,
@@ -1463,6 +1471,15 @@ impl Shell {
     pub fn join_error(&self) -> Option<&str> {
         match &self.layer {
             Layer::Join(join) => join.error.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The sentence that the join dialog shows after a redemption: the workspaces that it
+    /// added (ADR 0115).
+    pub fn join_redeemed(&self, cx: &gpui::App) -> Option<String> {
+        match &self.layer {
+            Layer::Join(join) => join::redeemed_sentence(join, &self.state.read(cx).view()),
             _ => None,
         }
     }

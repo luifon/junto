@@ -90,6 +90,8 @@ pub struct WorkspaceLine {
     /// The workspace that the window shows.
     pub shown: bool,
     pub member: bool,
+    /// The workspace has a logo (ADR 0122).
+    pub has_logo: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -955,6 +957,7 @@ fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> Workspace
                     .account
                     .workspace_ids
                     .contains(&workspace.workspace.id),
+                has_logo: workspace.workspace.logo.is_some(),
             })
             .collect(),
         may_create: holds_server(model, ServerPermission::CreateWorkspace),

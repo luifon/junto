@@ -60,6 +60,7 @@ pub mod stream;
 pub mod structure;
 pub mod threads;
 pub mod transcripts;
+pub mod workspace_logos;
 pub mod workspace_roles;
 pub mod workspaces;
 
@@ -325,6 +326,13 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || {
         routes!(workspaces::update_workspace, workspaces::delete_workspace)
+    });
+    add(&mut router, || {
+        routes!(
+            workspace_logos::get_logo,
+            workspace_logos::set_logo,
+            workspace_logos::remove_logo
+        )
     });
     add(&mut router, || routes!(afk::get_afk, afk::set_afk));
     add(&mut router, || routes!(afk::report_idle));

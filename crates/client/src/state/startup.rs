@@ -6,6 +6,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct StartupView {
     pub status: Option<Status>,
+    /// The name of the profile of the entry, when it is not the normal profile.
+    pub profile: Option<String>,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -25,6 +27,7 @@ impl Default for StartupState {
             wanted: None,
             view: StartupView {
                 status: Some(Status::Off),
+                profile: None,
                 busy: false,
                 error: None,
             },
@@ -78,18 +81,20 @@ impl AppState {
         }
         let service = self.startup.service.clone();
         let changing = cx.background_executor().spawn(async move {
-            match enabled {
+            let status = match enabled {
                 Some(enabled) => service.set(enabled),
                 None => service.status(),
-            }
+            };
+            (status, service.profile_name())
         });
         cx.spawn(async move |this, cx| {
-            let result = changing.await;
+            let (result, profile) = changing.await;
             let _ = this.update(cx, |this, cx| {
                 if this.startup.number != number {
                     return;
                 }
                 this.startup.view.busy = false;
+                this.startup.view.profile = profile;
                 match result {
                     Ok(status) => {
                         this.startup.view.status = Some(status);

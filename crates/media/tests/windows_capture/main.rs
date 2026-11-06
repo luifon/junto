@@ -107,6 +107,20 @@ impl Fixture {
         line.trim_end().to_owned()
     }
 
+    /// Sends a command and gives the inner area that the answer with `prefix` states, in
+    /// pixels of the screen of the window.
+    fn answer(&mut self, command: &str, prefix: &str) -> (i32, i32, i32, i32) {
+        self.send(command);
+        let line = self.line();
+        let words: Vec<i32> = line
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("the fixture wrote {line:?} to {command:?}"))
+            .split_whitespace()
+            .map(|word| word.parse().unwrap())
+            .collect();
+        (words[1], words[2], words[3], words[4])
+    }
+
     /// Changes the size of the inner area and gives the inner area that results.
     fn resize(&mut self, (width, height): (i32, i32)) -> (i32, i32, i32, i32) {
         self.send(&format!("resize {width} {height}"));
@@ -541,6 +555,353 @@ fn a_screen_share_has_the_display_size_and_stops_when_dropped() {
         "pictures came after the drop"
     );
     // The owner stopped the share: the sink is not told an end.
+    assert!(pictures.ended.lock().unwrap().is_empty());
+}
+
+/// The middles of the quarters of an area of a screen in a picture of the whole screen.
+fn screen_places(
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+) -> impl Fn(&PictureFrame) -> [(f64, f64); 4] {
+    move |picture: &PictureFrame| {
+        let x = f64::from(picture.width) / f64::from(screen.0);
+        let y = f64::from(picture.height) / f64::from(screen.1);
+        quarters((
+            f64::from(area.0) * x,
+            f64::from(area.1) * y,
+            f64::from(area.2) * x,
+            f64::from(area.3) * y,
+        ))
+    }
+}
+
+/// Waits until the newest picture is black at a place of the picture.
+fn until_black(pictures: &Pictures, at: (f64, f64), what: &str) {
+    let started = Instant::now();
+    loop {
+        if let Some(picture) = pictures.latest.lock().unwrap().as_ref()
+            && picture
+                .pixel(at.0 as u32, at.1 as u32)
+                .is_some_and(|pixel| near(pixel, (0, 0, 0)))
+        {
+            return;
+        }
+        assert!(started.elapsed() < PATIENCE, "{what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The middle of an area of the screen in a picture of the screen.
+fn middle(area: (i32, i32, i32, i32), screen: (u32, u32), picture: &PictureFrame) -> (u32, u32) {
+    let x = f64::from(picture.width) / f64::from(screen.0);
+    let y = f64::from(picture.height) / f64::from(screen.1);
+    (
+        (f64::from(area.0 + area.2) / 2.0 * x) as u32,
+        (f64::from(area.1 + area.3) / 2.0 * y) as u32,
+    )
+}
+
+/// Waits until the newest picture shows a colour in the middle of an area of the screen.
+fn until_middle(
+    pictures: &Pictures,
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+    colour: (u8, u8, u8),
+    what: &str,
+) {
+    let started = Instant::now();
+    let mut seen = None;
+    loop {
+        assert!(
+            pictures.ended.lock().unwrap().is_empty(),
+            "{:?}",
+            pictures.ended.lock().unwrap()
+        );
+        if let Some(picture) = pictures.latest.lock().unwrap().as_ref() {
+            let (x, y) = middle(area, screen, picture);
+            seen = picture.pixel(x, y);
+            if seen.is_some_and(|pixel| near(pixel, colour)) {
+                return;
+            }
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "{what}: {seen:?} instead of {colour:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Waits until the newest picture shows the colours of the quarters of an area of the screen,
+/// for the quarters whose middle is outside `covered` (an inner area of the screen, widened by
+/// 80 pixels for a frame and a caption at every display scale).
+fn until_colours_beside(
+    pictures: &Pictures,
+    area: (i32, i32, i32, i32),
+    screen: (u32, u32),
+    covered: (i32, i32, i32, i32),
+    what: &str,
+) {
+    let margin = 80;
+    let (left, top) = (area.0, area.1);
+    let (width, height) = (area.2 - area.0, area.3 - area.1);
+    let middles = [
+        (left + width / 4, top + height / 4),
+        (left + width * 3 / 4, top + height / 4),
+        (left + width / 4, top + height * 3 / 4),
+        (left + width * 3 / 4, top + height * 3 / 4),
+    ];
+    let free: Vec<(usize, (i32, i32))> = middles
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (x, y))| {
+            !(covered.0 - margin..covered.2 + margin).contains(x)
+                || !(covered.1 - margin..covered.3 + margin).contains(y)
+        })
+        .collect();
+    assert!(
+        free.len() >= 2,
+        "{what}: the dialog covers {} quarters",
+        4 - free.len()
+    );
+    for (quarter, (x, y)) in free {
+        until_middle(pictures, (x, y, x, y), screen, COLOURS[quarter], what);
+    }
+}
+
+/// A share of an application draws a dialog that its window opens, a window that the
+/// application opens after the start of the share, and its window at the new place after a
+/// move, with black at the place that the window left (ADR 0738).
+#[test]
+fn an_application_share_draws_a_dialog_a_later_window_and_a_moved_window() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let process = fixture.child.id() as i32;
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .unwrap()
+        .clone();
+    let screen = (display.width, display.height);
+    let pictures = Arc::new(Pictures::default());
+    let stream = runtime
+        .block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Application(process),
+                sound: SoundChoice::None,
+                quality: ShareQuality {
+                    resolution: Resolution::Source,
+                    frame_rate: 30,
+                },
+                dialog_parent: None,
+            },
+            pictures.clone(),
+        ))
+        .unwrap();
+    until_colours(
+        &pictures,
+        0,
+        screen_places(fixture.area, screen),
+        "the application share",
+    );
+
+    let dialog = fixture.answer("open dialog", "opened dialog ");
+    until_middle(
+        &pictures,
+        dialog,
+        screen,
+        window::DIALOG_COLOUR,
+        "the dialog of the window",
+    );
+    let later = fixture.answer("open window", "opened window ");
+    until_middle(
+        &pictures,
+        later,
+        screen,
+        window::LATER_COLOUR,
+        "the window opened after the start of the share",
+    );
+
+    // The window moves left and up, so that its old bottom right corner is free of it, of
+    // the dialog and of the later window. An owned dialog does not move with its owner: it
+    // stays at its place, above the moved window, and covers part of it.
+    let before = fixture.area;
+    let (right, down) = (-120, -100);
+    let moved = fixture.answer(&format!("move {right} {down}"), "moved ");
+    assert_eq!(
+        (moved.0 - before.0, moved.1 - before.1),
+        (right, down),
+        "the fixture did not move by the asked pixels"
+    );
+    until_colours_beside(
+        &pictures,
+        moved,
+        screen,
+        dialog,
+        "the application share after a move",
+    );
+    until_middle(
+        &pictures,
+        dialog,
+        screen,
+        window::DIALOG_COLOUR,
+        "the dialog at its place after the move of its owner",
+    );
+    let left_place = (before.2 - 30, before.3 - 30, before.2 - 10, before.3 - 10);
+    until_middle(
+        &pictures,
+        left_place,
+        screen,
+        (0, 0, 0),
+        "the place that the window left",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        pictures.ended.lock().unwrap().is_empty(),
+        "{:?}",
+        pictures.ended.lock().unwrap()
+    );
+    runtime.block_on(stream.stop()).unwrap();
+}
+
+/// A share of an application (ADR 0738) lists the program of the fixture on the screen of its
+/// window, shows that window at its place in a picture of the size of the screen and black
+/// where the application has no window, follows the window when its colours and its size
+/// change, and goes on when the window closes. Its preview draws the window in the same way.
+#[test]
+fn an_application_share_draws_its_window_at_its_place_follows_it_and_outlives_it() {
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    assert!(sources.application_capture);
+    let process = fixture.child.id() as i32;
+    let listed = sources
+        .application_pictures
+        .iter()
+        .find(|listed| listed.application.process_id == process)
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture is not listed: {:?}",
+                sources.application_pictures
+            )
+        });
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (listed.display, listed.windows, listed.width, listed.height),
+        (fixture.screen, 1, display.width, display.height)
+    );
+    let screen = (display.width, display.height);
+
+    let preview = runtime
+        .block_on(capture.preview(PictureSource::Application(process), (640, 360)))
+        .unwrap();
+    let places = screen_places(fixture.area, screen)(&preview);
+    for (quarter, (x, y)) in places.iter().enumerate() {
+        let pixel = preview.pixel(*x as u32, *y as u32).unwrap();
+        assert!(
+            near(pixel, COLOURS[quarter]),
+            "the preview shows {pixel:?} in quarter {quarter}"
+        );
+    }
+
+    let pictures = Arc::new(Pictures::default());
+    let stream = runtime
+        .block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Application(process),
+                sound: SoundChoice::None,
+                quality: ShareQuality {
+                    resolution: Resolution::Source,
+                    frame_rate: 30,
+                },
+                dialog_parent: None,
+            },
+            pictures.clone(),
+        ))
+        .unwrap();
+    assert_eq!(
+        (stream.width, stream.height),
+        Resolution::Source.fit(display.width, display.height)
+    );
+    until_colours(
+        &pictures,
+        0,
+        screen_places(fixture.area, screen),
+        "the application share",
+    );
+    // A corner of the screen far from the window shows no other application.
+    let far = {
+        let area = fixture.area;
+        let x = if area.0 + area.2 > display.width as i32 {
+            4.0
+        } else {
+            f64::from(display.width) - 4.0
+        };
+        let y = if area.1 + area.3 > display.height as i32 {
+            4.0
+        } else {
+            f64::from(display.height) - 4.0
+        };
+        (x, y)
+    };
+    until_black(&pictures, far, "the screen outside the window is not black");
+    fixture.send("turn");
+    until_colours(
+        &pictures,
+        1,
+        screen_places(fixture.area, screen),
+        "the application share after a turn",
+    );
+    let area = fixture.resize((420, 280));
+    until_colours(
+        &pictures,
+        1,
+        screen_places(area, screen),
+        "the application share after a change of size",
+    );
+
+    // The window closes: its place turns black, and the share goes on.
+    let middle = screen_places(area, screen);
+    fixture.send("close");
+    let started = Instant::now();
+    loop {
+        let black = pictures
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|picture| {
+                middle(picture).iter().all(|(x, y)| {
+                    picture
+                        .pixel(*x as u32, *y as u32)
+                        .is_some_and(|pixel| near(pixel, (0, 0, 0)))
+                })
+            });
+        if black {
+            break;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the place of the closed window did not turn black"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        pictures.ended.lock().unwrap().is_empty(),
+        "{:?}",
+        pictures.ended.lock().unwrap()
+    );
+    runtime.block_on(stream.stop()).unwrap();
     assert!(pictures.ended.lock().unwrap().is_empty());
 }
 
@@ -1376,5 +1737,159 @@ fn the_graphics_memory_of_a_window_share_does_not_grow_with_its_pictures() {
     assert!(
         grown < 16 << 20,
         "the graphics memory grew by {grown} bytes"
+    );
+}
+
+/// The processor time of this process in milliseconds, read by PowerShell, so that the test
+/// needs no call of the system of its own.
+fn processor_milliseconds() -> f64 {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "(Get-Process -Id {}).TotalProcessorTime.TotalMilliseconds",
+                std::process::id()
+            ),
+        ])
+        .output()
+        .expect("PowerShell runs");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace(',', ".")
+        .parse()
+        .expect("PowerShell states the processor time")
+}
+
+/// A sink that only counts the pictures and keeps the size of the last one, so that the
+/// measured time is the time of the capture and its delivery.
+#[derive(Default)]
+struct Counted {
+    pictures: AtomicUsize,
+    size: Mutex<(u32, u32)>,
+}
+
+impl CaptureSink for Counted {
+    fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
+        *self.size.lock().unwrap() = (buffer.width(), buffer.height());
+        self.pictures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn sound(&self, _: &[f32], _: Format) {}
+
+    fn ended(&self, error: CaptureError) {
+        panic!("the measured share ended: {error:?}");
+    }
+}
+
+/// The processor time of this process over `seconds` while the fixture turns its colours
+/// ten times a second: the time in milliseconds per second, and the pictures per second.
+fn measured(fixture: &mut Fixture, sink: &Counted, seconds: u64) -> (f64, f64, String) {
+    let pictures = sink.pictures.load(Ordering::Relaxed);
+    let before = processor_milliseconds();
+    junto_media::share::phases::take();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(seconds) {
+        fixture.send("turn");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let phases = junto_media::share::phases::take()
+        .iter()
+        .map(|(_, millis)| format!("{:.1}", millis / elapsed))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let time = (processor_milliseconds() - before) / elapsed;
+    let rate = (sink.pictures.load(Ordering::Relaxed) - pictures) as f64 / elapsed;
+    (time, rate, phases)
+}
+
+/// The processor time of a window share and of an application share of one and of three
+/// windows, at 30 pictures a second, against the same process without a share (ADR 0738,
+/// ADR 0914). The window covers the screen, so that both shares send pictures of about the
+/// size of the screen: the window share sends the picture of the window, the application
+/// share a picture of the screen. It prints a table with the size of the pictures and checks
+/// nothing; it runs only with `JUNTO_TEST_SHARE_COST=1`.
+#[test]
+fn the_processor_time_of_an_application_share() {
+    if std::env::var_os("JUNTO_TEST_SHARE_COST").is_none() {
+        return;
+    }
+    const SECONDS: u64 = 20;
+    let mut fixture = Fixture::open();
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let process = fixture.child.id() as i32;
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let display = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+        .expect("the screen of the fixture is listed");
+    // The inner area at the top left corner of the screen and of the size of the screen.
+    let (left, top, _, _) = fixture.area;
+    fixture.answer(&format!("move {} {}", -left, -top), "moved ");
+    let area = fixture.resize((display.width as i32, display.height as i32));
+    println!(
+        "The screen: {} × {} pixels; the inner area of the window: {} × {} pixels at ({}, {}).",
+        display.width,
+        display.height,
+        area.2 - area.0,
+        area.3 - area.1,
+        area.0,
+        area.1
+    );
+    let idle = Counted::default();
+    let (idle_time, _, idle_phases) = measured(&mut fixture, &idle, SECONDS);
+    // The phases: the follow loop of an application share, the copy from the graphics card,
+    // the composition of an application picture, the conversion for the encoder; each in
+    // milliseconds of one thread per second (ADR 0738).
+    println!(
+        "| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("| none | 0 | none | 0 | {idle_time:.1} | {idle_phases} |");
+    let share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
+        let sink = Arc::new(Counted::default());
+        let stream = runtime
+            .block_on(capture.start(
+                CaptureRequest {
+                    picture,
+                    sound: SoundChoice::None,
+                    quality: ShareQuality {
+                        resolution: Resolution::Source,
+                        frame_rate: 30,
+                    },
+                    dialog_parent: None,
+                },
+                sink.clone(),
+            ))
+            .unwrap();
+        // The first pictures, before the measured interval.
+        std::thread::sleep(Duration::from_secs(2));
+        let (time, rate, phases) = measured(fixture, &sink, SECONDS);
+        runtime.block_on(stream.stop()).unwrap();
+        let (width, height) = *sink.size.lock().unwrap();
+        println!("| {name} | {windows} | {width} × {height} | {rate:.1} | {time:.1} | {phases} |");
+    };
+    share(
+        "window",
+        1,
+        PictureSource::Window(fixture.window),
+        &mut fixture,
+    );
+    share(
+        "application",
+        1,
+        PictureSource::Application(process),
+        &mut fixture,
+    );
+    fixture.answer("open dialog", "opened dialog ");
+    fixture.answer("open window", "opened window ");
+    share(
+        "application",
+        3,
+        PictureSource::Application(process),
+        &mut fixture,
     );
 }

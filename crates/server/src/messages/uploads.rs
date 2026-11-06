@@ -22,12 +22,18 @@ use time::OffsetDateTime;
 
 pub const CHUNK: usize = 1024 * 1024;
 /// The bounds of a file that gets preview metadata (ADR 0408). The largest file that a
-/// client reads into memory to draw it.
+/// client reads into memory to draw it, when it decodes the picture whole.
 pub const MOST_PICTURE_BYTES: u64 = 32 * 1024 * 1024;
-/// The largest still picture: 128 MiB of pixels as RGBA, which a client decodes before it
-/// reduces the picture, and the longest side of a WebP file.
+/// The largest still picture that a client decodes whole: 128 MiB of pixels as RGBA, which
+/// a client decodes before it reduces the picture; and the longest side of a picture, that
+/// of a WebP file.
 pub const MOST_PICTURE_PIXELS: u64 = 33_554_432;
 pub const LONGEST_PICTURE_SIDE: u32 = 16_384;
+/// The largest file and picture that a client decodes reduced, without the whole picture in
+/// memory: a still PNG without interlacing or a JPEG of sequential coding
+/// ([`crate::image::Picture::reducible`]).
+pub const MOST_REDUCED_PICTURE_BYTES: u64 = 64 * 1024 * 1024;
+pub const MOST_REDUCED_PICTURE_PIXELS: u64 = 268_435_456;
 /// The largest canvas of an animation, 16 MiB as RGBA, which a client decodes once for each
 /// frame; the most frames; and the most pixels of all frames together, which bound the
 /// time of the decoding.
@@ -35,11 +41,18 @@ pub const MOST_FRAME_PIXELS: u64 = 4_194_304;
 pub const MOST_FRAMES: u32 = 2_048;
 pub const MOST_ANIMATION_PIXELS: u64 = 1_073_741_824;
 
-/// The picture that a client draws for a file, when the file is within the bounds.
-pub fn preview(picture: crate::image::Picture) -> Option<crate::image::Picture> {
+/// The picture that a client draws for a file of `total` bytes, when the file is within the
+/// bounds.
+pub fn preview(picture: crate::image::Picture, total: u64) -> Option<crate::image::Picture> {
     let pixels = u64::from(picture.width) * u64::from(picture.height);
-    let still =
-        pixels <= MOST_PICTURE_PIXELS && picture.width.max(picture.height) <= LONGEST_PICTURE_SIDE;
+    let (most_pixels, most_bytes) = if picture.reducible {
+        (MOST_REDUCED_PICTURE_PIXELS, MOST_REDUCED_PICTURE_BYTES)
+    } else {
+        (MOST_PICTURE_PIXELS, MOST_PICTURE_BYTES)
+    };
+    let still = pixels <= most_pixels
+        && total <= most_bytes
+        && picture.width.max(picture.height) <= LONGEST_PICTURE_SIDE;
     let moving = picture.frames <= 1
         || (pixels <= MOST_FRAME_PIXELS
             && picture.frames <= MOST_FRAMES
@@ -280,8 +293,8 @@ impl Read for Stored {
 }
 
 /// Reads every chunk of an upload once: checks each chunk, computes the hash of the file,
-/// and reads the preview metadata of a picture within [`MOST_PICTURE_BYTES`] from the
-/// parts of the file that state it.
+/// and reads the preview metadata of a picture within [`MOST_REDUCED_PICTURE_BYTES`] from
+/// the parts of the file that state it.
 pub fn check(
     root: PathBuf,
     id: AttachmentId,
@@ -297,8 +310,9 @@ pub fn check(
         digest: Sha256::new(),
         failure: None,
     };
-    let image = if total <= MOST_PICTURE_BYTES {
-        crate::image::picture(std::io::BufReader::new(&mut stored), total).and_then(preview)
+    let image = if total <= MOST_REDUCED_PICTURE_BYTES {
+        crate::image::picture(std::io::BufReader::new(&mut stored), total)
+            .and_then(|picture| preview(picture, total))
     } else {
         None
     };

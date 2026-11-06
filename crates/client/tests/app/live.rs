@@ -955,6 +955,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the screens and windows are listed", |window| {
         window.shows("share-sources")
     });
+    window.click("share-tab-window");
     window.click("share-window:11");
     window.click("share-sound-0");
     window.click("start-share");
@@ -1080,6 +1081,7 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     window.until("the dialog lists the sources again", |window| {
         window.shows("share-sources")
     });
+    window.click("share-tab-window");
     window.click("share-window:11");
     window.click("share-sound-0");
     window.click("start-share");
@@ -1223,6 +1225,136 @@ fn a_person_shares_two_things_in_the_window_and_switches_between_the_shares_of_a
     window.until("no share is left", |window| stage(window).is_none());
 }
 
+/// A person shares every window of one application from the Application tab of the dialog,
+/// with the sound of that application, which the dialog chose because the person chose no
+/// sound. The picture track has the name of a window share, which a client of 0.1.0 reads,
+/// and the server states the application. The other way, the window names a share of an
+/// application of the other person from the state of the server (ADR 0737, ADR 0738).
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_person_shares_an_application_and_each_side_names_it_an_application(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::call::{ShareKind as ReportedKind, ShareShows};
+    use junto_media::share::synthetic::PLAYER;
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    turn_processing_off(&mut window);
+    let own_id = window.own_account();
+    let admin_id = admin.handle.account().unwrap();
+    let reported = |account_id| -> Vec<(u8, Option<ReportedKind>, Option<ShareShows>)> {
+        caller
+            .handle
+            .live()
+            .view()
+            .model
+            .and_then(|model| {
+                model.call_at(&target.place).and_then(|call| {
+                    call.participant(account_id).map(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .map(|share| (share.slot, share.kind, share.shows))
+                            .collect()
+                    })
+                })
+            })
+            .unwrap_or_default()
+    };
+
+    window.click("call-share");
+    window.until("the sources are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-tab-application");
+    window.click_named(format!("share-application-picture:{PLAYER}"));
+    window.click("start-share");
+    window.until("the share of the application runs", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    assert_eq!(
+        window.capture.started(),
+        [CaptureRequest {
+            picture: PictureSource::Application(PLAYER),
+            sound: SoundChoice::Application(SyntheticCapture::player()),
+            quality: ShareQuality::default(),
+            dialog_parent: None,
+        }]
+    );
+    assert!(window.view().call.is_some_and(|call| {
+        call.own_shares
+            .iter()
+            .map(|share| (share.slot, share.kind))
+            .eq([(0, Some(ShareKind::Application))])
+    }));
+    // The other person reads the track as a window share of slot 0, and the server states
+    // the application.
+    window.until(
+        "the administrator receives the share as a window track",
+        |_| {
+            caller.calls.view().call.is_some_and(|call| {
+                call.shares
+                    .iter()
+                    .map(|share| (share.account_id, share.slot, share.kind))
+                    .eq([(own_id, 0, Some(ShareKind::Window))])
+            })
+        },
+    );
+    window.until("the server states the application", |_| {
+        reported(own_id) == [(0, Some(ReportedKind::Window), Some(ShareShows::Application))]
+    });
+    window.until("the administrator hears the application", |_| {
+        heard(&caller.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    window.click("call-share");
+    window.click("share-stop-all");
+    window.until("no own share is left", |window| {
+        own_share(window) == OwnShare::Off && window.capture.running() == 0
+    });
+
+    // The administrator shares an application: the window names it from the server.
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Application(PLAYER),
+        sound: SoundChoice::Application(SyntheticCapture::player()),
+        quality: ShareQuality::default(),
+        dialog_parent: None,
+    });
+    window.until("the window names the share an application", |window| {
+        stage(window).is_some_and(|stage| {
+            stage
+                .shares
+                .iter()
+                .map(|share| (share.account_id, share.kind))
+                .eq([(admin_id, Some(ShareKind::Application))])
+        })
+    });
+    window.until("the window plays the sound of the application", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    caller.calls.stop_share(None);
+    window.until("no share is left", |window| stage(window).is_none());
+}
+
 /// One of two shares of the person ends by itself, as when the shared screen is gone: the
 /// window tells it, and the close of that notice leaves the other share running, with its
 /// capture, its tracks, its picture and sound at the other person, and its record at the
@@ -1294,6 +1426,7 @@ fn one_of_two_shares_ends_by_itself_and_its_notice_leaves_the_other_running(
     window.until("the dialog lists the sources again", |window| {
         window.shows("share-sources")
     });
+    window.click("share-tab-window");
     window.click("share-window:11");
     window.click("share-sound-2");
     window.click("start-share");

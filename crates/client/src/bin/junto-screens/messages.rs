@@ -491,6 +491,29 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
             |shell, window, cx| shell.show_composer_preview(Pane::Main, true, window, cx),
         )?;
     }
+    // The Write tab formats the text while it is written: the marks of the part at the caret
+    // (the last bold part) have full contrast, the other marks are dimmed (ADR 0740).
+    for (name, scale, width, height) in [
+        ("messages-composer-formatting", 100, 1180.0, 800.0),
+        ("messages-composer-formatting-150", 150, 720.0, 600.0),
+    ] {
+        studio.draw_answered(
+            Screen::new(name, with_timeline(general().timeline()))
+                .scale(scale)
+                .size(width, height),
+            |shell, _, cx| prepare(shell, none(), cx),
+            |shell, window, cx| {
+                shell.type_message(
+                    Pane::Main,
+                    "## Review plan\n> A quoted line with *care*\n- A **strong** result with \
+                     ||a spoiler||, `code`, ~~old~~ and [a guide](https://example.test)\n\
+                     ```rust\nfn ship() { ready(); }\n```\nThe caret is in the **last part**",
+                    window,
+                    cx,
+                );
+            },
+        )?;
+    }
     studio.draw_answered(
         Screen::new(
             "messages-emoji-completion",

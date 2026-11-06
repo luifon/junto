@@ -281,6 +281,33 @@ fn startup_at_login_follows_the_system_adapter_and_refreshes_external_changes(
     });
 }
 
+/// The settings of a profile other than the normal one name the profile at the switch of
+/// start at login, and the switch changes the entry of that profile (ADR 0730).
+#[gpui::test]
+fn the_settings_of_another_profile_name_it_and_change_its_own_entry(cx: &mut TestAppContext) {
+    use junto_client_core::startup::{KeptStartup, Startup, Status};
+    let (_directory, mut window) = named(cx, "Member");
+    let profile = std::sync::Arc::new(KeptStartup::of_profile("Work"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.use_startup_service(profile.clone(), cx)
+    });
+    window.click("app-settings");
+    window.click("settings-section-interface");
+    let label = "Start Junto at login with the profile Work";
+    window.until("the profile is named", |window| {
+        crate::admin_pages::drawn_text(window)
+            .iter()
+            .any(|text| text.text == label || text.label.as_deref() == Some(label))
+    });
+    window.click_in_settings("start-at-login");
+    window.until("the entry of the profile is on", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.startup().status == Some(Status::On) && !state.startup().busy
+        })
+    });
+    assert_eq!(profile.status().unwrap(), Status::On);
+}
+
 #[gpui::test]
 fn startup_at_login_keeps_a_failed_write_and_retries_it(cx: &mut TestAppContext) {
     use junto_client_core::startup::{KeptStartup, Startup, Status};
@@ -360,20 +387,20 @@ fn startup_at_login_shows_approval_and_unavailable_statuses(cx: &mut TestAppCont
     });
     system
         .0
-        .show(Status::Unavailable(Unavailable::CustomProfile));
+        .show(Status::Unavailable(Unavailable::NotInstalled));
     window
         .state
         .update(&mut window.cx, |state, cx| state.refresh_startup(cx));
-    window.until("the unsupported profile is shown", |window| {
+    window.until("the unavailable entry is shown", |window| {
         window
             .state
             .read_with(&window.cx, |state, _| state.startup().status)
-            == Some(Status::Unavailable(Unavailable::CustomProfile))
+            == Some(Status::Unavailable(Unavailable::NotInstalled))
     });
     assert!(!window.shows("startup-approval"));
     window.click_in_settings("start-at-login");
     assert_eq!(
         system.status().unwrap(),
-        Status::Unavailable(Unavailable::CustomProfile)
+        Status::Unavailable(Unavailable::NotInstalled)
     );
 }

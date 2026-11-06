@@ -74,6 +74,11 @@ fn reaction_people_clear_the_names_when_history_access_ends(cx: &mut TestAppCont
         .run(admin.handle.api().add_reaction(sent.id, "👍"))
         .unwrap();
     window.until_message("a confirmation");
+    // The menu offers the roster only for a message with a reaction: it opens after the
+    // reaction is drawn.
+    window.until("the reaction is drawn", |window| {
+        window.shows_named(format!("reaction:{}:0", sent.id))
+    });
     window.right_click_named(format!("message:{}", sent.id));
     window.click("message-reaction-people");
     let author = admin.handle.account().unwrap();
@@ -139,6 +144,11 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
         .run(window.handle().api().add_reaction(sent.id, "🎉"))
         .unwrap();
     window.until_message("a private confirmation");
+    // The control of the roster stands after the reactions and moves when one is added: the
+    // press waits until both reactions of the message are drawn, or it is lost.
+    window.until("both reactions are drawn", |window| {
+        window.shows_named(format!("reaction:{}:1", sent.id))
+    });
     window.click_named(format!("reaction-people:{}", sent.id));
     window.click_named("reaction-emoji:🎉".to_owned());
     window.until("each emoji has its own roster", |window| {
@@ -164,12 +174,22 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
         .run(admin.handle.api().add_reaction(reply, "👍"))
         .unwrap();
     window.until_message("a discussion");
+    // The chip of the thread grows the row of the root when the reply arrives, which moves
+    // the menu of the row: the menu opens after the chip is drawn.
+    window.until("the root shows its reply", |window| {
+        window.shows_named(format!("thread-chip:{}", root.id))
+    });
     window.right_click_named(format!("message:{}", root.id));
     window.click("message-thread");
     window.until("the thread is drawn", |window| {
         window
             .replies()
             .contains(&"a thread confirmation".to_owned())
+    });
+    // The follow state of the thread arrives from the server after the replies, and its bar
+    // above the root moves the replies down: the press waits until the panel is complete.
+    window.until("the thread shows its follow state and its root", |window| {
+        window.shows("follow-bar") && window.shows("thread-root")
     });
     window.click_named(format!("reaction-people:{reply}"));
     window.until("the thread roster is shown", |window| {
