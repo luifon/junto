@@ -108,6 +108,18 @@ if pin JUNTO_CI_POSTGRES_MACOS_SHA256 | grep -qx '[0-9a-f]\{64\}' \
 else
     fail "tools/with_native_postgres.py downloads PostgreSQL without a SHA-256 in $pins"
 fi
+# The LiveKit release of the window tests of calls on Windows (ADR 0905): the version of the
+# image of the tests, and a SHA-256 for each pinned archive, which tools/native_downloads.py
+# checks.
+same "LiveKit version of the tests in Docker and of the native tests" \
+    "$(pin JUNTO_TEST_LIVEKIT_IMAGE | sed -n 's/^livekit\/livekit-server:v\([0-9.]*\)@.*/\1/p')" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' tools/with_native_livekit.py)"
+if [ "$(grep -c '^ *"[0-9a-f]\{64\}"),$' tools/with_native_livekit.py)" = "$(grep -c '^    "[a-z0-9]*": (f"livekit_' tools/with_native_livekit.py)" ] \
+    && grep -q 'sha256_of(partial)' tools/native_downloads.py; then
+    echo "ok    the LiveKit downloads of the native tests are checked by their SHA-256"
+else
+    fail "tools/with_native_livekit.py downloads a LiveKit release without a SHA-256"
+fi
 # The tools of the Windows CI machine (ADR 0905): each download of the setup has a SHA-256 of
 # its own and is fetched through the function that checks it; its Python has the minor
 # version of the Python image.

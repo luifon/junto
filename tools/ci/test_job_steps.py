@@ -81,12 +81,13 @@ class JobSteps(unittest.TestCase):
                 self.assertEqual(commands, ['python3 -m unittest discover -s packaging -p test_*.py',
                                             "python3 tools/test_test_services.py", own])
 
-    def test_macos_runs_the_window_tests_with_postgresql_and_leaves_out_only_the_live_tests(self):
+    def test_macos_runs_the_window_tests_with_postgresql_and_has_no_live_tests(self):
         status, commands, output = self.run_job("macos")
         self.assertEqual(status, 0, output)
         without, with_database = self.window_steps(commands, "macos")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
-        self.assertEqual(with_database, [f"{DATABASE['macos']} {WINDOW_TESTS} --skip updates:: --skip live::"])
+        self.assertEqual(with_database, [f"{DATABASE['macos']} {WINDOW_TESTS} --skip updates::"])
+        self.assertFalse(any("live::" in c for c in commands), commands)
         self.assertLess(commands.index("python3 tools/test_with_native_postgres.py"),
                         commands.index(f"{DATABASE['macos']} --fetch"))
         self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
@@ -156,7 +157,7 @@ class JobSteps(unittest.TestCase):
             self.assertTrue(all("cargo test --no-fail-fast " in c for c in tests), tests)
 
     def test_a_failed_window_test_fails_the_macos_job(self):
-        status, _, _ = self.run_job("macos", fail_on="--skip live::")
+        status, _, _ = self.run_job("macos", fail_on=f"{WINDOW_TESTS} --skip updates::")
         self.assertNotEqual(status, 0)
 
     def test_windows_runs_file_window_tests_and_starts_no_bundle(self):
@@ -164,11 +165,23 @@ class JobSteps(unittest.TestCase):
         self.assertEqual(status, 0, output)
         without, with_database = self.window_steps(commands, "windows")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
-        skips = " ".join(f"--skip {name}" for name in ["updates::", "live::", *WINDOWS_RECORDING_SKIPS])
+        skips = " ".join(f"--skip {name}" for name in ["updates::", *WINDOWS_RECORDING_SKIPS])
         self.assertEqual(with_database, [f"{DATABASE['windows']} {WINDOW_TESTS} {skips}"])
         self.assertNotIn("python3 tools/with_native_postgres.py --fetch", commands)
         self.assertIn("python3 packaging/check_windows.py", commands)
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))
+
+    def test_windows_runs_the_live_window_tests_with_native_livekit_and_keeps_their_failure(self):
+        live = (f"{DATABASE['windows']} python3 tools/with_native_livekit.py "
+                "cargo test --no-fail-fast --locked --workspace --test app live:: -- --ignored")
+        status, commands, output = self.run_job("windows")
+        self.assertEqual(status, 0, output)
+        self.assertIn(live, commands)
+        self.assertLess(commands.index("python3 tools/with_native_livekit.py --fetch"), commands.index(live))
+        self.assertLess(commands.index("python3 tools/test_native_programs.py"), commands.index(live))
+        status, _, output = self.run_job("windows", fail_on="live:: -- --ignored")
+        self.assertEqual(status, 1)
+        self.assertIn("Window tests with PostgreSQL and LiveKit (exit 1)", output)
 
     def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
         media = "cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture"

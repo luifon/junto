@@ -115,7 +115,8 @@ run budget tools/linux-container.sh sh -c 'mkdir -p /target/junto-ci && cargo te
 run budget tools/linux-container.sh cargo build --locked -p junto-client --features test-support --bin junto-screens
 # The test programs of `cargo test --workspace` in two lanes of about the same length: the window
 # tests, and the API tests of the server, the other test programs with the doc tests and the
-# Python unit tests. Every command has --workspace, so the features are those of the build above.
+# Python unit tests. A third lane runs the ignored window tests of calls against the LiveKit of
+# its container (`live::`). Every command has --workspace, so the features are those of the build above.
 # junto-screens draws every screen and checks that no area has an empty band, no control is past
 # an edge of the window, and each screen settles within its bound (ADR 0730, ADR 0731); it
 # measures and writes no picture, and needs no database. The second run draws every screen at
@@ -127,6 +128,9 @@ lanes <<'EOF'
 lane app share 4 memory 4g
 step Window tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app
+lane live share 4 memory 4g
+step Window tests of calls with LiveKit
+tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app live:: -- --ignored
 lane other share 2 memory 4g
 step Server API tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test api

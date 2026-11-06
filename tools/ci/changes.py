@@ -23,7 +23,7 @@ The rules, for every path that the change adds, changes or removes between <base
   the Linux image, packaging/, the workflows, and any path that no rule names.
 
 The Windows job runs only when the change can behave differently on Windows: a path of
-tools/windows/, packaging/, vendor/, a build script, a Windows source file, the storage and the
+tools/windows/, of the native LiveKit of the Windows tests, packaging/, vendor/, a build script, a Windows source file, the storage and the
 paths of the client core, a changed Cargo.toml line of a target, a cfg, the build dependencies or
 the features, or an added line of Rust, Python or PowerShell outside tests that names a cfg of
 the system, a file system or process call, or a path join; also a change of tools/ci, of the
@@ -43,7 +43,8 @@ RUST = ("rust-linux", "rust-macos", "rust-windows")
 ALL = [job for jobs in JOBS.values() for job in jobs]
 
 WINDOWS_PATHS = re.compile(
-    r"^(tools/windows/|packaging/|vendor/|tools/ci/|\.cargo/|rust-toolchain\.toml$|Cargo\.lock$|(.*/)?Cargo\.toml$|"
+    r"^(tools/windows/|tools/(with_native_livekit|native_downloads)\.py$|packaging/|vendor/|tools/ci/|"
+    r"\.cargo/|rust-toolchain\.toml$|Cargo\.lock$|(.*/)?Cargo\.toml$|"
     r".*build\.rs$|crates/.*/windows[^/]*\.rs$|crates/.*/src/storage/|"
     r"crates/client-core/src/(paths|data_dir|keys|releases)(/|\.rs$))")
 WINDOWS_LINES = re.compile(
