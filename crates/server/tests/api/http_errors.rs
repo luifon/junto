@@ -434,6 +434,40 @@ fn refused_at_once(answer: Early, line: &str) {
     assert_eq!(answer, Early::Line(line.to_owned()));
 }
 
+/// The status of a request that the router of `server` answers inside the test process, sent
+/// from 127.0.0.1 with the body `bytes` long that never ends: no connection can lose its
+/// answer, so it states the status that a refusal of TCP may hide on Windows.
+async fn refused_in_process(server: &TestServer, forwarded_for: Option<&str>, bytes: usize) -> u16 {
+    use tower::ServiceExt;
+    let (sender, receiver) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Vec<u8>, std::io::Error>>();
+    let chunk = vec![b' '; 16 * 1024];
+    for start in (0..bytes).step_by(chunk.len()) {
+        sender
+            .send(Ok(chunk[..chunk.len().min(bytes - start)].to_vec()))
+            .unwrap();
+    }
+    let body = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| (chunk, receiver))
+    });
+    let mut request = axum::http::Request::post("/api/v1/workspaces")
+        .header("host", "chat.example.test")
+        .header("content-type", "application/json");
+    if let Some(address) = forwarded_for {
+        request = request.header("x-forwarded-for", address);
+    }
+    let mut request = request.body(axum::body::Body::from_stream(body)).unwrap();
+    let peer = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let router = junto_server::routes::router(server.state.clone());
+    let answer = router.oneshot(request).await.unwrap();
+    // The sender still holds the body open: the answer came while the body still arrived.
+    drop(sender);
+    answer.status().as_u16()
+}
+
 /// One address cannot make the server hold more than a bounded number of bytes of request
 /// bodies: a further slow request is refused while it still sends.
 #[tokio::test]
@@ -451,6 +485,7 @@ async fn slow_requests_of_one_address_hold_a_bounded_number_of_body_bytes() {
         let answer = early_answer(&mut refused).await;
         refused_at_once(answer, "HTTP/1.1 429 Too Many Requests");
     }
+    assert_eq!(refused_in_process(&server, None, nearly_full).await, 429);
     drop(held);
 }
 
@@ -492,6 +527,10 @@ async fn many_slow_requests_hold_a_bounded_number_of_body_bytes() {
         refused_at_once(answer, "HTTP/1.1 503 Service Unavailable");
         assert!(bodies.held() <= 1024 * 1024);
     }
+    assert_eq!(
+        refused_in_process(&server, Some("203.0.113.200"), BODY).await,
+        503
+    );
     settled(HELD * BODY).await;
     assert_eq!(bodies.addresses(), HELD);
 
