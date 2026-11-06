@@ -246,6 +246,16 @@ impl SyntheticCapture {
                     (window.width, window.height) = (width, height);
                 }
             }
+            PictureSource::Application(process_id) => {
+                for listed in state
+                    .sources
+                    .application_pictures
+                    .iter_mut()
+                    .filter(|listed| listed.application.process_id == process_id)
+                {
+                    (listed.width, listed.height) = (width, height);
+                }
+            }
             PictureSource::Portal(_) => {}
         }
     }
