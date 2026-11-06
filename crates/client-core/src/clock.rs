@@ -338,34 +338,48 @@ mod platform {
             .replace("&amp;", "&")
     }
 
-    /// The time format of a clock of the Xfce panel: `digital-time-format` (Xfce 4.18) or
-    /// `digital-format` (earlier), a pattern of strftime.
+    /// The hour format of the first clock of the Xfce panel, by its `mode` (2, digital, when
+    /// the panel stores none): a digital clock shows `digital-time-format` (Xfce 4.18) or
+    /// `digital-format` (earlier), a pattern of strftime, or the default `%R` of the panel;
+    /// an LCD clock (4) shows 24 hours unless `show-military` is false; an analog, binary or
+    /// fuzzy clock shows no time of day, so the locale decides.
     fn xfce_clock(config: &Path) -> Option<HourCycle> {
         let text = settings_file(&config.join("xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"))?;
         let properties = xfconf_properties(&text);
-        let mut clock: Option<usize> = None;
+        let mut clock: Option<(usize, HashMap<String, String>)> = None;
+        let mut found = None;
         for (depth, values) in &properties {
-            if clock.is_some_and(|at| *depth <= at) {
-                clock = None;
-            }
             let name = values.get("name").map(String::as_str);
-            if clock.is_none() {
-                if name.is_some_and(|name| name.starts_with("plugin-"))
-                    && values.get("value").map(String::as_str) == Some("clock")
-                {
-                    clock = Some(*depth);
+            if let Some((at, settings)) = &mut clock {
+                if *depth > *at {
+                    if let (Some(name), Some(value)) = (name, values.get("value")) {
+                        settings.insert(name.to_owned(), value.clone());
+                    }
+                    continue;
                 }
-                continue;
+                found = clock.take().map(|(_, settings)| settings);
+                break;
             }
-            if matches!(name, Some("digital-time-format" | "digital-format"))
-                && let Some(cycle) = values
-                    .get("value")
-                    .and_then(|value| strftime_pattern(value))
+            if name.is_some_and(|name| name.starts_with("plugin-"))
+                && values.get("value").map(String::as_str) == Some("clock")
             {
-                return Some(cycle);
+                clock = Some((*depth, HashMap::new()));
             }
         }
-        None
+        let settings = found.or(clock.map(|(_, settings)| settings))?;
+        let setting = |name: &str| settings.get(name).map(String::as_str);
+        match setting("mode").unwrap_or("2") {
+            "2" => strftime_pattern(
+                setting("digital-time-format")
+                    .or(setting("digital-format"))
+                    .unwrap_or("%R"),
+            ),
+            "4" => match setting("show-military") {
+                Some("false") => Some(HourCycle::Twelve),
+                _ => Some(HourCycle::TwentyFour),
+            },
+            _ => None,
+        }
     }
 
     /// The format of the first clock applet of the MATE panel: `12-hour` or `24-hour`.
@@ -646,7 +660,8 @@ mod desktop_tests {
     }
 
     /// The clock of the Xfce panel states its format as a pattern of strftime, in the
-    /// property of Xfce 4.18 or in the one of earlier versions.
+    /// property of Xfce 4.18 or in the one of earlier versions, or shows the default `%R` of
+    /// the panel; an LCD clock reads `show-military`; an analog clock leaves the locale.
     #[test]
     fn xfce_reads_the_format_of_its_panel_clock() {
         let programs = Programs::new(&[LOCALE_TWENTY_FOUR]);
@@ -672,10 +687,40 @@ mod desktop_tests {
             read("XFCE", Some(older.path()), &programs),
             Some(HourCycle::TwentyFour)
         );
-        // A clock whose format was never changed follows the locale.
+        // A clock whose format was never changed shows the default of the panel, `%R`.
         let unchanged = config(&[(XFCE_PANEL, &xfce_panel(""))]);
         assert_eq!(
             read("XFCE", Some(unchanged.path()), &programs),
+            Some(HourCycle::TwentyFour)
+        );
+        // An LCD clock shows 24 hours unless its `show-military` is false.
+        let lcd = |military: &str| {
+            config(&[(
+                XFCE_PANEL,
+                &xfce_panel(&format!(
+                    "      <property name=\"mode\" type=\"uint\" value=\"4\"/>\n{military}"
+                )),
+            )])
+        };
+        let default = lcd("");
+        assert_eq!(
+            read("XFCE", Some(default.path()), &programs),
+            Some(HourCycle::TwentyFour)
+        );
+        let twelve =
+            lcd("      <property name=\"show-military\" type=\"bool\" value=\"false\"/>\n");
+        let programs_24 = Programs::new(&[LOCALE_TWENTY_FOUR]);
+        assert_eq!(
+            read("XFCE", Some(twelve.path()), &programs_24),
+            Some(HourCycle::Twelve)
+        );
+        // An analog clock shows no time of day: the locale decides.
+        let analog = config(&[(
+            XFCE_PANEL,
+            &xfce_panel("      <property name=\"mode\" type=\"uint\" value=\"0\"/>\n"),
+        )]);
+        assert_eq!(
+            read("XFCE", Some(analog.path()), &programs),
             Some(HourCycle::Twelve)
         );
     }
