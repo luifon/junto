@@ -2,6 +2,7 @@
 tools/with_native_ffmpeg.py. They download nothing and start no server: the Windows job of CI
 starts the real ones."""
 
+import contextlib
 import hashlib
 import io
 import os
@@ -97,11 +98,12 @@ class LiveKit(unittest.TestCase):
     def test_the_server_has_the_ports_of_the_docker_script_and_binds_only_the_loopback_address(self):
         chosen = with_native_livekit.settings({"JUNTO_TEST_LIVEKIT_PORT": "18500", "JUNTO_TEST_LIVEKIT_UDP_PORT": "18502",
                                                "JUNTO_TEST_WEBHOOK_ADDRESS": "127.0.0.1:18510"})
-        text = with_native_livekit.config(chosen, "room:\n  departure_timeout: 60\n")
+        text = with_native_livekit.config(chosen, "room:\n  departure_timeout: 60\n", "linux")
         self.assertIn("port: 18500\n", text)
         self.assertIn("  udp_port: 18502\n", text)
         self.assertIn("  tcp_port: 0\n", text)
         self.assertIn("    includes: [127.0.0.1/32]\n", text)
+        self.assertIn("  node_ip: 127.0.0.1\n", text)
         self.assertIn("  enable_loopback_candidate: true\n", text)
         self.assertIn("    - http://127.0.0.1:18510/internal/media/notifications\n", text)
         self.assertTrue(text.endswith("room:\n  departure_timeout: 60\n"))
@@ -111,6 +113,65 @@ class LiveKit(unittest.TestCase):
         self.assertEqual(environment["JUNTO_TEST_WEBHOOK_ADDRESS"], "127.0.0.1:18510")
         self.assertEqual(environment["OTHER"], "kept")
         self.assertNotIn("JUNTO_TEST_LIVEKIT_CONTAINER", environment)
+
+    def test_on_windows_the_udp_port_is_also_on_the_private_addresses_of_the_machine(self):
+        # Windows routes no UDP between an address of the network and 127.0.0.1, and the call
+        # library offers no candidate on the loopback interface.
+        chosen = with_native_livekit.settings({})
+        text = with_native_livekit.config(chosen, "", "win32")
+        self.assertIn("    includes: [127.0.0.1/32, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]\n", text)
+        self.assertIn("  tcp_port: 0\n", text)
+        self.assertIn("  use_external_ip: false\n", text)
+        self.assertNotIn("node_ip", text)
+
+    def test_the_rule_of_the_firewall_blocks_every_inbound_connection_to_the_one_program(self):
+        program = pathlib.PureWindowsPath(r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe")
+        show, add = with_native_livekit.rule_commands(program)
+        name = with_native_livekit.rule_name(program)
+        self.assertRegex(name, r"^junto-test-livekit-[0-9a-f]{12}$")
+        self.assertEqual(name, with_native_livekit.rule_name(pathlib.PureWindowsPath(str(program).upper())))
+        self.assertNotEqual(name, with_native_livekit.rule_name(program.with_name("other.exe")))
+        self.assertEqual(show, ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"])
+        self.assertEqual(add[:6], ["netsh", "advfirewall", "firewall", "add", "rule", f"name={name}"])
+        for setting in ["dir=in", "action=block", f"program={program}", "profile=any", "enable=yes"]:
+            self.assertIn(setting, add)
+        calls = []
+
+        class Done:
+            def __init__(self, code):
+                self.returncode, self.stdout = code, ""
+
+        def missing_then_added(command, **_):
+            calls.append(command[3])
+            return Done(1 if command[3] == "show" else 0)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(with_native_livekit.block(program, missing_then_added))
+        self.assertEqual(calls, ["show", "add"])
+        calls.clear()
+        self.assertTrue(with_native_livekit.block(program, lambda command, **_: calls.append(command[3]) or Done(0)))
+        self.assertEqual(calls, ["show"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(with_native_livekit.block(program, lambda command, **_: Done(1)))
+
+    def test_the_program_is_extracted_once_beside_its_download(self):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="junto-livekit-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        archive = directory / "livekit.zip"
+        archive.write_bytes(zip_bytes({"livekit-server.exe": b"program"}))
+        extractions = []
+
+        def extract(path, members, destination):
+            extractions.append(path)
+            return native_downloads.extract(path, members, destination)
+
+        for _ in range(2):
+            program = with_native_livekit.installed(archive, "livekit-server.exe", directory, "a" * 64, extract)
+            self.assertEqual(program, directory / f"livekit-{with_native_livekit.VERSION}" / "livekit-server.exe")
+            self.assertEqual(program.read_bytes(), b"program")
+        self.assertEqual(len(extractions), 1)
+        with_native_livekit.installed(archive, "livekit-server.exe", directory, "b" * 64, extract)
+        self.assertEqual(len(extractions), 2)
 
     def test_a_webhook_address_on_another_host_is_refused(self):
         self.assertEqual(with_native_livekit.webhook_port("127.0.0.1:18510"), "18510")

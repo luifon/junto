@@ -208,6 +208,7 @@ step "Panics in the callbacks of the platform"
 run env JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked --workspace --test native_panics
 step "PostgreSQL, LiveKit and FFmpeg for Windows"
 run python3 tools/windows/with_test_postgres.py --fetch
+# On Windows also the firewall rule that blocks the LiveKit program from other machines.
 run python3 tools/with_native_livekit.py --fetch
 run python3 tools/with_native_ffmpeg.py --fetch
 run python3 tools/test_native_programs.py
@@ -245,7 +246,8 @@ plan=$(mktemp)
     fi
     if part live; then
         # The window tests of calls against the LiveKit release for Windows of the version of
-        # the image of the other jobs, every socket of it on the loopback address
+        # the image of the other jobs, its signalling on the loopback address and its UDP port also on
+        # the private addresses of the machine, which a firewall rule blocks from other machines
         # (tools/with_native_livekit.py). The share of a window of the fixture program carries
         # the tone that the fixture plays.
         printf '%s\n' "lane live memory 4g" "step Window tests with PostgreSQL and LiveKit" \
