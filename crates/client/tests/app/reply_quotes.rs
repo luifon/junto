@@ -287,12 +287,14 @@ fn a_forward_keeps_its_original_while_a_reload_reads_it_again(cx: &mut TestAppCo
 }
 
 /// A channel with a reply to an original that the loaded messages do not hold, behind a
-/// proxy that loses the answer of the first `losses` reads of the original.
+/// proxy that loses the answer of the first `losses` reads of the original. The test keeps
+/// the server: a dropped `TestServer` ends the server behind the proxy.
 fn reply_behind_a_proxy(
     cx: &mut TestAppContext,
     losses: usize,
 ) -> (
     World,
+    crate::support::TestServer,
     crate::support::FaultProxy,
     tempfile::TempDir,
     crate::harness::Window,
@@ -348,7 +350,7 @@ fn reply_behind_a_proxy(
         ))
         .unwrap();
     window.until_message("the answer");
-    (world, proxy, directory, window, original.id, read)
+    (world, server, proxy, directory, window, original.id, read)
 }
 
 fn reads(proxy: &crate::support::FaultProxy, read: &str) -> usize {
@@ -368,11 +370,13 @@ fn quote_of(window: &mut crate::harness::Window, original: MessageId) -> Option<
         .map(|quote| quote.text.clone())
 }
 
-/// The reads of a quoted message that fail for a time stop after six (ADR 0747).
+/// The reads of a quoted message that fail for a time stop after six, and start again when
+/// the stream of the server connects again (ADR 0747).
 #[gpui::test]
 fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
     use std::time::Duration;
-    let (_world, proxy, _directory, mut window, original, read) = reply_behind_a_proxy(cx, 7);
+    let (_world, _server, proxy, _directory, mut window, original, read) =
+        reply_behind_a_proxy(cx, 7);
     // The waits of 1, 2, 4, 8 and 16 seconds pass on the clock of the test.
     window.until("six reads failed", |_| reads(&proxy, &read) == 6);
     // Far beyond the schedule, no seventh read.
@@ -383,6 +387,18 @@ fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
     }
     assert_eq!(reads(&proxy, &read), 6, "the reads stop after six");
     assert_eq!(quote_of(&mut window, original), Some(QuoteText::Unknown));
+
+    // The stream connects again: the quote is read again; the seventh answer is lost too,
+    // and the eighth read shows the original.
+    proxy.cut_streams();
+    window.until(
+        "the quote is read after the stream connected again",
+        |window| {
+            reads(&proxy, &read) >= 8
+                && quote_of(window, original)
+                    == Some(QuoteText::Text("the older original".to_owned()))
+        },
+    );
 }
 
 /// A read of a quoted message that waits after a failure is not sent when its reply is not
@@ -390,7 +406,8 @@ fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_quote_read_that_waits_stops_when_its_reply_is_not_shown(cx: &mut TestAppContext) {
     use std::time::Duration;
-    let (world, proxy, _directory, mut window, _original, read) = reply_behind_a_proxy(cx, 6);
+    let (world, _server, proxy, _directory, mut window, _original, read) =
+        reply_behind_a_proxy(cx, 6);
     let _ = world;
     window.until("a read failed", |_| reads(&proxy, &read) >= 1);
     // The waits before the next reads are on the clock of the test, which stands from here
