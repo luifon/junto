@@ -42,8 +42,10 @@ deploy/tests/backup-restore.sh                        # backup of a running serv
 deploy/tests/upgrade.sh                               # upgrade from an earlier release, the database role, a start stopped during its copy, and the way back
 deploy/tests/one-host.sh                              # the one-host form on one machine
 deploy/tests/two-hosts.sh                             # the two-host form on one machine, as two projects
+deploy/tests/link-entrypoint.sh                       # the start script of the link with stand-ins for wg and curl
+deploy/tests/link-recovery.sh                         # the two link containers start again without a handshake and send their notices
 (cd spikes/test-participant && cargo build --release)
 deploy/tests/recording.sh                             # a recorded call with the real recorder, its failures, and backups during a recording
 ```
 
-The last five build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `upgrade.sh` needs the commit of the earlier release in the checkout, and also builds the server image of that release. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time.
+The last five build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `upgrade.sh` needs the commit of the earlier release in the checkout, and also builds the server image of that release. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time. `link-recovery.sh` takes about 20 minutes; it needs the networks 172.31.250.0/24 to 172.31.252.0/24 and the UDP port `JUNTO_TEST_LINK_PORT` (default 51821).

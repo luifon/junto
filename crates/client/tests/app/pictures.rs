@@ -1091,6 +1091,18 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
     wait_for(&mut window, 100);
     assert_eq!(frames(&mut window, id), [1]);
 
+    // A menu of the message lies over a part of the window only: the animation plays on.
+    window.in_shell(|shell, window, cx| shell.open_message_menu(Pane::Main, sent.id, window, cx));
+    assert!(window.shows("message-menu"));
+    wait_for(&mut window, 100);
+    assert_eq!(
+        frames(&mut window, id),
+        [2],
+        "the animation stopped beside a menu"
+    );
+    window.press("escape");
+    assert!(!window.shows("message-menu"));
+
     // The viewer plays the animation.
     click_picture(&mut window, id);
     assert!(window.shows("picture-viewer"));
@@ -1098,12 +1110,26 @@ fn an_animation_plays_only_in_view_of_the_active_window_without_reduced_motion(
         window.in_shell(|shell, _, _| shell.shown_frames(id)).len() == 2
     });
     let shown = frames(&mut window, id);
+    let behind = window.in_shell(|shell, _, _| shell.shown_frames_behind_the_viewer(id));
+    assert!(
+        !behind.is_empty(),
+        "the picture under the viewer is not drawn"
+    );
     wait_for(&mut window, 100);
     let next = frames(&mut window, id);
     assert!(
         next.len() == 2 && next != shown,
         "the viewer does not play the animation: {shown:?} then {next:?}"
     );
+    // The picture of the message under the viewer stays at its frame.
+    for _ in 0..4 {
+        wait_for(&mut window, 100);
+        assert_eq!(
+            window.in_shell(|shell, _, _| shell.shown_frames_behind_the_viewer(id)),
+            behind,
+            "the picture under the viewer plays"
+        );
+    }
 }
 
 /// Turns the wheel over the message list by `delta` pixels until `done` holds.
@@ -1229,4 +1255,126 @@ fn many_large_pictures_are_held_at_the_size_that_the_list_draws(cx: &mut TestApp
         window.cx.update(|window, _| window.scale_factor())
     );
     assert!(most <= own / 4, "{most} of {own}");
+}
+
+/// The viewer of a picture of a pinned message, opened from the panel of pins, closes when
+/// the message is deleted, also when the list of the channel does not hold that message: a
+/// deleted message leaves the pins. An unpin does not close a viewer opened from the list.
+#[gpui::test]
+fn the_viewer_of_a_pinned_picture_closes_when_its_message_is_deleted(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    // The messages are sent before the member joins, so the list of the channel holds only
+    // the latest page of them.
+    let workspace = world
+        .run(admin.handle.api().workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    let general = world
+        .run(admin.handle.api().channels(workspace))
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|channel| channel.name == "general")
+        .unwrap()
+        .id;
+    let pinned = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The plan",
+        vec![("plan.png", png(64, 48))],
+    );
+    world
+        .run(admin.handle.api().pin_message(pinned.id))
+        .unwrap();
+    for number in 0..60 {
+        send_files(
+            &world,
+            &admin,
+            PlaceId::Channel(general),
+            &format!("Text {number}"),
+            Vec::new(),
+        );
+    }
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    assert_eq!(window.selected_channel(), general);
+    window.until_message("Text 59");
+    window.click("pins-button");
+    let id = pinned.attachments[0].id;
+    let picture = selector(format!("picture:{id}"));
+    window.until(
+        "the pinned picture is drawn in the panel of pins",
+        |window| window.cx.debug_bounds(picture).is_some(),
+    );
+    assert!(
+        window
+            .feed()
+            .is_some_and(|feed| !feed.rows.iter().any(|row| matches!(row,
+            junto_client::state::feed::FeedRow::Message(row) if row.message.id == pinned.id))),
+        "the list of the channel holds the pinned message"
+    );
+
+    // A viewer opened from the list of the channel stays open when another member unpins
+    // its message: the message and its file are still there.
+    let sketch = send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(general),
+        "The sketch",
+        vec![("sketch.png", png(48, 32))],
+    );
+    world
+        .run(admin.handle.api().pin_message(sketch.id))
+        .unwrap();
+    let pinned_rows = |window: &mut Window| match window
+        .view()
+        .workspace()
+        .and_then(|workspace| workspace.pins.clone())
+        .map(|pins| pins.state)
+    {
+        Some(junto_client::state::view::PinsState::Loaded(rows)) => {
+            rows.iter().map(|row| row.message.id).collect::<Vec<_>>()
+        }
+        _ => Vec::new(),
+    };
+    window.until("the pins hold the second picture", |window| {
+        pinned_rows(window).contains(&sketch.id)
+    });
+    let server_id = window.view().selected.unwrap().id;
+    window.in_shell(|shell, window, cx| {
+        shell.open_picture_viewer(
+            server_id,
+            sketch.id,
+            sketch.attachments.clone(),
+            0,
+            window,
+            cx,
+        )
+    });
+    assert!(window.shows("picture-viewer"));
+    world
+        .run(admin.handle.api().unpin_message(sketch.id))
+        .unwrap();
+    window.until("the pins no longer hold the second picture", |window| {
+        !pinned_rows(window).contains(&sketch.id)
+    });
+    assert!(
+        window.shows("picture-viewer"),
+        "an unpin closed a viewer opened from the list"
+    );
+    window.press("escape");
+    assert!(!window.shows("picture-viewer"));
+    window.click_named(format!("picture:{id}"));
+    window.until("the viewer opens", |window| window.shows("picture-viewer"));
+    world
+        .run(admin.handle.api().delete_message(pinned.id))
+        .unwrap();
+    window.until("the viewer closes with the deleted message", |window| {
+        !window.shows("picture-viewer")
+    });
 }

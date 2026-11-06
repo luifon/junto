@@ -47,6 +47,13 @@ finish() {
     fi
     exit 0
 }
+# The window tests that need FFmpeg with libopus and libx264, for the sample files of
+# recordings. The GitHub-hosted macOS runner has no FFmpeg, and its workflow sets
+# JUNTO_CI_FFMPEG=absent; the Linux job runs these tests (ADR 0905). Windows uses the pinned
+# FFmpeg build of tools/with_native_ffmpeg.py.
+without_ffmpeg=(--skip recordings:: --skip transcripts::
+    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts
+    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed)
 case "$(uname -s)" in
     Darwin) system=macos ;;
     MINGW* | MSYS* | CYGWIN*) system=windows ;;
@@ -138,12 +145,23 @@ if [ "$system" = macos ]; then
     run python3 tools/test_with_native_postgres.py
     run python3 tools/with_native_postgres.py --fetch
     step "Window tests with PostgreSQL"
-    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
+    skipped=()
+    if [ "${JUNTO_CI_FFMPEG:-}" = absent ]; then
+        echo "JUNTO_CI_FFMPEG=absent: this runner has no FFmpeg; the window tests of recordings and transcripts are skipped here and run in the Linux job"
+        skipped=("${without_ffmpeg[@]}")
+    fi
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates:: \
+        ${skipped[@]+"${skipped[@]}"}
     # The library and the API tests of the server against the same PostgreSQL. The API tests
-    # with --workspace, as in the build step, so that Cargo builds nothing again.
+    # with --workspace, as in the build step, so that Cargo builds nothing again. A runner
+    # without FFmpeg leaves them to the Linux job, as the tests of recordings need it.
     step "Server tests with PostgreSQL"
-    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked -p junto-server --lib
-    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test api
+    if [ "${JUNTO_CI_FFMPEG:-}" = absent ]; then
+        echo "JUNTO_CI_FFMPEG=absent: this runner has no FFmpeg; the tests of the server run in the Linux job"
+    else
+        run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked -p junto-server --lib
+        run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test api
+    fi
     finish
 fi
 

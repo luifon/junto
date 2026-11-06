@@ -2166,8 +2166,9 @@ const EMOJI_GROUPS: [&str; 9] = [
     "Flags",
 ];
 
-/// The tabs of the emoji picker are in the picker, and neither the tabs nor the names of
-/// the groups cover each other, in a large window and in the smallest window (ADR 0758).
+/// The tabs of the emoji picker are in the picker and do not cover each other, the picker
+/// names its open group, and each tab has the name of its group as its accessible label, in
+/// a large window and in the smallest window (ADR 0758).
 #[gpui::test]
 fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext) {
     let world = World::new();
@@ -2183,38 +2184,38 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
             shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
         });
         assert!(window.shows("emoji-picker"));
-        let painted = {
-            let _record = junto_client::ui::record_painted_text();
-            window.cx.update(|window, _| window.refresh());
-            window.settle();
-            junto_client::ui::take_painted_text()
-        };
-        // The refresh and the settle can draw more than one frame: a name painted again at
-        // the same place is the same name.
-        let painted_names: Vec<_> = painted
-            .iter()
-            .filter(|text| EMOJI_GROUPS.contains(&text.text.as_ref()))
-            .collect();
-        let names: Vec<_> = painted_names
-            .iter()
-            .enumerate()
-            .filter(|(index, text)| {
-                !painted_names[..*index]
+        // The picker paints the name of its open group once, above the grid, and each tab
+        // gives the system the name of its group as its accessible label; the open tab is
+        // the selected one.
+        for (open, tab) in [(0, EMOJI_TABS[0]), (8, EMOJI_TABS[8]), (0, EMOJI_TABS[0])] {
+            window.click(tab);
+            let (painted, controls) = drawn_names_and_controls(&mut window);
+            let mut names: Vec<_> = painted
+                .iter()
+                .filter(|text| EMOJI_GROUPS.contains(&text.text.as_ref()))
+                .map(|text| (text.text.to_string(), text.bounds))
+                .collect();
+            names.dedup();
+            assert_eq!(
+                names
                     .iter()
-                    .any(|held| held.text == text.text && held.bounds == text.bounds)
-            })
-            .map(|(_, text)| *text)
-            .collect();
-        for (index, name) in names.iter().enumerate() {
-            for other in &names[index + 1..] {
-                assert!(
-                    !name.bounds.intersects(&other.bounds),
-                    "at {width} by {height}, the name {} covers {}: {:?} and {:?}",
-                    name.text,
-                    other.text,
-                    name.bounds,
-                    other.bounds
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                [EMOJI_GROUPS[open]],
+                "at {width} by {height}, with {tab} open"
+            );
+            for (index, tab) in EMOJI_TABS.iter().enumerate() {
+                let control = controls
+                    .iter()
+                    .rev()
+                    .find(|control| control.name.as_ref() == *tab)
+                    .unwrap_or_else(|| panic!("{tab} was not drawn"));
+                assert_eq!(
+                    control.label.as_deref(),
+                    Some(EMOJI_GROUPS[index]),
+                    "the accessible label of {tab}"
                 );
+                assert_eq!(control.selected, Some(index == open), "{tab}");
             }
         }
         let picker = window.cx.debug_bounds("emoji-picker").unwrap();
@@ -2242,6 +2243,23 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
         window.press("escape");
         assert!(!window.shows("emoji-picker"));
     }
+}
+
+/// The texts that a drawing of the window painted and the controls that it placed.
+fn drawn_names_and_controls(
+    window: &mut Window,
+) -> (
+    Vec<junto_client::ui::PaintedText>,
+    Vec<junto_client::ui::Placed>,
+) {
+    let _record = junto_client::ui::record_painted_text();
+    junto_client::ui::record_controls();
+    window.cx.update(|window, _| window.refresh());
+    window.settle();
+    (
+        junto_client::ui::take_painted_text(),
+        junto_client::ui::take_controls(),
+    )
 }
 
 fn drawn_text(window: &mut Window) -> Vec<junto_client::ui::PaintedText> {

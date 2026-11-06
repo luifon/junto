@@ -2288,18 +2288,49 @@ impl Shell {
             .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
                 let sentence = SharedString::from(sentence);
+                // The line keeps one line of height, so a problem that arrives moves no
+                // control (ADR 0740). The line takes the keyboard focus and shows its whole
+                // sentence while it holds it, as the tooltip does for the pointer.
+                let focus = window
+                    .use_keyed_state("compose-problem-focus", cx, |_, cx| {
+                        cx.focus_handle().tab_stop(true)
+                    })
+                    .read(cx)
+                    .clone();
+                let focused = focus.is_focused(window);
                 div()
-                    .id("compose-problem")
-                    .debug_selector(|| "compose-problem".to_owned())
-                    .role(Role::Alert)
-                    .aria_label(sentence.clone())
-                    .tooltip(crate::ui::tooltip(sentence.clone()))
+                    .id("compose-problem-line")
+                    .relative()
                     .min_w_0()
-                    .truncate()
-                    .text_size(u(12.5))
-                    .line_height(u(18.0))
-                    .ink(colors.cinnabar_ink)
-                    .child(sentence)
+                    .child(
+                        div()
+                            .id("compose-problem")
+                            .debug_selector(|| "compose-problem".to_owned())
+                            .role(Role::Alert)
+                            .aria_label(sentence.clone())
+                            .track_focus(&focus)
+                            // Only the keyboard gives the line the focus: a press of the
+                            // pointer leaves it in the input, where the person writes.
+                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
+                            .tooltip(crate::ui::tooltip(sentence.clone()))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(u(12.5))
+                            .line_height(u(18.0))
+                            .ink(colors.cinnabar_ink)
+                            .child(sentence.clone()),
+                    )
+                    .when(focused, |line| {
+                        line.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .child(crate::ui::focused_tooltip(sentence, cx)),
+                        )
+                    })
             });
 
         // The line under the box: a problem of the message, or how to send. It always has

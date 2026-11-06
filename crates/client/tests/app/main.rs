@@ -98,6 +98,7 @@ mod pictures;
 mod presence;
 mod profile_cards;
 mod reaction_people;
+mod reconnect;
 mod recordings;
 mod recovery;
 mod reply_quotes;

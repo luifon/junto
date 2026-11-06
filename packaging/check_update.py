@@ -21,9 +21,11 @@ from keychains import cleanup, signals
 from programs import outcome, program
 import release_tools
 import check_lifecycle
+from running import refuse_when_running
 
 
 def check():
+    refuse_when_running()
     arch = architecture()
     before = run("security", "list-keychains", "-d", "user")
     default_before = run("security", "default-keychain", "-d", "user")

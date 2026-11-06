@@ -87,7 +87,8 @@ def checked(root, check):
     return repository_with(root, SERIAL.format(check=check))
 
 
-def prepared(directory, environment, settings="JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\n"):
+def prepared(directory, environment,
+             settings="JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\n"):
     """The environment of a run with the programs of FAKES, and the settings of its CI directory:
     by default the caches have no free-space level."""
     environment = dict(environment)
@@ -306,7 +307,7 @@ class Ended(unittest.TestCase):
                 JUNTO_CI_RUN_LOCK=str(lock), RUN_LOCK=str(lock), JOB_PIDS=str(root / "pids"),
                 JOB_TARGET=str(target(root, directory)), JOB_STARTED=str(root / "started"),
                 JOB_ENDED=str(root / "ended")),
-                "JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\nJUNTO_CI_TARGET_CAP_GIB=0\n")
+                "JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_TARGET_CAP_GIB=0\n")
             process = subprocess.Popen(["sh", RUNNER, directory, "sample-run", runner, repository, job],
                                        env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                        start_new_session=whole_group)

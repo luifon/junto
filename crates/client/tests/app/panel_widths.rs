@@ -254,3 +254,37 @@ fn the_main_area_keeps_its_least_width_with_every_panel_at_its_widest(cx: &mut T
         );
     }
 }
+
+/// A drag past the room of a panel keeps the width that the person saw, not the width
+/// that the pointer reached: a wider window later opens the panel as wide as it was shown.
+/// The same holds for the arrow keys.
+#[gpui::test]
+fn a_drag_past_the_room_of_a_panel_keeps_the_width_that_was_shown(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Panels");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(1200.0), px(900.0))));
+    window.settle();
+    window.click("members-button");
+    window.until("the member list is open", |window| {
+        window.shows("side-panel")
+    });
+    drag(&mut window, "edge-members", -2000.0);
+    let shown = width(&mut window, "side-panel");
+    assert!(
+        shown < f32::from(Panel::Members.bounds().1),
+        "the room of the window is narrower than the widest member list"
+    );
+    assert_eq!(kept(&mut window, Panel::Members), Some(shown as u16));
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(2400.0), px(900.0))));
+    window.settle();
+    assert_eq!(width(&mut window, "side-panel"), shown);
+
+    // The arrow keys at the widest that the room allows do not store a wider width.
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(1200.0), px(900.0))));
+    window.settle();
+    window.click("edge-members");
+    window.press("left");
+    assert_eq!(kept(&mut window, Panel::Members), Some(shown as u16));
+}

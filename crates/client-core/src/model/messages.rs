@@ -773,6 +773,12 @@ impl ServerModel {
         changed
     }
 
+    /// The server holds the message no more for the account: a read found it gone. A window
+    /// that shows something of the message, such as the viewer of its pictures, closes.
+    pub fn is_gone(&self, message_id: MessageId) -> bool {
+        self.gone_ids.contains(&message_id)
+    }
+
     /// Records a message that the server returned as the answer to a send of this client.
     /// Such a message confirms no other waiting message. The list holds the newest ones.
     pub(crate) fn note_sent(&mut self, message_id: MessageId) {
@@ -847,7 +853,15 @@ impl ServerModel {
     /// message loses it: the timeline, the open threads of the channel, the pin list, and
     /// the named messages. A thread whose root is gone holds nothing any more.
     pub(crate) fn remove_message(&mut self, place: PlaceId, message_id: MessageId) -> bool {
+        const MOST_GONE: usize = 256;
         let mut changed = false;
+        if !self.gone_ids.contains(&message_id) {
+            if self.gone_ids.len() >= MOST_GONE {
+                self.gone_ids.remove(0);
+            }
+            self.gone_ids.push(message_id);
+            changed = true;
+        }
         for timeline in &mut self.timelines {
             if timeline.place.container() != place {
                 continue;
@@ -884,6 +898,7 @@ impl ServerModel {
         }
         self.outbox.clone_from(&before.outbox);
         self.sent_ids.clone_from(&before.sent_ids);
+        self.gone_ids.clone_from(&before.gone_ids);
         self.received_in.clone_from(&before.received_in);
         self.withheld = before
             .withheld

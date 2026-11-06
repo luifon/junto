@@ -51,6 +51,14 @@ here=$directory/runs/$run
 checkout=$directory/checkout
 objects=$here/commit.git
 
+# gone <pid>: waits until the process has ended. A signal for which a trap is set ends a wait
+# early (POSIX), also a signal that arrived while a trap ran, before that trap ignored it: a
+# Ctrl-C reaches the locked part twice, from the terminal and from the lock program, and the
+# wait of its cleanup then returned while the job still ran.
+gone() {
+    while kill -0 "$1" 2>/dev/null; do wait "$1" 2>/dev/null || true; done
+}
+
 if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     # Until the locked part runs, a failure or a signal ends the run here: the repository of the
     # run is removed and "finished" names the status. This part never changes the checkout,
@@ -65,7 +73,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         # ends every process of the run before it releases the lock (tools/windows/lock.py).
         if [ -n "$locked" ]; then
             kill -TERM "$locked" 2>/dev/null || true
-            wait "$locked" 2>/dev/null || true
+            gone "$locked"
         fi
         rm -rf "$objects" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
@@ -175,7 +183,7 @@ end_job() {
     else
         kill -TERM "$pid" 2>/dev/null || true
     fi
-    wait "$pid" 2>/dev/null || true
+    gone "$pid"
     pid=""
 }
 caches_check() {

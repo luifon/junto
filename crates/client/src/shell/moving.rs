@@ -42,10 +42,15 @@ struct Play {
     playing: bool,
 }
 
+/// The start of the slot of a picture that the picture viewer draws.
+pub(crate) const VIEWER_SLOT: &str = "viewer:";
+
 /// The animations of the pictures of messages in one window.
 #[derive(Default)]
 pub(crate) struct Playback {
     drawing: Cell<u64>,
+    /// A layer lies over the content of the window: only the pictures of the viewer play.
+    covered: Cell<bool>,
     /// The shown frame of each animation in each place where the window draws it.
     plays: RefCell<HashMap<(SharedString, ImageId), Play>>,
     /// The time at which a timer draws the window again for the animations of the last
@@ -107,6 +112,13 @@ impl Playback {
         (play.frame.min(count - 1), playing.then_some(play.due))
     }
 
+    /// Whether a layer, such as the picture viewer or a dialog, lies over the content of the
+    /// window for this drawing. A picture under it stays at its frame: the content mask that
+    /// tells whether a picture is in view does not see a layer.
+    pub(crate) fn set_covered(&self, covered: bool) {
+        self.covered.set(covered);
+    }
+
     /// The frame that the window showed last of an animation.
     fn shown(&self, slot: &SharedString, image: &RenderImage) -> usize {
         self.plays
@@ -140,6 +152,21 @@ impl Playback {
     #[cfg(feature = "test-support")]
     pub(crate) fn waits(&self) -> bool {
         self.wake.get().is_some()
+    }
+
+    /// The frames that the last drawing showed in the slots that name `slot` and do not start
+    /// with `outside`. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn shown_frames_outside(&self, outside: &str, slot: &str) -> Vec<usize> {
+        let drawing = self.drawing.get();
+        self.plays
+            .borrow()
+            .iter()
+            .filter(|((place, _), play)| {
+                place.contains(slot) && !place.starts_with(outside) && play.drawn == drawing
+            })
+            .map(|(_, play)| play.frame)
+            .collect()
     }
 
     /// The frames that the last drawing showed of the animations whose place contains
@@ -176,9 +203,10 @@ pub(crate) fn picture(
         move |bounds, hitbox, window, cx| {
             let visible = bounds.intersect(&window.content_mask().bounds);
             let shown = visible.size.width > Pixels::ZERO && visible.size.height > Pixels::ZERO;
+            let covered = playback.covered.get() && !slot.starts_with(VIEWER_SLOT);
             let hovered = hitbox.is_hovered(window);
             let reduced = cx.reduce_motion();
-            let playing = shown && window.is_window_active() && (!reduced || hovered);
+            let playing = shown && !covered && window.is_window_active() && (!reduced || hovered);
             let now = cx.background_executor().now();
             let (frame, next) = if shown {
                 playback.step(&slot, &image, playing, now)
@@ -197,7 +225,7 @@ pub(crate) fn picture(
             if let Some(next) = next {
                 playback.wake_at(next, now, window, cx);
             }
-            if shown && reduced {
+            if shown && !covered && reduced {
                 window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
                     if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) != hovered {
                         window.refresh();

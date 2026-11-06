@@ -43,6 +43,13 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/swift
           df -h /
       - name: Rust on Linux
+        # The hosted runner of a public repository has 4 processors and 16 GB. Without these
+        # settings tools/serial.sh gives the command the worker pair 0-1 and 6 GiB, one Cargo
+        # job (ADR 0905).
+        env:
+          JUNTO_LINUX_CPU_FIRST: "0"
+          JUNTO_LINUX_CPUS: "4"
+          JUNTO_LINUX_MEMORY: 11g
         run: tools/ci/rust-linux.sh
 
   rust-other-systems:
@@ -53,10 +60,18 @@ jobs:
       matrix:
         system: [macos-15, windows-2025]
     runs-on: ${{ matrix.system }}
-    timeout-minutes: 90
+    # The Windows runner took 73 minutes in one run; in three others the limit of 90 minutes
+    # ended it in its last step, the window tests with PostgreSQL, after 25 to 29 minutes of
+    # that step (ADR 0905).
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
+      # The image of the Windows runner checks out with core.autocrlf true, and the tests that
+      # read files of the checkout then see CR LF; the project's Windows machine checks out
+      # with it false (tools/ci/run-jobs.sh).
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -112,6 +127,9 @@ jobs:
           key: postgres-macos-${{ steps.postgres-macos-pin.outputs.sha256 }}
       - name: Rust on ${{ matrix.system }}
         shell: bash
+        # The macOS runner has no FFmpeg; the job skips the window tests that need it (ADR 0905).
+        env:
+          JUNTO_CI_FFMPEG: ${{ runner.os == 'macOS' && 'absent' || '' }}
         run: tools/ci/rust-other-systems.sh
 
   licences:

@@ -24,12 +24,18 @@ exit 0
 """
 SYSTEMS = {"macos": "Darwin", "windows": "MINGW64_NT-10.0-26100"}
 WINDOW_TESTS = "cargo test --no-fail-fast --locked --workspace --test app --"
+RECORDING_SKIPS = [
+    'recordings::',
+    'transcripts::',
+    'admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts',
+    'system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed',
+]
 DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
 class JobSteps(unittest.TestCase):
-    def run_job(self, system, fail_on="", parts=""):
+    def run_job(self, system, fail_on="", parts="", extra=None):
         """Runs the job in a copy of the files it reads; returns its exit code, the recorded
         commands and its output."""
         temporary = Path(tempfile.mkdtemp(prefix="junto-job-"))
@@ -56,6 +62,7 @@ class JobSteps(unittest.TestCase):
             "FAIL_ON": fail_on,
             "CARGO_TARGET_DIR": str(temporary / "target"),
             "JUNTO_CI_PARTS": parts,
+            **(extra or {}),
         }
         result = subprocess.run(["bash", str(root / "tools" / "ci" / "rust-other-systems.sh")], env=environment,
                                 capture_output=True, text=True, timeout=120)
@@ -85,6 +92,18 @@ class JobSteps(unittest.TestCase):
         self.assertLess(commands.index("python3 tools/test_with_native_postgres.py"),
                         commands.index(f"{DATABASE['macos']} --fetch"))
         self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
+
+    # The GitHub-hosted macOS runner has no FFmpeg (ADR 0905): its job skips the window tests
+    # and the server tests that need it, and states why.
+    def test_a_macos_runner_without_ffmpeg_skips_the_tests_that_need_it_and_says_so(self):
+        status, commands, output = self.run_job("macos", extra={"JUNTO_CI_FFMPEG": "absent"})
+        self.assertEqual(status, 0, output)
+        _, with_database = self.window_steps(commands, "macos")
+        skips = " ".join(f"--skip {name}" for name in ["updates::", *RECORDING_SKIPS])
+        self.assertEqual(with_database, [f"{DATABASE['macos']} {WINDOW_TESTS} {skips}"])
+        self.assertIn("JUNTO_CI_FFMPEG=absent: this runner has no FFmpeg", output)
+        self.assertFalse([c for c in commands if "-p junto-server --lib" in c or "--test api" in c], commands)
+        self.assertIn("the tests of the server run in the Linux job", output)
 
     def test_both_systems_run_the_library_and_the_api_tests_of_the_server_with_postgresql(self):
         wrapped = {"macos": DATABASE["macos"],

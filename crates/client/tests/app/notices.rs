@@ -369,22 +369,33 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
     window.reveal(&scroll, "quiet-zone-choice:Asia/Tokyo");
     window.click("quiet-zone-choice:Asia/Tokyo");
     assert!(!window.shows("quiet-zone-search"));
-    window.in_shell(|shell, window, cx| shell.type_quiet_times("22:00", "7:30", window, cx));
-    let before = reloads(&mut window);
-    window.click("set-daily-quiet");
-    window.until("the daily quiet time", |window| {
-        matches!(
-            window.view().quiet.daily,
-            Some(Agreement::All(Some(daily)))
-                if daily.start_minute == 22 * 60
-                    && daily.end_minute == 7 * 60 + 30
-                    && daily.time_zone == "Asia/Tokyo"
-        )
-    });
-    window.until(
-        "the state was replaced after the quiet time was set",
-        |window| reloads(window) > before,
-    );
+    // The quiet time is chosen from the time of day in Tokyo, which has no summer time, so
+    // that one span holds the time of the test and another does not, at any time of day.
+    let now = tokyo_minute();
+    for (start, end, quiet) in [
+        ((now + 1380) % 1440, (now + 60) % 1440, true),
+        ((now + 120) % 1440, (now + 180) % 1440, false),
+    ] {
+        window.in_shell(|shell, window, cx| {
+            shell.type_quiet_times(&time_of_day(start), &time_of_day(end), window, cx)
+        });
+        let before = reloads(&mut window);
+        window.click("set-daily-quiet");
+        window.until("the daily quiet time", |window| {
+            let view = window.view().quiet;
+            matches!(
+                view.daily,
+                Some(Agreement::All(Some(daily)))
+                    if u32::from(daily.start_minute) == start
+                        && u32::from(daily.end_minute) == end
+                        && daily.time_zone == "Asia/Tokyo"
+            ) && view.quiet_now == quiet
+        });
+        window.until(
+            "the state was replaced after the quiet time was set",
+            |window| reloads(window) > before,
+        );
+    }
     // Two equal times are no time span.
     window.in_shell(|shell, window, cx| shell.type_quiet_times("8:00", "08:00", window, cx));
     window.click("set-daily-quiet");
@@ -1462,4 +1473,18 @@ fn a_notice_plays_its_sound_under_the_rules_of_a_system_notification(cx: &mut Te
     pause(&world);
     window.settle();
     assert_eq!(count(&mut window), 2);
+}
+
+/// The minute of the day in Tokyo, nine hours after UTC all year.
+fn tokyo_minute() -> u32 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    ((seconds / 60 + 9 * 60) % 1440) as u32
+}
+
+/// A minute of the day as the field of a quiet time takes it, such as "7:05".
+fn time_of_day(minute: u32) -> String {
+    format!("{}:{:02}", minute / 60, minute % 60)
 }

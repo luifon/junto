@@ -726,6 +726,11 @@ impl Shell {
                                 .min_h_0()
                                 .w_full()
                                 .overflow_y_scroll()
+                                // A stage whose people are all hidden shows no tile, only
+                                // the note under it.
+                                .when(!shown.is_empty(), |stage| {
+                                    stage.child(crate::ui::area(crate::ui::CENTRED))
+                                })
                                 .child(measure)
                                 .child(
                                     div()

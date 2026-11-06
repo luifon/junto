@@ -184,6 +184,65 @@ pub(crate) enum Layer {
     FileLink(Box<crate::state::OpenFileLink>),
 }
 
+impl Layer {
+    /// The layer covers the content of the window: a dialog with its scrim, or the viewer of
+    /// pictures. A menu or a list at a control lies over a part only, and the pictures beside
+    /// it stay in view.
+    pub(crate) fn covers_content(&self) -> bool {
+        // Every layer is named, so that a new one is classified before it compiles.
+        match self {
+            Layer::None
+            | Layer::ServerMenu
+            | Layer::DeviceMenu(..)
+            | Layer::ShareMenu
+            | Layer::PersonMenu(..)
+            | Layer::AccountMenu(..)
+            | Layer::CallMoveMenu(..)
+            | Layer::ThreadMenu(..)
+            | Layer::MessageMenu(..)
+            | Layer::ComposerMenu(..)
+            | Layer::NoticeMenu(..)
+            | Layer::ChannelMenu(..)
+            | Layer::GroupMenu(..)
+            | Layer::WorkspaceMenu(..)
+            | Layer::GroupChoice(..)
+            | Layer::DirectMenu(..)
+            | Layer::SearchFilter(..)
+            | Layer::RecordingFiles(..)
+            | Layer::RecordingParts(..)
+            | Layer::RecordLanguage => false,
+            Layer::Welcome
+            | Layer::Settings
+            | Layer::Prejoin(..)
+            | Layer::Join(..)
+            | Layer::Presence(..)
+            | Layer::Profile
+            | Layer::ConfirmRemove(..)
+            | Layer::ConfirmForget(..)
+            | Layer::SharePicker(..)
+            | Layer::Forward(..)
+            | Layer::ReactionPeople(..)
+            | Layer::ConfirmDelete(..)
+            | Layer::Emoji(..)
+            | Layer::Fork(..)
+            | Layer::RenameGroup(..)
+            | Layer::PersonalSection(..)
+            | Layer::VoiceStatus(..)
+            | Layer::Notify
+            | Layer::ConfirmRemoveRecording(..)
+            | Layer::Admin
+            | Layer::Account
+            | Layer::LinkAll
+            | Layer::NewDirect
+            | Layer::QuickSwitcher
+            | Layer::GroupConversation
+            | Layer::GroupMemberships
+            | Layer::Picture(..)
+            | Layer::FileLink(..) => true,
+        }
+    }
+}
+
 /// What the emoji of the picker is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmojiTarget {
@@ -1800,6 +1859,9 @@ impl Render for Shell {
             crate::panics::test_support::reached(crate::panics::test_support::Handler::Render);
         }
         self.message_pictures.drawing_starts();
+        self.message_pictures
+            .playback
+            .set_covered(self.layer.covers_content());
         self.notice_list.frame_starts();
         if std::mem::take(&mut self.view_stale) {
             self.take_state(window, cx);
@@ -2382,4 +2444,35 @@ fn pressed_combo(keystroke: &gpui::Keystroke) -> Option<KeyCombo> {
         keys.push(key);
     }
     KeyCombo::new(keys).ok()
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::Layer;
+    use junto_client_core::protocol::ids::{ChannelId, ServerId};
+
+    /// A menu or a list at a control leaves the pictures of the list in view; a dialog and
+    /// the viewer cover them.
+    #[test]
+    fn only_a_layer_that_covers_the_content_stops_the_pictures() {
+        let server = ServerId::generate();
+        for menu in [
+            Layer::None,
+            Layer::ServerMenu,
+            Layer::ShareMenu,
+            Layer::GroupChoice(server),
+            Layer::ChannelMenu(ChannelId::generate()),
+            Layer::RecordLanguage,
+        ] {
+            assert!(!menu.covers_content());
+        }
+        for dialog in [
+            Layer::Settings,
+            Layer::ConfirmRemove(server),
+            Layer::Notify,
+            Layer::QuickSwitcher,
+        ] {
+            assert!(dialog.covers_content());
+        }
+    }
 }

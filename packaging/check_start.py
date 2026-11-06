@@ -6,9 +6,11 @@ import sys
 import tempfile
 
 from programs import outcome
+from running import refuse_when_running
 
 
 def check(bundle):
+    refuse_when_running()
     binary = pathlib.Path(bundle).resolve(strict=True) / "Contents/MacOS/junto"
     with tempfile.TemporaryDirectory(prefix="junto-start-") as directory:
         result = subprocess.run([str(binary), "--data-dir", directory, "--no-activate", "--check-startup"],
