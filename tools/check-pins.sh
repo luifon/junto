@@ -114,6 +114,10 @@ fi
 same "LiveKit version of the tests in Docker and of the native tests" \
     "$(pin JUNTO_TEST_LIVEKIT_IMAGE | sed -n 's/^livekit\/livekit-server:v\([0-9.]*\)@.*/\1/p')" \
     "$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' tools/with_native_livekit.py)"
+# The elevated setup of the Windows machine blocks the program of this version (ADR 0905).
+same "LiveKit version of the native tests and of the firewall rule of the Windows setup" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' tools/with_native_livekit.py)" \
+    "$(sed -n "s/^\\\$LiveKitVersion = '\([0-9.]*\)'\$/\1/p" tools/windows/ci-setup.ps1)"
 if [ "$(grep -c '^ *"[0-9a-f]\{64\}"),$' tools/with_native_livekit.py)" = "$(grep -c '^    "[a-z0-9]*": (f"livekit_' tools/with_native_livekit.py)" ] \
     && grep -q 'sha256_of(partial)' tools/native_downloads.py; then
     echo "ok    the LiveKit downloads of the native tests are checked by their SHA-256"

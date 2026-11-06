@@ -208,7 +208,8 @@ step "Panics in the callbacks of the platform"
 run env JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked --workspace --test native_panics
 step "PostgreSQL, LiveKit and FFmpeg for Windows"
 run python3 tools/windows/with_test_postgres.py --fetch
-# On Windows also the firewall rule that blocks the LiveKit program from other machines.
+# On Windows it also checks the firewall rule that blocks the LiveKit program from other
+# machines, which the elevated setup creates (tools/windows/ci-setup.ps1); the job cannot.
 run python3 tools/with_native_livekit.py --fetch
 run python3 tools/with_native_ffmpeg.py --fetch
 run python3 tools/test_native_programs.py

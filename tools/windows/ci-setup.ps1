@@ -6,7 +6,8 @@
 # Every tool is downloaded from its publisher at the version below, checked by its SHA-256,
 # and installed below -Directory, except the parts of the Build Tools that the Visual Studio
 # installer places in fixed folders (the installer itself and the Windows SDK). The script
-# enables the Task Scheduler operational log and changes no PATH. A tool whose recorded version is the pinned one is
+# enables the Task Scheduler operational log, creates the firewall rule that blocks the LiveKit
+# program of the tests (Block-TestLiveKit), and changes no PATH. It runs elevated. A tool whose recorded version is the pinned one is
 # left as it is, so a second run downloads nothing.
 #
 # Exit codes: 0 when every tool is ready; 1 when a step failed; 3 when the Build Tools need a
@@ -43,6 +44,12 @@ $BuildToolsComponents = @(
     'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
     'Microsoft.VisualStudio.Component.Windows11SDK.26100'
 )
+# The LiveKit of the window tests of calls (tools/with_native_livekit.py, ADR 0905): on Windows
+# its UDP port is also on the private addresses of the machine. An inbound rule of the firewall
+# blocks its program from other machines and keeps Windows from asking about it. The job runs
+# without elevation and only checks the rule. The version is that of the wrapper.
+$LiveKitVersion = '1.13.9'
+$LiveKitRule = 'junto-test-livekit'
 
 $Tools = Join-Path $Directory 'tools'
 $Downloads = Join-Path $Directory 'downloads'
@@ -167,9 +174,20 @@ function Enable-TaskLog {
     }
 }
 
+function Block-TestLiveKit {
+    $program = Join-Path $env:USERPROFILE ('.cache\junto-livekit\livekit-' + $LiveKitVersion + '\livekit-server.exe')
+    # The rule of an earlier version names another path: it is replaced. None is no failure.
+    & netsh.exe advfirewall firewall delete rule "name=$LiveKitRule" | Out-Null
+    & netsh.exe advfirewall firewall add rule "name=$LiveKitRule" dir=in action=block "program=$program" profile=any enable=yes | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not create the firewall rule $LiveKitRule for $program (run setup elevated)"
+    }
+}
+
 function Invoke-Setup {
     try {
         Enable-TaskLog
+        Block-TestLiveKit
         Install-Git
         Install-Python
         Install-Rustup

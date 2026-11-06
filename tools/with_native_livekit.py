@@ -24,15 +24,16 @@ also bound to the private IPv4 addresses of the machine (10/8, 172.16/12, 192.16
 the machine has; DHCP can change them). An inbound rule of Windows Defender Firewall blocks the
 program, so no other machine reaches the port and Windows shows no prompt of its firewall
 (ADR 0915); the traffic of the machine to its own addresses passes. The program is extracted
-once beside the download, so that the rule names one path; `--fetch` creates the rule, which
-needs an elevated account, and the server does not start on Windows without it. The log of the
+once beside the download, so that the rule names one path. The elevated setup of the Windows
+machine creates the rule (tools/windows/ci-setup.ps1); the job runs without elevation, so
+`--fetch` and the start only check it, and the server does not start on Windows without it.
+The log of the
 server is printed when the command or the start fails, and with JUNTO_TEST_LIVEKIT_LOG=1 also
 after a command that passed.
 
-    python3 tools/with_native_livekit.py --fetch      (also the rule of the firewall on Windows)
+    python3 tools/with_native_livekit.py --fetch      (on Windows also checks the rule)
 """
 
-import hashlib
 import os
 import pathlib
 import subprocess
@@ -137,39 +138,41 @@ def installed(archive, program, downloads, digest, extract=native_downloads.extr
     return extracted
 
 
-def rule_name(program):
-    """The name of the inbound rule of the firewall that blocks `program`: one per path."""
-    digest = hashlib.sha256(str(program).lower().encode()).hexdigest()[:12]
-    return f"junto-test-livekit-{digest}"
+# The inbound rule of Windows Defender Firewall that blocks the program from other machines. The
+# elevated setup of the Windows machine creates it for the program of the pinned version
+# (tools/windows/ci-setup.ps1, Block-TestLiveKit); the job, which runs without elevation, only
+# checks it.
+RULE = "junto-test-livekit"
 
 
-def rule_commands(program):
-    """The netsh commands that read and that create the rule that blocks every inbound
-    connection to `program` in every profile."""
-    name = rule_name(program)
-    show = ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"]
-    add = ["netsh", "advfirewall", "firewall", "add", "rule", f"name={name}", "dir=in", "action=block",
-           f"program={program}", "profile=any", "enable=yes"]
-    return show, add
+def rule_command():
+    return ["netsh", "advfirewall", "firewall", "show", "rule", f"name={RULE}", "verbose"]
+
+
+def blocks(text, program):
+    """Whether the output of `rule_command` holds an enabled inbound rule that blocks
+    `program` in every profile."""
+    for rule in text.replace("\r", "").split("\n\n"):
+        fields = {}
+        for line in rule.splitlines():
+            name, colon, value = line.partition(":")
+            if colon:
+                fields.setdefault(name.strip(), value.strip())
+        if (fields.get("Program", "").lower() == str(program).lower() and fields.get("Action") == "Block"
+                and fields.get("Direction") == "In" and fields.get("Enabled") == "Yes"
+                and fields.get("Profiles") == "Domain,Private,Public"):
+            return True
+    return False
 
 
 def has_rule(program, run=subprocess.run):
-    show, _ = rule_commands(program)
-    return run(show, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    shown = run(rule_command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return shown.returncode == 0 and blocks(shown.stdout, program)
 
 
-def block(program, run=subprocess.run):
-    """Creates the rule when it is absent. False when it cannot be created."""
-    if has_rule(program, run):
-        return True
-    _, add = rule_commands(program)
-    created = run(add, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if created.returncode != 0:
-        print(f"the rule of the firewall for {program} was not created (an elevated account creates it): "
-              f"{created.stdout.strip()}", flush=True)
-        return False
-    print(f"the firewall blocks inbound connections to {program} (rule {rule_name(program)})", flush=True)
-    return True
+def no_rule(program):
+    return (f"no enabled inbound rule {RULE} of the firewall blocks {program} in every profile; the elevated "
+            "setup of the Windows machine creates it: tools/ci/ci.sh setup-windows (tools/windows/ci-setup.ps1)")
 
 
 def ready(port, tries=READY_TRIES, server=None):
@@ -199,10 +202,12 @@ def main(arguments):
         print(f"{label} was not downloaded or extracted: {failure}", flush=True)
         return 1
     if arguments == ["--fetch"]:
-        return 0 if sys.platform != "win32" or block(server_program) else 1
+        if sys.platform == "win32" and not has_rule(server_program):
+            print(no_rule(server_program), flush=True)
+            return 1
+        return 0
     if sys.platform == "win32" and not has_rule(server_program):
-        print(f"{label} does not start: no rule of the firewall blocks {server_program}; "
-              "`with_native_livekit.py --fetch` on an elevated account creates it", flush=True)
+        print(f"{label} does not start: {no_rule(server_program)}", flush=True)
         return 1
     chosen = settings(os.environ)
     try:

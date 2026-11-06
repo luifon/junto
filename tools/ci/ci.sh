@@ -25,7 +25,8 @@
 #                                   its commit from the runner that has it.
 #   ci.sh setup-windows             installs the pinned tools of the Windows job on the
 #                                   Windows machine (tools/windows/ci-setup.ps1 of this
-#                                   working tree). Exit 3: Windows must restart first.
+#                                   working tree), elevated, and the firewall rule of the
+#                                   LiveKit of the tests. Exit 3: Windows must restart first.
 #
 # The SSH alias of the Linux host and its CI directory come from JUNTO_CI_HOST and
 # JUNTO_CI_DIR, in the environment or in .env.local of the repository. The Windows machine:

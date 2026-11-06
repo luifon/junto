@@ -2,7 +2,6 @@
 tools/with_native_ffmpeg.py. They download nothing and start no server: the Windows job of CI
 starts the real ones."""
 
-import contextlib
 import hashlib
 import io
 import os
@@ -124,35 +123,49 @@ class LiveKit(unittest.TestCase):
         self.assertIn("  use_external_ip: false\n", text)
         self.assertNotIn("node_ip", text)
 
-    def test_the_rule_of_the_firewall_blocks_every_inbound_connection_to_the_one_program(self):
-        program = pathlib.PureWindowsPath(r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe")
-        show, add = with_native_livekit.rule_commands(program)
-        name = with_native_livekit.rule_name(program)
-        self.assertRegex(name, r"^junto-test-livekit-[0-9a-f]{12}$")
-        self.assertEqual(name, with_native_livekit.rule_name(pathlib.PureWindowsPath(str(program).upper())))
-        self.assertNotEqual(name, with_native_livekit.rule_name(program.with_name("other.exe")))
-        self.assertEqual(show, ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"])
-        self.assertEqual(add[:6], ["netsh", "advfirewall", "firewall", "add", "rule", f"name={name}"])
-        for setting in ["dir=in", "action=block", f"program={program}", "profile=any", "enable=yes"]:
-            self.assertIn(setting, add)
-        calls = []
+    def test_the_job_only_checks_the_rule_of_the_firewall_that_the_setup_created(self):
+        program = r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe"
+        self.assertEqual(with_native_livekit.rule_command(),
+                         ["netsh", "advfirewall", "firewall", "show", "rule", "name=junto-test-livekit", "verbose"])
+
+        def shown(program_line, action="Block", enabled="Yes", profiles="Domain,Private,Public"):
+            return ("\r\nRule Name:                            junto-test-livekit\r\n"
+                    "----------------------------------------------------------------------\r\n"
+                    f"Enabled:                              {enabled}\r\nDirection:                            In\r\n"
+                    f"Profiles:                             {profiles}\r\nLocalIP:                              Any\r\n"
+                    f"Program:                              {program_line}\r\n"
+                    f"Action:                               {action}\r\n\r\nOk.\r\n")
+
+        self.assertTrue(with_native_livekit.blocks(shown(program), program))
+        self.assertTrue(with_native_livekit.blocks(shown(program.upper()), program))
+        other = program.replace("1.13.9", "1.13.8")
+        self.assertTrue(with_native_livekit.blocks(shown(other) + shown(program), program))
+        for wrong in [shown(other), shown(program, action="Allow"), shown(program, enabled="No"),
+                      shown(program, profiles="Private"), "No rules match the specified criteria.\r\n"]:
+            self.assertFalse(with_native_livekit.blocks(wrong, program), wrong)
 
         class Done:
-            def __init__(self, code):
-                self.returncode, self.stdout = code, ""
+            def __init__(self, code, stdout):
+                self.returncode, self.stdout = code, stdout
 
-        def missing_then_added(command, **_):
-            calls.append(command[3])
-            return Done(1 if command[3] == "show" else 0)
+        commands = []
 
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertTrue(with_native_livekit.block(program, missing_then_added))
-        self.assertEqual(calls, ["show", "add"])
-        calls.clear()
-        self.assertTrue(with_native_livekit.block(program, lambda command, **_: calls.append(command[3]) or Done(0)))
-        self.assertEqual(calls, ["show"])
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertFalse(with_native_livekit.block(program, lambda command, **_: Done(1)))
+        def run(command, **_):
+            commands.append(command)
+            return Done(0, shown(program))
+
+        self.assertTrue(with_native_livekit.has_rule(program, run))
+        self.assertEqual(commands, [with_native_livekit.rule_command()])
+        self.assertFalse(with_native_livekit.has_rule(program, lambda command, **_: Done(1, "No rules match")))
+        self.assertIn("tools/ci/ci.sh setup-windows", with_native_livekit.no_rule(program))
+
+    def test_the_setup_blocks_the_program_that_the_job_checks(self):
+        setup = (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text()
+        self.assertIn(f"$LiveKitVersion = '{with_native_livekit.VERSION}'", setup)
+        self.assertIn(f"$LiveKitRule = '{with_native_livekit.RULE}'", setup)
+        self.assertIn(r"('.cache\junto-livekit\livekit-' + $LiveKitVersion + '\livekit-server.exe')", setup)
+        for setting in ["dir=in", "action=block", "profile=any", "enable=yes"]:
+            self.assertIn(setting, setup)
 
     def test_the_program_is_extracted_once_beside_its_download(self):
         directory = pathlib.Path(tempfile.mkdtemp(prefix="junto-livekit-"))
