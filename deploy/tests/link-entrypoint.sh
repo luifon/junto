@@ -29,7 +29,7 @@ remove() {
 trap remove EXIT
 trap 'exit 130' INT TERM
 
-docker build -q -t "$image" "$deploy/images/link" > /dev/null
+docker build --load -q -t "$image" "$deploy/images/link" > /dev/null
 mkdir -p "$work/fake" "$work/state" "$work/keys"
 chmod 777 "$work/state" "$work/keys"
 echo "a-private-key" > "$work/keys/private"
