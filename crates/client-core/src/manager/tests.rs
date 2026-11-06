@@ -789,6 +789,78 @@ async fn a_kept_key_of_another_address_withdraws_its_request_before_it_is_discar
     assert!(matches!(flow.view().state, AddServerState::Preview(_)));
 }
 
+/// A server that cannot be reached, or a release without the withdrawal route, refuses the
+/// withdrawal every time. The person can still forget the account on this device; the
+/// server is not told, and its request stays (ADR 0712).
+#[tokio::test(start_paused = true)]
+async fn an_account_is_forgotten_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+
+    server.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+    assert!(
+        handle
+            .access()
+            .actions
+            .contains(&ActionKind::ForgetAccountHere)
+    );
+    server.set_down(true);
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    handle
+        .dispatch(AccessAction::ForgetAccountHere)
+        .await
+        .unwrap();
+    server.set_down(false);
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount { notice: None }
+    );
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+    assert_eq!(server.waiting_requests().len(), 1);
+    assert_eq!(server.waiting_requests()[0].1, key);
+    assert_eq!(server.count("/join-requests/withdrawal"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_of_another_address_is_discarded_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let real = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    real.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    real.set_down(false);
+
+    network.plug("moved", real.clone());
+    let flow = device.client.add_server();
+    let fetch = AddServerAction::Fetch {
+        address: "moved.example.test".to_owned(),
+    };
+    assert!(flow.dispatch(fetch).await.is_err());
+    real.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(flow.dispatch(AddServerAction::DiscardKey).await.is_err());
+    assert!(device.client.data_dir().key_file(real.server_id()).exists());
+
+    flow.dispatch(AddServerAction::DiscardKeyHere)
+        .await
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(real.server_id()).exists());
+    assert!(matches!(flow.view().state, AddServerState::Preview(_)));
+    assert_eq!(real.waiting_requests().len(), 1);
+    assert_eq!(real.count("/join-requests/withdrawal"), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_that_already_waits_is_shown_with_the_name_that_the_server_holds() {
     let network = Arc::new(Network::default());
@@ -1456,6 +1528,10 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     let on_newer = add(&client, "newer").await;
     let on_older = add(&client, "older").await;
     let on_future = add(&client, "future").await;
+    // A server without a common version is incompatible from its save, with the reason
+    // that the preview found (ADR 0713).
+    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
+    assert_eq!(on_future.reach(), Reach::Incompatible(incompatible));
 
     on_newer.dispatch(claim()).await.unwrap();
     on_older.dispatch(claim()).await.unwrap();
@@ -1474,7 +1550,6 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     on_newer.api().own_account().await.unwrap();
     assert_eq!(newer.seen().last().unwrap(), "Get /api/v2/account");
 
-    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
     assert_eq!(
         on_future.dispatch(claim()).await,
         Err(FlowError::Incompatible(incompatible))
@@ -2084,7 +2159,11 @@ async fn a_key_without_a_book_entry_is_not_used_at_another_address() {
     ));
     assert_eq!(
         view.actions,
-        [AddServerActionKind::DiscardKey, AddServerActionKind::Reset]
+        [
+            AddServerActionKind::DiscardKey,
+            AddServerActionKind::DiscardKeyHere,
+            AddServerActionKind::Reset
+        ]
     );
     assert_eq!(
         flow.dispatch(AddServerAction::Save {
@@ -4765,4 +4844,177 @@ async fn token_search_capabilities_use_server_discovery_and_reject_another_serve
         fixed.capabilities().await,
         Err(ApiError::InvalidResponse { status: 200, .. })
     ));
+}
+
+/// Another program holds the lock of the data directory while the person logs in after a
+/// logout of the person, whose end is written to the book first. The login fails at once
+/// and says so, and no thread of the runtime of the client waits for the other program
+/// (ADR 0710). The client runs on a runtime of its own, as in the application.
+#[test]
+fn a_login_while_another_program_holds_the_data_directory_says_so_at_once() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+
+    let login = handle.dispatch(AccessAction::LogIn);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(login));
+    });
+    let answered = receiver.recv_timeout(Duration::from_secs(30));
+    other_program.unlock().unwrap();
+    assert_eq!(
+        answered.expect("the login waited for the other program"),
+        Err(FlowError::DataHeld)
+    );
+    let view = handle.access();
+    assert!(matches!(view.state, AccessState::LoggedOutByPerson { .. }));
+    assert_eq!(view.error, Some(FlowError::DataHeld));
+    assert!(handle.entry().logged_out);
+
+    driver
+        .block_on(handle.dispatch(AccessAction::LogIn))
+        .unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    let book = device.reopened(&network);
+    assert!(!book.servers()[0].entry().logged_out);
+}
+
+/// Runs an action of a server on a thread of its own and waits at most 30 seconds for its
+/// answer: an action that waited for another program would not answer.
+fn answered_while_held(
+    action: impl Future<Output = Result<(), FlowError>> + Send + 'static,
+) -> Result<(), FlowError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(action));
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the action waited for the other program")
+}
+
+/// The lock of the data directory as another program holds it: a handle of its own.
+fn held_by_another_program(device: &Device) -> std::fs::File {
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+    other_program
+}
+
+/// Forgetting an account on this device and creating the key of a join take the lock of the
+/// data directory on the runtime of the client too: while another program holds it they
+/// answer at once that another program changes the data (ADR 0710).
+#[test]
+fn forget_here_and_a_join_do_not_wait_for_another_program() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("JOIN-CODE", 1);
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (waiting, fresh) = driver.block_on(async {
+        let waiting = device.add("acme").await;
+        waiting.dispatch(ask("Grace")).await.unwrap();
+        let other = network.host("harbor");
+        other.add_invite("JOIN-CODE", 1);
+        let fresh = device.add("harbor").await;
+        (waiting, fresh)
+    });
+    let other_program = held_by_another_program(&device);
+
+    let forgotten = answered_while_held(waiting.dispatch(AccessAction::ForgetAccountHere));
+    let joined = answered_while_held(fresh.dispatch(AccessAction::Join {
+        code: InviteCode::new("JOIN-CODE"),
+        name: "Grace".to_owned(),
+        device_name: "Laptop".to_owned(),
+    }));
+    other_program.unlock().unwrap();
+    assert_eq!(forgotten, Err(FlowError::DataHeld));
+    assert_eq!(joined, Err(FlowError::DataHeld));
+    assert!(device.client.data_dir().key_file(waiting.id()).exists());
+    assert!(!device.client.data_dir().key_file(fresh.id()).exists());
+
+    driver
+        .block_on(waiting.dispatch(AccessAction::ForgetAccountHere))
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(waiting.id()).exists());
+}
+
+/// Another thread of the same client holds the lock of the data directory for a moment, as a
+/// background write of the window does: the write of an action waits for it and succeeds,
+/// and is not told as a change of another program (ADR 0710).
+#[test]
+fn a_write_waits_for_another_thread_of_the_same_process() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    // Right before the write, another thread takes the lock and keeps it for a moment.
+    let data_dir = device.client.data_dir().clone();
+    let holder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let started = holder.clone();
+    *device.client.inner.core.before_write.lock().unwrap() = Some(Arc::new(move || {
+        let mut started = started.lock().unwrap();
+        if started.is_some() {
+            return;
+        }
+        let (taken, has_taken) = std::sync::mpsc::channel();
+        let data_dir = data_dir.clone();
+        *started = Some(std::thread::spawn(move || {
+            let _lock = data_dir.lock().unwrap();
+            taken.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }));
+        has_taken.recv().unwrap();
+    }));
+    let login = handle.dispatch(AccessAction::LogIn);
+    assert_eq!(answered_while_held(login), Ok(()));
+    holder.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    assert!(!handle.entry().logged_out);
 }

@@ -73,7 +73,8 @@ async fn a_member_leaves_the_server_returns_to_the_same_account_and_then_deletes
             ActionKind::Check,
             ActionKind::Join,
             ActionKind::RequestAccess,
-            ActionKind::ForgetAccount
+            ActionKind::ForgetAccount,
+            ActionKind::ForgetAccountHere
         ]
     );
     assert_eq!(

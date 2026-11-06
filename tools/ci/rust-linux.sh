@@ -96,6 +96,11 @@ run budget tools/linux-container.sh cargo clippy --workspace --all-targets --loc
 # workspace lint does not compile (ADR 0913).
 step "Lint the device checks of the media crate"
 run budget tools/linux-container.sh cargo clippy --locked -p junto-media --features native-device-tests --all-targets -- -D warnings
+# Each package alone, with only the features that it and its dependencies ask for: its library
+# and programs, then every target (tools/ci/each_crate.py).
+step "Lint each crate alone"
+run budget tools/linux-container.sh python3 tools/ci/each_crate.py clippy --locked --keep-going -- -D warnings
+run budget tools/linux-container.sh python3 tools/ci/each_crate.py clippy --locked --all-targets --keep-going -- -D warnings
 step "Build the server used by process tests"
 run budget tools/linux-container.sh cargo build --workspace --locked
 # The V4L2 device in memory of the camera tests is not linked into the client (ADR 0913); the
@@ -110,7 +115,8 @@ run budget tools/linux-container.sh sh -c 'mkdir -p /target/junto-ci && cargo te
 run budget tools/linux-container.sh cargo build --locked -p junto-client --features test-support --bin junto-screens
 # The test programs of `cargo test --workspace` in two lanes of about the same length: the window
 # tests, and the API tests of the server, the other test programs with the doc tests and the
-# Python unit tests. Every command has --workspace, so the features are those of the build above.
+# Python unit tests. A third lane runs the ignored window tests of calls against the LiveKit of
+# its container (`live::`). Every command has --workspace, so the features are those of the build above.
 # junto-screens draws every screen and checks that no area has an empty band, no control is past
 # an edge of the window, and each screen settles within its bound (ADR 0730, ADR 0731); it
 # measures and writes no picture, and needs no database. The second run draws every screen at
@@ -122,6 +128,9 @@ lanes <<'EOF'
 lane app share 4 memory 4g
 step Window tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app
+lane live share 4 memory 4g
+step Window tests of calls with LiveKit
+tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test app live:: -- --ignored
 lane other share 2 memory 4g
 step Server API tests with PostgreSQL
 tools/linux-container.sh cargo test --no-fail-fast --workspace --locked --test api

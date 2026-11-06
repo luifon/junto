@@ -55,6 +55,44 @@ fn the_processing_of_one_frame_of_each_direction() {
     );
 }
 
+/// One frame of the microphone through `Processor::capture` with the default settings of the
+/// client, with the noise suppressor and without it, in microseconds and in milliseconds of
+/// processor time per second of sound (ADR 0733, `docs/client-performance.md`). The frames
+/// are a tone with noise, so that the network runs as on speech.
+#[test]
+#[ignore = "a timing: run it by name"]
+fn the_capture_of_one_frame_with_and_without_the_noise_suppressor() {
+    const FRAMES: u32 = 3_000;
+    for noise_suppression in [true, false] {
+        let processor = Processor::new(Processing {
+            noise_suppression,
+            ..Processing::default()
+        });
+        let mut state = 0x2545_f491_u32;
+        let (median, rounds) = median(|| {
+            let started = Instant::now();
+            for index in 0..FRAMES as usize {
+                let mut frame = [0i16; FRAME_SAMPLES];
+                for (n, sample) in frame.iter_mut().enumerate() {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    let noise = f32::from((state >> 20) as u16) - 2048.0;
+                    let tone = ((index * FRAME_SAMPLES + n) as f32 * 0.0311).sin() * 6000.0;
+                    *sample = (tone + noise) as i16;
+                }
+                processor.capture(&mut frame);
+            }
+            started.elapsed().as_secs_f64() * 1e6 / f64::from(FRAMES)
+        });
+        println!(
+            "the capture of one frame, noise suppression {noise_suppression}: median {median:.1} µs \
+             ({:.1} ms per second of sound), rounds {rounds:.1?}",
+            median / 10.0
+        );
+    }
+}
+
 /// A received picture of 1920 × 1080 in planes scaled to 1128 × 634: from its planes where
 /// they are, and after a copy of them as the engine made before (ADR 0774), in milliseconds.
 #[test]

@@ -76,6 +76,11 @@ run cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
 # workspace lint does not compile (ADR 0913).
 step "Lint the device checks of the media crate"
 run cargo clippy --locked -p junto-media --features native-device-tests --all-targets --keep-going -- -D warnings
+# Each package alone, with only the features that it and its dependencies ask for: its library
+# and programs, then every target (tools/ci/each_crate.py, ADR 0905).
+step "Lint each crate alone"
+run python3 tools/ci/each_crate.py clippy --locked --keep-going -- -D warnings
+run python3 tools/ci/each_crate.py clippy --locked --all-targets --keep-going -- -D warnings
 step "Build every target"
 run cargo build --workspace --all-targets --locked
 if [ "$system" = macos ]; then
@@ -91,15 +96,8 @@ if [ "$system" = macos ]; then
     step "Media unit tests on macOS"
     run cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions
 fi
-# The tests that need PostgreSQL run on Linux only, except the window tests on Windows and
-# on macOS.
 step "Tests that need no database"
 run cargo test --no-fail-fast --locked -p junto-authz -p junto-protocol
-# The reading of the free space of a directory, which differs between Unix and Windows
-# (ADR 0605).
-run cargo test --no-fail-fast --locked -p junto-server --lib storage::
-# Directory-relative files on Unix and the Windows test store (ADR 0606, ADR 0912).
-run cargo test --no-fail-fast --locked -p junto-server --lib recordings::files::
 run cargo test --no-fail-fast --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"
 run python3 -m unittest discover -s packaging -p "test_*.py"
@@ -131,7 +129,8 @@ if [ "$system" = macos ]; then
     run env JUNTO_TEST_NATIVE_MACOS_WINDOWS=1 cargo test --no-fail-fast --locked --workspace --test native_macos_windows
     # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0916):
     # updates:: without a database, then the other tests against the PostgreSQL build for
-    # macOS of the version of the CI image. Not here: the tests of live::, which need LiveKit.
+    # macOS of the version of the CI image. The tests of live:: are ignored here: no release of
+    # LiveKit for macOS is pinned (ADR 0905).
     # --workspace, as in the build step, so that Cargo builds nothing again.
     step "Window tests without a database"
     run cargo test --no-fail-fast --locked --workspace --test app -- updates::
@@ -139,7 +138,12 @@ if [ "$system" = macos ]; then
     run python3 tools/test_with_native_postgres.py
     run python3 tools/with_native_postgres.py --fetch
     step "Window tests with PostgreSQL"
-    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates:: --skip live::
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
+    # The library and the API tests of the server against the same PostgreSQL. The API tests
+    # with --workspace, as in the build step, so that Cargo builds nothing again.
+    step "Server tests with PostgreSQL"
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked -p junto-server --lib
+    run python3 tools/with_native_postgres.py cargo test --no-fail-fast --locked --workspace --test api
     finish
 fi
 
@@ -152,8 +156,8 @@ python3 tools/windows/dialogs.py record "$dialogs"
 trap 'python3 tools/windows/dialogs.py check "$dialogs" || exit 1; rm -f "$dialogs"' EXIT
 # The unit tests of the media crate, the reading of the sources of the WebRTC wrapper (ADR 0733),
 # and the capture of the screen against the window of a fixture program, which appears on the
-# desktop of the account for a few seconds without taking the focus. No test plays sound
-# (ADR 0706).
+# desktop of the account for a few seconds without taking the focus. One test makes the fixture
+# play a tone for a few seconds on the default output device (ADR 0706).
 step "Media tests and screen capture on Windows"
 run cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture
 # The keys of a call in every application: the reader of the keyboard against F24, which the
@@ -174,16 +178,36 @@ run env JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked --workspac
 # step, so that Cargo builds nothing again.
 step "Window tests without a database"
 run cargo test --no-fail-fast --locked --workspace --test app -- updates::
-step "PostgreSQL for Windows"
+step "PostgreSQL, LiveKit and FFmpeg for Windows"
 run python3 tools/windows/with_test_postgres.py --fetch
-# The remaining window tests use native PostgreSQL and the Windows file store (ADR 0912).
-# The live tier needs LiveKit; finished-recording fixtures need FFmpeg and /bin/sh.
+run python3 tools/with_native_livekit.py --fetch
+run python3 tools/with_native_ffmpeg.py --fetch
+run python3 tools/test_native_programs.py
+# The remaining window tests use native PostgreSQL, the Windows file store (ADR 0912) and the
+# FFmpeg build for Windows; the stand-in of the transcription worker runs in the sh of Git for
+# Windows.
 step "Window tests with PostgreSQL"
 run python3 -m unittest discover -s tools/windows -p "test_*.py"
-run python3 tools/windows/with_test_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- \
-    --skip updates:: --skip live:: \
-    --skip recordings:: \
-    --skip transcripts:: \
-    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts \
-    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
+# The library and the API tests of the server against the same PostgreSQL and FFmpeg.
+step "Server tests with PostgreSQL"
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked -p junto-server --lib
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked --workspace --test api
+# The window tests of calls against the LiveKit release for Windows of the version of the image
+# of the other jobs, every socket of it on the loopback address (tools/with_native_livekit.py).
+# The share of a window of the fixture program carries the tone that the fixture plays.
+step "Window tests with PostgreSQL and LiveKit"
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_livekit.py \
+    cargo test --no-fail-fast --locked --workspace --test app live:: -- --ignored
+# The client in release form with the line tables of a release package (packaging/README.md):
+# the backtrace of a panic report names the functions of the program (ADR 0757). Not for a change
+# that touches neither the client, the copies of gpui nor a Cargo file (JUNTO_CI_PARTS=debug,
+# tools/ci/changes.py); the run of each night builds it.
+if [ "${JUNTO_CI_PARTS:-}" != debug ]; then
+    step "Panic reports of a release build"
+    run env CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo test --no-fail-fast --locked --release -p junto-client --lib panics::
+fi
 finish

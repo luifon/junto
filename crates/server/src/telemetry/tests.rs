@@ -651,16 +651,28 @@ async fn bounded_child(name: &str) -> bool {
     true
 }
 
+/// Runs one test of this binary in a process of its own and requires that it ran and
+/// passed: a filter that matches no test makes the test runner end with success too.
 async fn run_child(mut command: tokio::process::Command) {
-    let mut child = command.spawn().unwrap();
-    match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
-        Ok(status) => assert!(status.unwrap().success(), "exporter subprocess failed"),
-        Err(_) => {
-            child.kill().await.unwrap();
-            child.wait().await.unwrap();
-            panic!("exporter subprocess exceeded its execution bound");
-        }
-    }
+    command
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn().unwrap();
+    // A child that passes the bound is killed when its future is dropped.
+    let Ok(output) = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output()).await
+    else {
+        panic!("exporter subprocess exceeded its execution bound");
+    };
+    let output = output.unwrap();
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "exporter subprocess failed: {printed}"
+    );
+    assert!(
+        printed.contains("test result: ok. 1 passed"),
+        "the subprocess ran no test: {printed}"
+    );
 }
 
 #[tokio::test]

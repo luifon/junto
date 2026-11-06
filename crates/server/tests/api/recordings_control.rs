@@ -189,6 +189,39 @@ async fn a_lost_recorder_is_found_by_the_participants_of_the_room_and_new_jobs_s
     assert_eq!(done.recording.failed_segments, 3);
 }
 
+/// A composite is a picture of the people of the call. While nobody of the call is in the
+/// room, a lost composite gets no new job, which would record the empty room (ADR 0604); with
+/// a member in the room it gets one
+/// (`a_lost_recorder_is_found_by_the_participants_of_the_room_and_new_jobs_start`). Before, a
+/// restored backup of a running recording, whose call nobody was in, recorded the empty
+/// room until the server ended the call.
+#[tokio::test]
+async fn a_lost_composite_gets_a_new_job_only_while_a_member_of_the_call_is_in_the_room() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(30));
+    for seat in [&studio.ann_seat, &studio.ben_seat] {
+        server.fake().leave(&seat.room, &seat.identity);
+    }
+    server.tend().await;
+    server.recorder().kill();
+    server.recorder().participants_gone();
+    server.recorder().restart();
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    let composite = of_source(&detail, SegmentSource::Composite);
+    assert_eq!(composite.len(), 1, "{:?}", states(&detail));
+    assert_eq!(
+        (composite[0].state, composite[0].failure),
+        LOST,
+        "{:?}",
+        states(&detail)
+    );
+    assert_eq!(composites(&server.recorder().jobs()).len(), 1);
+}
+
 /// The participant of a new job enters the room some seconds after the request. A job
 /// without a participant is lost only when it is older than 10 seconds.
 #[tokio::test]

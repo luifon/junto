@@ -34,9 +34,13 @@ class Select(unittest.TestCase):
 
     def test_tools_ci_and_cargo_files_run_every_job(self):
         for path in ["tools/ci/test_budget.py", "tools/ci/run-jobs.sh", "Cargo.lock", "Cargo.toml",
-                     "crates/media/Cargo.toml", "rust-toolchain.toml", "vendor/cpal/src/lib.rs"]:
+                     "crates/media/Cargo.toml", "rust-toolchain.toml"]:
             with self.subTest(path=path):
                 self.assertEqual(set(decisions([path]).values()), {"run"})
+        # A copy other than those of gpui: the Windows job without its release build.
+        chosen = decisions(["vendor/cpal/src/lib.rs"])
+        self.assertEqual(chosen.pop("rust-windows"), "debug")
+        self.assertEqual(set(chosen.values()), {"run"})
 
     def test_unknown_paths_run_every_job_but_windows_by_its_rules(self):
         for path in ["tools/linux/Dockerfile", "deploy/livekit-common.yaml", "a/new/file.txt"]:
@@ -60,14 +64,27 @@ class Select(unittest.TestCase):
     def test_windows_runs_only_for_a_change_that_can_behave_differently_there(self):
         server = ["crates/server/src/routes/messages.rs"]
         self.assertEqual(decisions(server)["rust-windows"], "skip")
-        self.assertEqual(decisions(server, code=["    std::fs::write(&path, data)?;"])["rust-windows"], "run")
-        self.assertEqual(decisions(server, code=['#[cfg(windows)]'])["rust-windows"], "run")
+        self.assertEqual(decisions(server, code=["    std::fs::write(&path, data)?;"])["rust-windows"], "debug")
+        self.assertEqual(decisions(server, code=['#[cfg(windows)]'])["rust-windows"], "debug")
         self.assertEqual(decisions(["crates/client/Cargo.toml"], cargo=['+[target.\'cfg(windows)\'.dependencies]'])
                          ["rust-windows"], "run")
         for path in ["tools/windows/lock.py", "packaging/windows.py", "crates/media/build.rs",
-                     "crates/client-core/src/paths.rs", "crates/server/src/storage/free.rs", "Cargo.lock"]:
+                     "crates/client-core/src/paths.rs", "crates/server/src/storage/free.rs", "Cargo.lock",
+                     "tools/with_native_livekit.py", "tools/with_native_ffmpeg.py", "tools/native_downloads.py"]:
             with self.subTest(path=path):
-                self.assertEqual(decisions([path])["rust-windows"], "run")
+                self.assertIn(decisions([path])["rust-windows"], ("run", "debug"))
+
+    def test_windows_builds_the_client_in_release_form_only_for_a_change_of_the_client_gpui_or_cargo(self):
+        for path in ["crates/client/src/panics.rs", "vendor/gpui-pre-0.3.8/src/window.rs", "Cargo.lock",
+                     "crates/media/Cargo.toml", ".cargo/config.toml", "rust-toolchain.toml",
+                     "tools/ci/rust-other-systems.sh"]:
+            with self.subTest(path=path):
+                self.assertEqual(decisions([path], code=["#[cfg(windows)]"])["rust-windows"], "run")
+        for path in ["tools/windows/lock.py", "crates/server/src/storage/free.rs", "packaging/windows.py"]:
+            with self.subTest(path=path):
+                self.assertEqual(decisions([path])["rust-windows"], "debug")
+        self.assertEqual(decisions(["crates/server/src/routes/messages.rs"],
+                                   code=["    std::fs::write(&path, data)?;"])["rust-windows"], "debug")
 
     def test_the_lines_and_paths_of_a_commit_range_come_from_git(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,7 +108,7 @@ class Select(unittest.TestCase):
             finally:
                 os.chdir(here)
             self.assertEqual(chosen["rust-linux"][0], "run")
-            self.assertEqual(chosen["rust-windows"][0], "run")
+            self.assertEqual(chosen["rust-windows"][0], "debug")
             self.assertIn("std::process::", chosen["rust-windows"][1])
 
 

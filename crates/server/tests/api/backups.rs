@@ -20,6 +20,7 @@ async fn binary(arguments: &[&str], environment: &[(&str, String)]) -> HostComma
     command
         .args(arguments)
         .env_clear()
+        .envs(junto_server::starter::system_environment())
         .envs(environment.iter().map(|(name, value)| (*name, value)))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

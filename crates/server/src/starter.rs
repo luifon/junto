@@ -4,6 +4,19 @@
 #[cfg(windows)]
 mod windows_process;
 
+/// The variables of the system that a program that the server starts with an emptied
+/// environment needs on Windows: without `SystemRoot` a process cannot load the providers of
+/// its sockets. Empty on other systems.
+pub fn system_environment() -> Vec<(&'static str, std::ffi::OsString)> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    ["SystemRoot", "windir", "SystemDrive", "TEMP", "TMP"]
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name, value)))
+        .collect()
+}
+
 /// Resolves when the process with the number `starter` has ended, at once when it is not the
 /// process that started this one.
 pub async fn ended(starter: u32) {

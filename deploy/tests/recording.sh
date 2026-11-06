@@ -14,8 +14,9 @@
 #   deploy/tests/recording.sh [<project name>]
 #
 # Needs Docker with Compose, curl, python3 and the test participant. Needs 13 GiB of free
-# disk space for Docker (ADR 0605) and four free CPU cores. The sum of the memory limits is
-# under 4 GB. Everything is removed at the end.
+# disk space for Docker (ADR 0605) and six free processors: with four, the recorder had holes
+# in the timestamps of the composite (ADR 0910). The sum of the memory limits is under 4 GB.
+# Everything is removed at the end.
 #
 # JUNTO_TEST_PARTICIPANT       the program of spikes/test-participant, when it is elsewhere.
 # JUNTO_RECORDING_TEST_MODELS  a directory with the model files of the worker for Whisper
@@ -40,6 +41,17 @@ port=${JUNTO_LOCAL_PORT:-8080}
 
 if [ ! -x "$participant" ]; then
     echo "the test participant is not built: (cd spikes/test-participant && cargo build --release)" >&2
+    exit 2
+fi
+# The processors that the test may use: those of its own process, which a pinning sets, and
+# at most those of Docker.
+processors=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+docker_processors=$(docker info --format '{{.NCPU}}')
+if [ "$docker_processors" -lt "$processors" ]; then
+    processors=$docker_processors
+fi
+if [ "$processors" -lt 6 ]; then
+    echo "the recording test needs 6 processors and has $processors: the recorder needs up to 4 for the composite beside the media server, the server and three participants (ADR 0910)" >&2
     exit 2
 fi
 if { [ -n "$models" ] && [ -z "$speech" ]; } || { [ -z "$models" ] && [ -n "$speech" ]; }; then

@@ -100,6 +100,7 @@ impl Client {
             .arg(command)
             .args(["--url", url, "--token", token.expose()])
             .args(arguments)
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -257,6 +258,86 @@ async fn a_forced_end_of_a_test_process_also_ends_its_call_participants() {
                 .args(["-KILL", &participant.to_string()])
                 .status();
             panic!("the participant {participant} still runs: {errors}");
+        }
+    })
+    .await;
+}
+
+/// Set for a run of this test binary by the test below, which kills that process.
+const KILLED_CHILD: &str = "JUNTO_LIVE_KILLED_CHILD";
+
+#[tokio::test]
+#[ignore = "run in its own process by a_killed_test_process_also_ends_its_call_participants"]
+async fn child_with_a_call_participant_that_is_killed() {
+    if std::env::var_os(KILLED_CHILD).is_none() {
+        return;
+    }
+    let scene = scene().await;
+    let join = scene.server.join_call(&scene.ann, scene.voice.id).await;
+    let client = Client::publisher(&join, &["--mic-hz", "440"]);
+    client.until("joined").await;
+    println!("participant process {}", client.child.id());
+    std::thread::sleep(Wait::from_secs(120));
+}
+
+/// ADR 0915: a test process that a signal ends runs no `Drop`, and its call participants
+/// end by themselves, because they were started with the number of that process.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_killed_test_process_also_ends_its_call_participants() {
+    limited(async {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "live::child_with_a_call_participant_that_is_killed",
+                "--ignored",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(KILLED_CHILD, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _adopted = crate::limit::adopt(child.id());
+        let output = child.stdout.take().unwrap();
+        let (participant, read) = tokio::task::spawn_blocking(move || {
+            let mut read = Vec::new();
+            for line in BufReader::new(output).lines().map_while(Result::ok) {
+                // The line can follow the name of the test that libtest wrote before it.
+                if let Some((_, number)) = line.split_once("participant process ") {
+                    return (number.trim().parse::<u32>().ok(), read);
+                }
+                read.push(line);
+            }
+            (None, read)
+        })
+        .await
+        .unwrap();
+        let participant =
+            participant.unwrap_or_else(|| panic!("the child started no participant: {read:?}"));
+        let runs = || {
+            std::process::Command::new("kill")
+                .args(["-0", &participant.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        assert!(runs(), "the participant ended before its test process");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let started = Instant::now();
+        while runs() && started.elapsed() < Wait::from_secs(5) {
+            tokio::time::sleep(Wait::from_millis(20)).await;
+        }
+        if runs() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &participant.to_string()])
+                .status();
+            panic!("the participant {participant} still runs after its test process was killed");
         }
     })
     .await;

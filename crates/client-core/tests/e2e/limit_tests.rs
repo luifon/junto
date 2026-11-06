@@ -250,6 +250,100 @@ fn a_cleanup_after_the_end_of_the_body_is_bounded_too() {
     }
 }
 
+#[tokio::test]
+#[ignore = "run in its own process by the_end_of_the_runtime_of_a_test_is_bounded_too"]
+async fn child_whose_body_leaves_a_task_that_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    crate::limit::limited_test(Duration::from_secs(5), Duration::from_millis(300), async {
+        step("leaves a task whose drop waits");
+        let stuck = Stuck;
+        tokio::spawn(async move {
+            let _stuck = stuck;
+            std::future::pending::<()>().await;
+        });
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "run in its own process by the_end_of_the_runtime_of_a_test_is_bounded_too"]
+async fn child_whose_body_leaves_a_blocking_task_that_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    crate::limit::limited_test(Duration::from_secs(5), Duration::from_millis(300), async {
+        step("leaves a blocking task that waits");
+        let (started, has_started) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            std::thread::sleep(Duration::from_secs(20));
+        });
+        has_started.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "run in its own process by the_end_of_the_runtime_of_a_test_is_bounded_too"]
+async fn child_whose_body_fails_and_leaves_a_task_that_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    crate::limit::limited_test(Duration::from_secs(5), Duration::from_millis(300), async {
+        step("leaves a task whose drop waits, and fails");
+        let stuck = Stuck;
+        tokio::spawn(async move {
+            let _stuck = stuck;
+            std::future::pending::<()>().await;
+        });
+        panic!("the body fails");
+    })
+    .await;
+}
+
+/// The runtime of a test ends after its body: it drops the tasks that the body left and
+/// waits for its blocking tasks. A task of the call library can wait in its drop, as the
+/// close of a peer connection waits for the signaling thread, and that wait is after the
+/// limit of the body. The test process ends with the report of what it waited for.
+#[test]
+fn the_end_of_the_runtime_of_a_test_is_bounded_too() {
+    for (child, step) in [
+        (
+            "limit_tests::child_whose_body_leaves_a_task_that_does_not_end",
+            "leaves a task whose drop waits",
+        ),
+        (
+            "limit_tests::child_whose_body_leaves_a_blocking_task_that_does_not_end",
+            "leaves a blocking task that waits",
+        ),
+        (
+            "limit_tests::child_whose_body_fails_and_leaves_a_task_that_does_not_end",
+            "leaves a task whose drop waits, and fails",
+        ),
+    ] {
+        let (code, errors, took) = run_child(child);
+        assert_eq!(
+            code,
+            Some(crate::limit::LIMIT_EXIT_CODE),
+            "{child} took {took:?}: {errors}"
+        );
+        assert!(
+            took < Duration::from_secs(10),
+            "{child} took {took:?}: {errors}"
+        );
+        assert!(
+            errors.contains(
+                "did not end within 300ms after its body: the end of its runtime waits for a \
+                 task or a blocking task that the test left"
+            ),
+            "{child}: {errors}"
+        );
+        assert!(errors.contains(step), "{child}: {errors}");
+    }
+}
+
 /// True while a process with this number exists.
 #[cfg(unix)]
 fn exists(process: u32) -> bool {

@@ -825,7 +825,8 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         .await
         .ok(StatusCode::CREATED);
     assert_eq!(channel.kind, ChannelKind::Voice);
-    assert_eq!(channel.position, 3);
+    // A new channel goes after the last channel of its group, the empty category.
+    assert_eq!(channel.position, 0);
     assert_eq!(channel.category_id, Some(category.id));
     assert!(!channel.permanent_messages);
 
@@ -846,7 +847,8 @@ async fn categories_and_channels_are_created_listed_and_edited() {
         .await
         .ok(StatusCode::OK);
     assert_eq!(uncategorised.category_id, None);
-    assert_eq!(uncategorised.position, 7);
+    // A channel that leaves its category goes after the last channel of the root.
+    assert_eq!(uncategorised.position, 3);
 
     let list: ChannelList = server
         .get(&guest, &format!("{base}/channels"))
@@ -1424,7 +1426,8 @@ async fn channels_are_moved_together_or_not_at_all() {
     let after = places().await;
     assert_eq!(after[&plans.id], (Some(category.id), 0));
     assert_eq!(after[&notes.id], (None, plans.position));
-    assert_eq!(after[&closed.id], before[&closed.id]);
+    // "closed" stays after "notes", and the root closes the place that "plans" left.
+    assert_eq!(after[&closed.id], (None, before[&closed.id].1 - 1));
 }
 
 /// A page drops "x" after "b", between "b" at 10 and "c" at 20, and sends the two neighbours
@@ -1441,18 +1444,12 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         .grant_workspace(&owner, &manager, workspace.id, &[W::ManageChannel])
         .await;
     let everyone = everyone_role(&server, &owner, workspace.id).await;
+    // The root holds "general", "voice" and "AFK" at the places 0 to 2, then "b", "c", "x"
+    // and "hidden". A position is the place among the channels of the group that the caller
+    // sees (ADR 0304).
     let mut placed = Vec::new();
-    for (name, position) in [("b", 10), ("c", 20), ("x", 30), ("hidden", 40)] {
-        let channel = create_channel(&server, &owner, workspace.id, name).await;
-        let channel: Channel = server
-            .patch(
-                &owner,
-                &format!("/api/v1/channels/{}", channel.id),
-                &json!({ "position": position }),
-            )
-            .await
-            .ok(StatusCode::OK);
-        placed.push(channel);
+    for name in ["b", "c", "x", "hidden"] {
+        placed.push(create_channel(&server, &owner, workspace.id, name).await);
     }
     let [b, c, x, hidden] = <[Channel; 4]>::try_from(placed).unwrap();
     // The manager sees "c" but may not change it, and does not see "hidden".
@@ -1471,11 +1468,13 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     .ok::<PermissionRule>(StatusCode::OK);
     let path = format!("/api/v1/workspaces/{}/channels/positions", workspace.id);
     let at = |position: i32| json!({ "category_id": null, "position": position });
-    let drop = |neighbour: &Channel, read: i32| {
+    // The page drops "x", read at 5, between "b" and "c": at the place 4 of the channels
+    // without "x", with both neighbours as checks.
+    let drop = |b_read: i32| {
         json!({ "moves": [
-            { "channel_id": x.id, "from": at(30), "to": at(11) },
-            { "channel_id": neighbour.id, "from": at(read), "to": at(read) },
-            { "channel_id": c.id, "from": at(20), "to": at(20) },
+            { "channel_id": x.id, "from": at(5), "to": at(4) },
+            { "channel_id": b.id, "from": at(b_read), "to": at(b_read) },
+            { "channel_id": c.id, "from": at(4), "to": at(4) },
         ]})
     };
     let place_of = |id: ChannelId| {
@@ -1515,32 +1514,34 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     // A check of a channel that the manager does not see refuses the request with
     // `not_found`, as an unknown channel does, also when the request names another workspace:
     // the answer does not tell that the channel exists or where.
+    let check = |id: ChannelId, read: i32| json!({ "moves": [{ "channel_id": id, "from": at(read), "to": at(read) }] });
+    let mut with_hidden = drop(3);
+    with_hidden["moves"][1] = check(hidden.id, 6)["moves"][0].clone();
     server
-        .patch(&manager, &path, &drop(&hidden, 40))
+        .patch(&manager, &path, &with_hidden)
         .await
         .error(ErrorCode::NotFound);
-    assert_eq!(place_of(x.id).await, (None, 30));
+    assert_eq!(place_of(x.id).await, (None, 5));
     let other: Workspace = server
         .post(&owner, "/api/v1/workspaces", &json!({ "name": "Other" }))
         .await
         .ok(StatusCode::CREATED);
     let other_path = format!("/api/v1/workspaces/{}/channels/positions", other.id);
-    let check = |id: ChannelId, read: i32| json!({ "moves": [{ "channel_id": id, "from": at(read), "to": at(read) }] });
     for path in [&path, &other_path] {
         for id in [hidden.id, ChannelId::generate()] {
             server
-                .patch(&manager, path, &check(id, 40))
+                .patch(&manager, path, &check(id, 6))
                 .await
                 .error(ErrorCode::NotFound);
         }
     }
     // A channel that the manager sees, named with another workspace, is refused as such.
     server
-        .patch(&manager, &other_path, &check(c.id, 20))
+        .patch(&manager, &other_path, &check(c.id, 4))
         .await
         .error(ErrorCode::InvalidRequest);
 
-    // The other administrator moves "b"; the page still read it at 10.
+    // The other administrator moves "b" to the end; the page still read it at 3.
     server
         .patch(
             &owner,
@@ -1550,12 +1551,14 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
         .await
         .ok::<Channel>(StatusCode::OK);
     server
-        .patch(&manager, &path, &drop(&b, 10))
+        .patch(&manager, &path, &drop(3))
         .await
         .error(ErrorCode::Conflict);
-    assert_eq!(place_of(x.id).await, (None, 30));
+    // The owner, who sees every channel, reads the stored positions: "x" is still at 5.
+    assert_eq!(place_of(x.id).await, (None, 5));
 
-    // A request of checks only changes nothing: no audit entry and no event.
+    // A request of checks only changes nothing: no audit entry and no event. The manager
+    // reads "c" at 3 and "b" at 5.
     let entries = audit_entries().await;
     let events = updated().await;
     server
@@ -1563,8 +1566,8 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
             &manager,
             &path,
             &json!({ "moves": [
-                { "channel_id": b.id, "from": at(40), "to": at(40) },
-                { "channel_id": c.id, "from": at(20), "to": at(20) },
+                { "channel_id": b.id, "from": at(5), "to": at(5) },
+                { "channel_id": c.id, "from": at(3), "to": at(3) },
             ]}),
         )
         .await
@@ -1572,15 +1575,25 @@ async fn a_move_is_refused_when_a_neighbour_that_it_checks_has_moved() {
     assert_eq!(audit_entries().await, entries);
     assert_eq!(updated().await, events);
 
-    // From the current page the drop applies. The checks change nothing, so "x" has the only
-    // audit entry and the only event, and "c", which the manager may not change, is checked.
+    // From the current page "x", read at 4, goes after "b", at the place 5 of the channels
+    // without "x": after the last that the manager sees, and so after "hidden" too. The
+    // checks change nothing, so "x" has the only audit entry and the only event, and "c",
+    // which the manager may not change, is checked.
     server
-        .patch(&manager, &path, &drop(&b, 40))
+        .patch(
+            &manager,
+            &path,
+            &json!({ "moves": [
+                { "channel_id": x.id, "from": at(4), "to": at(5) },
+                { "channel_id": b.id, "from": at(5), "to": at(5) },
+                { "channel_id": c.id, "from": at(3), "to": at(3) },
+            ]}),
+        )
         .await
         .empty(StatusCode::NO_CONTENT);
-    assert_eq!(place_of(x.id).await, (None, 11));
-    assert_eq!(place_of(b.id).await, (None, 40));
-    assert_eq!(place_of(c.id).await, (None, 20));
+    assert_eq!(place_of(x.id).await, (None, 6));
+    assert_eq!(place_of(b.id).await, (None, 5));
+    assert_eq!(place_of(c.id).await, (None, 3));
     assert_eq!(audit_entries().await, entries + 1);
     let new_events: Vec<String> = updated()
         .await
@@ -1636,5 +1649,12 @@ async fn a_channel_link_lookup_reads_active_and_archived_channels_under_the_call
         .await
         .ok::<junto_protocol::structure::ArchivedChannel>(StatusCode::OK);
     let read: Channel = server.get(&member, &path).await.ok(StatusCode::OK);
-    assert_eq!(read, channel);
+    // An archived channel is in no list and has no place there (ADR 0304).
+    assert_eq!(
+        read,
+        Channel {
+            position: 0,
+            ..channel
+        }
+    );
 }

@@ -302,6 +302,7 @@ fn categories(action: &str, words: &[String]) -> Result<Option<Action>, Failure>
             UpdateCategory {
                 name: Some(word(words, 3, "the name")?.to_owned()),
                 position: None,
+                place: None,
             },
         ),
         "move" => Action::ChangeCategory(
@@ -310,6 +311,7 @@ fn categories(action: &str, words: &[String]) -> Result<Option<Action>, Failure>
             UpdateCategory {
                 name: None,
                 position: Some(position(word(words, 3, "the position")?)?),
+                place: None,
             },
         ),
         "delete" => Action::DeleteCategory(workspace()?, category()?),

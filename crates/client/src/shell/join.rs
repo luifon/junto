@@ -409,7 +409,7 @@ impl Shell {
 
     /// Gives up the request that the dialog shows. The state of the application carries
     /// the work and its result; the dialog closes when the server has left the book.
-    fn cancel_request_in_dialog(&mut self, cx: &mut Context<Self>) {
+    fn cancel_request_in_dialog(&mut self, here: bool, cx: &mut Context<Self>) {
         let Layer::Join(join) = &mut self.layer else {
             return;
         };
@@ -417,8 +417,13 @@ impl Shell {
             return;
         };
         join.error = None;
-        self.state
-            .update(cx, |state, cx| state.cancel_request(server_id, cx));
+        self.state.update(cx, |state, cx| {
+            if here {
+                state.cancel_request_here(server_id, cx);
+            } else {
+                state.cancel_request(server_id, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -557,6 +562,7 @@ impl Shell {
             );
         // The error follows every control of the dialog, whose top stays: it moves no
         // control (ADR 0730).
+        let failed = error.is_some();
         let error_slot = crate::ui::notice_slot("join-error-slot").children(error.map(|error| {
             div()
                 .mt(u(12.0))
@@ -759,6 +765,25 @@ impl Shell {
                             }))
                             .into_any_element(),
                     ]));
+                // The discard asks the server to withdraw a request of the key first. When
+                // the server could not be told, the person can discard the key here only.
+                if failed && !busy {
+                    dialog = dialog.child(not_told(
+                        Button::new("discard-key-here")
+                            .label(text::DISCARD_KEY_HERE)
+                            .selector("discard-key-here")
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.run_add(
+                                    Running::Discarding,
+                                    AddServerAction::DiscardKeyHere,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ));
+                }
             }
             Body::Waiting { name } => {
                 dialog = dialog
@@ -774,7 +799,7 @@ impl Shell {
                             .h(u(30.0))
                             .px(u(12.0))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.cancel_request_in_dialog(cx);
+                                this.cancel_request_in_dialog(false, cx);
                             }))
                             .into_any_element(),
                         Button::new("close-join")
@@ -788,6 +813,18 @@ impl Shell {
                             }))
                             .into_any_element(),
                     ]));
+                if failed && !busy {
+                    dialog = dialog.child(not_told(
+                        Button::new("cancel-request-here")
+                            .label(text::CANCEL_REQUEST_HERE)
+                            .selector("cancel-request-here")
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cancel_request_in_dialog(true, cx);
+                            })),
+                    ));
+                }
             }
             Body::Statement(title, detail) => {
                 dialog = dialog
@@ -903,4 +940,16 @@ fn path(
                 .child(help),
         )
         .children(controls)
+}
+
+/// The action that gives up a request or a key on this device only, with the sentence that
+/// the server was not told (ADR 0712).
+fn not_told(action: Button) -> impl IntoElement {
+    div()
+        .mt(u(10.0))
+        .flex()
+        .flex_col()
+        .gap(u(8.0))
+        .child(Notice::new(text::SERVER_NOT_TOLD).selector("server-not-told"))
+        .child(div().flex().child(action))
 }

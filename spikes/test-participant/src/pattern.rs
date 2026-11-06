@@ -20,12 +20,35 @@ struct Yuv(u8, u8, u8);
 const WHITE: Yuv = Yuv(235, 128, 128);
 const BLACK: Yuv = Yuv(16, 128, 128);
 
-fn yuv(r: u8, g: u8, b: u8) -> Yuv {
-    let (r, g, b) = (r as f64, g as f64, b as f64);
+/// The YCbCr matrix in which a picture is written. A frame of the call library states no
+/// matrix, so a receiver reads each codec with its default: Chromium, which draws the
+/// composite of a recording, reads VP8 as BT.601 and H.264 as BT.709. A picture written in
+/// the matrix that its receivers read keeps its colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matrix {
+    Bt601,
+    Bt709,
+}
+
+impl Matrix {
+    /// The luma coefficients Kr and Kb.
+    fn coefficients(self) -> (f64, f64) {
+        match self {
+            Self::Bt601 => (0.299, 0.114),
+            Self::Bt709 => (0.2126, 0.0722),
+        }
+    }
+}
+
+/// A colour in limited-range YCbCr of `matrix`.
+fn yuv(matrix: Matrix, r: u8, g: u8, b: u8) -> Yuv {
+    let (kr, kb) = matrix.coefficients();
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let y = kr * r + (1.0 - kr - kb) * g + kb * b;
     Yuv(
-        (16.0 + 0.257 * r + 0.504 * g + 0.098 * b) as u8,
-        (128.0 - 0.148 * r - 0.291 * g + 0.439 * b) as u8,
-        (128.0 + 0.439 * r - 0.368 * g - 0.071 * b) as u8,
+        (16.0 + 219.0 * y).round() as u8,
+        (128.0 + 224.0 * (b - y) / (2.0 * (1.0 - kb))).round() as u8,
+        (128.0 + 224.0 * (r - y) / (2.0 * (1.0 - kr))).round() as u8,
     )
 }
 
@@ -109,7 +132,9 @@ impl Pattern {
         label: &str,
         color: (u8, u8, u8),
         marker: Option<Marker>,
+        matrix: Matrix,
     ) -> Self {
+        let yuv = |r, g, b| yuv(matrix, r, g, b);
         let (w, h) = (width as usize, height as usize);
         let mut background = Canvas::new(w, h);
         match kind {

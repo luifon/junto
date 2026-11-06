@@ -114,6 +114,7 @@ fn server(id: ServerId) -> ServerSnapshot {
         model: None,
         server_version: None,
         server_events: None,
+        event_revision: 0,
     }
 }
 

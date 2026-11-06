@@ -382,6 +382,15 @@ impl AppState {
         self.reload_recordings(reload, server_id, workspace_id, cx);
     }
 
+    /// The number of reads of the list of recordings that the page started, and whether a
+    /// read waits for the end of [`RELOAD_INTERVAL`]. A test moves its clock only while a
+    /// read waits, and tells a read that an event caused from one that the clock caused.
+    #[cfg(feature = "test-support")]
+    pub fn recordings_reads(&self) -> (u64, bool) {
+        let list = &self.admin.recordings;
+        (list.read, list.waits.is_some())
+    }
+
     /// Does what the reloads of the list named: reads the list from the start now, or
     /// after a wait.
     fn reload_recordings(

@@ -157,11 +157,12 @@ pub async fn fork(
         if exists {
             return Err(ApiError::conflict("the thread has already been forked"));
         }
-        let position: i32 = sqlx::query_scalar("select coalesce(max(position),-1)+1 from channels where workspace_id=$1 and deleted_at is null")
+        let position: i32 = sqlx::query_scalar("select coalesce(max(position),-1)+1 from channels where workspace_id=$1 and category_id is not distinct from $2 and deleted_at is null")
             .bind(workspace_id)
+            .bind(source.channel.category_id)
             .fetch_one(&mut *connection)
             .await?;
-        let channel = Channel {
+        let mut channel = Channel {
             voice_status: String::new(),
             topic: String::new(),
             id: channel_id,
@@ -281,6 +282,11 @@ pub async fn fork(
             false,
         )
         .await?;
+        // The place of the fork among the channels of its group that the caller sees
+        // (ADR 0304).
+        channel.position = access
+            .channel_place(connection, workspace_id, channel.id)
+            .await?;
         Ok(channel)
     })?;
     Ok((StatusCode::CREATED, Json(channel)))

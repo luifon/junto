@@ -159,6 +159,10 @@ impl DataDir {
     pub(crate) fn lock(&self) -> Result<DirectoryLock, StorageError> {
         self.handles.root.lock()
     }
+
+    pub(crate) fn try_lock(&self) -> Result<DirectoryLock, StorageError> {
+        self.handles.root.try_lock()
+    }
 }
 
 pub(crate) const BOOK_FILE: &str = "servers.json";

@@ -448,6 +448,32 @@ fn decide(
                     thread,
                     ..
                 } => *thread = standing.threads.get(root).cloned(),
+                // The position of a category is its place among the categories that the
+                // recipient sees now (ADR 0304).
+                Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
+                    let Some(rank) = standing
+                        .workspaces
+                        .get(&category.workspace_id)
+                        .and_then(|workspace| workspace.category_ranks.get(&category.id))
+                    else {
+                        return Ok(Decision::Hidden);
+                    };
+                    category.position = *rank;
+                }
+                // The position of a channel is its place among the channels of its group
+                // that the recipient sees now (ADR 0304).
+                Event::ChannelCreated { channel }
+                | Event::ChannelUpdated { channel }
+                | Event::ChannelRestored { channel } => {
+                    let Some(rank) = standing
+                        .workspaces
+                        .get(&channel.workspace_id)
+                        .and_then(|workspace| workspace.channel_ranks.get(&channel.id))
+                    else {
+                        return Ok(Decision::Hidden);
+                    };
+                    channel.position = *rank;
+                }
                 _ => {}
             }
             Ok(Decision::Deliver(Box::new(Receivable {
@@ -1230,6 +1256,39 @@ impl Standing {
                     .map(|(category, scope, child)| (category.id, (scope, child)))
                     .collect()
             };
+            let ranked = candidates.iter().any(|candidate| {
+                matches!(
+                    &candidate.event,
+                    Some(Event::CategoryCreated { category } | Event::CategoryUpdated { category })
+                        if category.workspace_id == workspace_id
+                )
+            });
+            let category_ranks = if ranked {
+                let order = access
+                    .category_order(connection, workspace_id, &scope)
+                    .await?;
+                crate::access::categories::ranks(&order)
+            } else {
+                HashMap::new()
+            };
+            let channel_placed = candidates.iter().any(|candidate| {
+                matches!(
+                    &candidate.event,
+                    Some(
+                        Event::ChannelCreated { channel }
+                            | Event::ChannelUpdated { channel }
+                            | Event::ChannelRestored { channel }
+                    ) if channel.workspace_id == workspace_id
+                )
+            });
+            let channel_ranks = if channel_placed {
+                let order = access
+                    .channel_order(connection, workspace_id, &scope)
+                    .await?;
+                crate::access::channel_order::channel_ranks(&order)
+            } else {
+                HashMap::new()
+            };
             workspaces.insert(
                 workspace_id,
                 WorkspaceStanding {
@@ -1237,6 +1296,8 @@ impl Standing {
                     everyone_role_id,
                     channels,
                     categories,
+                    category_ranks,
+                    channel_ranks,
                 },
             );
         }

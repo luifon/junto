@@ -117,6 +117,10 @@ pub enum FlowError {
     Incomplete { failed: usize, total: usize },
     #[error("a local file could not be used: {0}")]
     Storage(String),
+    /// Another program holds the lock of the data directory, so the change was not written
+    /// to the server book. It is written at the next action (ADR 0710).
+    #[error("another program is changing the data of Junto on this device")]
+    DataHeld,
     #[error("the client is shutting down")]
     Stopped,
 }
@@ -206,7 +210,10 @@ impl From<KeyStoreError> for FlowError {
 
 impl From<StorageError> for FlowError {
     fn from(error: StorageError) -> Self {
-        Self::Storage(error.to_string())
+        match error {
+            StorageError::Held { .. } => Self::DataHeld,
+            other => Self::Storage(other.to_string()),
+        }
     }
 }
 
@@ -216,6 +223,7 @@ impl From<crate::book::BookError> for FlowError {
         match error {
             BookError::AlreadySaved { server_id, .. }
             | BookError::AddressTaken { server_id, .. } => Self::AlreadySaved { server_id },
+            BookError::Storage(error) => Self::from(error),
             other => Self::Storage(other.to_string()),
         }
     }

@@ -280,6 +280,8 @@ pub fn save_progress(written: u64, bytes: Option<u64>) -> String {
     }
 }
 
+pub const SAVED_EARLIER: &str = "Saved on this device before the last start";
+
 pub fn saved_as(path: &Path) -> String {
     format!("Saved as {}", path.display())
 }

@@ -1111,7 +1111,8 @@ pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
 pub const NOISE_SUPPRESSION: &str = "Noise suppression";
-pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
+pub const NOISE_SUPPRESSION_HELP: &str =
+    "Removes steady background noise, such as a fan, and lowers typing and clicks a little.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
 /// The section of the settings with the switches of the sounds (ADR 0707).
@@ -1614,6 +1615,13 @@ pub const ADD_TO_SERVER_BOOK: &str = "Add to the server book";
 pub const KEY_OF_OTHER_ADDRESS_TITLE: &str =
     "This device holds a key of this server for another address";
 pub const DISCARD_KEY: &str = "Discard the stored key";
+pub const DISCARD_KEY_HERE: &str = "Discard on this device only";
+pub const CANCEL_REQUEST_HERE: &str = "Cancel on this device only";
+/// Said beside the actions that give up a request without telling the server, after the
+/// server could not be told (ADR 0712).
+pub const SERVER_NOT_TOLD: &str = "The server was not told. If you continue on this device \
+     only, the server keeps the request until it expires, and an approval of it makes an \
+     account that no device of yours can open.";
 pub const SAVING: &str = "Saving…";
 pub const CODE_MISSING: &str = "Type the code that the administrator gave you.";
 pub const NAME_MISSING: &str = "Choose a name in the settings first.";
@@ -1838,6 +1846,9 @@ pub fn flow_error(error: &FlowError) -> String {
         FlowError::Storage(reason) => {
             format!("A file of the data directory could not be used: {reason}.")
         }
+        FlowError::DataHeld => "Another program is changing the data of Junto on this device, \
+             so the change was not saved. Try again when it has finished, or close it."
+            .to_owned(),
         FlowError::Stopped => "Junto is shutting down.".to_owned(),
     }
 }
@@ -3563,6 +3574,7 @@ mod tests {
                 total: 3,
             },
             FlowError::Storage("the file is locked".to_owned()),
+            FlowError::DataHeld,
             FlowError::Stopped,
         ];
         all.extend(ErrorCode::ALL.iter().map(|code| FlowError::Refused {
@@ -3617,10 +3629,11 @@ mod tests {
                 FlowError::InvalidBundle(_) => "invalid bundle",
                 FlowError::Incomplete { .. } => "incomplete",
                 FlowError::Storage(_) => "storage",
+                FlowError::DataHeld => "data held",
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 25);
     }
 
     #[test]

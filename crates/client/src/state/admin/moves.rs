@@ -4,7 +4,7 @@
 use junto_client_core::api::Receipt;
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
-use junto_client_core::protocol::structure::ChannelMove;
+use junto_client_core::protocol::structure::{ChannelMove, ChannelPlace};
 
 use crate::state::receipts::Awaited;
 
@@ -31,10 +31,11 @@ struct Waiting {
     /// The moves that change a channel. A later move of the same channel that the state
     /// holds takes the move of that channel out of an earlier request.
     moves: Vec<ChannelMove>,
-    /// The moves that only check the place of a channel. They are drawn while the request
-    /// is refused, so that the state read again after a conflict changes nothing that the
-    /// page drew before the person puts the refusal away.
-    checks: Vec<ChannelMove>,
+    /// Where the page drew the channels of the request after the move, by their index in
+    /// their group. They are drawn there while the request is refused, so that the state
+    /// read again after a conflict changes nothing that the page drew before the person puts
+    /// the refusal away.
+    drawn: Vec<(ChannelId, ChannelPlace)>,
     /// The receipt of the answer. Absent while the request is on its way.
     answered: Option<Awaited>,
     /// Why the server refused the request.
@@ -42,17 +43,27 @@ struct Waiting {
 }
 
 impl ChannelMoves {
-    /// The moves of the channels of one workspace that are drawn, the oldest first.
+    /// The moves of the channels of one workspace that are drawn, the oldest first: each
+    /// `to` is the index of the channel in its group. A refused request first states where
+    /// the page drew its channels, as moves to the same place, and then its moves.
     pub fn of(&self, server_id: ServerId, workspace_id: WorkspaceId) -> Vec<ChannelMove> {
         self.waiting
             .iter()
             .filter(|held| held.server_id == server_id && held.workspace_id == workspace_id)
             .flat_map(|held| {
-                let checks = held.refused.is_some().then_some(&held.checks);
-                held.moves
-                    .iter()
-                    .chain(checks.into_iter().flatten())
-                    .copied()
+                let drawn: Vec<ChannelMove> = if held.refused.is_some() {
+                    held.drawn
+                        .iter()
+                        .map(|(channel_id, place)| ChannelMove {
+                            channel_id: *channel_id,
+                            from: *place,
+                            to: *place,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                drawn.into_iter().chain(held.moves.iter().copied())
             })
             .collect()
     }
@@ -72,13 +83,15 @@ impl ChannelMoves {
     }
 
     /// Notes the moves of one request, and returns its number. A move that only checks the
-    /// place of a channel changes nothing and is drawn only while the request is refused.
+    /// place of a channel changes nothing. `drawn` is where the page draws the channels of
+    /// the request after the move, which is drawn only while the request is refused.
     pub(crate) fn begin(
         &mut self,
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
         moves: &[ChannelMove],
+        drawn: Vec<(ChannelId, ChannelPlace)>,
     ) -> u64 {
         self.begun += 1;
         self.waiting.push(Waiting {
@@ -91,11 +104,7 @@ impl ChannelMoves {
                 .filter(|held| held.to != held.from)
                 .copied()
                 .collect(),
-            checks: moves
-                .iter()
-                .filter(|held| held.to == held.from)
-                .copied()
-                .collect(),
+            drawn,
             answered: None,
             refused: None,
         });
@@ -199,6 +208,7 @@ mod tests {
         ChannelPlace {
             category_id: None,
             position,
+            place: None,
         }
     }
 
@@ -230,12 +240,14 @@ mod tests {
             workspace_id,
             x,
             &[moved(x, 0, 5), moved(y, 5, 4)],
+            Vec::new(),
         );
         let second = moves.begin(
             server_id,
             workspace_id,
             x,
             &[moved(x, 5, 9), moved(y, 4, 4)],
+            Vec::new(),
         );
         assert_eq!(
             moves.of(server_id, workspace_id),
@@ -266,15 +278,17 @@ mod tests {
             workspace_id,
             x,
             &[moved(x, 0, 5), moved(y, 5, 5)],
+            vec![(x, place(5)), (y, place(4))],
         );
         // While it waits, the check of "y" is not drawn: "y" is where the state has it.
         assert_eq!(moves.of(server_id, workspace_id), [moved(x, 0, 5)]);
-        // Refused, both stay where the page drew them, also over a state read again.
+        // Refused, both stay where the page drew them, also over a state read again: the
+        // places where the page drew them, and then the move.
         moves.refused(number, "No longer there.".to_owned());
         moves.settle(|_, _| Some(&model));
         assert_eq!(
             moves.of(server_id, workspace_id),
-            [moved(x, 0, 5), moved(y, 5, 5)]
+            [moved(x, 5, 5), moved(y, 4, 4), moved(x, 0, 5)]
         );
         assert_eq!(
             moves.refusal(server_id, workspace_id),

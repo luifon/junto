@@ -8,7 +8,7 @@ use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::invite::ApproveJoinRequest;
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel, UpdateChannel};
 
-use crate::harness::{World, member, named, open};
+use crate::harness::{Window, World, member, named, open};
 use crate::support::FaultProxy;
 
 #[gpui::test]
@@ -381,6 +381,193 @@ fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(cx: &m
     }));
     assert_eq!(window.view().servers.len(), 1);
     window.until_ready();
+}
+
+/// A server of a release without the withdrawal route answers 404 to it, so "Cancel request"
+/// fails each time. The window then offers to cancel on this device only and says that the
+/// server was not told; that removes the server and its key, and the request stays on the
+/// server (ADR 0712).
+#[gpui::test]
+fn a_request_that_the_server_cannot_be_told_to_withdraw_is_cancelled_on_this_device(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&proxy.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    assert!(!window.shows("cancel-request-here"));
+    let server_id = window.view().servers[0].id;
+    proxy.answer_with(
+        "POST",
+        "/join-requests/withdrawal",
+        404,
+        br#"{"error":{"code":"not_found","message":"no such route"}}"#.to_vec(),
+    );
+    window.click("cancel-request");
+    window.until("the cancellation fails", |window| {
+        window.shows("cancel-request-here") && window.shows("server-not-told")
+    });
+    assert_eq!(window.view().servers.len(), 1);
+    let key_file = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().key_file(server_id)
+    });
+    assert!(key_file.exists());
+
+    window.click("cancel-request-here");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        !state.pending().remove_failed.contains_key(&server_id)
+    }));
+    assert!(!key_file.exists());
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
+/// The add-server dialog for a key that this device holds for another address offers to
+/// discard the key on this device only after the withdrawal failed, with the sentence that
+/// the server was not told; that discards the key and shows the preview (ADR 0712).
+#[gpui::test]
+fn a_key_of_another_address_is_discarded_on_this_device_when_the_server_cannot_be_told(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Luca");
+
+    // A request at the address of the server, and a removal that does not wait for the
+    // server: the key of the request stays on this device.
+    window.find_server(&server.address());
+    window.click("request-access");
+    window.until("the request waits", |window| window.shows("cancel-request"));
+    window.click("close-join");
+    let server_id = window.view().servers[0].id;
+    let client = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().clone());
+    std::thread::spawn(move || client.remove_server(server_id))
+        .join()
+        .unwrap()
+        .unwrap();
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    let key_file = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().key_file(server_id)
+    });
+    assert!(key_file.exists());
+
+    // The same server at another address, whose release has no withdrawal route.
+    proxy.answer_with(
+        "POST",
+        "/join-requests/withdrawal",
+        404,
+        br#"{"error":{"code":"not_found","message":"no such route"}}"#.to_vec(),
+    );
+    window.find_server(&proxy.address());
+    assert!(window.shows("join-key-of-other-address"));
+    assert!(!window.shows("discard-key-here"));
+    window.click("discard-key");
+    window.until("the discard fails", |window| {
+        window.shows("discard-key-here") && window.shows("server-not-told")
+    });
+    assert!(key_file.exists());
+
+    window.click("discard-key-here");
+    window.until("the preview of the server is shown", |window| {
+        window.shows("request-access") && !window.shows("join-key-of-other-address")
+    });
+    assert!(!key_file.exists());
+    assert_eq!(
+        world.run(admin.handle.api().join_requests()).unwrap().len(),
+        1
+    );
+}
+
+/// The information that a server gives at `/api/server`, read without the client.
+fn server_information(world: &World, address: &str) -> serde_json::Value {
+    world.run(async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let authority = address.trim_start_matches("http://").to_owned();
+        let mut stream = tokio::net::TcpStream::connect(&authority).await.unwrap();
+        let request =
+            format!("GET /api/server HTTP/1.1\r\nhost: {authority}\r\nconnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer).await.unwrap();
+        let answer = String::from_utf8(answer).unwrap();
+        let (_, body) = answer.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap()
+    })
+}
+
+/// A server whose API versions this build cannot use is saved, and the main area shows its
+/// panel with "Check again", which asks the server again, and "Remove" (ADR 0713, ADR 0732).
+#[gpui::test]
+fn the_panel_of_a_server_of_another_api_version_checks_again_and_removes(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let mut information = server_information(&world, &server.address());
+    information["api_versions"] = serde_json::json!([999]);
+    proxy.answer_json(
+        "GET",
+        "/api/server",
+        serde_json::to_vec(&information).unwrap(),
+    );
+    let (_directory, mut window) = named(cx, "Luca");
+
+    window.find_server(&proxy.address());
+    assert!(window.shows("join-incompatible"));
+    window.click("add-to-server-book");
+    window.until("the panel of the incompatible server", |window| {
+        window.shows("incompatible")
+            && window.shows("check-server")
+            && window.shows("remove-server")
+    });
+    assert!(matches!(
+        window.status(),
+        Some(ServerStatus::Incompatible(_))
+    ));
+
+    // The check runs from the press until its answer is applied: the panel is read after
+    // that end, which only the answer brings.
+    let server_id = window.view().servers[0].id;
+    let running = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .client()
+                .server(server_id)
+                .and_then(|server| server.access().in_progress)
+        })
+    };
+    let asked = proxy.seen("/api/server").len();
+    window.click("check-server");
+    window.until("the check has asked the server again and ended", |window| {
+        proxy.seen("/api/server").len() > asked && running(window).is_none()
+    });
+    assert!(matches!(
+        window.status(),
+        Some(ServerStatus::Incompatible(_))
+    ));
+    assert!(window.shows("incompatible") && window.shows("check-server"));
+
+    window.click("remove-server");
+    window.click("confirm");
+    window.until("the server is removed", |window| {
+        window.view().servers.is_empty()
+    });
+    assert!(!window.shows("incompatible"));
 }
 
 #[gpui::test]

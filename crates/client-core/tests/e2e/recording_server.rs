@@ -50,11 +50,13 @@ use crate::support::TestDatabase;
 /// `<script> run <job> --out <transcript> --audio-root <directory of the recording>`. It
 /// writes the transcript that the test gave for that recording, and fails without one. For
 /// a recording that the test marked as refused it ends with the code of a refused job,
-/// which fails the transcript without a further run (ADR 0607).
+/// which fails the transcript without a further run (ADR 0607). On Windows the `sh` of Git
+/// for Windows runs it, whose `basename` takes only `/` as a separator.
 const WORKER_SCRIPT: &str = r#"#!/bin/sh
 here=$(dirname "$0")
-[ -f "$here/$(basename "$6").refuse" ] && exit 2
-given="$here/$(basename "$6").json"
+recording=$(basename "$(printf '%s' "$6" | tr '\\' /)")
+[ -f "$here/$recording.refuse" ] && exit 2
+given="$here/$recording.json"
 [ -f "$given" ] || exit 1
 cp "$given" "$4.tmp" && mv "$4.tmp" "$4"
 "#;
@@ -211,6 +213,12 @@ where
     result.await.expect("the work of the test server ended")
 }
 
+/// The shell of the stand-in worker: on Windows the `sh` of Git for Windows, from the path
+/// of the CI job (ADR 0912).
+fn worker_shell() -> String {
+    if cfg!(windows) { "sh" } else { "/bin/sh" }.to_owned()
+}
+
 fn program(variable: &str, name: &str) -> PathBuf {
     std::env::var_os(variable).map_or_else(|| name.into(), PathBuf::from)
 }
@@ -240,7 +248,7 @@ impl RecordingServer {
             ffprobe: program("JUNTO_FFPROBE", "ffprobe"),
             transcriber: Some(TranscriberSettings {
                 batch_size: None,
-                command: vec!["/bin/sh".to_owned(), script.to_str().unwrap().to_owned()],
+                command: vec![worker_shell(), script.to_str().unwrap().replace('\\', "/")],
                 environment: Vec::new(),
                 separate_speakers: true,
             }),

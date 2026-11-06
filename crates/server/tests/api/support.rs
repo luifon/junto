@@ -1184,6 +1184,7 @@ pub async fn host_command_on(database_url: String, arguments: &[&str]) -> HostCo
     command
         .args(arguments)
         .env_clear()
+        .envs(junto_server::starter::system_environment())
         .env("JUNTO_DATABASE_URL", database_url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

@@ -142,9 +142,11 @@ pub enum Unplanned {
     /// The channel is at the place already, or the page does not hold the channel or the
     /// group.
     Nothing,
-    /// Each way of the move changes a channel in which the person does not hold "manage
-    /// channel" (ADR 0761).
+    /// The person does not hold "manage channel" in the moved channel (ADR 0761).
     NotManaged,
+    /// The move takes the channel out of its category to the root, which needs "manage
+    /// channel" in the workspace (ADR 0304).
+    RootNotManaged,
     /// Each way of the move that the person may send names more channels than one
     /// request names (ADR 0304).
     TooMany,
@@ -171,6 +173,21 @@ pub struct ChannelsPage {
     /// the moved channel, at whose row the refusal is stated, and the reason. While it is
     /// drawn, the page offers no move (ADR 0730).
     pub refusal: Option<(ChannelId, String)>,
+    /// The server takes the place of a move (`place`, event revision 20 and later); an older
+    /// server takes positions as release 0.1.0 computed them (ADR 0206).
+    pub places: bool,
+}
+
+/// The request of a move, and where the page draws the channels that it names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Planned {
+    /// The moves that the request sends: the moved channel, from the position where the
+    /// state holds it to its place among the channels of the group (`place`), and the
+    /// channels next to that place as checks of the positions where the state holds them.
+    pub moves: Vec<ChannelMove>,
+    /// The index of each channel of the request in the order of its group that the page
+    /// draws after the move.
+    pub drawn: Vec<(ChannelId, ChannelPlace)>,
 }
 
 impl ChannelsPage {
@@ -195,29 +212,94 @@ impl ChannelsPage {
     }
 
     /// The moves that put the channel at the place `to` of the channels of `category_id`,
-    /// computed from this page alone, the moved channel first: the way with the fewest
-    /// changed channels (see [`placings`](crate::state::admin::structure::placings)) in
-    /// which the person holds "manage channel" in every channel whose position or category
-    /// changes (ADR 0761). The channels next to the place, as the page read them, follow as
-    /// moves that only check where they are, so that the server refuses a move computed from
-    /// an order that changed (ADR 0304); such a check needs "view channel" alone. The moves
-    /// name at most the channels that one request names. The drag, Up, Down and the places
-    /// of "Move to" all use it, so they offer the same destinations.
+    /// computed from this page alone, the moved channel first: one move to the place `to`
+    /// among the channels of the group as the page shows them without the moved one, which
+    /// is the meaning of a position for the server (ADR 0304). The person holds "manage
+    /// channel" in the moved channel, and "manage channel" in the workspace for a move to the
+    /// root (ADR 0761). The channels next to the place, as the page read them, follow as moves
+    /// that only check where they are, so that the server refuses a move computed from an
+    /// order that changed; such a check needs "view channel" alone. The drag, Up, Down and the
+    /// places of "Move to" all use it, so they offer the same destinations.
     pub fn plan(
         &self,
         channel_id: ChannelId,
         category_id: Option<CategoryId>,
         to: usize,
-    ) -> Result<Vec<ChannelMove>, Unplanned> {
+    ) -> Result<Planned, Unplanned> {
         if self.refusal.is_some() {
             return Err(Unplanned::RefusalShown);
         }
-        self.channel(channel_id).ok_or(Unplanned::Nothing)?;
+        let line = self.channel(channel_id).ok_or(Unplanned::Nothing)?;
+        let group = self.group(category_id).ok_or(Unplanned::Nothing)?;
+        let others: Vec<&ChannelLine> = group
+            .channels
+            .iter()
+            .filter(|line| line.id != channel_id)
+            .collect();
+        let at = to.min(others.len());
+        if group.channels.iter().position(|line| line.id == channel_id) == Some(at) {
+            return Err(Unplanned::Nothing);
+        }
+        if !line.may_manage {
+            return Err(Unplanned::NotManaged);
+        }
+        if category_id.is_none() && line.category_id.is_some() && !self.may_manage {
+            return Err(Unplanned::RootNotManaged);
+        }
+        let place = i32::try_from(at).map_err(|_| Unplanned::TooMany)?;
+        if !self.places {
+            return self.plan_of_positions(channel_id, category_id, to, place);
+        }
+        let shown = |position: i32| ChannelPlace {
+            category_id,
+            position,
+            place: None,
+        };
+        let mut moves = vec![ChannelMove {
+            channel_id,
+            from: line.place,
+            to: ChannelPlace {
+                category_id,
+                position: place,
+                place: Some(place),
+            },
+        }];
+        let mut drawn = vec![(channel_id, shown(place))];
+        let before = at.checked_sub(1).and_then(|before| others.get(before));
+        let after = others.get(at);
+        for (neighbour, shown_at) in [(before, place - 1), (after, place + 1)] {
+            let Some(neighbour) = neighbour else {
+                continue;
+            };
+            moves.push(ChannelMove {
+                channel_id: neighbour.id,
+                from: neighbour.place,
+                to: neighbour.place,
+            });
+            drawn.push((neighbour.id, shown(shown_at)));
+        }
+        if moves.len() > MOST_CHANNEL_MOVES {
+            return Err(Unplanned::TooMany);
+        }
+        Ok(Planned { moves, drawn })
+    }
+
+    /// The moves of [`ChannelsPage::plan`] for a server that takes positions only, as the
+    /// window of release 0.1.0 computed them: the fewest channels of the group get new
+    /// positions in the order of position and identifier (`placings`), and the channels
+    /// next to the place follow as checks (ADR 0206).
+    fn plan_of_positions(
+        &self,
+        channel_id: ChannelId,
+        category_id: Option<CategoryId>,
+        to: usize,
+        place: i32,
+    ) -> Result<Planned, Unplanned> {
         let group = self.group(category_id).ok_or(Unplanned::Nothing)?;
         let order: Vec<(ChannelId, i32)> = group
             .channels
             .iter()
-            .map(|line| (line.id, line.position))
+            .map(|line| (line.id, line.place.position))
             .collect();
         let others: Vec<&ChannelLine> = group
             .channels
@@ -225,16 +307,20 @@ impl ChannelsPage {
             .filter(|line| line.id != channel_id)
             .collect();
         let at = to.min(others.len());
-        let neighbours: Vec<&ChannelLine> = at
+        let neighbours: Vec<(&ChannelLine, i32)> = at
             .checked_sub(1)
             .and_then(|before| others.get(before))
+            .map(|line| (*line, place - 1))
             .into_iter()
-            .chain(others.get(at))
-            .copied()
+            .chain(others.get(at).map(|line| (*line, place + 1)))
             .collect();
-        let ways = crate::state::admin::structure::placings(&order, channel_id, to);
+        let shown = |position: i32| ChannelPlace {
+            category_id,
+            position,
+            place: None,
+        };
         let mut refused = Unplanned::Nothing;
-        for changes in ways {
+        for changes in crate::state::admin::structure::placings(&order, channel_id, to) {
             let lines: Option<Vec<&ChannelLine>> = changes
                 .iter()
                 .map(|(id, _)| self.channel(*id).filter(|line| line.may_manage))
@@ -251,17 +337,14 @@ impl ChannelsPage {
                 .map(|((id, position), line)| ChannelMove {
                     channel_id: *id,
                     from: line.place,
-                    to: ChannelPlace {
-                        category_id,
-                        position: *position,
-                    },
+                    to: shown(*position),
                 })
                 .collect();
-            if let Some(at) = moves.iter().position(|held| held.channel_id == channel_id) {
-                let own = moves.remove(at);
+            if let Some(own) = moves.iter().position(|held| held.channel_id == channel_id) {
+                let own = moves.remove(own);
                 moves.insert(0, own);
             }
-            for line in &neighbours {
+            for (line, _) in &neighbours {
                 if moves.iter().all(|held| held.channel_id != line.id) {
                     moves.push(ChannelMove {
                         channel_id: line.id,
@@ -274,7 +357,10 @@ impl ChannelsPage {
                 refused = Unplanned::TooMany;
                 continue;
             }
-            return Ok(moves);
+            let drawn = std::iter::once((channel_id, shown(place)))
+                .chain(neighbours.iter().map(|(line, at)| (line.id, shown(*at))))
+                .collect();
+            return Ok(Planned { moves, drawn });
         }
         Err(refused)
     }
@@ -882,57 +968,128 @@ fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> Workspace
 /// first: the page shows each such channel at the place that its newest move asks for,
 /// and states that place as the one where the channel is, so the order changes at the
 /// action of the person and not at the answer or at the events (ADR 0730).
+/// True when the server takes the place of a move: event revision 20 and later (ADR 0206).
+fn takes_places(server: &ServerSnapshot) -> bool {
+    server.event_revision >= 20
+}
+
 fn channels_page(
     workspace: &WorkspaceModel,
     waiting: &[ChannelMove],
     refusal: Option<(ChannelId, String)>,
+    places: bool,
 ) -> ChannelsPage {
     let in_category = |category_id: Option<CategoryId>| {
         category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
     };
-    let place_of = |held: &junto_client_core::model::ChannelModel| {
-        waiting
+    // The order of the state, by position and by identifier for equal positions, in each
+    // group. Then the drawn moves, the oldest first: a run of moves to the same place puts
+    // those channels at the places where the page read them, together, and the other
+    // channels fill the other places in their order; a move to another place takes the
+    // channel out and puts it at its place among the other channels of its group, which is
+    // the meaning of a position (ADR 0304).
+    let mut order: Vec<(
+        Option<CategoryId>,
+        Vec<&junto_client_core::model::ChannelModel>,
+    )> = std::iter::once(None)
+        .chain(
+            workspace
+                .categories
+                .iter()
+                .map(|category| Some(category.id)),
+        )
+        .map(|group| {
+            let mut held: Vec<_> = workspace
+                .channels
+                .iter()
+                .filter(|held| in_category(held.channel.category_id) == group)
+                .collect();
+            held.sort_by_key(|held| (held.channel.position, held.channel.id.as_uuid().as_u128()));
+            (group, held)
+        })
+        .collect();
+    let mut rest = waiting;
+    while let Some(first) = rest.first() {
+        let run = if first.to == first.from {
+            rest.iter()
+                .take_while(|moved| moved.to == moved.from)
+                .count()
+        } else {
+            1
+        };
+        let (now, later) = rest.split_at(run);
+        rest = later;
+        let taken: Vec<(&junto_client_core::model::ChannelModel, ChannelPlace)> = now
             .iter()
-            .rev()
-            .find(|moved| moved.channel_id == held.channel.id)
-            .map_or(
-                ChannelPlace {
-                    category_id: held.channel.category_id,
-                    position: held.channel.position,
-                },
-                |moved| moved.to,
-            )
-    };
-    let lines = |category_id: Option<CategoryId>| {
-        let mut lines: Vec<ChannelLine> = workspace
-            .channels
-            .iter()
-            .map(|held| (held, place_of(held)))
-            .filter(|(_, place)| in_category(place.category_id) == category_id)
-            .map(|(held, place)| ChannelLine {
-                id: held.channel.id,
-                name: held.channel.name.clone(),
-                kind: held.channel.kind,
-                category_id,
-                position: place.position,
-                place,
-                permanent: held.channel.permanent_messages,
-                first: false,
-                last: false,
-                may_manage: workspace.holds_in(held.channel.id, WorkspacePermission::ManageChannel),
-                moves_up: Err(Unplanned::Nothing),
-                moves_down: Err(Unplanned::Nothing),
+            .filter_map(|moved| {
+                let held = order.iter_mut().find_map(|(_, held)| {
+                    let at = held
+                        .iter()
+                        .position(|held| held.channel.id == moved.channel_id)?;
+                    Some(held.remove(at))
+                })?;
+                Some((held, moved.to))
             })
             .collect();
-        // The order of the state: by position, and by identifier for equal positions.
-        lines.sort_by_key(|line| (line.position, line.id.as_uuid().as_u128()));
-        if let Some(first) = lines.first_mut() {
-            first.first = true;
+        for (group, held) in &mut order {
+            let mut placed: Vec<_> = taken
+                .iter()
+                .filter(|(_, place)| in_category(place.category_id) == *group)
+                .map(|(channel, place)| (place.position, *channel))
+                .collect();
+            placed.sort_by_key(|(position, _)| *position);
+            if placed.is_empty() {
+                continue;
+            }
+            let mut placed = placed.into_iter().peekable();
+            let mut others = std::mem::take(held).into_iter();
+            loop {
+                let at = i32::try_from(held.len()).unwrap_or(i32::MAX);
+                let next = match placed.peek() {
+                    Some((position, _)) if *position <= at => placed.next().map(|(_, it)| it),
+                    _ => others.next().or_else(|| placed.next().map(|(_, it)| it)),
+                };
+                let Some(next) = next else {
+                    break;
+                };
+                held.push(next);
+            }
         }
-        if let Some(last) = lines.last_mut() {
-            last.last = true;
-        }
-        lines
+    }
+    let lines = |category_id: Option<CategoryId>| {
+        let held = order
+            .iter()
+            .find(|(group, _)| *group == category_id)
+            .map(|(_, held)| held.as_slice())
+            .unwrap_or_default();
+        let count = held.len();
+        held.iter()
+            .zip(0..)
+            .map(|(held, position)| {
+                // The position that the server gave, which a request names as where the
+                // page read the channel (ADR 0304).
+                let place = ChannelPlace {
+                    category_id,
+                    position: held.channel.position,
+                    place: None,
+                };
+                ChannelLine {
+                    id: held.channel.id,
+                    name: held.channel.name.clone(),
+                    kind: held.channel.kind,
+                    category_id,
+                    position,
+                    place,
+                    permanent: held.channel.permanent_messages,
+                    first: position == 0,
+                    last: usize::try_from(position).is_ok_and(|at| at + 1 == count),
+                    may_manage: workspace
+                        .holds_in(held.channel.id, WorkspacePermission::ManageChannel),
+                    moves_up: Err(Unplanned::Nothing),
+                    moves_down: Err(Unplanned::Nothing),
+                }
+            })
+            .collect::<Vec<ChannelLine>>()
     };
     let mut groups = vec![ChannelGroup {
         category: None,
@@ -957,6 +1114,7 @@ fn channels_page(
         may_manage: holds_workspace(workspace, WorkspacePermission::ManageChannel),
         groups,
         refusal,
+        places,
     };
     // A move by one place is the move to the place before or after, with the same rule of
     // positions and permissions as a drag.
@@ -1207,6 +1365,7 @@ pub fn derive(
                     admin
                         .channel_moves
                         .refusal(server_id, workspace.workspace.id),
+                    takes_places(server),
                 )),
                 (AdminPage::Archive, Some(workspace)) => {
                     ServerPage::Archive(archive_page(model, workspace, known))

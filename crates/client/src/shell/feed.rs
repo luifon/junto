@@ -1349,16 +1349,6 @@ impl CodeTokens {
         tokens
     }
 
-    /// The number of coloured parts of a drawn code block, without counting a use of them.
-    #[cfg(feature = "test-support")]
-    fn drawn(&self, code: &str, language: &str) -> Option<usize> {
-        let rules = highlight::rules_of(language)?;
-        self.held
-            .get(rules)?
-            .get(code)
-            .map(|(tokens, _)| tokens.len())
-    }
-
     fn drop_oldest(&mut self) {
         let oldest = self
             .held
@@ -1398,17 +1388,9 @@ fn code_block(
         Token::Value => colors.code_value,
         Token::Comment => colors.code_comment,
     };
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = tokens
+    let colours: Vec<(Range<usize>, Hsla)> = tokens
         .iter()
-        .map(|(range, token)| {
-            (
-                range.clone(),
-                HighlightStyle {
-                    color: Some(colour(*token).into()),
-                    ..HighlightStyle::default()
-                },
-            )
-        })
+        .map(|(range, token)| (range.clone(), colour(*token).into()))
         .collect();
     let copy = code.to_owned();
     div()
@@ -1463,7 +1445,7 @@ fn code_block(
                         ),
                 ),
         )
-        .child(StyledText::new(code.to_owned()).with_highlights(highlights))
+        .child(crate::ui::code_text(code.to_owned().into(), colours))
         .into_any_element()
 }
 
@@ -1660,13 +1642,6 @@ impl Shell {
             offset_in_item: px(0.0),
         });
         cx.notify();
-    }
-
-    /// How many coloured parts the window drew for a code block in this language. Absent
-    /// when it drew no such block.
-    #[cfg(feature = "test-support")]
-    pub fn code_colours(&self, code: &str, language: &str) -> Option<usize> {
-        self.code_tokens.drawn(code, language)
     }
 
     /// Shows the end of the history of a pane: the list goes there, and the latest page
@@ -2165,20 +2140,28 @@ impl Shell {
             )
             .when(away, |frame| {
                 frame.child(
-                    div().absolute().right(u(18.0)).bottom(u(8.0)).child(
-                        Button::new("go-to-end")
-                            .icon(Icon::ChevronDown)
-                            .label(if feed.unread > 0 {
-                                SharedString::from(text::unread_tooltip(feed.unread, 0))
-                            } else {
-                                text::GO_TO_END.into()
-                            })
-                            .tooltip(text::GO_TO_END)
-                            .selector(pane.id("go-to-end"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.go_to_end(pane, window, cx);
-                            })),
-                    ),
+                    // The button lies over the rows: it takes the pointer, so that the row under
+                    // it is not hovered and does not take the press as well, and leaves the
+                    // wheel to the list (ADR 0740).
+                    div()
+                        .absolute()
+                        .right(u(18.0))
+                        .bottom(u(8.0))
+                        .block_mouse_except_scroll()
+                        .child(
+                            Button::new("go-to-end")
+                                .icon(Icon::ChevronDown)
+                                .label(if feed.unread > 0 {
+                                    SharedString::from(text::unread_tooltip(feed.unread, 0))
+                                } else {
+                                    text::GO_TO_END.into()
+                                })
+                                .tooltip(text::GO_TO_END)
+                                .selector(pane.id("go-to-end"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.go_to_end(pane, window, cx);
+                                })),
+                        ),
                 )
             })
             .into_any_element()
@@ -4797,6 +4780,20 @@ impl Shell {
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
+    }
+
+    /// The jump that the list of a pane went to last: the message and the number of the jump.
+    /// A test tells by it whether a list took a jump of the state.
+    #[cfg(feature = "test-support")]
+    pub fn feed_jump(&self, pane: Pane) -> Option<(MessageId, u64)> {
+        self.list(pane).target
+    }
+
+    /// The first row of the list of a pane and the distance of the view into it.
+    #[cfg(feature = "test-support")]
+    pub fn feed_scroll_top(&self, pane: Pane) -> (usize, f32) {
+        let top = self.list(pane).list.logical_scroll_top();
+        (top.item_ix, f32::from(top.offset_in_item))
     }
 
     /// The bounds in which the last frame drew the list of a pane. A test that measures a

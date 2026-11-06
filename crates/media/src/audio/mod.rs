@@ -8,6 +8,7 @@
 pub mod capture;
 pub(crate) mod check;
 pub mod cpal_host;
+pub mod denoise;
 pub mod host;
 pub mod input_test;
 pub mod level;

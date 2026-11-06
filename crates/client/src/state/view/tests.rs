@@ -251,6 +251,7 @@ pub(super) fn server(
         model: model.map(Arc::new),
         server_version: None,
         server_events: None,
+        event_revision: 0,
     }
 }
 
@@ -3518,4 +3519,12 @@ fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_c
     controls.warning = Some(SoundWarning::NoMicrophoneAccess);
     controls.show_muted_speech(20, true);
     assert!(!controls.muted_speech);
+}
+
+/// The revision of the `hello` of the stream decides; while the stream has not greeted, the
+/// one of the description of the server (ADR 0206).
+#[test]
+fn the_revision_of_the_stream_decides_and_the_description_stands_in_before_a_hello() {
+    assert_eq!(super::event_revision(Some(19), 20), 19);
+    assert_eq!(super::event_revision(None, 20), 20);
 }

@@ -30,6 +30,7 @@ def quoted(command):
 
 WINDOW_LANE = "cargo test --no-fail-fast --workspace --locked --test app"
 API_LANE = "cargo test --no-fail-fast --workspace --locked --test api"
+LIVE_LANE = "cargo test --no-fail-fast --workspace --locked --test app live:: -- --ignored"
 OTHER_LANE = ("sh -c targets=$(python3 tools/ci/cargo_targets.py /target/junto-ci/test-programs.json app api) "
               "&& exec cargo test --no-fail-fast --workspace --locked $targets")
 DOC_LANE = "cargo test --no-fail-fast --workspace --locked --doc"
@@ -61,6 +62,16 @@ class LinuxSteps(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn(DEVICE_TESTS, commands)
         self.assertLess(commands.index("cargo build --workspace --locked"), commands.index(DEVICE_TESTS))
+
+    def test_the_linux_job_lints_each_crate_alone_and_keeps_its_failure(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        for targets in ("", "--all-targets "):
+            command = f"python3 tools/ci/each_crate.py clippy --locked {targets}--keep-going -- -D warnings"
+            self.assertEqual(commands.count(command), 1)
+        status, commands, output = self.run_job(fail_on="each_crate.py clippy --locked --all-targets")
+        self.assertEqual(status, 17)
+        self.assertIn("Lint each crate alone (exit 17)", output.split("=== Failed steps", 1)[1])
 
     def test_the_linux_job_measures_the_empty_bands_of_every_screen(self):
         status, commands, output = self.run_job()
@@ -108,13 +119,13 @@ class LinuxSteps(unittest.TestCase):
         status, commands, output = self.run_job()
         self.assertEqual(status, 0, output)
         build = next(c for c in commands if "--no-run" in c and "--workspace" in c)
-        lanes = [WINDOW_LANE, API_LANE, OTHER_LANE, DOC_LANE]
+        lanes = [WINDOW_LANE, LIVE_LANE, API_LANE, OTHER_LANE, DOC_LANE]
         for command in lanes:
             self.assertEqual(commands.count(command), 1, command)
             self.assertLess(commands.index(build), commands.index(command))
         # Every other test program: the build's own list without the two lanes of their own.
         self.assertIn("cargo_targets.py /target/junto-ci/test-programs.json app api", OTHER_LANE)
-        self.assertIn("Lanes: app, other, screens-1, screens-2, least-1, least-2, one after the other", output)
+        self.assertIn("Lanes: app, live, other, screens-1, screens-2, least-1, least-2, one after the other", output)
         self.assertFalse([c for c in commands if c.startswith("cargo test") and "--workspace" in c
                           and c not in lanes and "--no-run" not in c])
 
@@ -134,6 +145,16 @@ class LinuxSteps(unittest.TestCase):
         failed = output.split("=== Failed steps", 1)[1]
         self.assertIn(f"Server API tests with PostgreSQL (exit 17): tools/linux-container.sh {API_LANE}", failed)
         self.assertNotIn("Window tests", failed)
+
+    def test_the_window_tests_of_calls_run_in_a_lane_of_their_own_and_keep_their_failure(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        self.assertEqual(commands.count(LIVE_LANE), 1)
+        status, commands, output = self.run_job(fail_on="live:: -- --ignored")
+        self.assertEqual(status, 17)
+        failed = output.split("=== Failed steps", 1)[1]
+        self.assertIn(f"Window tests of calls with LiveKit (exit 17): tools/linux-container.sh {LIVE_LANE}", failed)
+        self.assertIn(WINDOW_LANE, commands)
 
     def test_each_step_states_its_start_end_and_duration(self):
         status, commands, output = self.run_job()

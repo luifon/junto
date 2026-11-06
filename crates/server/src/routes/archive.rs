@@ -66,12 +66,13 @@ pub async fn archive_channel(
             &AuditEvent::ChannelArchived,
         )
         .await?;
+        let stored = record.channel.clone();
         let channel = archive::view(connection, record, days, now).await?;
         let archived = Event::ChannelArchived {
             channel: channel.clone(),
         };
         events::publish(connection, now, &archived).await?;
-        super::channels::left_lists(connection, now, &channel.channel).await?;
+        super::channels::left_lists(connection, now, &stored).await?;
         Ok(channel)
     })
     .map(Json)
@@ -101,8 +102,15 @@ pub async fn restore_channel(
             scope: &scope,
             permission: WorkspacePermission::ManageChannel,
         })?;
+        let workspace_id = record.channel.workspace_id;
         if record.archived_at.is_none() {
-            return Ok(record.channel);
+            let position = access
+                .channel_place(connection, workspace_id, channel_id)
+                .await?;
+            return Ok(Channel {
+                position,
+                ..record.channel
+            });
         }
         sqlx::query(
             "update channels set archived_at = null, deletion_notice_at = null
@@ -123,10 +131,20 @@ pub async fn restore_channel(
             channel: record.channel.clone(),
         };
         events::publish(connection, now, &restored).await?;
-        let workspace_id = record.channel.workspace_id;
         events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel_id)
             .await?;
-        Ok(record.channel)
+        // The channel takes its place in the list again: the places of the open channels
+        // after it in its group change for each person (ADR 0304).
+        if super::channels::followed_in_group(connection, &record.channel).await? {
+            events::log::structure_reordered(connection, now, workspace_id).await?;
+        }
+        let position = access
+            .channel_place(connection, workspace_id, channel_id)
+            .await?;
+        Ok(Channel {
+            position,
+            ..record.channel
+        })
     })
     .map(Json)
 }

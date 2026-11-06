@@ -8,7 +8,7 @@ use gpui::{
 };
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
-use junto_client_core::protocol::structure::{ChannelKind, ChannelMove, UpdateChannel};
+use junto_client_core::protocol::structure::{ChannelKind, UpdateChannel};
 
 use super::{
     Form, FormField, Mode, Question, group_label, line, line_text, named, page_title, refusal,
@@ -142,7 +142,7 @@ impl Shell {
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        moves: Vec<ChannelMove>,
+        moves: crate::state::admin::view::Planned,
         form: bool,
         cx: &mut Context<Self>,
     ) -> impl Fn(&Click, &mut Window, &mut gpui::App) + 'static {

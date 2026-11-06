@@ -5,8 +5,9 @@
 #
 #   run-jobs.sh <directory> <run> <runner> <repository> <job>...
 #
-# A job is <name>, <name>:python (only the Python unit tests of a Rust job) or <name>:skip (not
-# run; recorded as skipped), as tools/ci/ci.sh selects them with tools/ci/changes.py.
+# A job is <name>, <name>:python (only the Python unit tests of a Rust job), <name>:debug (the
+# Windows job without its release build) or <name>:skip (not run; recorded as skipped), as
+# tools/ci/ci.sh selects them with tools/ci/changes.py.
 #
 # <directory> is the CI directory of this machine, <run> the name of the run, <runner>
 # "linux", "macos" or "windows", <repository> a Git repository or a Git bundle file with the

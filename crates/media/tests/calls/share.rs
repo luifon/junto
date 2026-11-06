@@ -572,7 +572,6 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
 
         // Ben shares a window with the sound of its application. Cal goes on watching Ann:
         // a share that starts does not replace what a person watches.
-        let share_started = tokio::time::Instant::now();
         ben.calls.start_share(window(player()));
         let info = ben.until_sharing().await;
         assert_eq!(
@@ -621,14 +620,8 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         ben.until_heard_tone(SYSTEM.0).await;
 
         // Cal chooses the share of Ben: its picture, and its sound in place of the other one.
-        // A sender lowers its cadence while its estimate of the bandwidth is low, as in the
-        // first seconds of a stream on a busy machine, and the media server decides what it
-        // forwards (ADR 0737). Once the media connection of Cal receives the share of Ben at
-        // its full rate, the window gets each of those pictures at their full size: the share
-        // is sent at the frame rate that its sharer chose, 30 pictures per second, where the
-        // defaults of the call library send a picture of 800 pixels at 5 per second.
-        let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
-        let switched = tokio::time::Instant::now();
+        // The rate at which the pictures arrive is measured by
+        // `a_watched_share_arrives_at_the_full_rate_that_its_sharer_chose`.
         cal.calls.watch_share(ShareId::of(ben_id, 0));
         cal.until("Cal watches the share of Ben", |view| {
             view.call
@@ -638,23 +631,6 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         .await;
         let picture = cal.until_shown(ShareId::of(ben_id, 0), GREEN, YELLOW).await;
         assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
-        let at_switch = ben.encoding(800).await;
-        let forwarded = cal.until_received_at_full_rate(800, switched, &ben).await;
-        let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
-        eprintln!(
-            "the full rate arrived {forwarded:?} after the change of the watched share; \
-             pictures of the full size in each of the three seconds after it: {seconds:?}; \
-             the encoding of the sender at the change: {at_switch}; at the full rate: {}",
-            ben.encoding(800).await
-        );
-        if seconds.iter().sum::<usize>() < FULL_RATE_IN_THREE_SECONDS {
-            let after = crate::statistics::snapshot(&ben, &cal, share_started).await;
-            crate::statistics::frame_rate(&cal, seconds.iter().sum(), &before_switch, &after);
-            panic!(
-                "the media connection received the full rate, and the window got {seconds:?} \
-                 pictures of the full size in the three seconds after it"
-            );
-        }
         cal.until_heard_tone(PLAYER.0).await;
         cal.until_silent_tone(SYSTEM.0).await;
 
@@ -709,6 +685,101 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
             })
         })
         .await;
+    })
+    .await;
+}
+
+/// The processors that the measurement of the full rate needs: three call engines in one
+/// process encode and decode the shares, and on 2 processors the sender of WebRTC lowered the
+/// picture of 800 pixels to 5 to 9 per second, limited by its processor (ADR 0773).
+const FULL_RATE_PROCESSORS: usize = 4;
+
+/// A viewer that changes the watched share receives it at the frame rate that its sharer
+/// chose, and the window gets each of those pictures at their full size (ADR 0773).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_watched_share_arrives_at_the_full_rate_that_its_sharer_chose() {
+    let processors = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    assert!(
+        processors >= FULL_RATE_PROCESSORS,
+        "this test measures the full frame rate of a share with three call engines in one \
+         process, which needs {FULL_RATE_PROCESSORS} processors; the run has {processors}"
+    );
+    limited(async {
+        let _media = media_server_alone().await;
+        let (ann, ben, cal) = (Person::new(440.0), Person::new(880.0), Person::new(1320.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let _cal_at = room.member(&ann_at, &cal, "Cal").await;
+        let (ann_id, ben_id) = (account(&ann_at), account(&ben_at));
+        for person in [&ann, &ben, &cal] {
+            person.enter(room.target).await;
+            person.calls.set_muted(true);
+        }
+        ben.capture.set_colours(GREEN, YELLOW);
+
+        // Ann shares her screen at the lowest frame rate, so that the rate of the share of
+        // Ben is measured, and Cal watches it.
+        ann.calls.start_share(CaptureRequest {
+            quality: ShareQuality {
+                frame_rate: junto_media::share::FRAME_RATES[0],
+                ..ShareQuality::default()
+            },
+            ..screen(SoundChoice::System)
+        });
+        ann.until_sharing().await;
+        cal.until("Cal watches the share of Ann", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched == Some(ShareId::of(ann_id, 0)))
+        })
+        .await;
+        let share_started = tokio::time::Instant::now();
+        ben.calls.start_share(window(player()));
+        ben.until_sharing().await;
+        cal.until("Cal sees two shares", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.shares.len() == 2)
+        })
+        .await;
+        cal.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
+
+        // Cal chooses the share of Ben: its picture, and its sound in place of the other one.
+        // A sender lowers its cadence while its estimate of the bandwidth is low, as in the
+        // first seconds of a stream on a busy machine, and the media server decides what it
+        // forwards (ADR 0737). Once the media connection of Cal receives the share of Ben at
+        // its full rate, the window gets each of those pictures at their full size: the share
+        // is sent at the frame rate that its sharer chose, 30 pictures per second, where the
+        // defaults of the call library send a picture of 800 pixels at 5 per second.
+        let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
+        let switched = tokio::time::Instant::now();
+        cal.calls.watch_share(ShareId::of(ben_id, 0));
+        cal.until("Cal watches the share of Ben", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.watched == Some(ShareId::of(ben_id, 0)))
+        })
+        .await;
+        let picture = cal.until_shown(ShareId::of(ben_id, 0), GREEN, YELLOW).await;
+        assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
+        let at_switch = ben.encoding(800).await;
+        let forwarded = cal.until_received_at_full_rate(800, switched, &ben).await;
+        let seconds = cal.pictures_in_three_seconds(ben_id, (800, 600)).await;
+        eprintln!(
+            "the full rate arrived {forwarded:?} after the change of the watched share; \
+             pictures of the full size in each of the three seconds after it: {seconds:?}; \
+             the encoding of the sender at the change: {at_switch}; at the full rate: {}",
+            ben.encoding(800).await
+        );
+        if seconds.iter().sum::<usize>() < FULL_RATE_IN_THREE_SECONDS {
+            let after = crate::statistics::snapshot(&ben, &cal, share_started).await;
+            crate::statistics::frame_rate(&cal, seconds.iter().sum(), &before_switch, &after);
+            panic!(
+                "the media connection received the full rate, and the window got {seconds:?} \
+                 pictures of the full size in the three seconds after it"
+            );
+        }
     })
     .await;
 }
@@ -1508,6 +1579,7 @@ async fn a_client_of_a_release_before_several_shares_never_receives_a_further_sh
                 "0.5",
             ])
             .env("LIVEKIT_TOKEN", join.token.expose())
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
@@ -1933,8 +2005,7 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
         })
         .await;
         ben.calls.leave().await;
-        ben.host.clear_played();
-        let cleared = tokio::time::Instant::now();
+        ben.host.record_played();
         let mut views = ben.calls.watch();
         let joining = ben.calls.join(room.target);
         let first = tokio::time::timeout(PATIENCE, views.wait_for(|view| view.call.is_some()))
@@ -1958,13 +2029,11 @@ async fn the_blocks_of_the_server_hold_for_a_share_and_from_the_first_moment_of_
             })
             .await;
         assert_eq!(view.call.unwrap().microphone, MicrophoneState::Closed);
-        // Two seconds of the call: the tone of Ann is in none of the sound that was played
-        // since the join, from its first sample.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Ben receives the sound of Ann, and the tone of Ann is in none of the sound that
+        // was played since the join, from its first sample.
+        ben.until_receiving(&ann).await;
         let (played, rate) = ben.host.played_since_clear();
-        assert!(played.len() > rate as usize, "{}", played.len());
-        // The sink keeps the last 12 seconds: everything since the join is examined.
-        assert!(cleared.elapsed() < Duration::from_secs(10));
+        assert!(!played.is_empty());
         for part in played.chunks(rate as usize / 4) {
             let heard = junto_media::audio::synthetic::tone_level(part, rate, ann.hz);
             assert!(heard < ABSENT_DBFS, "{heard}");

@@ -8,6 +8,7 @@ mod action_menu;
 mod area;
 mod avatar;
 mod button;
+mod code_text;
 mod controls;
 mod dialog;
 mod field;
@@ -46,6 +47,9 @@ pub use area::{COVER, KEPT, area, cover};
 pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
+pub(crate) use code_text::code_text;
+#[cfg(feature = "test-support")]
+pub use code_text::{CodePaintRecord, PaintedCode, record_painted_code, take_painted_code};
 pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};

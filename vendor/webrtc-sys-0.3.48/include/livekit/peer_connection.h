@@ -119,13 +119,7 @@ class PeerConnection : webrtc::PeerConnectionObserver {
 
   std::unique_ptr<SessionDescription> current_remote_description() const;
 
-  std::unique_ptr<SessionDescription> pending_local_description() const;
-
-  std::unique_ptr<SessionDescription> pending_remote_description() const;
-
-  std::unique_ptr<SessionDescription> local_description() const;
-
-  std::unique_ptr<SessionDescription> remote_description() const;
+  // Modified: the getters of the pending, local and remote descriptions are removed.
 
   PeerConnectionState connection_state() const;
 

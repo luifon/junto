@@ -791,7 +791,10 @@ def check_frame(scene: Scene, when: str, path: str, at: float) -> None:
         unit = picture_width / 640
         for bar in range(8):
             crops[f"camera-{tile}-bar-{bar}"] = (left + (bar * 80 + 28) * unit, y + 170 * unit, 24 * unit, 24 * unit)
+        # Two places of the band: the white line that crosses the camera picture can cover
+        # one of them, never both.
         crops[f"camera-{tile}-band"] = (left + 500 * unit, y + 306 * unit, 100 * unit, 20 * unit)
+        crops[f"camera-{tile}-band-2"] = (left + 300 * unit, y + 306 * unit, 100 * unit, 20 * unit)
     crops["corner"] = (2, 2, 4, 4)
     measured = scene.media.regions(path, at, crops)
     if set(measured) != set(crops):
@@ -812,12 +815,16 @@ def check_frame(scene: Scene, when: str, path: str, at: float) -> None:
             sum(bars) >= 7,
             [tuple(round(value) for value in measured[f"camera-{tile}-bar-{bar}"]) for bar in range(8)],
         )
-        band = measured[f"camera-{tile}-band"]
-        owners[tile] = "A" if same_colour(band, COLOUR_A) else "B" if same_colour(band, COLOUR_B) else None
+        bands = [measured[f"camera-{tile}-band"], measured[f"camera-{tile}-band-2"]]
+        owners[tile] = (
+            "A" if any(same_colour(band, COLOUR_A) for band in bands)
+            else "B" if any(same_colour(band, COLOUR_B) for band in bands)
+            else None
+        )
     report.check(
         f"frame {when}: the two camera tiles are the cameras of A and of B",
         sorted(str(owner) for owner in owners.values()) == ["A", "B"],
-        {tile: tuple(round(value) for value in measured[f"camera-{tile}-band"]) for tile in range(2)},
+        {tile: [tuple(round(value) for value in measured[f"camera-{tile}-{band}"]) for band in ("band", "band-2")] for tile in range(2)},
     )
     report.check(f"frame {when}: the stage beside the tiles is dark", measured["corner"][0] < 60, measured["corner"])
 
@@ -909,7 +916,7 @@ def check_downloads(scene: Scene, recording_id: str, composite: dict[str, Any], 
         "PUT", f"/api/v1/workspaces/{scene.workspace_id}/members/{outsider.account_id}/roles/{role['id']}", expect=(200, 204)
     )
     scene.owner.call(
-        "PUT", f"/api/v1/channels/{scene.channel_id}/overrides/{role['id']}", {"allow": [], "deny": ["view_channel"]}, expect=(200, 204)
+        "PUT", f"/api/v1/channels/{scene.channel_id}/rules/roles/{role['id']}", {"allow": [], "deny": ["view_channel"]}, expect=(200, 204)
     )
     after_file = outsider.call("GET", audio_path)
     after_recording = outsider.call("GET", f"/api/v1/recordings/{recording_id}")
@@ -1539,8 +1546,22 @@ def phase_recorder_stopped(scene: Scene, arguments: argparse.Namespace) -> None:
     time.sleep(6)
     scene.stop_recording()
     stopped = time.time()
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stopped - 1))
     deployment.run("stop", "recorder", seconds=180)
     report.ok(f"the recorder container was stopped {time.time() - stopped:.1f} s after the stop of the recording")
+    # The start script of the recorder states the jobs at the stop signal and the signal that
+    # it passed on (deploy/images/recorder/start.sh). The step holds only when a job still
+    # ran at the signal: a recorder that had ended its jobs, or that got SIGINT at once, does
+    # not show that the jobs end within the wait.
+    lines = deployment.run("logs", "--no-log-prefix", "--since", since, "recorder").splitlines()
+    running = [int(match.group(1)) for line in lines if (match := re.match(r"recorder stop: jobs running at the stop signal: (\d+);", line))]
+    report.check("a job of the recorder still ran when its container got the stop signal", len(running) == 1 and running[0] >= 1, running)
+    report.check(
+        "the recorder got SIGTERM after its jobs ended within the wait, and no SIGINT",
+        any(re.match(r"recorder stop: no job runs after \d+ s; SIGTERM to the recorder$", line) for line in lines)
+        and not any("SIGINT to the recorder" in line for line in lines),
+        [line for line in lines if line.startswith("recorder stop:")],
+    )
     detail = scene.wait_final(ended, 240)
     report.check(
         "a recording that was stopped right before the stop of the recorder is ready, with four ended segments and checked files",

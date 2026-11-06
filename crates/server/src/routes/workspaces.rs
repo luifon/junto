@@ -87,7 +87,7 @@ pub(crate) async fn create(
     name: &str,
 ) -> ApiResult<(Workspace, WorkspaceRole)> {
     access.require(Request::Server(ServerPermission::CreateWorkspace))?;
-    let (workspace_id, everyone) = bootstrap::create_workspace(connection, name, now).await?;
+    let (workspace_id, everyone) = bootstrap::create_workspace(connection, name, now, 0).await?;
     let workspace = Workspace {
         id: workspace_id,
         name: name.to_owned(),

@@ -368,6 +368,131 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
     assert!(!window.shows("thread-panel"));
 }
 
+/// The two statements of the fork dialog that the test above does not reach (ADR 0741): a
+/// failure of the server, in the sentence of its error, and a thread whose root is gone.
+#[gpui::test]
+fn a_fork_states_a_failure_of_the_server_and_a_thread_that_is_gone(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    admin.allow_everyone(&world, &[WorkspacePermission::ManageChannel]);
+    let channel_id = window.selected_channel();
+    let first = admin
+        .send(&world, channel_id, document("Tracks or mixdown?"))
+        .id;
+    let second = admin.send(&world, channel_id, document("Which room?")).id;
+    window.until_message("Which room?");
+    let fork_state = |window: &mut Window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.fork.clone())
+    };
+    let fork = |window: &mut Window, root_id: MessageId| {
+        window.in_shell(|shell, window, cx| {
+            shell.open_fork_dialog(root_id, ChannelKind::Text, window, cx);
+            shell.type_fork_name("tracks", window, cx);
+            shell.submit_fork(window, cx);
+        });
+    };
+
+    // The server fails: the dialog states the error in the sentence of its code.
+    proxy.answer_with(
+        "POST",
+        &format!("/messages/{first}/fork"),
+        500,
+        br#"{"error":{"code":"internal","message":"the test proxy answered"}}"#.to_vec(),
+    );
+    window.open_thread_of(first);
+    fork(&mut window, first);
+    let failed = text::flow_error(&junto_client_core::flow::FlowError::Unavailable);
+    window.until("the failure of the server", |window| {
+        fork_state(window) == Some(ForkState::Refused(failed.clone()))
+    });
+    assert!(window.shows("fork-refused") && window.shows("fork-dialog"));
+    window.click("cancel-fork");
+
+    // The root of the thread is deleted before the window learns of it: the server answers
+    // that it does not know the thread.
+    window.open_thread_of(second);
+    proxy.hold_events();
+    world
+        .run(admin.handle.api().delete_message(second))
+        .unwrap();
+    fork(&mut window, second);
+    window.until("the thread is gone", |window| {
+        fork_state(window) == Some(ForkState::Refused(text::FORK_THREAD_GONE.to_owned()))
+    });
+    assert!(window.shows("fork-refused") && window.shows("fork-dialog"));
+    proxy.release_events();
+}
+
+/// The attach control of the thread composer has a name of its own, and opens the file
+/// dialog for the next reply of the thread, not for the channel.
+#[gpui::test]
+fn the_thread_composer_attaches_a_chosen_file_to_the_reply(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, _channel_id, root_id) = with_root(cx, &world);
+    window.open_thread_of(root_id);
+    window.until("the thread composer opens", |window| {
+        window.shows("thread-composer-input") && window.shows("thread-attach-file")
+    });
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("take-two.flac");
+    std::fs::write(&path, b"the second take").unwrap();
+    window.click("thread-attach-file");
+    let chosen = path.clone();
+    window.simulate(|cx| cx.simulate_path_prompt_response(move |_| Some(vec![chosen])));
+    let thread_draft = |window: &mut Window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .map(|thread| thread.draft.clone())
+            .unwrap_or_default()
+    };
+    window.until("the file is in the draft of the thread", |window| {
+        let draft = thread_draft(window);
+        draft.len() == 1
+            && matches!(
+                draft[0].progress.stage,
+                junto_client_core::transfers::UploadStage::Complete(_)
+            )
+    });
+    assert!(
+        window
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.draft.is_empty()),
+        "the file went to the draft of the channel"
+    );
+    window.type_into("thread-composer-input", "The second take");
+    window.click("thread-send-message");
+    window.until("the reply is in the thread", |window| {
+        window
+            .replies()
+            .iter()
+            .any(|text| text.contains("The second take"))
+    });
+    let page = world
+        .run(admin.handle.api().thread(root_id, &Default::default()))
+        .unwrap();
+    let reply = page
+        .replies
+        .messages
+        .iter()
+        .find(|message| message.document == Some(document("The second take")))
+        .unwrap();
+    assert_eq!(reply.attachments.len(), 1);
+    assert_eq!(reply.attachments[0].name, "take-two.flac");
+}
+
 #[gpui::test]
 fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
     let world = World::new();

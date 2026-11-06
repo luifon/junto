@@ -249,7 +249,14 @@ async fn rule_a02_an_archived_channel_leaves_the_list() {
         )));
         let found = archived(&server, reader, workspace.id).await;
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].channel, channel);
+        // An archived channel is in no list and has no place there (ADR 0304).
+        assert_eq!(
+            found[0].channel,
+            Channel {
+                position: 0,
+                ..channel.clone()
+            }
+        );
         assert_eq!(found[0].archived_at, server.clock.now());
         assert_eq!(
             found[0].deletes_at,

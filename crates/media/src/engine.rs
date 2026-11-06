@@ -2031,9 +2031,10 @@ mod tests {
                 let (stop, reads) = (stop.clone(), reads.clone());
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
-                        let _ = offerer.current_remote_description();
-                        let _ = answerer.current_remote_description();
-                        let _ = offerer.current_local_description();
+                        for connection in [&offerer, &answerer] {
+                            let _ = connection.current_local_description();
+                            let _ = connection.current_remote_description();
+                        }
                         reads.fetch_add(1, Ordering::Relaxed);
                     }
                 })
@@ -2093,7 +2094,10 @@ mod tests {
             "the readers ran {} times",
             reads.load(Ordering::Relaxed)
         );
-        assert!(offerer.current_remote_description().is_some());
+        for connection in [&offerer, &answerer] {
+            assert!(connection.current_local_description().is_some());
+            assert!(connection.current_remote_description().is_some());
+        }
     }
 
     #[test]

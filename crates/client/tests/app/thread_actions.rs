@@ -409,8 +409,10 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         ""
     );
-    // The caret is at the end of the text: the person adds to it, and Enter saves.
-    window.type_into("thread-composer-input", " and one mix");
+    // The edit puts the caret at the end of the text and the focus in the field: the
+    // person adds to it without a click, which would place the caret where it lands, and
+    // Enter saves.
+    window.simulate(|cx| cx.simulate_input(" and one mix"));
     window.press("enter");
     window.until("the edited reply", |window| {
         window.replies() == ["One per speaker and one mix"]
