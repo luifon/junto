@@ -202,6 +202,7 @@ down_text() {
 mkfifo /var/run/wireguard/tick
 exec 3<> /var/run/wireguard/tick
 pause() {
+    # shellcheck disable=SC3045 # BusyBox ash, the shell of the image, has read -t.
     read -r -t 1 _ <&3 || true
 }
 # Whether the container has SPARE free processes for the forks of a pass.
