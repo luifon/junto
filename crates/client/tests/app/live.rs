@@ -397,21 +397,22 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
 
-    // The sound button turns the sound of the call off for this person only.
+    // The sound button turns the sound of the call off for this person only, and mutes the
+    // microphone of the window with it (the default setting, ADR 0739); the sound on opens
+    // the microphone again.
     window.click("sound-output");
     window.until("the window plays nothing", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
-    until_hears(
-        &world,
-        &mut window,
-        &caller,
-        Hears::Administrator,
-        "after the sound of the window was turned off",
-    );
+    window.until("the administrator hears nothing of the window", |_| {
+        heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
+    });
     window.click("sound-output");
     window.until("the window plays the call again", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
+    });
+    window.until("the administrator hears the window again", |_| {
+        heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
 
     // The members of the call, and the volume of one person: the arrow keys change it.
