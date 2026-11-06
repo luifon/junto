@@ -84,8 +84,11 @@ PART_PATHS = {
     "crates": re.compile(rf"^({EVERY_PART}|vendor/|crates/.*/windows[^/]*\.rs$|crates/.*/windows/)"),
 }
 PARTS = list(PART_PATHS)
-# Code under a cfg of the system, in the text of a file: `git grep -E` reads this pattern.
-SYSTEM_CODE = r"cfg!?\(.*(windows|unix|target_os|target_family)"
+# A condition of the system anywhere in the text of a file, also one written over several
+# lines: a key of the system, `windows` or `unix` in a cfg of one line, or a line that is only
+# `windows` or `unix`, an item of a list of `any(`, `all(` or `not(`. `git grep -E` reads it.
+SYSTEM_CODE = (r"target_os|target_family|cfg!?\(.*(windows|unix)"
+               r"|^[[:space:]]*(not\()?(windows|unix)[[:space:]]*[,)]*[[:space:]]*$")
 CRATE_LINES = re.compile(r"cfg\((not\()?(any\(|all\()?(windows|unix|target_os|target_family|feature)|cfg!\(")
 TEST_PATH = re.compile(r"(^|/)tests?/|tests?\.rs$|/test_[^/]*\.py$|^test_[^/]*\.py$|_tests\.rs$")
 

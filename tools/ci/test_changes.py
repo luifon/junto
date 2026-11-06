@@ -139,9 +139,20 @@ class Select(unittest.TestCase):
             plain.write_text("fn a() {}\n")
             gone = source / "gone.rs"
             gone.write_text('#[cfg(target_os = "windows")]\nfn b() {}\n')
+            # Conditions written over several lines, and an edit inside them that names none.
+            spread = source / "spread.rs"
+            spread.write_text('#[cfg(all(\n    target_os = "windows",\n    feature = "x"\n))]\nfn c() {\n    let a = 1;\n}\n')
+            listed = source / "listed.rs"
+            listed.write_text("#[cfg(any(\n    windows,\n    unix\n))]\nfn d() {\n    let a = 1;\n}\n")
+            alone = source / "alone.rs"
+            alone.write_text("#[cfg(\n    windows\n)]\nfn e() {\n    let a = 1;\n}\n")
+            neither = source / "neither.rs"
+            neither.write_text("// windows of the call\nfn f() {\n    let unix_time = 1;\n}\n")
             subprocess.run([*git, "add", "."], check=True)
             subprocess.run([*git, "commit", "--quiet", "-m", "one"], check=True, env=identity)
             windows.write_text('#[cfg(windows)]\nfn open() {\n    let a = 2;\n}\n')
+            for path in (spread, listed, alone, neither):
+                path.write_text(path.read_text().replace("= 1;", "= 2;"))
             plain.write_text("fn a() { let b = 1; }\n")
             gone.unlink()
             subprocess.run([*git, "add", "-A"], check=True)
@@ -149,13 +160,13 @@ class Select(unittest.TestCase):
             here = os.getcwd()
             os.chdir(directory)
             try:
-                found = changes.system_files("HEAD~1", "HEAD", ["crates/media/src/share/mod.rs",
-                                                                 "crates/media/src/share/plain.rs",
-                                                                 "crates/media/src/share/gone.rs"])
+                names = ["mod", "plain", "gone", "spread", "listed", "alone", "neither"]
+                found = changes.system_files("HEAD~1", "HEAD", [f"crates/media/src/share/{name}.rs" for name in names])
                 chosen = changes.from_git("HEAD~1", "HEAD")
             finally:
                 os.chdir(here)
-            self.assertEqual(found, ["crates/media/src/share/gone.rs", "crates/media/src/share/mod.rs"])
+            self.assertEqual(found, [f"crates/media/src/share/{name}.rs"
+                                     for name in ["alone", "gone", "listed", "mod", "spread"]])
             self.assertEqual(chosen["rust-windows"][0], "base+live+crates")
 
     def test_the_lines_and_paths_of_a_commit_range_come_from_git(self):
