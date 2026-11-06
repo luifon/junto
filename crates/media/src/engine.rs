@@ -681,13 +681,12 @@ impl Engine {
     }
 
     /// As [`Engine::set_controls_at`], for the controls of a call whose closes of the
-    /// person's setting the calls counted on the gate already: only a block of the
-    /// microphone closes the gate here, so an open that the calls permitted with the count of
-    /// such a close is not refused by its own close (ADR 0794).
-    pub fn set_controls_counted(&self, controls: Controls, read: u64) {
+    /// microphone the calls made on the gate already, also those of a block: the controls
+    /// carry `stops`, the count with which the calls opened the microphone, and the gate
+    /// opens only while no close came after it (ADR 0794).
+    pub fn set_controls_counted(&self, controls: Controls, stops: u64) {
         #[cfg(test)]
         self.asked_for(Asked::Controls(controls));
-        let stops = self.link.count_for(controls.microphone_blocked, read);
         let _ = self.commands.send(Command::Controls(controls, stops));
     }
 

@@ -464,10 +464,10 @@ pub struct AppState {
     keybind_boundary: u64,
     keybind_global_ready: bool,
     /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
-    /// keys of push to mute, and whether their hold closed the microphone.
+    /// keys of push to mute.
     mute_holds: HashSet<Option<gpui::EntityId>>,
-    /// The hold closed the microphone, with the count of closes after its close.
-    muted_by_hold: Option<junto_media::calls::Reopen>,
+    /// The calls were told the press of push to mute and not yet its release.
+    hold_told: bool,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -1035,7 +1035,7 @@ impl AppState {
             keybind_boundary: 0,
             keybind_global_ready: true,
             mute_holds: HashSet::new(),
-            muted_by_hold: None,
+            hold_told: false,
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,
@@ -2528,17 +2528,10 @@ impl AppState {
         } else if off {
             // The sound off takes the place of a held key of push to mute: its release
             // opens nothing, and the sound on opens the microphone that the key closed.
-            let held = self.muted_by_hold.take();
-            self.calls.sound_off_muting(held);
+            self.calls.sound_off_muting();
         } else {
             // While the key is still held, its release opens the microphone.
-            let held = !self.mute_holds.is_empty();
-            if let Some(reopen) = self
-                .calls
-                .sound_on_reopening(self.calls.seat().as_ref(), held)
-            {
-                self.muted_by_hold = Some(reopen);
-            }
+            self.calls.sound_on_reopening();
         }
     }
 

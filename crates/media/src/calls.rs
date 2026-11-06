@@ -7,6 +7,7 @@
 //! the server ends the place.
 
 mod capture_stop;
+mod microphone;
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -36,6 +37,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use self::microphone::{Event as MicrophoneEvent, Microphone};
 use crate::audio::capture::CaptureLink;
 use crate::audio::{AudioError, AudioHost, DeviceInfo, Devices};
 use crate::engine::{
@@ -356,9 +358,6 @@ enum SessionCommand {
     StopCamera,
     Controls,
     Muted(bool),
-    /// The person opens the microphone at this seat, or the calls open it again by
-    /// themselves, with the permission of that open.
-    Unmute(Seat, Reopen),
     /// The talk key, with the count of closes of the microphone at the press or the
     /// release.
     Talking(bool, u64),
@@ -400,6 +399,8 @@ struct ActiveHandle {
     commands: mpsc::UnboundedSender<SessionCommand>,
     /// The gate of the microphone of the engine of the call.
     gate: Arc<CaptureLink>,
+    /// The identity of the device in the room of the call.
+    identity: String,
 }
 
 /// The join that the person asked for last and did not end.
@@ -409,21 +410,26 @@ struct Joining {
     target: CallTarget,
 }
 
-/// The permission of an open of the microphone: the count of closes of the calls and of the
-/// gate of the engine, read in the locked step that decided the open (ADR 0739, ADR 0794).
-/// Every close advances both counts in one lock, also a close by a rule of the call and a
-/// replacement of the input device, and the engine sends frames only while the count of its
-/// gate is the one of the permission. So a permission from before any close opens nothing,
-/// whatever the order in which the threads take the open and the close.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Reopen {
-    closes: u64,
-    stops: Option<u64>,
+/// What a step of the microphone changed, for the caller to tell.
+#[derive(Debug, Clone, Copy)]
+struct Stepped {
+    before: Microphone,
+    after: Microphone,
+    device_changed: bool,
+}
+
+impl Stepped {
+    fn closed(&self) -> bool {
+        !self.before.muted && self.after.muted
+    }
 }
 
 #[derive(Default)]
 struct Shared {
-    muted: bool,
+    /// The microphone of the person, which changes only by [`Shared::step`].
+    microphone: Microphone,
+    /// The closes of the microphone outside a call, which stand for the count of a gate.
+    idle_closes: u64,
     deafened: bool,
     talking: bool,
     voice: VoiceConfig,
@@ -437,20 +443,6 @@ struct Shared {
     joining: Option<Joining>,
     next_key: u64,
     active: Option<ActiveHandle>,
-    /// How often the person or a rule of the call closed the microphone. An open that was
-    /// asked for before the last close has no effect: a close does not wait for an open that
-    /// is on its way, and a rule overrides an open that the person asked for before it.
-    closes: u64,
-    /// An open of the person that the session has not taken yet, with the count of closes
-    /// when it was asked for.
-    opening: Option<u64>,
-    /// The sound off closed a microphone that was open, with the count of closes after that
-    /// close: the sound on opens it again unless a close came after it or its input device
-    /// changed (ADR 0739).
-    sound_off_reopens: Option<Reopen>,
-    /// A key of push to mute holds the microphone closed, and its release opens it with
-    /// this permission.
-    held_reopen: Option<Reopen>,
     /// The microphone open outside a call for its level (ADR 0733).
     input_test: Option<crate::audio::input_test::InputTest>,
     /// How often the level test was started or stopped: an open that finishes after a
@@ -483,25 +475,61 @@ struct Inner {
 type AfterClose = Box<dyn FnOnce(&Inner) + Send>;
 
 impl Shared {
-    /// Closes the person's setting: one close of the calls and of the gate of the engine,
-    /// in this lock, with the permission of an open after it.
-    fn close_now(&mut self) -> Reopen {
-        self.muted = true;
-        self.closes += 1;
-        // The frames stop here, before the session and the engine take the close.
-        let stops = self.active.as_ref().map(|active| active.gate.stop_now());
-        Reopen {
-            closes: self.closes,
-            stops,
+    /// A call starts on the gate of its engine: the microphone takes its count.
+    fn start(&mut self, active: ActiveHandle) {
+        let gate = &active.gate;
+        self.microphone =
+            self.microphone
+                .moved(self.idle_closes, gate.stops(), gate.replacements());
+        self.active = Some(active);
+    }
+
+    /// The call ends: the microphone takes the count of the closes outside a call.
+    fn end(&mut self) {
+        if let Some(active) = self.active.take() {
+            self.microphone = self
+                .microphone
+                .moved(active.gate.stops(), self.idle_closes, 0);
         }
     }
 
-    /// The permission of an open that the person asks for now.
-    fn reopen_now(&self) -> Reopen {
-        Reopen {
-            closes: self.closes,
-            stops: self.active.as_ref().map(|active| active.gate.stops()),
+    /// Takes one event of the microphone with the count of the gate of the call of this
+    /// moment, and closes the gate here, before the session and the engine take the change
+    /// (ADR 0739, ADR 0794). An open of the person first takes the replacements of the input
+    /// device that the engine made before it, and the engine makes none until the open has
+    /// its count.
+    fn step(&mut self, event: MicrophoneEvent) -> Stepped {
+        let before = self.microphone;
+        let gate = self.active.as_ref().map(|active| active.gate.clone());
+        let device_changed = match gate.as_deref() {
+            Some(gate) if event == MicrophoneEvent::Unmute => {
+                let _replacing = gate.hold_replacements();
+                let read = MicrophoneEvent::Replaced(gate.replacements());
+                self.step_at(read, Some(gate));
+                self.step_at(event, Some(gate))
+            }
+            gate => self.step_at(event, gate),
+        };
+        Stepped {
+            before,
+            after: self.microphone,
+            device_changed,
         }
+    }
+
+    fn step_at(&mut self, event: MicrophoneEvent, gate: Option<&CaptureLink>) -> bool {
+        let count = gate.map_or(self.idle_closes, CaptureLink::stops);
+        let (after, effects) = microphone::step(self.microphone, event, count);
+        for _ in 0..effects.closes {
+            match gate {
+                Some(gate) => {
+                    gate.stop_now();
+                }
+                None => self.idle_closes += 1,
+            }
+        }
+        self.microphone = after;
+        effects.device_changed
     }
 }
 
@@ -517,36 +545,73 @@ impl Inner {
     }
 
     fn set_muted(&self, muted: bool) {
-        if muted {
-            self.close();
-            return;
-        }
-        self.shared().muted = false;
-        self.view.send_modify(|view| view.muted = false);
-        self.tell(SessionCommand::Muted(false));
+        self.microphone(if muted {
+            MicrophoneEvent::Mute
+        } else {
+            MicrophoneEvent::Unmute
+        });
     }
 
-    /// Closes the person's own setting, and gives the count of closes that this close made,
-    /// read under the same lock: a close by a rule right after it has a higher count.
-    fn close(&self) -> Reopen {
-        let reopen = self.shared().close_now();
-        self.closed();
-        reopen
+    /// Takes one event of the microphone from outside the session, and tells the view and the
+    /// session what it changed in the same lock, so that they follow the order of the steps.
+    fn microphone(&self, event: MicrophoneEvent) -> Stepped {
+        self.microphone_with(event, None)
     }
 
-    /// Tells a close that left the lock.
-    fn closed(&self) {
+    /// As [`Inner::microphone`], and turns the sound off or on in the same lock.
+    fn microphone_with(&self, event: MicrophoneEvent, deafened: Option<bool>) -> Stepped {
+        let stepped = self.step_in(&mut self.shared(), event, deafened);
         #[cfg(test)]
-        if let Some(after) = self
-            .after_close
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+        if stepped.closed()
+            && let Some(after) = self
+                .after_close
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
         {
             after(self);
         }
-        self.view.send_modify(|view| view.muted = true);
-        self.tell(SessionCommand::Muted(true));
+        stepped
+    }
+
+    fn step_in(
+        &self,
+        shared: &mut Shared,
+        event: MicrophoneEvent,
+        deafened: Option<bool>,
+    ) -> Stepped {
+        if let Some(deafened) = deafened {
+            shared.deafened = deafened;
+            self.view.send_modify(|view| view.deafened = deafened);
+        }
+        let stepped = shared.step(event);
+        self.show_microphone(stepped);
+        if let Some(active) = &shared.active {
+            let command = if stepped.after.muted != stepped.before.muted {
+                Some(SessionCommand::Muted(stepped.after.muted))
+            } else {
+                (deafened.is_some() || stepped.after.open != stepped.before.open)
+                    .then_some(SessionCommand::Controls)
+            };
+            if let Some(command) = command {
+                let _ = active.commands.send(command);
+            }
+        }
+        stepped
+    }
+
+    /// Shows the setting after a step of the microphone, and the notice of a changed device
+    /// when the step tells it.
+    fn show_microphone(&self, stepped: Stepped) {
+        let muted = stepped.after.muted;
+        self.view.send_if_modified(|view| {
+            let changed = view.muted != muted || stepped.device_changed;
+            view.muted = muted;
+            if stepped.device_changed {
+                view.closed = Some(MicrophoneClosed::DeviceChanged);
+            }
+            changed
+        });
     }
 
     /// An action named another call or seat than the one of this device, and did nothing.
@@ -667,69 +732,50 @@ impl Calls {
         self.inner.set_muted(true);
     }
 
-    /// Closes an open microphone for a held key of push to mute, and gives the permission
-    /// that its release opens with. A microphone that another action closed before is not
-    /// closed by the hold, and the release opens nothing.
-    pub fn mute_for_hold(&self) -> Option<Reopen> {
-        let reopen = {
-            let mut shared = self.inner.shared();
-            if shared.muted {
-                return None;
-            }
-            let reopen = shared.close_now();
-            shared.held_reopen = Some(reopen);
-            reopen
-        };
-        self.inner.closed();
-        Some(reopen)
+    /// A key of push to mute is held: an open microphone closes, and the release opens it
+    /// again. A microphone that another action closed before stays closed at the release.
+    pub fn press_hold(&self) {
+        self.inner.microphone(MicrophoneEvent::Press);
     }
 
-    /// The key of push to mute is let go: the microphone that its hold closed opens again
-    /// at `seat` with the permission of the hold ([`Calls::mute_for_hold`],
+    /// The key of push to mute is let go: the microphone that its hold closed opens again,
+    /// unless a close came after the hold ([`Calls::press_hold`],
     /// [`Calls::sound_on_reopening`]).
-    pub fn release_hold(&self, seat: Option<&Seat>, reopen: Reopen) {
-        self.inner.shared().held_reopen = None;
-        self.unmute_with(seat, reopen);
+    pub fn release_hold(&self) {
+        self.inner.microphone(MicrophoneEvent::Release);
     }
 
     /// The hold of push to mute ended without a release that opens: the call ended.
     pub fn forget_hold(&self) {
-        self.inner.shared().held_reopen = None;
+        self.inner.microphone(MicrophoneEvent::ForgetHold);
     }
 
     /// Opens the microphone of the person for the seat that the person saw when the action
     /// was made: `None` when the device was in no call, and the setting is then the one of
     /// the next call. When the device is in another call or at another seat by now, the
     /// microphone stays closed, and the view tells it (ADR 0788). Without a call nothing is
-    /// told: the end of the call was.
+    /// told: the end of the call was. No close by a rule or by the engine refuses it.
     pub fn unmute_in(&self, seat: Option<&Seat>) {
-        let reopen = self.inner.shared().reopen_now();
-        self.unmute_with(seat, reopen);
-    }
-
-    /// Opens the microphone as [`Calls::unmute_in`] does, with a permission: nothing
-    /// opens when a close came after it.
-    fn unmute_with(&self, seat: Option<&Seat>, reopen: Reopen) {
         let mut shared = self.inner.shared();
-        if shared.closes != reopen.closes {
-            return;
-        }
-        let session = shared.active.as_ref().map(|active| active.commands.clone());
-        match (session, seat) {
-            (Some(session), Some(seat)) => {
-                shared.opening = Some(reopen.closes);
-                let _ = session.send(SessionCommand::Unmute(seat.clone(), reopen));
+        let held = match (&shared.active, seat) {
+            (Some(active), Some(seat)) => {
+                seat.target == active.target && seat.identity == active.identity
             }
-            (Some(_), None) => {
-                drop(shared);
-                self.inner.unused(Unused::Microphone);
+            (Some(_), None) => false,
+            (None, seat) => {
+                if seat.is_none() {
+                    self.inner
+                        .step_in(&mut shared, MicrophoneEvent::Unmute, None);
+                }
+                return;
             }
-            // The lock is held: a call that starts now reads the setting after this.
-            (None, None) => {
-                shared.muted = false;
-                self.inner.view.send_modify(|view| view.muted = false);
-            }
-            (None, Some(_)) => {}
+        };
+        if held {
+            self.inner
+                .step_in(&mut shared, MicrophoneEvent::Unmute, None);
+        } else {
+            drop(shared);
+            self.inner.unused(Unused::Microphone);
         }
     }
 
@@ -757,53 +803,35 @@ impl Calls {
         {
             let mut shared = self.inner.shared();
             shared.deafened = deafened;
-            shared.sound_off_reopens = None;
+            shared.step(MicrophoneEvent::ForgetSoundOff);
         }
         self.inner.view.send_modify(|view| view.deafened = deafened);
         self.inner.tell(SessionCommand::Controls);
     }
 
     /// Turns the sound off and closes the microphone with it (ADR 0739). The sound on
-    /// ([`Calls::sound_on_reopening`]) opens it again when it was open, or an open of the
-    /// person was on its way, or only a held key of push to mute closed it: `held` is the
-    /// permission of that hold, which holds when no close came after it.
-    pub fn sound_off_muting(&self, held: Option<Reopen>) {
-        {
-            let mut shared = self.inner.shared();
-            let open = held.is_some_and(|held| held.closes == shared.closes)
-                || !shared.muted
-                || shared.opening == Some(shared.closes);
-            let reopen = shared.close_now();
-            shared.deafened = true;
-            shared.held_reopen = None;
-            shared.sound_off_reopens = open.then_some(reopen);
-        }
-        self.inner.view.send_modify(|view| view.deafened = true);
-        self.inner.closed();
+    /// ([`Calls::sound_on_reopening`]) opens it again when it was open, or when only a held
+    /// key of push to mute closed it.
+    pub fn sound_off_muting(&self) {
+        self.sound(true, MicrophoneEvent::SoundOff);
     }
 
-    /// Turns the sound on after [`Calls::sound_off_muting`], and opens the microphone at
-    /// `seat` again when the sound off closed it. A close by the person or by a rule of the
-    /// call after the sound off keeps it closed, and so does a change of its input device,
-    /// which the calls tell (ADR 0794). While a key of push to mute is `held` the microphone
-    /// stays closed, and the permission that its release opens with is given to the key.
-    pub fn sound_on_reopening(&self, seat: Option<&Seat>, held: bool) -> Option<Reopen> {
-        let reopens = self.inner.shared().sound_off_reopens.take();
-        self.set_deafened(false);
-        match reopens {
-            Some(reopen) if held => {
-                self.inner.shared().held_reopen = Some(reopen);
-                return Some(reopen);
-            }
-            Some(reopen) => self.unmute_with(seat, reopen),
-            None => {}
-        }
-        None
+    /// Turns the sound on after [`Calls::sound_off_muting`], and opens the microphone again
+    /// when the sound off closed it. A close by the person or by a rule of the call after the
+    /// sound off keeps it closed, and so does a change of its input device, which the calls
+    /// tell (ADR 0794). While a key of push to mute is held the microphone stays closed, and
+    /// its release opens it.
+    pub fn sound_on_reopening(&self) {
+        self.sound(false, MicrophoneEvent::SoundOn);
+    }
+
+    fn sound(&self, deafened: bool, event: MicrophoneEvent) {
+        self.inner.microphone_with(event, Some(deafened));
     }
 
     /// Forgets that the sound off closed the microphone: the sound on opens nothing.
     pub fn forget_sound_off_close(&self) {
-        self.inner.shared().sound_off_reopens = None;
+        self.inner.microphone(MicrophoneEvent::ForgetSoundOff);
     }
 
     /// The push-to-talk key is held or released (ADR 0507).
@@ -816,15 +844,18 @@ impl Calls {
         let mut shared = self.inner.shared();
         if shared.talking != talking {
             shared.talking = talking;
+            if !talking {
+                // The release is a close: the frames stop here.
+                shared.step(MicrophoneEvent::Fence);
+            }
             if let Some(active) = &shared.active {
-                // The release is a close: the frames stop here. The press carries the
-                // count of closes of this moment, so a release that follows it is later
-                // than the press when the engine takes the press.
-                let stops = if talking {
-                    active.gate.stops()
-                } else {
-                    active.gate.stop_now()
-                };
+                // The press carries the count with which the setting is open, so a release
+                // or a replacement of the device that follows it is later than the press when
+                // the engine takes the press.
+                let stops = shared
+                    .microphone
+                    .open
+                    .unwrap_or_else(|| active.gate.stops());
                 let _ = active
                     .commands
                     .send(SessionCommand::Talking(talking, stops));
@@ -1714,7 +1745,7 @@ fn start(
         withheld.share = true;
     }
     let controls = Controls {
-        muted: shared.muted,
+        muted: shared.microphone.muted,
         deafened: shared.deafened,
         microphone_blocked: true,
         sound_blocked: true,
@@ -1762,11 +1793,12 @@ fn start(
     if let Some((width, height)) = shared.view_size {
         engine.set_view_size(width, height);
     }
-    shared.active = Some(ActiveHandle {
+    shared.start(ActiveHandle {
         key,
         target,
         commands,
         gate: engine.gate(),
+        identity: answer.identity.clone(),
     });
     drop(shared);
     let timing = inner.options.timing;
@@ -1815,8 +1847,7 @@ fn start(
         moving: None,
         probes: Vec::new(),
         speaking: false,
-        inputs_replaced_seen: 0,
-        open_read: None,
+        sent_open: None,
         #[cfg(test)]
         sent_controls: Vec::new(),
         timing,
@@ -2722,12 +2753,9 @@ struct Session {
     /// The work of moves that have ended. Each closes the connection that it made.
     probes: Vec<tokio::task::JoinHandle<()>>,
     speaking: bool,
-    /// The count of the engine of microphones opened on another device while the setting
-    /// was closed, that the session took.
-    inputs_replaced_seen: u64,
-    /// The count of closes of the gate that the next controls carry: the one of the
-    /// permission of an open.
-    open_read: Option<u64>,
+    /// The count of the gate with which the last controls that the engine was given open
+    /// the microphone.
+    sent_open: Option<u64>,
     /// The controls that the session gave the engine, with their count, for the tests.
     #[cfg(test)]
     sent_controls: Vec<(bool, u64)>,
@@ -2914,8 +2942,7 @@ impl Session {
                 .as_ref()
                 .is_some_and(|active| active.key == key)
             {
-                shared.active = None;
-                shared.opening = None;
+                shared.end();
             }
         }
         inner.view.send_modify(|view| {
@@ -3202,37 +3229,6 @@ impl Session {
                 }
                 self.apply_controls();
             }
-            SessionCommand::Unmute(seat, reopen) => {
-                // A replacement of the input device that the session has not read yet is
-                // told with the open that it refuses.
-                self.note_replacements(self.engine.gate().replacements());
-                {
-                    let mut shared = self.inner.shared();
-                    if shared.opening == Some(reopen.closes) {
-                        shared.opening = None;
-                    }
-                }
-                if self.holds(&seat, Unused::Microphone) {
-                    let opened = {
-                        let mut shared = self.inner.shared();
-                        // A close that the person or a rule made after this open holds.
-                        let opened = shared.closes == reopen.closes;
-                        if opened {
-                            shared.muted = false;
-                        }
-                        opened
-                    };
-                    if opened {
-                        self.inner.view.send_modify(|view| view.muted = false);
-                        self.opened_by_the_person();
-                        // The engine opens its gate with the count of the permission: a
-                        // close of the gate after it, also one that the engine makes for a
-                        // replaced device, keeps it closed.
-                        self.open_read = reopen.stops;
-                        self.apply_controls();
-                    }
-                }
-            }
             SessionCommand::Talking(talking, stops) => {
                 self.engine.set_talking_at(talking, stops);
             }
@@ -3317,25 +3313,29 @@ impl Session {
     }
 
     fn apply_controls(&mut self) {
-        // The count of closes is read with the setting, under the lock that a close of the
-        // person holds: controls that open the microphone carry a count from before a
-        // close that follows them, so they cannot open the gate after it.
-        let read = self.open_read.take();
-        let (muted, deafened, stops) = {
-            let shared = self.inner.shared();
+        let microphone_blocked = self.microphone_block.is_some()
+            || self.withheld.microphone
+            || !self.admitted
+            || self.rejoining;
+        // The count is read with the setting, under the lock of the steps of the microphone:
+        // controls that open carry the count of the step that opened, so a close that follows
+        // it, also one of the engine, keeps the gate closed. A block closes the gate at once,
+        // and the setting keeps its permission.
+        let (muted, deafened, open) = {
+            let mut shared = self.inner.shared();
+            if microphone_blocked && !self.controls.microphone_blocked {
+                shared.step(MicrophoneEvent::Fence);
+            }
             (
-                shared.muted,
+                shared.microphone.muted,
                 shared.deafened,
-                read.unwrap_or_else(|| self.engine.stops()),
+                shared.microphone.open,
             )
         };
         let controls = Controls {
             muted,
             deafened,
-            microphone_blocked: self.microphone_block.is_some()
-                || self.withheld.microphone
-                || !self.admitted
-                || self.rejoining,
+            microphone_blocked,
             sound_blocked: self.sound_block.is_some()
                 || self.blocks_untold
                 || !self.admitted
@@ -3343,10 +3343,12 @@ impl Session {
             camera_held: !self.admitted,
             push_to_talk: self.withheld.voice_activity,
         };
-        // An open with a permission gives the engine its count also when the controls are
-        // the same: the gate opens only with it.
-        if controls != self.controls || read.is_some() {
+        // An open gives the engine its count also when the controls are the same: the gate
+        // opens only with it.
+        if controls != self.controls || open != self.sent_open {
             self.controls = controls;
+            self.sent_open = open;
+            let stops = open.unwrap_or_else(|| self.engine.stops());
             #[cfg(test)]
             self.sent_controls
                 .push((controls.muted || controls.microphone_blocked, stops));
@@ -3583,8 +3585,7 @@ impl Session {
             return false;
         }
         self.grants.handled = Some(position);
-        self.inner.shared().close_now();
-        self.inner.view.send_modify(|view| view.muted = true);
+        self.microphone(MicrophoneEvent::RuleClose);
         if hand_raised && self.admitted {
             let api = self.server.api();
             self.inner.runtime.spawn(async move {
@@ -3624,7 +3625,7 @@ impl Session {
     /// A block ended, and the session cannot read how. The end is taken as a grant: the
     /// setting is closed, and the person is told why (ADR 0785).
     fn close_for_unread_end(&mut self, position: u64, hand_raised: bool) {
-        let open = !self.inner.shared().muted;
+        let open = !self.inner.shared().microphone.muted;
         if self.close_for_grant(position, hand_raised) && open {
             self.inner
                 .view
@@ -3634,13 +3635,19 @@ impl Session {
 
     /// Closes the person's own setting by a rule of the calls, and tells the person why.
     fn close_setting(&mut self, why: MicrophoneClosed) {
-        self.inner.shared().close_now();
-        self.inner.view.send_modify(|view| {
-            view.muted = true;
-            view.closed = Some(why);
-        });
+        self.microphone(MicrophoneEvent::RuleClose);
+        self.inner.view.send_modify(|view| view.closed = Some(why));
         self.apply_controls();
         self.show();
+    }
+
+    /// Takes one event of the microphone in the session, and shows what it changed in the
+    /// same lock.
+    fn microphone(&mut self, event: MicrophoneEvent) -> Stepped {
+        let mut shared = self.inner.shared();
+        let stepped = shared.step(event);
+        self.inner.show_microphone(stepped);
+        stepped
     }
 
     /// Takes what the permissions of the voice channel withhold. A source that they no
@@ -3707,7 +3714,7 @@ impl Session {
                 }
             }
         }
-        if state.input_replaced && !self.inner.shared().muted {
+        if state.input_replaced && !self.inner.shared().microphone.muted {
             self.close_setting(MicrophoneClosed::DeviceChanged);
         }
         self.note_replacements(self.engine.gate().replacements());
@@ -3718,32 +3725,10 @@ impl Session {
     /// the microphone closed. The engine closed its gate for each, so no open that was
     /// permitted before it sends from the device that the person did not choose; the calls
     /// close the setting too, and tell the person when an open was due or the setting was
-    /// open: the sound on after the sound off, the release of push to mute, an open on its
-    /// way (ADR 0739, ADR 0794).
+    /// open: the sound on after the sound off, the release of push to mute (ADR 0739,
+    /// ADR 0794).
     fn note_replacements(&mut self, count: u64) {
-        if count <= self.inputs_replaced_seen {
-            return;
-        }
-        self.inputs_replaced_seen = count;
-        let (due, open) = {
-            let mut shared = self.inner.shared();
-            let open = !shared.muted;
-            let due = shared.sound_off_reopens.is_some()
-                || shared.opening.is_some()
-                || shared.held_reopen.is_some();
-            shared.close_now();
-            shared.sound_off_reopens = None;
-            shared.opening = None;
-            shared.held_reopen = None;
-            (due, open)
-        };
-        if due || open {
-            self.inner.view.send_modify(|view| {
-                view.muted = true;
-                view.closed = Some(MicrophoneClosed::DeviceChanged);
-            });
-        }
-        if open {
+        if self.microphone(MicrophoneEvent::Replaced(count)).closed() {
             self.apply_controls();
             self.show();
         }

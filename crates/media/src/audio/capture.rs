@@ -2,8 +2,8 @@
 //! mono frames of 10 ms at 48 kHz, pass the audio processing, are measured, and are sent
 //! or replaced by silence (ADR 0733).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use livekit::webrtc::native::audio_resampler::AudioResampler;
 use tokio::sync::mpsc;
@@ -47,6 +47,9 @@ pub struct CaptureLink {
     /// How often the engine opened the microphone on another device while the gate held it
     /// closed.
     replacements: AtomicU64,
+    /// Held while a replacement closes the gate and is counted, and while the calls read
+    /// the replacements and the count of the gate for an open of the person.
+    replacing: Mutex<()>,
     /// The level in whole dBFS below which voice activation sends silence, or
     /// `NO_THRESHOLD` (ADR 0701).
     threshold: AtomicI32,
@@ -83,6 +86,7 @@ impl Default for CaptureLink {
             stops: AtomicU64::default(),
             stops_taken: AtomicU64::default(),
             replacements: AtomicU64::default(),
+            replacing: Mutex::default(),
             threshold: AtomicI32::new(NO_THRESHOLD),
         }
     }
@@ -132,8 +136,17 @@ impl CaptureLink {
     /// the gate held it closed: a close of the gate, which refuses every open that was
     /// permitted before it, and one more replacement for the calls to tell (ADR 0794).
     pub fn replace_while_closed(&self) {
+        let _replacing = self.hold_replacements();
         self.stop_now();
         self.replacements.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// No replacement is counted while the guard is held: the count of the gate and the
+    /// count of replacements read under it belong together.
+    pub fn hold_replacements(&self) -> MutexGuard<'_, ()> {
+        self.replacing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// How often [`CaptureLink::replace_while_closed`] was told.

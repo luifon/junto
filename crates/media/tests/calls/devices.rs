@@ -442,7 +442,7 @@ async fn a_device_replaced_around_the_sound_off_is_not_opened_by_the_sound_on() 
         })
         .await;
         let opened = ann.host.opened_inputs().len();
-        ann.calls.sound_off_muting(None);
+        ann.calls.sound_off_muting();
         ann.host.remove_input("desk");
         ann.host.break_input(AudioError::NoDevice);
         until("the default microphone is opened", || {
@@ -455,9 +455,8 @@ async fn a_device_replaced_around_the_sound_off_is_not_opened_by_the_sound_on() 
             })
             .await;
         assert!(view.muted && view.deafened);
-        let seat = view.call.unwrap().seat();
         ben.host.clear_played();
-        ann.calls.sound_on_reopening(Some(&seat), false);
+        ann.calls.sound_on_reopening();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert!(
             ann.calls.view().muted,
