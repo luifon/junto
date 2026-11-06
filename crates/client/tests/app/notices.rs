@@ -673,8 +673,8 @@ fn a_second_press_on_a_notice_goes_to_its_message_again(cx: &mut TestAppContext)
 
 /// The button to the end of the list lies over the rows of the list. The pointer on it does not
 /// reach the message under it: that message draws no actions, and a press on the button does
-/// not also press one of them, which once opened the reaction picker of the message under it
-/// (ADR 0740).
+/// not also press one of them, which once opened the reaction picker of the message under it.
+/// The wheel over the button still moves the list (ADR 0740).
 #[gpui::test]
 fn the_button_to_the_end_keeps_the_pointer_from_the_message_under_it(cx: &mut TestAppContext) {
     let world = World::new();
@@ -712,6 +712,21 @@ fn the_button_to_the_end_keeps_the_pointer_from_the_message_under_it(cx: &mut Te
             "the message {id} under the button draws its actions"
         );
     }
+    // The wheel over the button still moves the list.
+    let top = window.in_shell(|shell, _, _| shell.feed_scroll_top(Pane::Main));
+    window.dispatch(gpui::ScrollWheelEvent {
+        position: button.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(200.0))),
+        ..Default::default()
+    });
+    window.settle();
+    assert_ne!(
+        window.in_shell(|shell, _, _| shell.feed_scroll_top(Pane::Main)),
+        top,
+        "the wheel over the button did not move the list"
+    );
+    let button = window.cx.debug_bounds("go-to-end").unwrap();
+    window.move_pointer(button.center());
     window.press_at(button.center(), gpui::MouseButton::Left);
     window.until("the end of the list", |window| {
         window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main))

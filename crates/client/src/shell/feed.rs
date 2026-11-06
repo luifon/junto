@@ -2141,12 +2141,13 @@ impl Shell {
             .when(away, |frame| {
                 frame.child(
                     // The button lies over the rows: it takes the pointer, so that the row under
-                    // it is not hovered and does not take the press as well (ADR 0740).
+                    // it is not hovered and does not take the press as well, and leaves the
+                    // wheel to the list (ADR 0740).
                     div()
                         .absolute()
                         .right(u(18.0))
                         .bottom(u(8.0))
-                        .occlude()
+                        .block_mouse_except_scroll()
                         .child(
                             Button::new("go-to-end")
                                 .icon(Icon::ChevronDown)
@@ -4786,6 +4787,13 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn feed_jump(&self, pane: Pane) -> Option<(MessageId, u64)> {
         self.list(pane).target
+    }
+
+    /// The first row of the list of a pane and the distance of the view into it.
+    #[cfg(feature = "test-support")]
+    pub fn feed_scroll_top(&self, pane: Pane) -> (usize, f32) {
+        let top = self.list(pane).list.logical_scroll_top();
+        (top.item_ix, f32::from(top.offset_in_item))
     }
 
     /// The bounds in which the last frame drew the list of a pane. A test that measures a
