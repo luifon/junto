@@ -62,6 +62,15 @@ class LinuxSteps(unittest.TestCase):
         self.assertIn(DEVICE_TESTS, commands)
         self.assertLess(commands.index("cargo build --workspace --locked"), commands.index(DEVICE_TESTS))
 
+    def test_the_linux_job_lints_each_crate_alone_and_keeps_its_failure(self):
+        status, commands, output = self.run_job()
+        self.assertEqual(status, 0, output)
+        for targets in ("", "--all-targets "):
+            self.assertIn(f"python3 tools/ci/each_crate.py clippy --locked {targets}--keep-going -- -D warnings", commands)
+        status, commands, output = self.run_job(fail_on="each_crate.py clippy --locked --all-targets")
+        self.assertEqual(status, 17)
+        self.assertIn("Lint each crate alone (exit 17)", output.split("=== Failed steps", 1)[1])
+
     def test_the_linux_job_measures_the_empty_bands_of_every_screen(self):
         status, commands, output = self.run_job()
         self.assertEqual(status, 0, output)

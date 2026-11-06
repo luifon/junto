@@ -190,6 +190,17 @@ class JobSteps(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertFalse(any("dialogs.py" in c for c in commands))
 
+    def test_both_systems_lint_each_crate_alone_and_keep_its_failure(self):
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            for targets in ("", "--all-targets "):
+                self.assertIn(f"python3 tools/ci/each_crate.py clippy --locked {targets}--keep-going -- -D warnings",
+                              commands, system)
+            status, _, output = self.run_job(system, fail_on="each_crate.py clippy --locked --all-targets")
+            self.assertEqual(status, 1, system)
+            self.assertIn("Lint each crate alone (exit 1)", output, system)
+
     def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)

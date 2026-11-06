@@ -96,6 +96,11 @@ run budget tools/linux-container.sh cargo clippy --workspace --all-targets --loc
 # workspace lint does not compile (ADR 0913).
 step "Lint the device checks of the media crate"
 run budget tools/linux-container.sh cargo clippy --locked -p junto-media --features native-device-tests --all-targets -- -D warnings
+# Each package alone, with only the features that it and its dependencies ask for: its library
+# and programs, then every target (tools/ci/each_crate.py).
+step "Lint each crate alone"
+run budget tools/linux-container.sh python3 tools/ci/each_crate.py clippy --locked --keep-going -- -D warnings
+run budget tools/linux-container.sh python3 tools/ci/each_crate.py clippy --locked --all-targets --keep-going -- -D warnings
 step "Build the server used by process tests"
 run budget tools/linux-container.sh cargo build --workspace --locked
 # The V4L2 device in memory of the camera tests is not linked into the client (ADR 0913); the

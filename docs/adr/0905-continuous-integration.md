@@ -195,6 +195,11 @@ The Windows setup enables the Task Scheduler operational event log before any in
 
 The Linux desktop checks also run `tools/check_window_placement.py` under the isolated X11 display: main and detached-window move/resize, normal and maximized restart, restore size, fullscreen and removed-display fallback inside a smaller work area. The detached case builds the opt-in `native_placement` target and opens its production Shell with synthetic devices. The check uses a private profile and reaps every process it starts (ADR 0730).
 
+
+**The coverage of 2026-11-06.** The times below were measured on the Linux host, on two processors of a worker lock with other work on the host; the jobs give a step that compiles the processors of the free worker locks (`budget.py`), so their steps take less there. The Windows steps could not be run here: their figures are those of the Linux equivalent, and the next run of the Windows job measures them.
+
+- **The lint of each crate alone.** The lint of the workspace resolves the features of every package together, so a crate that compiles only with a feature that another package of the workspace turns on, or a test target that needs such a feature, passes it. `tools/ci/each_crate.py` runs `cargo clippy -p <package>` for each package of `cargo metadata --no-deps`, once for its library and programs and once with `--all-targets`, continues after a failed package, prints the duration of each and names the failed packages at the end (`tools/ci/test_each_crate.py`). The Linux job and the jobs of macOS and Windows run it after the lint of the device checks (step "Lint each crate alone"). Cost on the host: 300 s and 206 s the first time, while the feature sets of each package alone were not yet compiled (the target cache keeps them for the next runs); 64 s and 97 s after a change of `junto-protocol`, which every package uses; 37 s for both after a change of `junto-client`; 5 s each without a change.
+
 ## Consequences
 
 - An error that exists only with PostgreSQL on macOS or Windows is found by CI only when a window test reaches it; the other tests that need PostgreSQL run on Linux only.
