@@ -24,9 +24,15 @@
 use std::path::Path;
 
 use junto_media::audio::FRAME_SAMPLES;
-use junto_media::audio::denoise::{Denoiser, GATE, GateSettings};
+use junto_media::audio::denoise::Denoiser;
 use junto_media::audio::processing::{Processing, Processor};
 use livekit::webrtc::native::audio_resampler::AudioResampler;
+
+/// The gate that the client does not run, which the unit tests of the media crate run as well.
+#[path = "../src/audio/denoise/gate.rs"]
+mod gate;
+
+use gate::{GATE, GateSettings, Gated};
 
 /// The samples of a WAV file of 16-bit mono sound at 48 kHz.
 fn read(path: &Path) -> Vec<i16> {
@@ -100,14 +106,19 @@ fn chain(
         noise_suppression: false,
         automatic_gain,
     });
-    let mut denoiser = suppressor.map(Denoiser::new);
-    let delay = denoiser.as_ref().map_or(0, Denoiser::delay);
+    let mut denoiser = suppressor.map(|gate| (Denoiser::default(), gate.map(Gated::new)));
+    let delay = denoiser.as_ref().map_or(0, |(network, gated)| {
+        network.delay() + gated.as_ref().map_or(0, Gated::delay)
+    });
     let mut output = Vec::with_capacity(samples.len() + delay);
     for chunk in samples.as_chunks::<FRAME_SAMPLES>().0 {
         let mut frame = *chunk;
         processor.capture(&mut frame);
-        if let Some(denoiser) = &mut denoiser {
-            denoiser.process(&mut frame);
+        if let Some((network, gated)) = &mut denoiser {
+            let voice = network.process(&mut frame);
+            if let Some(gated) = gated {
+                gated.process(&mut frame, voice);
+            }
         }
         output.extend(frame.iter().map(|sample| f64::from(*sample) / 32768.0));
     }

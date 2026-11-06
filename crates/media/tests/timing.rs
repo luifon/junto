@@ -58,7 +58,7 @@ fn the_processing_of_one_frame_of_each_direction() {
 /// One frame of the microphone through `Processor::capture` with the default settings of the
 /// client, with the noise suppressor and without it, in microseconds and in milliseconds of
 /// processor time per second of sound (ADR 0733, `docs/client-performance.md`). The frames
-/// are a tone with noise, so that the network and the gate run as on speech.
+/// are a tone with noise, so that the network runs as on speech.
 #[test]
 #[ignore = "a timing: run it by name"]
 fn the_capture_of_one_frame_with_and_without_the_noise_suppressor() {

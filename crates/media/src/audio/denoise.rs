@@ -1,121 +1,36 @@
 //! The noise suppressor of the microphone (ADR 0733): RNNoise, a recurrent network, through
 //! its Rust port `nnnoiseless`. The network removes steady noise and lowers short noises a
-//! little. The client runs it without a gate: a gate on the probability of voice that the
-//! network gives for each frame takes more typing and clicks out of the pauses, but it keeps
-//! the starts of words only when the sound waits 50 ms for it. The gate stays here for its
-//! tests and for the measurement of `tests/noise_quality.rs`.
+//! little. The client runs it without a gate on its probability of voice: such a gate takes
+//! more typing and clicks out of the pauses, but keeps the starts of words only when the sound
+//! waits 50 ms for it (`gate`, which only the tests and the measurement run).
 
 use nnnoiseless::DenoiseState;
 
 use super::FRAME_SAMPLES;
 
-/// The settings of the gate on the probability of voice.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GateSettings {
-    /// The probability of voice above which the gate opens.
-    pub voice: f32,
-    /// How many frames of 10 ms the gate stays open after the last frame with voice.
-    pub hangover_frames: usize,
-    /// The gain of the closed gate.
-    pub closed: f32,
-    /// The part of the way to the closed gain that one frame goes after the hangover.
-    pub closing: f32,
-    /// How many frames of 10 ms the sound waits, so that the gate opens before the frames
-    /// whose probability rises late at the start of a word.
-    pub lookahead_frames: usize,
-}
-
-/// The gate that keeps the starts of words in the measurement of ADR 0733: open above a
-/// probability of 0.6, 80 ms of hangover, -25 dB when closed, and 50 ms of lookahead. The
-/// client does not run it.
-pub const GATE: GateSettings = GateSettings {
-    voice: 0.6,
-    hangover_frames: 8,
-    closed: 0.056,
-    closing: 0.05,
-    lookahead_frames: 5,
-};
-
-/// The gate alone: the gain of each frame from the probabilities of voice that the network
-/// gave. It opens in the frame in which the probability of a frame within its lookahead
-/// crosses the threshold, and closes slowly after the hangover.
-pub struct Gate {
-    settings: GateSettings,
-    gain: f32,
-    hold: usize,
-    /// The probabilities of the frames that wait, the oldest first.
-    ahead: std::collections::VecDeque<f32>,
-}
-
-impl Gate {
-    pub fn new(settings: GateSettings) -> Self {
-        Self {
-            settings,
-            gain: 1.0,
-            hold: 0,
-            ahead: std::collections::VecDeque::new(),
-        }
-    }
-
-    /// Takes the probability of the newest frame and gives the gain at the start and at the
-    /// end of the frame that leaves the lookahead. Without a lookahead that is the frame of
-    /// the probability.
-    pub fn next(&mut self, voice: f32) -> (f32, f32) {
-        self.ahead.push_back(voice);
-        if self.ahead.len() > self.settings.lookahead_frames + 1 {
-            self.ahead.pop_front();
-        }
-        if self.ahead.iter().any(|voice| *voice > self.settings.voice) {
-            self.hold = self.settings.hangover_frames.max(1);
-        } else {
-            self.hold = self.hold.saturating_sub(1);
-        }
-        let start = self.gain;
-        self.gain = if self.hold > 0 {
-            1.0
-        } else {
-            self.gain + (self.settings.closed - self.gain) * self.settings.closing
-        };
-        (start, self.gain)
-    }
-}
+#[cfg(test)]
+mod gate;
 
 pub struct Denoiser {
     network: Box<DenoiseState<'static>>,
     input: [f32; FRAME_SAMPLES],
     output: [f32; FRAME_SAMPLES],
-    gate: Option<Gate>,
-    /// The frames of the network that wait for the lookahead of the gate.
-    waiting: std::collections::VecDeque<[f32; FRAME_SAMPLES]>,
 }
 
-/// The suppressor of the client: the network without a gate.
 impl Default for Denoiser {
     fn default() -> Self {
-        Self::new(None)
-    }
-}
-
-impl Denoiser {
-    /// The network with a gate of these settings, or without a gate.
-    pub fn new(gate: Option<GateSettings>) -> Self {
         Self {
             network: DenoiseState::new(),
             input: [0.0; FRAME_SAMPLES],
             output: [0.0; FRAME_SAMPLES],
-            gate: gate.map(Gate::new),
-            waiting: std::collections::VecDeque::new(),
         }
     }
+}
 
-    /// The delay of the sound in samples: one frame of the network and the lookahead of the
-    /// gate.
+impl Denoiser {
+    /// The delay of the sound in samples: one frame.
     pub fn delay(&self) -> usize {
         FRAME_SAMPLES
-            * (1 + self
-                .gate
-                .as_ref()
-                .map_or(0, |gate| gate.settings.lookahead_frames))
     }
 
     /// Processes one mono frame of 10 ms at 48 kHz in place and returns the probability of
@@ -125,32 +40,10 @@ impl Denoiser {
             *to = f32::from(*from);
         }
         let voice = self.network.process_frame(&mut self.output, &self.input);
-        let Some(gate) = &mut self.gate else {
-            write(frame, &self.output, (1.0, 1.0));
-            return voice;
-        };
-        self.waiting.push_back(self.output);
-        let (start, end) = gate.next(voice);
-        if self.waiting.len() > gate.settings.lookahead_frames {
-            if let Some(leaving) = self.waiting.pop_front() {
-                write(frame, &leaving, (start, end));
-            }
-        } else {
-            frame.fill(0);
+        for (to, from) in frame.iter_mut().zip(self.output.iter()) {
+            *to = from.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
         }
         voice
-    }
-}
-
-/// Writes a frame of the network with a gain that moves from `start` to `end` along the
-/// frame, so that a change makes no step in the sound.
-fn write(frame: &mut [i16; FRAME_SAMPLES], from: &[f32; FRAME_SAMPLES], (start, end): (f32, f32)) {
-    let per_sample = (end - start) / FRAME_SAMPLES as f32;
-    for (index, (to, from)) in frame.iter_mut().zip(from.iter()).enumerate() {
-        let gain = start + per_sample * index as f32;
-        *to = (from * gain)
-            .round()
-            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     }
 }
 
@@ -160,6 +53,7 @@ mod tests {
     //! synthesis with pauses, and the noises of a call that the voice suppressor of the
     //! call library does not remove: typing, clicks of a mouse, and a fan with hum.
 
+    use super::gate::{GATE, Gate, GateSettings, Gated};
     use super::*;
 
     const RATE: f64 = 48_000.0;
@@ -343,18 +237,24 @@ mod tests {
     /// Runs a clip through the suppressor, frame by frame, and gives the output earlier by the
     /// delay of the suppressor, to align it with the input.
     fn suppressed(clip: &[f64]) -> Vec<f64> {
-        suppressed_by(Denoiser::default(), clip)
+        suppressed_by(None, clip)
     }
 
-    fn suppressed_by(mut denoiser: Denoiser, clip: &[f64]) -> Vec<f64> {
-        let delay = denoiser.delay();
+    /// The same with a gate after the network.
+    fn suppressed_by(gate: Option<GateSettings>, clip: &[f64]) -> Vec<f64> {
+        let mut denoiser = Denoiser::default();
+        let mut gated = gate.map(Gated::new);
+        let delay = denoiser.delay() + gated.as_ref().map_or(0, Gated::delay);
         let mut output = Vec::with_capacity(clip.len());
         for chunk in clip.as_chunks::<FRAME_SAMPLES>().0.iter() {
             let mut frame = [0i16; FRAME_SAMPLES];
             for (to, from) in frame.iter_mut().zip(chunk) {
                 *to = (from * 32768.0).clamp(-32768.0, 32767.0) as i16;
             }
-            denoiser.process(&mut frame);
+            let voice = denoiser.process(&mut frame);
+            if let Some(gated) = &mut gated {
+                gated.process(&mut frame, voice);
+            }
             output.extend(frame.iter().map(|sample| f64::from(*sample) / 32768.0));
         }
         output.drain(..delay);
@@ -452,7 +352,7 @@ mod tests {
     /// 3 dB there (the measurement of ADR 0733).
     #[test]
     fn the_gate_keeps_the_first_30_ms_of_each_phrase() {
-        let gated = |clip: &[f64]| suppressed_by(Denoiser::new(Some(GATE)), clip);
+        let gated = |clip: &[f64]| suppressed_by(Some(GATE), clip);
         let mut random = Random(0x5eed_1234_abcd_0002);
         let (voice, starts) = voice(&mut random, 6);
         for (name, scale_db) in [("speech", 0.0), ("speech 20 dB lower", -20.0)] {
