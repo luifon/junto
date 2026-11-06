@@ -486,6 +486,7 @@ fn acme() -> ServerSnapshot {
         model: Some(acme_model(|_| {})),
         server_version: ServerVersion::parse("0.3.1"),
         server_events: None,
+        event_revision: 0,
     }
 }
 
@@ -506,6 +507,7 @@ fn harbor() -> ServerSnapshot {
         ))))),
         server_version: ServerVersion::parse("0.3.0"),
         server_events: None,
+        event_revision: 0,
     }
 }
 
@@ -519,6 +521,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         model: None,
         server_version: None,
         server_events: None,
+        event_revision: 0,
         ..harbor()
     }
 }

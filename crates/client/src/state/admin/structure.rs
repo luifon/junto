@@ -270,15 +270,17 @@ impl AppState {
         up: bool,
         cx: &mut Context<Self>,
     ) {
-        let live = self
-            .client
-            .server(server_id)
-            .map(|server| server.live().view());
+        let server = self.client.server(server_id);
+        let live = server.as_ref().map(|server| server.live().view());
         // A server of event revision 20 and later takes the place; an older one takes the
         // positions of release 0.1.0 (ADR 0206).
-        let places = live
+        let places = server
             .as_ref()
-            .is_some_and(|view| view.server_events.is_some_and(|revision| revision >= 20));
+            .zip(live.as_ref())
+            .is_some_and(|(server, view)| {
+                let described = server.entry().capabilities.message_format.event_revision;
+                crate::state::view::event_revision(view.server_events, described) >= 20
+            });
         let order: Vec<(CategoryId, i32)> = live
             .and_then(|view| view.model)
             .and_then(|model| {

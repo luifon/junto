@@ -1281,6 +1281,7 @@ pub(crate) mod tests {
             ))),
             server_version: None,
             server_events: None,
+            event_revision: 0,
         }
     }
 

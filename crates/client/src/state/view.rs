@@ -74,6 +74,16 @@ pub struct ServerSnapshot {
     pub server_version: Option<ServerVersion>,
     /// The revision of the messages and events that the server stated (ADR 0206).
     pub server_events: Option<u32>,
+    /// The revision of the server for the requests of the window: the one of the `hello` of
+    /// its stream, and while the stream has not greeted the one of its description, which
+    /// the server book keeps from `GET /api/server` (ADR 0206).
+    pub event_revision: u32,
+}
+
+/// The revision of a server for the requests of the window: the stream's, else the one of
+/// its description.
+pub fn event_revision(stream: Option<u32>, described: u32) -> u32 {
+    stream.unwrap_or(described)
 }
 
 impl ServerSnapshot {
@@ -95,6 +105,10 @@ impl ServerSnapshot {
             model: live.model,
             server_version: live.server_version,
             server_events: live.server_events,
+            event_revision: event_revision(
+                live.server_events,
+                entry.capabilities.message_format.event_revision,
+            ),
         }
     }
 }

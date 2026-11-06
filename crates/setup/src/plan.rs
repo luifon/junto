@@ -730,6 +730,7 @@ fn existing_workspace(
     for existing in &found.roles {
         role_names.entry(existing.id).or_insert(existing.id);
     }
+    let planned = planned_order(entry, found);
     let mut categories: HashSet<StructureId> = found
         .categories
         .iter()
@@ -745,6 +746,10 @@ fn existing_workspace(
             .categories
             .iter()
             .find(|existing| existing.id == category.id);
+        let category = &CategoryEntry {
+            position: planned.categories.get(&category.id).copied(),
+            ..category.clone()
+        };
         match existing {
             Some(existing) => update_category(planner, category, existing),
             None => {
@@ -766,6 +771,10 @@ fn existing_workspace(
             .channels
             .iter()
             .find(|existing| existing.id == channel.id);
+        let channel = &ChannelEntry {
+            position: planned.channels.get(&channel.id).copied(),
+            ..channel.clone()
+        };
         match existing {
             Some(existing) => {
                 if !update_channel(planner, channel, existing) {
@@ -795,6 +804,97 @@ fn existing_workspace(
     );
     let stored = found.glossary.as_deref().unwrap_or_default();
     glossary(planner, id, &found.name, stored, entry.glossary.as_deref());
+}
+
+/// The positions that the plan sends for the categories and the channels of an existing
+/// workspace: an entry that is absent sends none.
+#[derive(Default)]
+struct PlannedOrder {
+    categories: HashMap<StructureId, i32>,
+    channels: HashMap<StructureId, i32>,
+}
+
+/// One entry of the file in a group: the position that the file states, and the stored
+/// position when the entry is already in that group on the server.
+struct Placed {
+    id: StructureId,
+    stated: i32,
+    stored: Option<i32>,
+}
+
+/// The positions to send for the entries of one group that state a position. The order is
+/// compared, not the numbers (ADR 0304): when those entries are already in the order of the
+/// file on the server and none of them enters the group, nothing is sent, also when the
+/// numbers differ, for example by the gap of a deleted entry that the server numbered away.
+/// Otherwise each such entry gets its place among them, and the entries whose stored position
+/// differs from their place send it. An entry without a stated position keeps its position
+/// or goes to the end, and an entry that the file does not hold keeps its position.
+fn group_order(entries: &mut [Placed], into: &mut HashMap<StructureId, i32>) {
+    entries.sort_by_key(|entry| (entry.stated, entry.id));
+    let entering = entries.iter().any(|entry| entry.stored.is_none());
+    let mut on_server: Vec<&Placed> = entries.iter().collect();
+    on_server.sort_by_key(|entry| (entry.stored, entry.id));
+    let same = on_server
+        .iter()
+        .map(|entry| entry.id)
+        .eq(entries.iter().map(|entry| entry.id));
+    if same && !entering {
+        return;
+    }
+    for (place, entry) in entries.iter().enumerate() {
+        let Ok(place) = i32::try_from(place) else {
+            break;
+        };
+        if entry.stored != Some(place) {
+            into.insert(entry.id, place);
+        }
+    }
+}
+
+/// The positions of the categories and of each group of channels of an existing workspace.
+fn planned_order(entry: &WorkspaceEntry, found: &WorkspaceEntry) -> PlannedOrder {
+    let mut planned = PlannedOrder::default();
+    let mut categories: Vec<Placed> = entry
+        .categories
+        .iter()
+        .filter_map(|category| {
+            let stored = found
+                .categories
+                .iter()
+                .find(|existing| existing.id == category.id)
+                .map(|existing| existing.position.unwrap_or(0));
+            Some(Placed {
+                id: category.id,
+                stated: category.position?,
+                stored,
+            })
+        })
+        .collect();
+    group_order(&mut categories, &mut planned.categories);
+    let mut groups: BTreeMap<Option<StructureId>, Vec<Placed>> = BTreeMap::new();
+    for channel in &entry.channels {
+        let Some(stated) = channel.position else {
+            continue;
+        };
+        let existing = found
+            .channels
+            .iter()
+            .find(|existing| existing.id == channel.id);
+        let now = existing.map(|existing| existing.category.flatten());
+        let group = channel.category.or(now).flatten();
+        let stored = existing
+            .filter(|_| now == Some(group))
+            .map(|existing| existing.position.unwrap_or(0));
+        groups.entry(group).or_default().push(Placed {
+            id: channel.id,
+            stated,
+            stored,
+        });
+    }
+    for entries in groups.values_mut() {
+        group_order(entries, &mut planned.channels);
+    }
+    planned
 }
 
 /// States the problem of an entry whose identifier names an entry of another workspace.
@@ -1375,7 +1475,10 @@ fn update_channel(
         )
         .map(str::to_owned);
     let category = differences.value("category", existing.category, channel.category, reference);
-    let position = differences.value("position", existing.position, channel.position, |value| {
+    // A channel that enters another group goes to its end on the server, so its place is
+    // sent also when the number equals its position in the group that it leaves.
+    let stored_position = existing.position.filter(|_| category.is_none());
+    let position = differences.value("position", stored_position, channel.position, |value| {
         value.to_string()
     });
     let permanent_messages = differences.value(

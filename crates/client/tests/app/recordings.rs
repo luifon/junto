@@ -694,26 +694,33 @@ fn recorded_scene(
     junto_client_core::protocol::ids::ChannelId,
     junto_client_core::ServerHandle,
 ) {
-    let (server, admin, directory, window, voice, luca, _) = recorded_scene_at(cx, world, false);
+    let scene = recorded_scene_at(cx, world, false);
+    let Scene {
+        server,
+        admin,
+        directory,
+        window,
+        voice,
+        luca,
+        ..
+    } = scene;
     (server, admin, directory, window, voice, luca)
 }
 
+/// What [`recorded_scene_at`] makes.
+struct Scene {
+    server: RecordingServer,
+    admin: Admin,
+    directory: tempfile::TempDir,
+    window: Window,
+    voice: junto_client_core::protocol::ids::ChannelId,
+    luca: junto_client_core::ServerHandle,
+    proxy: Option<FaultProxy>,
+}
+
 /// As [`recorded_scene`]; with `through_proxy` the window reaches the server through a proxy,
-/// which the scene returns as well.
-#[allow(clippy::type_complexity)]
-fn recorded_scene_at(
-    cx: &mut TestAppContext,
-    world: &World,
-    through_proxy: bool,
-) -> (
-    RecordingServer,
-    Admin,
-    tempfile::TempDir,
-    Window,
-    junto_client_core::protocol::ids::ChannelId,
-    junto_client_core::ServerHandle,
-    Option<FaultProxy>,
-) {
+/// which the scene holds as well.
+fn recorded_scene_at(cx: &mut TestAppContext, world: &World, through_proxy: bool) -> Scene {
     let server = world.run(RecordingServer::start("Acme Studio"));
     let admin = world.run(async {
         let device = Device::new();
@@ -747,7 +754,15 @@ fn recorded_scene_at(
         .state
         .read_with(&window.cx, |state, _| state.client().servers())
         .remove(0);
-    (server, admin, directory, window, voice, luca, proxy)
+    Scene {
+        server,
+        admin,
+        directory,
+        window,
+        voice,
+        luca,
+        proxy,
+    }
 }
 
 /// The page of the recordings that the open administration shows.
@@ -790,8 +805,15 @@ fn the_recordings_page_reads_again_at_the_events_of_a_recording_and_lists_its_co
     use junto_client_core::protocol::recording::RecordingState;
 
     let world = World::new();
-    let (server, admin, _directory, mut window, voice, luca, proxy) =
-        recorded_scene_at(cx, &world, true);
+    let Scene {
+        server,
+        admin,
+        directory: _directory,
+        mut window,
+        voice,
+        luca,
+        proxy,
+    } = recorded_scene_at(cx, &world, true);
     let proxy = proxy.unwrap();
     let ada = logged_in(&admin.handle);
     window.open_administration();

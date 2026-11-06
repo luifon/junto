@@ -279,24 +279,60 @@ async fn end_of_group(
     .await?)
 }
 
+/// The groups that a channel left and the workspaces that a category left during one request
+/// or one structure apply. Each is numbered from 0 once, at the end, so that the positions of
+/// the same request or file keep the numbers that the client read (ADR 0304).
+#[must_use = "the groups are numbered by `number` at the end of the request"]
+#[derive(Default)]
+pub(crate) struct Departures {
+    /// Each group, and whether a rule may have hidden a channel that left it from a person.
+    groups: std::collections::BTreeMap<(WorkspaceId, Option<CategoryId>), bool>,
+    categories: std::collections::BTreeSet<WorkspaceId>,
+}
+
+impl Departures {
+    /// Numbers each group that an entry left.
+    pub(crate) async fn number(
+        self,
+        connection: &mut PgConnection,
+        now: OffsetDateTime,
+    ) -> ApiResult<()> {
+        for workspace_id in self.categories {
+            close_category_gap(connection, now, workspace_id).await?;
+        }
+        for (group, hidden_left) in self.groups {
+            close_channel_gap(connection, now, group, hidden_left).await?;
+        }
+        Ok(())
+    }
+
+    /// The channel `left` leaves the group. Whether a rule may have hidden it is read now: a
+    /// change of a role or a rule earlier in the same transaction refreshes the workspace by
+    /// itself.
+    async fn left(
+        &mut self,
+        connection: &mut PgConnection,
+        group: (WorkspaceId, Option<CategoryId>),
+        left: ChannelId,
+    ) -> ApiResult<()> {
+        let hidden = events::log::may_be_hidden(connection, left).await?;
+        *self.groups.entry(group).or_default() |= hidden;
+        Ok(())
+    }
+}
+
 /// Numbers the channels of a group, that are not deleted, from 0 in their stored order, after
-/// the channel `left` left it, when a rule may have hidden that channel from a person: a
-/// person who sees every remaining channel reads the stored positions, and a gap would show
-/// where a channel hidden from that person was (ADR 0304). A gap of a channel that every
-/// person saw shows nothing hidden. `None` numbers the group in every case. Every person of
-/// the workspace reads the structure again when a position changed, or when the numbers of
-/// a person who saw fewer channels change from places to the stored positions.
-pub(crate) async fn close_channel_gap(
+/// a channel left it: a person who sees every remaining channel reads the stored positions,
+/// and a gap could show where a channel hidden from that person was (ADR 0304). Every person
+/// of the workspace reads the structure again when a position changed, or, after a channel
+/// that a rule may have hidden left (`hidden_left`), when the numbers of a person who saw
+/// fewer channels can change from places to the stored positions.
+async fn close_channel_gap(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     (workspace_id, category_id): (WorkspaceId, Option<CategoryId>),
-    left: Option<ChannelId>,
+    hidden_left: bool,
 ) -> ApiResult<()> {
-    if let Some(left) = left
-        && !events::log::may_be_hidden(connection, left).await?
-    {
-        return Ok(());
-    }
     let changed = sqlx::query(
         "update channels c set position = o.place
          from (select id, (row_number() over (order by position, id) - 1)::integer as place
@@ -310,7 +346,7 @@ pub(crate) async fn close_channel_gap(
     .execute(&mut *connection)
     .await?;
     if changed.rows_affected() > 0
-        || channel_numbers_differ(connection, workspace_id, category_id).await?
+        || (hidden_left && channel_numbers_differ(connection, workspace_id, category_id).await?)
     {
         events::log::structure_reordered(connection, now, workspace_id).await?;
     }
@@ -827,16 +863,19 @@ pub async fn update_channel(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        update_channel_in(
+        let mut departures = Departures::default();
+        let channel = update_channel_in(
             connection,
             &access,
             now,
             channel_id,
             new_name.as_deref(),
             &body,
-            Order::Now,
+            (Order::Now, &mut departures),
         )
-        .await
+        .await?;
+        departures.number(connection, now).await?;
+        Ok(channel)
     })
     .map(Json)
 }
@@ -917,7 +956,9 @@ pub async fn move_channels(
             .collect();
         // The channels change their category first, each to the end of its new group; then
         // the order of each group is set once from the positions of the whole request, which
-        // a client of API v1 computed together (ADR 0304).
+        // a client of API v1 computed together, and the groups that they left are numbered
+        // (ADR 0304).
+        let mut departures = Departures::default();
         for held in &moved {
             let change = UpdateChannel {
                 category_id: Some(held.to.category_id),
@@ -930,7 +971,7 @@ pub async fn move_channels(
                 held.channel_id,
                 None,
                 &change,
-                Order::Later,
+                (Order::Later, &mut departures),
             )
             .await?;
         }
@@ -952,6 +993,7 @@ pub async fn move_channels(
                 .collect();
             order_channels(connection, &access, now, (workspace_id, group), &targets).await?;
         }
+        departures.number(connection, now).await?;
         let places = crate::access::channel_order::channel_ranks(
             &access
                 .channel_order(connection, workspace_id, &workspace)
@@ -984,7 +1026,8 @@ pub(crate) enum Order {
     Later,
 }
 
-/// Changes a channel. `new_name` is the validated name of `change`.
+/// Changes a channel. `new_name` is the validated name of `change`. A group that the channel
+/// leaves is added to `departures`.
 pub(crate) async fn update_channel_in(
     connection: &mut PgConnection,
     access: &Access,
@@ -992,7 +1035,7 @@ pub(crate) async fn update_channel_in(
     channel_id: ChannelId,
     new_name: Option<&str>,
     change: &UpdateChannel,
-    order: Order,
+    (order, departures): (Order, &mut Departures),
 ) -> ApiResult<Channel> {
     let (record, scope) = access.channel(connection, channel_id).await?;
     access.require(Request::Channel {
@@ -1059,7 +1102,7 @@ pub(crate) async fn update_channel_in(
     }
     if moved_group {
         let group = (channel.workspace_id, category_before);
-        close_channel_gap(connection, now, group, Some(channel_id)).await?;
+        departures.left(connection, group, channel_id).await?;
     }
     if let (Order::Now, Some(position)) = (order, change.position) {
         let group = (channel.workspace_id, channel.category_id);
@@ -1165,7 +1208,10 @@ pub async fn delete_channel(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        delete_channel_in(connection, &app.calls, &access, now, channel_id).await
+        let mut departures = Departures::default();
+        let deleting = (now, &mut departures);
+        delete_channel_in(connection, &app.calls, &access, deleting, channel_id).await?;
+        departures.number(connection, now).await
     })?;
     app.purges.wake();
     Ok(StatusCode::NO_CONTENT)
@@ -1175,7 +1221,7 @@ pub(crate) async fn delete_channel_in(
     connection: &mut PgConnection,
     calls: &Calls,
     access: &Access,
-    now: OffsetDateTime,
+    (now, departures): (OffsetDateTime, &mut Departures),
     channel_id: ChannelId,
 ) -> ApiResult<()> {
     let (record, scope) = access.channel(connection, channel_id).await?;
@@ -1200,7 +1246,15 @@ pub(crate) async fn delete_channel_in(
         name: &record.channel.name,
         permanent_message_count: record.permanent_message_count,
     };
-    remove_channel(connection, calls, now, &removed, Some(access.account_id)).await?;
+    let removing = (now, departures);
+    remove_channel(
+        connection,
+        calls,
+        removing,
+        &removed,
+        Some(access.account_id),
+    )
+    .await?;
     if record.archived_at.is_some() {
         return Ok(());
     }
@@ -1245,11 +1299,11 @@ pub(crate) struct Removed<'a> {
 /// Deletes a channel: for a person, who passed the checks of the route, and for the server
 /// when the archive period of the channel has ended (ADR 0410). The row stays as a marker
 /// (ADR 0407). The content of the channel is removed afterwards, in bounded parts
-/// (ADR 0017).
+/// (ADR 0017). Its group is added to `departures`.
 pub(crate) async fn remove_channel(
     connection: &mut PgConnection,
     calls: &Calls,
-    now: OffsetDateTime,
+    (now, departures): (OffsetDateTime, &mut Departures),
     channel: &Removed<'_>,
     by: Option<junto_protocol::ids::AccountId>,
 ) -> ApiResult<()> {
@@ -1267,7 +1321,7 @@ pub(crate) async fn remove_channel(
         return Err(ApiError::conflict("the channel changed during the request"));
     };
     let group = (channel.workspace_id, category_id);
-    close_channel_gap(connection, now, group, Some(channel.id)).await?;
+    departures.left(connection, group, channel.id).await?;
     sqlx::query("delete from thread_forks where channel_id=$1")
         .bind(channel.id)
         .execute(&mut *connection)
@@ -1312,7 +1366,10 @@ pub async fn delete_category(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        delete_category_in(connection, &access, now, (workspace_id, category_id)).await
+        let mut departures = Departures::default();
+        let ids = (workspace_id, category_id);
+        delete_category_in(connection, &access, (now, &mut departures), ids).await?;
+        departures.number(connection, now).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1320,7 +1377,7 @@ pub async fn delete_category(
 pub(crate) async fn delete_category_in(
     connection: &mut PgConnection,
     access: &Access,
-    now: OffsetDateTime,
+    (now, departures): (OffsetDateTime, &mut Departures),
     (workspace_id, category_id): (WorkspaceId, CategoryId),
 ) -> ApiResult<()> {
     let (_, scope) = access
@@ -1364,19 +1421,26 @@ pub(crate) async fn delete_category_in(
         };
         events::publish(connection, now, &detached).await?;
     }
-    // The rows of deleted channels refer to the category as well. The channels go after the
-    // channels of the root, in their order, numbered on from the end of the root.
-    let end = end_of_group(connection, workspace_id, None).await?;
+    // The channels go after the channels of the root, in their order: the root and the
+    // channels of the category are numbered from 0 in one statement, which adds nothing to a
+    // stored position. The rows of deleted channels refer to the category as well.
     sqlx::query(
-        "update channels c set category_id = null, position = $2 + o.place
-         from (select id, (row_number() over (order by position, id) - 1)::integer as place
-               from channels where category_id = $1) o
+        "update channels c set category_id = null, position = o.place
+         from (select id, (row_number() over (
+                   order by category_id is not null, position, id) - 1)::integer as place
+               from channels
+               where workspace_id = $2 and deleted_at is null
+                 and (category_id is null or category_id = $1)) o
          where c.id = o.id",
     )
     .bind(category_id)
-    .bind(end)
+    .bind(workspace_id)
     .execute(&mut *connection)
     .await?;
+    sqlx::query("update channels set category_id = null where category_id = $1")
+        .bind(category_id)
+        .execute(&mut *connection)
+        .await?;
     sqlx::query("delete from structure_identifiers where kind = 'category' and object_id = $1")
         .bind(category_id)
         .execute(&mut *connection)
@@ -1385,8 +1449,8 @@ pub(crate) async fn delete_category_in(
         .bind(category_id)
         .execute(&mut *connection)
         .await?;
-    close_category_gap(connection, now, workspace_id).await?;
-    close_channel_gap(connection, now, (workspace_id, None), None).await?;
+    departures.categories.insert(workspace_id);
+    departures.groups.insert((workspace_id, None), true);
     audit::record(
         connection,
         now,

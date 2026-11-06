@@ -1500,6 +1500,85 @@ fn a_server_of_an_older_event_revision_gets_the_positions_of_release_0_1_0(
     assert!(sent.iter().all(|body| !body.contains("place")), "{sent:?}");
 }
 
+/// While the stream of a server of revision 20 reconnects, the window keeps the revision that
+/// the last `hello` stated: Up of a category sends its place, as one request, and not the
+/// positions of release 0.1.0 (ADR 0206).
+#[gpui::test]
+fn a_server_of_revision_20_gets_the_place_while_its_stream_reconnects(cx: &mut TestAppContext) {
+    use junto_client_core::live::StreamStatus;
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    let server_id = window.view().servers[0].id;
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    for name in ["First", "Second", "Third"] {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap();
+    }
+    let third = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .categories
+        .into_iter()
+        .find(|category| category.name == "Third")
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the categories", |window| {
+        page_categories(window) == ["First", "Second", "Third"] && crate::admin_pages::idle(window)
+    });
+    let stream = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            let view = state
+                .client()
+                .server(server_id)
+                .map(|server| server.live().view());
+            view.map(|view| (view.status, view.server_events))
+        })
+    };
+    window.until("the stream states its revision", |window| {
+        stream(window)
+            .is_some_and(|(status, revision)| status == StreamStatus::Live && revision.is_some())
+    });
+    // The next connection of the stream connects, and its `hello` waits at the proxy.
+    proxy.hold_events();
+    proxy.cut_streams();
+    window.until(
+        "the stream reconnects with the revision of the last hello",
+        |window| {
+            stream(window).is_some_and(|(status, revision)| {
+                status != StreamStatus::Live
+                    && revision == Some(junto_client_core::protocol::events::EVENT_REVISION)
+            })
+        },
+    );
+    let before = proxy.all().len();
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{third}")));
+    let moved_up = ["First", "Third", "Second"];
+    window.until("the server has the third category second", |_| {
+        server_categories(&world, &owner, default) == moved_up
+    });
+    let sent: Vec<String> = proxy.all()[before..]
+        .iter()
+        .filter(|seen| seen.method == "PATCH")
+        .map(|seen| String::from_utf8_lossy(&seen.body).into_owned())
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("\"place\""), "{sent:?}");
+    proxy.release_events();
+}
+
 #[gpui::test]
 fn an_administrator_renames_reorders_and_deletes_categories_in_the_window(cx: &mut TestAppContext) {
     use junto_client_core::protocol::structure::CreateCategory;

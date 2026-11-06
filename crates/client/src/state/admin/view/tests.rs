@@ -217,6 +217,7 @@ impl Scene {
             model: Some(Arc::new(self.model())),
             server_version: None,
             server_events: None,
+            event_revision: 0,
         }
     }
 

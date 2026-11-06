@@ -631,9 +631,9 @@ async fn an_entry_that_leaves_a_group_leaves_no_gap() {
 /// A new entry that a person may not see makes every person of the workspace read the
 /// structure again when the numbers of that person change: from the stored positions of the
 /// group to places, which differ where an archived channel stands before a listed one or a
-/// position was stored as given (ADR 0304). A category is listed only to the people who
-/// manage channels while it is empty; a channel in a category can be hidden by its rules. A
-/// root channel that every person sees records none.
+/// position was stored as given (ADR 0304). An empty category is listed only to the people
+/// who manage channels; a new channel of a category takes the rules of the category, which
+/// hide it from the member here. A root channel that every person sees records none.
 #[tokio::test]
 async fn a_new_entry_hidden_from_a_person_refreshes_the_workspace() {
     let server = TestServer::start().await;
@@ -642,34 +642,64 @@ async fn a_new_entry_hidden_from_a_person_refreshes_the_workspace() {
     let workspace_id = server.default_workspace(&owner).await.id;
     // A position stored as given, as a client of API v1 stores it: 5 for the only category.
     let given = server.category(&owner, workspace_id, "Given", 5).await;
-    let first: Channel = server
-        .post(
-            &owner,
-            &format!("/api/v1/workspaces/{workspace_id}/channels"),
-            &json!({"name": "first", "kind": "text", "category_id": given.id}),
-        )
-        .await
-        .ok(StatusCode::CREATED);
-    let _: Channel = server
-        .post(
-            &owner,
-            &format!("/api/v1/workspaces/{workspace_id}/channels"),
-            &json!({"name": "listed", "kind": "text", "category_id": given.id}),
-        )
-        .await
-        .ok(StatusCode::CREATED);
+    let mut made = Vec::new();
+    for name in ["first", "listed"] {
+        let channel: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": given.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        made.push(channel);
+    }
     let _: serde_json::Value = server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/archive", first.id),
+            &format!("/api/v1/channels/{}/archive", made[0].id),
             &json!({}),
         )
         .await
         .ok(StatusCode::OK);
+    // The category denies the member "view channel"; its two channels have rules of their own
+    // and stay visible to the member, a new channel takes the rules of the category.
+    sqlx::query("update channels set permissions_synced = false where category_id = $1")
+        .bind(given.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,1)")
+        .bind(given.id).bind(member.account_id).bind(workspace_id).execute(&server.db).await.unwrap();
+    let listed_position = |list: ChannelList| {
+        list.channels
+            .iter()
+            .find(|channel| channel.id == made[1].id)
+            .map(|channel| channel.position)
+    };
+    assert_eq!(
+        categories(&server, &member, workspace_id).await,
+        [(given.id, 5)]
+    );
+    assert_eq!(
+        listed_position(list(&server, &member, workspace_id).await),
+        Some(1)
+    );
     let mut stream = server.subscribed(&member, Level::Full).await;
-    server.category(&owner, workspace_id, "New", 0).await;
+    let _: Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/categories"),
+            &json!({"name": "New"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
     let events = server.traffic(&member, &mut stream).await;
     assert_eq!(refreshes(&events, workspace_id), 1, "{events:?}");
+    assert_eq!(
+        categories(&server, &member, workspace_id).await,
+        [(given.id, 0)]
+    );
     let _: Channel = server
         .post(
             &owner,
@@ -679,7 +709,11 @@ async fn a_new_entry_hidden_from_a_person_refreshes_the_workspace() {
         .await
         .ok(StatusCode::CREATED);
     let events = server.traffic(&member, &mut stream).await;
-    assert!(refreshes(&events, workspace_id) >= 1, "{events:?}");
+    assert_eq!(refreshes(&events, workspace_id), 1, "{events:?}");
+    assert_eq!(
+        listed_position(list(&server, &member, workspace_id).await),
+        Some(0)
+    );
     server.channel(&owner, workspace_id, "open").await;
     let events = server.traffic(&member, &mut stream).await;
     assert_eq!(refreshes(&events, workspace_id), 0, "{events:?}");
@@ -687,7 +721,8 @@ async fn a_new_entry_hidden_from_a_person_refreshes_the_workspace() {
 
 /// The channels of a deleted category go after the channels of the root in their stored
 /// order, whatever positions were stored as given: a negative one, as a drag of the window
-/// of 0.1.0 to the top of a group stores, and one near the largest position (ADR 0304).
+/// of 0.1.0 to the top of a group stores, one near the largest position, and the largest
+/// position in the root (ADR 0304).
 #[tokio::test]
 async fn the_channels_of_a_deleted_category_go_after_the_root_in_their_order() {
     let server = TestServer::start().await;
@@ -714,6 +749,16 @@ async fn the_channels_of_a_deleted_category_go_after_the_root_in_their_order() {
             .ok(StatusCode::OK);
         made.push(channel.id);
     }
+    // The last root channel at the largest position that the API accepts.
+    let largest = server.channel(&owner, workspace_id, "largest").await;
+    let _: Channel = server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", largest.id),
+            &json!({"position": i32::MAX}),
+        )
+        .await
+        .ok(StatusCode::OK);
     let root_before: Vec<ChannelId> = root(&server, &owner, workspace_id)
         .await
         .iter()
@@ -734,4 +779,65 @@ async fn the_channels_of_a_deleted_category_go_after_the_root_in_their_order() {
     let mut wanted = root_before;
     wanted.extend(made);
     assert_eq!(ids, wanted);
+    let positions: Vec<i32> = after.iter().map(|(_, position)| *position).collect();
+    assert!(without_gap(&positions), "{positions:?}");
+}
+
+/// The changes of one structure apply refer to the numbers that the file was made from: a
+/// group that a channel leaves is numbered once, after the last change, and not before a
+/// later change of the same apply sets a position in it (ADR 0304).
+#[tokio::test]
+async fn a_structure_apply_numbers_a_group_that_a_channel_left_after_its_last_change() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let projects = server.category(&owner, workspace_id, "Projects", 0).await;
+    let other = server.category(&owner, workspace_id, "Other", 1).await;
+    for name in ["a", "b", "c", "d"] {
+        let _: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": projects.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+    }
+    let export = server.structure(&owner).await;
+    let entry = |name: &str| {
+        export.structure.workspaces[0]
+            .channels
+            .iter()
+            .find(|channel| channel.name == name)
+            .unwrap()
+            .id
+    };
+    let category = export.structure.workspaces[0]
+        .categories
+        .iter()
+        .find(|category| category.name == other.name)
+        .unwrap()
+        .id;
+    // The wanted order of Projects is a, d, c: the file moves b away first, then gives d the
+    // position 1 between a at 0 and c at 2.
+    let changes = json!([
+        { "change": "update_channel", "id": entry("b"), "category": category },
+        { "change": "update_channel", "id": entry("d"), "position": 1 },
+    ]);
+    let _: serde_json::Value = server
+        .change_structure(&owner, &export.revision, changes)
+        .await
+        .ok(StatusCode::OK);
+    let list = list(&server, &owner, workspace_id).await;
+    let mut group: Vec<(i32, ChannelId, String)> = list
+        .channels
+        .iter()
+        .filter(|channel| channel.category_id == Some(projects.id))
+        .map(|channel| (channel.position, channel.id, channel.name.clone()))
+        .collect();
+    group.sort();
+    let names: Vec<&str> = group.iter().map(|(_, _, name)| name.as_str()).collect();
+    assert_eq!(names, ["a", "d", "c"]);
+    let positions: Vec<i32> = group.iter().map(|(position, _, _)| *position).collect();
+    assert!(without_gap(&positions), "{positions:?}");
 }

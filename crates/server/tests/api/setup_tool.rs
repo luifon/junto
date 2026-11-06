@@ -1139,3 +1139,66 @@ async fn a_file_orders_the_categories_and_the_root_channels_exactly() {
         );
     }
 }
+
+/// A file applied again does not write back the gap of a deleted channel: the server numbers
+/// the group after the apply, and the plan compares the order of the entries, not their
+/// numbers, so the second plan has no change, and a member from whom the deleted channel was
+/// hidden reads positions without a gap (ADR 0304).
+#[tokio::test]
+async fn a_file_applied_again_does_not_write_back_the_gap_of_a_deleted_channel() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let member = server.join(&owner, "Member").await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let projects = server.category(&owner, workspace_id, "Projects", 0).await;
+    let mut made = Vec::new();
+    for name in ["a", "secret", "c"] {
+        let channel: junto_protocol::structure::Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": projects.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        made.push(channel);
+    }
+    sqlx::query("insert into channel_person_overrides(channel_id,workspace_id,account_id,allow,deny) values($1,$2,$3,0,1)")
+        .bind(made[1].id).bind(workspace_id).bind(member.account_id).execute(&server.db).await.unwrap();
+    let exported = scratch.0.join("exported.json");
+    let exported = exported.to_str().unwrap();
+    tool(&server, &token, &["export", "--out", exported])
+        .await
+        .succeeded();
+    let mut file: Value =
+        serde_json::from_str(&std::fs::read_to_string(exported).unwrap()).unwrap();
+    let secret = made[1].id.to_string();
+    file["workspaces"][0]["channels"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|channel| channel["id"] != json!(secret));
+    file["delete"] = json!({ "channels": [secret] });
+    let path = write(&scratch, "without-secret.json", &file);
+    tool(&server, &token, &["apply", &path]).await.succeeded();
+    let second = tool(&server, &token, &["plan", &path]).await.succeeded();
+    assert!(second.out.starts_with("No changes:"), "{}", second.out);
+    for reader in [&owner, &member] {
+        let list: junto_protocol::structure::ChannelList = server
+            .get(
+                reader,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            )
+            .await
+            .ok(StatusCode::OK);
+        let mut group: Vec<(i32, String)> = list
+            .channels
+            .iter()
+            .filter(|channel| channel.category_id == Some(projects.id))
+            .map(|channel| (channel.position, channel.name.clone()))
+            .collect();
+        group.sort();
+        assert_eq!(group, [(0, "a".to_owned()), (1, "c".to_owned())]);
+    }
+}

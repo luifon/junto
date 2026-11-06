@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::access::{ChannelRecord, stored_channel};
 use crate::error::{ApiError, ApiResult};
 use crate::events;
-use crate::routes::channels::{Removed, remove_channel};
+use crate::routes::channels::{Departures, Removed, remove_channel};
 use crate::state::AppState;
 use crate::transact;
 
@@ -199,7 +199,10 @@ pub async fn delete_due(app: &AppState) -> ApiResult<()> {
                     name: &record.channel.name,
                     permanent_message_count: record.permanent_message_count,
                 };
-                remove_channel(connection, &app.calls, now, &removed, None).await?;
+                let mut departures = Departures::default();
+                let removing = (now, &mut departures);
+                remove_channel(connection, &app.calls, removing, &removed, None).await?;
+                departures.number(connection, now).await?;
                 Ok(true)
             })
         };

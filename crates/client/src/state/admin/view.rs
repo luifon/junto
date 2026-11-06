@@ -970,7 +970,7 @@ fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> Workspace
 /// action of the person and not at the answer or at the events (ADR 0730).
 /// True when the server takes the place of a move: event revision 20 and later (ADR 0206).
 fn takes_places(server: &ServerSnapshot) -> bool {
-    server.server_events.is_some_and(|revision| revision >= 20)
+    server.event_revision >= 20
 }
 
 fn channels_page(
