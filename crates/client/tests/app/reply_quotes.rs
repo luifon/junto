@@ -289,7 +289,7 @@ fn a_forward_keeps_its_original_while_a_reload_reads_it_again(cx: &mut TestAppCo
 /// A channel with a reply to an original that the loaded messages do not hold, behind a
 /// proxy that loses the answer of the first `losses` reads of the original. The test keeps
 /// the server: a dropped `TestServer` ends the server behind the proxy.
-fn reply_behind_a_proxy(
+pub(crate) fn reply_behind_a_proxy(
     cx: &mut TestAppContext,
     losses: usize,
 ) -> (
