@@ -230,7 +230,6 @@ impl Layer {
             | Layer::Emoji(..)
             | Layer::Fork(..)
             | Layer::RenameGroup(..)
-            | Layer::PersonalSection(..)
             | Layer::VoiceStatus(..)
             | Layer::Notify
             | Layer::ConfirmRemoveRecording(..)
