@@ -319,8 +319,19 @@ impl ServerApi {
     /// A picture of another device of the account that is stored after the avatar was read
     /// here is not replaced: the answer is `conflict`.
     pub async fn set_avatar(&self, image: Vec<u8>) -> Result<Avatar, ApiError> {
-        let kind = profile::check_avatar(&image)?;
+        profile::check_avatar(&image)?;
         let seen = self.own_account().await?.avatar.map(|avatar| avatar.hash);
+        self.set_avatar_over(image, seen).await
+    }
+
+    /// Stores the avatar while the account has the picture `seen` (its hash; `None`: no
+    /// picture) or already this one; any other picture gets `conflict` (ADR 0119).
+    pub async fn set_avatar_over(
+        &self,
+        image: Vec<u8>,
+        seen: Option<String>,
+    ) -> Result<Avatar, ApiError> {
+        let kind = profile::check_avatar(&image)?;
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/account/avatar".to_owned();
         read_json(&self.call_picture(path, seen, body).await?)

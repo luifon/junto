@@ -127,7 +127,8 @@ impl<'de> Deserialize<'de> for EventCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProfileSync {
-    /// Nothing to send: the account was not created here, or the preset has no avatar.
+    /// Nothing to send: the account was not created here, the preset has no avatar, or
+    /// another device stored a picture of the account before the preset arrived.
     #[default]
     NotNeeded,
     /// The preset waits to be sent. `attempts` counts the tries that failed.

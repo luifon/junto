@@ -34,6 +34,9 @@ use super::transport::{
 };
 use crate::profile::{InvalidAvatar, avatar_hash, check_avatar};
 
+/// The avatar that another device of an account stores (`Fault::OtherAvatarFirst`).
+pub(crate) const OTHER_AVATAR: &[u8] = b"\x89PNG\r\n\x1a\nother device";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fault {
     /// Answers `busy` without doing the work.
@@ -44,6 +47,10 @@ pub(crate) enum Fault {
     LoseRequest,
     /// Makes no connection: the server receives nothing, and no client sends it again.
     NoConnection,
+    /// Does the work and cuts the connection before the answer.
+    CutAfterWork,
+    /// Another device of the account stores [`OTHER_AVATAR`] just before the work.
+    OtherAvatarFirst,
     /// Does the work and answers with the right status and a body that is not JSON.
     Garble,
 }
@@ -915,6 +922,22 @@ impl World {
                 if let Some(code) = self.avatar_refusal {
                     return Err(plain(code));
                 }
+                // The condition of the route (ADR 0119): the picture that the client saw.
+                let before = request
+                    .url
+                    .query_pairs()
+                    .find(|(name, _)| name == "before")
+                    .map(|(_, value)| value.into_owned());
+                let stored = self.accounts[&account_id]
+                    .avatar
+                    .as_deref()
+                    .map(avatar_hash);
+                if let Some(before) = before
+                    && stored.as_deref() != Some(avatar_hash(&image).as_str())
+                    && stored.as_deref().unwrap_or("none") != before
+                {
+                    return Err(plain("conflict"));
+                }
                 if let Some(account) = self.accounts.get_mut(&account_id) {
                     account.avatar = Some(image);
                 }
@@ -1073,6 +1096,27 @@ impl Transport for FakeServer {
                 Some(Fault::Busy) => Ok(refusal("busy")),
                 Some(Fault::LoseRequest) => lost(TransportErrorKind::Interrupted),
                 Some(Fault::NoConnection) => lost(TransportErrorKind::Connect),
+                Some(Fault::CutAfterWork) => {
+                    let _ = world.handle(&request);
+                    lost(TransportErrorKind::Interrupted)
+                }
+                Some(Fault::OtherAvatarFirst) => {
+                    let owner = world
+                        .session_device(&request)
+                        .map(|device| device.account_id);
+                    if let Some(account) = owner.ok().and_then(|id| world.accounts.get_mut(&id)) {
+                        account.avatar = Some(OTHER_AVATAR.to_vec());
+                    }
+                    Ok(match world.handle(&request) {
+                        Ok((status, body)) => HttpResponse {
+                            status,
+                            retry_after: None,
+                            body: body.into(),
+                            receipt: crate::api::Receipt::NotStated,
+                        },
+                        Err(code) => refusal(code),
+                    })
+                }
                 Some(Fault::LoseAnswer) => {
                     let _ = world.handle(&request);
                     lost(TransportErrorKind::Timeout)

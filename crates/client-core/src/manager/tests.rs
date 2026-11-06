@@ -10,7 +10,7 @@ use junto_protocol::secret::{InviteCode, LinkCode, OwnerCode};
 
 use super::*;
 use crate::address::ServerAddress;
-use crate::api::testing::{FakeServer, Fault};
+use crate::api::testing::{FakeServer, Fault, OTHER_AVATAR};
 use crate::api::{ChallengeMismatch, TransportErrorKind, TransportFuture};
 use crate::api::{HttpRequest, TransportError};
 use crate::flow::add_server::{AddServerAction, AddServerActionKind, AddServerState};
@@ -2742,6 +2742,58 @@ async fn the_avatar_of_the_preset_is_sent_to_an_account_that_this_device_created
     without_avatar.dispatch(join("CODE")).await.unwrap();
     assert_eq!(without_avatar.profile_sync(), ProfileSync::NotNeeded);
     assert_eq!(server.avatar_of(logged_in(&without_avatar)), None);
+}
+
+/// The preset keeps the condition "no picture" at every try (ADR 0119): a picture that another
+/// device of the account stores first is never replaced, neither by the repetition of a cut
+/// try nor at a later login.
+#[tokio::test(start_paused = true)]
+async fn a_preset_avatar_never_replaces_a_picture_that_another_device_stored_first() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 2);
+    let first = device(&network);
+    first.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = first.add("acme").await;
+    // The first try is stored and its connection cut; another device stores its picture
+    // before the repetition, which gets the conflict.
+    server.fail(
+        "/account/avatar",
+        [Fault::CutAfterWork, Fault::OtherAvatarFirst],
+    );
+    handle.dispatch(join("CODE")).await.unwrap();
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
+    assert_eq!(server.count("/account/avatar"), 2);
+    // The next login sends nothing.
+    let handle = first.reopened(&network).servers().remove(0);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    handle.connect().await.unwrap();
+    assert_eq!(
+        handle.apply_profile().await.unwrap(),
+        ProfileSync::NotNeeded
+    );
+    assert_eq!(server.count("/account/avatar"), 2);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
+
+    // A try that failed leaves the preset waiting; a picture stored before the next login is
+    // kept, and the preset is not wanted any more.
+    let other = device(&network);
+    other.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = other.add("acme").await;
+    server.fail("/account/avatar", [Fault::NoConnection]);
+    handle.dispatch(join("CODE")).await.unwrap();
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    server.store_avatar(account_id, OTHER_AVATAR.to_vec());
+    let handle = other.reopened(&network).servers().remove(0);
+    handle.connect().await.unwrap();
+    assert_eq!(
+        handle.apply_profile().await.unwrap(),
+        ProfileSync::NotNeeded
+    );
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
 }
 
 #[tokio::test(start_paused = true)]
