@@ -449,11 +449,11 @@ mod tests {
             let mut drawn = under.clone();
             draw_row(&mut drawn, &source, format);
             let expected: Vec<u8> = under
-                .chunks_exact(4)
-                .zip(source.chunks_exact(4))
-                .flat_map(|(under, over)| {
-                    drawn_pixel(under.try_into().unwrap(), over.try_into().unwrap(), format)
-                })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(source.as_chunks::<4>().0)
+                .flat_map(|(under, over)| drawn_pixel(*under, *over, format))
                 .collect();
             assert_eq!(drawn, expected, "{format:?}");
         }
