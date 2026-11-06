@@ -102,6 +102,7 @@ mod profile_cards;
 mod reaction_people;
 mod recordings;
 mod recovery;
+mod release_notes;
 mod reply_quotes;
 mod review_corrections;
 mod system_lines;

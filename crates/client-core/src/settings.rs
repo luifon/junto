@@ -159,6 +159,9 @@ pub struct InterfaceSettings {
     pub call_window_panel_closed: bool,
     pub keep_running_after_close: bool,
     pub clock_format: crate::clock::ClockFormat,
+    /// The version of the client that started last, for the release notes of the versions
+    /// after it (ADR 0727). Absent in a file of 0.1.0.
+    pub last_build: Option<crate::updates::Version>,
 }
 
 impl Default for InterfaceSettings {
@@ -172,6 +175,7 @@ impl Default for InterfaceSettings {
             call_window_panel_closed: false,
             keep_running_after_close: true,
             clock_format: Default::default(),
+            last_build: None,
         }
     }
 }
@@ -197,6 +201,9 @@ struct SettingsFile {
     keep_running_after_close: bool,
     #[serde(default)]
     clock_format: crate::clock::ClockFormat,
+    /// 0.1.0 does not know it and ignores it (ADR 0710).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_build: Option<String>,
 }
 
 fn enabled() -> bool {
@@ -254,6 +261,10 @@ impl SettingsStore {
             call_window_panel_closed: file.call_window_panel_closed,
             keep_running_after_close: file.keep_running_after_close,
             clock_format: file.clock_format,
+            last_build: file
+                .last_build
+                .as_deref()
+                .and_then(|text| crate::updates::Version::parse(text).ok()),
         };
         Ok((settings, file.keybinds.checked()))
     }
@@ -315,6 +326,7 @@ impl SettingsStore {
                 call_window_panel_closed: settings.call_window_panel_closed,
                 keep_running_after_close: settings.keep_running_after_close,
                 clock_format: settings.clock_format,
+                last_build: settings.last_build.map(|build| build.to_string()),
             },
         )?;
         Ok((settings, keybinds))
@@ -326,6 +338,25 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn the_last_build_is_kept_at_version_3_and_a_file_of_0_1_0_has_none() {
+        let (_directory, data_dir, store) = store();
+        let build = crate::updates::Version::new(0, 2, 0);
+        store
+            .update(|settings| settings.last_build = Some(build))
+            .unwrap();
+        assert_eq!(store.load().unwrap().last_build, Some(build));
+        let file = data_dir.root().join(SETTINGS_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(value["format_version"], 3);
+        assert_eq!(value["last_build"], "0.2.0");
+        // 0.1.0 writes the file without it.
+        value.as_object_mut().unwrap().remove("last_build");
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(store.load().unwrap().last_build, None);
+    }
 
     fn store() -> (tempfile::TempDir, DataDir, SettingsStore) {
         let directory = tempfile::tempdir().unwrap();
@@ -352,6 +383,7 @@ mod tests {
             call_window_panel_closed: false,
             keep_running_after_close: false,
             clock_format: crate::clock::ClockFormat::TwelveHour,
+            last_build: Some(crate::updates::Version::new(0, 2, 0)),
         };
         store.save(chosen).unwrap();
         assert_eq!(store.load().unwrap(), chosen);
@@ -538,6 +570,7 @@ mod tests {
             call_window_panel_closed: false,
             keep_running_after_close: true,
             clock_format: Default::default(),
+            last_build: None,
         };
         assert_eq!(written, both);
         assert_eq!(first.load().unwrap(), both);

@@ -64,7 +64,7 @@ fn main() -> ExitCode {
                 activate: false,
                 ..WindowStart::default()
             };
-            let state = app::state_with_media(client, start, synthetic_media(), cx);
+            let state = app::state_with_media(client, start.clone(), synthetic_media(), cx);
             let window = app::open_main_window(state.clone(), start, cx).unwrap();
             cx.spawn(async move |cx| {
                 let checked = stages(&state, window, &directory, cx).await;

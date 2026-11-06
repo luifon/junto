@@ -146,7 +146,7 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
             capture: Arc::new(SyntheticCapture::new()),
             timing: CallTiming::default(),
         };
-        let state = app::state_with_media(client, start, media, cx);
+        let state = app::state_with_media(client, start.clone(), media, cx);
         let main = app::open_main_window(state.clone(), start, cx).unwrap();
         cx.spawn(async move |cx| {
             let result = async {

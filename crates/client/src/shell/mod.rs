@@ -60,6 +60,7 @@ mod presence;
 mod profile;
 mod rail;
 mod recorded;
+mod release_notes;
 pub mod room;
 mod search;
 mod server_menu;
@@ -105,6 +106,8 @@ pub(crate) enum Layer {
     /// The first start: the person chooses a name.
     Welcome,
     Settings,
+    /// The release notes after an update or from the settings (ADR 0727).
+    ReleaseNotes(Box<release_notes::ReleaseNotesDialog>),
     Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
     ServerMenu,
@@ -1008,9 +1011,16 @@ impl Shell {
                 .state
                 .update(cx, |state, cx| state.set_window_active(active, cx));
         }
+        let notes = shell.state.read(cx).release_notes_due().to_vec();
         if !detached && shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
+        } else if !detached && !notes.is_empty() {
+            // The notes of the versions since the one that started last, once.
+            shell
+                .state
+                .update(cx, |state, _| state.release_notes_shown());
+            shell.open_release_notes(&notes, false, window, cx);
         } else {
             // The window holds the keyboard focus from its start, so that the key of
             // push-to-talk reaches it before the first click.
@@ -2283,6 +2293,7 @@ impl Shell {
             Layer::None
             | Layer::Welcome
             | Layer::Settings
+            | Layer::ReleaseNotes(_)
             | Layer::LinkAll
             | Layer::QuickSwitcher => false,
         };
@@ -2349,6 +2360,7 @@ impl Shell {
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
+            Layer::ReleaseNotes(_) => self.render_release_notes(cx),
             Layer::Prejoin(prejoin) => self.render_prejoin(**prejoin, cx),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
             Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),

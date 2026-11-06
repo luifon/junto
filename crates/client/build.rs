@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
     tray_pictures(&target, &output)?;
+    release_notes(&output)?;
     // The WebRTC library holds Objective-C categories that the linker drops on macOS unless
     // it is told to keep them. A binary without them stops at its start.
     if target == "macos" {
@@ -106,5 +107,49 @@ fn tray_pictures(target: &str, output: &std::path::Path) -> Result<(), Box<dyn s
     }
     list.push_str("]\n");
     std::fs::write(output.join("tray-pictures.rs"), list)?;
+    Ok(())
+}
+
+/// The release notes of every version (ADR 0727): the files `docs/releases/<version>.md`,
+/// which are also the texts of the GitHub releases. The file `release-notes.rs` lists them as
+/// `(major, minor, patch, text)`.
+#[allow(clippy::disallowed_methods)]
+fn release_notes(output: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/releases");
+    println!("cargo:rerun-if-changed={}", folder.display());
+    let mut list = String::from("&[\n");
+    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&folder) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    entries.sort();
+    for path in entries {
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let numbers: Vec<u32> = stem
+            .split('.')
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md")
+            || numbers.len() != 3
+            || stem.split('.').count() != 3
+        {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        let path = path.canonicalize()?;
+        list.push_str(&format!(
+            "    ({}, {}, {}, include_str!({:?})),\n",
+            numbers[0],
+            numbers[1],
+            numbers[2],
+            path.display().to_string()
+        ));
+    }
+    list.push_str("]\n");
+    std::fs::write(output.join("release-notes.rs"), list)?;
     Ok(())
 }

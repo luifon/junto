@@ -80,6 +80,7 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
+use junto_client_core::updates::Version;
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_client_core::{EntryKey, Owner};
@@ -148,6 +149,7 @@ pub fn finish_writes(cx: &mut gpui::App) {
 /// A setting of the interface, for the failure of its write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Setting {
+    LastBuild,
     Scale,
     ServerBook,
     Theme,
@@ -504,6 +506,10 @@ pub struct AppState {
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
+    /// The release notes of the versions (ADR 0727), and those that the window shows once
+    /// after an update.
+    release_notes: crate::release_notes::ReleaseNotes,
+    release_notes_due: Vec<(Version, &'static str)>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
     device_checks: Option<device_checks::CheckSession>,
     device_check_sequence: u64,
@@ -1050,6 +1056,8 @@ impl AppState {
             client,
             calls,
             voice_failed,
+            release_notes: Default::default(),
+            release_notes_due: Vec::new(),
             camera_devices: Vec::new(),
             device_checks: None,
             device_check_sequence: 0,
@@ -3511,6 +3519,44 @@ impl AppState {
         self.name_result.take()
     }
 
+    /// Takes the release notes of this start, and the notes of the versions after the one
+    /// that started last, which the window shows once (ADR 0727). A data directory without
+    /// that version and with a server book or a profile was used by 0.1.0, which did not
+    /// store it; an empty one is a first install, which shows none. The version of this build
+    /// is stored. The book and the profile are the ones that the start read already.
+    pub fn take_release_notes(
+        &mut self,
+        notes: crate::release_notes::ReleaseNotes,
+        cx: &mut Context<Self>,
+    ) {
+        let build = self.client.updates().build();
+        let used = !self.client.servers().is_empty() || !self.preset_name().is_empty();
+        let last = self
+            .settings
+            .last_build
+            .or_else(|| used.then_some(Version::new(0, 1, 0)));
+        self.release_notes_due = last.map_or_else(Vec::new, |last| notes.after(last, build));
+        self.release_notes = notes;
+        if self.settings.last_build != Some(build) {
+            self.settings.last_build = Some(build);
+            self.write_setting(Setting::LastBuild, cx);
+        }
+    }
+
+    /// The notes that the window shows once after an update, the newest first.
+    pub fn release_notes_due(&self) -> &[(Version, &'static str)] {
+        &self.release_notes_due
+    }
+
+    pub fn release_notes_shown(&mut self) {
+        self.release_notes_due.clear();
+    }
+
+    /// The notes of the version of this build, for "What is new" in the settings.
+    pub fn release_notes_of_this_build(&self) -> Option<(Version, &'static str)> {
+        self.release_notes.of(self.client.updates().build())
+    }
+
     /// Sets the interface scale and stores it.
     pub fn set_scale(&mut self, scale_percent: u32, cx: &mut Context<Self>) {
         self.scale_of_this_start = None;
@@ -3638,6 +3684,7 @@ impl AppState {
                             }
                             Setting::Scale => stored.scale_percent = wanted.scale_percent,
                             Setting::ClockFormat => stored.clock_format = wanted.clock_format,
+                            Setting::LastBuild => stored.last_build = wanted.last_build,
                             Setting::ServerBook => {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }

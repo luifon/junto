@@ -857,6 +857,23 @@ impl Shell {
             help(text::DATA_DIRECTORY_HELP, theme).into_any_element(),
         ];
         parts.extend(self.render_version_settings(theme, window, cx));
+        if let Some(notes) = self.state.read(cx).release_notes_of_this_build() {
+            parts.push(
+                div()
+                    .mt(u(8.0))
+                    .child(
+                        Button::new("release-notes-open")
+                            .label(text::WHAT_IS_NEW)
+                            .selector("release-notes-open")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_release_notes(&[notes], true, window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         parts
     }
 

@@ -20,6 +20,7 @@ pub mod opening;
 pub mod panics;
 pub mod permissions;
 pub mod picture;
+pub mod release_notes;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 pub(crate) mod selectable;

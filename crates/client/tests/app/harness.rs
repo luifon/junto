@@ -267,7 +267,26 @@ pub fn open(cx: &mut TestAppContext, data_dir: &Path) -> Window {
 pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -> Window {
     log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
-    open_client(cx, client, scale, None)
+    open_client(cx, client, scale, None, no_release_notes())
+}
+
+/// The release notes of the tests that are not about them: none, so that a data directory
+/// that a test writes shows no notes when the build carries notes of a newer version.
+fn no_release_notes() -> junto_client::release_notes::ReleaseNotes {
+    junto_client::release_notes::ReleaseNotes::new([])
+}
+
+/// Opens the application as the build of `build`, with these release notes (ADR 0727).
+pub fn open_as_version(
+    cx: &mut TestAppContext,
+    data_dir: &Path,
+    build: junto_client_core::updates::Version,
+    notes: junto_client::release_notes::ReleaseNotes,
+) -> Window {
+    log_into_test_output();
+    let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
+    options.build = build;
+    open_client(cx, Client::open(options).unwrap(), None, None, notes)
 }
 
 /// Opens the application with this screen capture in the place of the synthetic one.
@@ -283,7 +302,7 @@ pub fn open_with_capture(
 ) -> Window {
     log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
-    open_client(cx, client, None, Some(capture))
+    open_client(cx, client, None, Some(capture), no_release_notes())
 }
 
 /// Opens the application with a source of releases, and with the version that the build
@@ -298,7 +317,13 @@ pub fn open_with_updates(
     let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
     options.update_source = Some(source);
     options.build = build;
-    open_client(cx, Client::open(options).unwrap(), None, None)
+    open_client(
+        cx,
+        Client::open(options).unwrap(),
+        None,
+        None,
+        no_release_notes(),
+    )
 }
 
 /// Sends the log of the client into the output of the test, which the test runner keeps for
@@ -326,6 +351,7 @@ fn open_client(
     client: Client,
     scale: Option<u32>,
     system_capture: Option<std::sync::Arc<dyn ScreenCapture>>,
+    release_notes: junto_client::release_notes::ReleaseNotes,
 ) -> Window {
     log_into_test_output();
     junto_client_core::storage::refuse_locks_while(window_thread_works);
@@ -337,6 +363,7 @@ fn open_client(
         scale_percent: scale,
         activate: false,
         timing: timing(),
+        release_notes,
     };
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     let capture = SyntheticCapture::new();

@@ -1599,6 +1599,7 @@ pub const fn no_account_status(notice: Option<Notice>) -> &'static str {
 // Joining a server.
 pub const JOIN_A_SERVER: &str = "Join a server";
 pub const CLOSE: &str = "Close";
+pub const WHAT_IS_NEW: &str = "What is new";
 pub const CANCEL: &str = "Cancel";
 pub const SERVER_FOUND: &str = "Server found";
 pub const OPERATOR_NOTICE: &str =
