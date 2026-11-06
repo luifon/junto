@@ -26,7 +26,9 @@ program, so no other machine reaches the port and Windows shows no prompt of its
 (ADR 0915); the traffic of the machine to its own addresses passes. The program is extracted
 once beside the download, so that the rule names one path. The elevated setup of the Windows
 machine creates the rule (tools/windows/ci-setup.ps1); the job runs without elevation, so
-`--fetch` and the start only check it, and the server does not start on Windows without it.
+`--fetch` and the start only check that it is in effect: the firewall is on in the profile of
+every connected network, and an enabled inbound rule blocks UDP to the program from every
+address. The server does not start on Windows otherwise.
 The log of the
 server is printed when the command or the start fails, and with JUNTO_TEST_LIVEKIT_LOG=1 also
 after a command that passed.
@@ -34,6 +36,7 @@ after a command that passed.
     python3 tools/with_native_livekit.py --fetch      (on Windows also checks the rule)
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -141,38 +144,82 @@ def installed(archive, program, downloads, digest, extract=native_downloads.extr
 # The inbound rule of Windows Defender Firewall that blocks the program from other machines. The
 # elevated setup of the Windows machine creates it for the program of the pinned version
 # (tools/windows/ci-setup.ps1, Block-TestLiveKit); the job, which runs without elevation, only
-# checks it.
+# checks that it is in effect.
 RULE = "junto-test-livekit"
+# The firewall profile of each category of a connected network.
+PROFILE_OF = {"Public": "Public", "Private": "Private", "DomainAuthenticated": "Domain"}
+# Reads, without elevation, the state of the firewall that decides whether the server may start:
+# the categories of the connected networks, whether the firewall of each profile is on, and the
+# rules of the name in the store that is in effect, with their filters.
+STATE_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+function Texts($values) { ,@($values | ForEach-Object { [string]$_ }) }
+$networks = Texts (Get-NetConnectionProfile | ForEach-Object { $_.NetworkCategory })
+$profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object {
+    @{ name = [string]$_.Name; enabled = [string]$_.Enabled } })
+$rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'RULE_NAME' -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $application = $_ | Get-NetFirewallApplicationFilter
+        $port = $_ | Get-NetFirewallPortFilter
+        $address = $_ | Get-NetFirewallAddressFilter
+        $interface = $_ | Get-NetFirewallInterfaceTypeFilter
+        @{ enabled = [string]$_.Enabled; direction = [string]$_.Direction; action = [string]$_.Action
+           profile = [string]$_.Profile; program = [string]$application.Program
+           protocol = [string]$port.Protocol; local_port = Texts $port.LocalPort
+           remote = Texts $address.RemoteAddress; local = Texts $address.LocalAddress
+           interface = [string]$interface.InterfaceType } })
+ConvertTo-Json -Depth 4 -Compress @{ networks = $networks; profiles = $profiles; rules = $rules }
+""".replace("RULE_NAME", RULE)
 
 
-def rule_command():
-    return ["netsh", "advfirewall", "firewall", "show", "rule", f"name={RULE}", "verbose"]
+def state_command():
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", STATE_SCRIPT]
 
 
-def blocks(text, program):
-    """Whether the output of `rule_command` holds an enabled inbound rule that blocks
-    `program` in every profile."""
-    for rule in text.replace("\r", "").split("\n\n"):
-        fields = {}
-        for line in rule.splitlines():
-            name, colon, value = line.partition(":")
-            if colon:
-                fields.setdefault(name.strip(), value.strip())
-        if (fields.get("Program", "").lower() == str(program).lower() and fields.get("Action") == "Block"
-                and fields.get("Direction") == "In" and fields.get("Enabled") == "Yes"
-                and fields.get("Profiles") == "Domain,Private,Public"):
-            return True
-    return False
+def unprotected(state, program):
+    """Why the firewall does not keep other machines from the UDP port of `program`, or None.
+    The firewall of the profile of every connected network is on (of every profile when no
+    network is connected), and an enabled inbound rule of the name blocks every protocol or
+    UDP to the program, on every port, from every remote address, to every local address, on
+    every interface, in those profiles."""
+    needed = {PROFILE_OF.get(network, network) for network in state.get("networks") or []}
+    needed = needed or set(PROFILE_OF.values())
+    enabled = {profile.get("name"): profile.get("enabled") for profile in state.get("profiles") or []}
+    off = sorted(name for name in needed if enabled.get(name) != "True")
+    if off:
+        return f"the firewall is off in the profile {', '.join(off)} of a connected network"
+
+    def blocks(rule):
+        profile = rule.get("profile", "")
+        return (rule.get("enabled") == "True" and rule.get("direction") == "Inbound"
+                and rule.get("action") == "Block" and rule.get("program", "").lower() == str(program).lower()
+                and rule.get("protocol") in ("Any", "UDP") and rule.get("local_port") == ["Any"]
+                and rule.get("remote") == ["Any"] and rule.get("local") == ["Any"]
+                and rule.get("interface") == "Any"
+                and (profile == "Any" or all(name in profile for name in needed)))
+
+    if not any(blocks(rule) for rule in state.get("rules") or []):
+        return (f"no enabled inbound rule {RULE} blocks UDP to {program} from every address in the "
+                f"profile {', '.join(sorted(needed))}")
+    return None
 
 
-def has_rule(program, run=subprocess.run):
-    shown = run(rule_command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    return shown.returncode == 0 and blocks(shown.stdout, program)
+def protection(program, run=subprocess.run):
+    """Why LiveKit may not start on this machine, or None: the state of the firewall as
+    Windows PowerShell reads it."""
+    read = run(state_command(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if read.returncode != 0:
+        return f"the state of the firewall could not be read: {read.stdout.strip()[-300:]}"
+    try:
+        state = json.loads(read.stdout)
+    except ValueError:
+        return f"the state of the firewall could not be read: {read.stdout.strip()[-300:]}"
+    return unprotected(state, program)
 
 
-def no_rule(program):
-    return (f"no enabled inbound rule {RULE} of the firewall blocks {program} in every profile; the elevated "
-            "setup of the Windows machine creates it: tools/ci/ci.sh setup-windows (tools/windows/ci-setup.ps1)")
+def refused(program, reason):
+    return (f"{reason}; the elevated setup of the Windows machine creates the rule "
+            "(tools/ci/ci.sh setup-windows, tools/windows/ci-setup.ps1), and the firewall must be on")
 
 
 def ready(port, tries=READY_TRIES, server=None):
@@ -202,12 +249,14 @@ def main(arguments):
         print(f"{label} was not downloaded or extracted: {failure}", flush=True)
         return 1
     if arguments == ["--fetch"]:
-        if sys.platform == "win32" and not has_rule(server_program):
-            print(no_rule(server_program), flush=True)
+        reason = protection(server_program) if sys.platform == "win32" else None
+        if reason:
+            print(refused(server_program, reason), flush=True)
             return 1
         return 0
-    if sys.platform == "win32" and not has_rule(server_program):
-        print(f"{label} does not start: {no_rule(server_program)}", flush=True)
+    reason = protection(server_program) if sys.platform == "win32" else None
+    if reason:
+        print(f"{label} does not start: {refused(server_program, reason)}", flush=True)
         return 1
     chosen = settings(os.environ)
     try:

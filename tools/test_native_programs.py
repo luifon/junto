@@ -4,6 +4,7 @@ starts the real ones."""
 
 import hashlib
 import io
+import json
 import os
 import pathlib
 import re
@@ -123,26 +124,45 @@ class LiveKit(unittest.TestCase):
         self.assertIn("  use_external_ip: false\n", text)
         self.assertNotIn("node_ip", text)
 
-    def test_the_job_only_checks_the_rule_of_the_firewall_that_the_setup_created(self):
+    def test_livekit_starts_only_while_the_firewall_keeps_other_machines_from_its_program(self):
         program = r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe"
-        self.assertEqual(with_native_livekit.rule_command(),
-                         ["netsh", "advfirewall", "firewall", "show", "rule", "name=junto-test-livekit", "verbose"])
+        on = [{"name": name, "enabled": "True"} for name in ("Domain", "Private", "Public")]
 
-        def shown(program_line, action="Block", enabled="Yes", profiles="Domain,Private,Public"):
-            return ("\r\nRule Name:                            junto-test-livekit\r\n"
-                    "----------------------------------------------------------------------\r\n"
-                    f"Enabled:                              {enabled}\r\nDirection:                            In\r\n"
-                    f"Profiles:                             {profiles}\r\nLocalIP:                              Any\r\n"
-                    f"Program:                              {program_line}\r\n"
-                    f"Action:                               {action}\r\n\r\nOk.\r\n")
+        def rule(**changed):
+            fields = {"enabled": "True", "direction": "Inbound", "action": "Block", "profile": "Any",
+                      "program": program, "protocol": "Any", "local_port": ["Any"], "remote": ["Any"],
+                      "local": ["Any"], "interface": "Any"}
+            return {**fields, **changed}
 
-        self.assertTrue(with_native_livekit.blocks(shown(program), program))
-        self.assertTrue(with_native_livekit.blocks(shown(program.upper()), program))
-        other = program.replace("1.13.9", "1.13.8")
-        self.assertTrue(with_native_livekit.blocks(shown(other) + shown(program), program))
-        for wrong in [shown(other), shown(program, action="Allow"), shown(program, enabled="No"),
-                      shown(program, profiles="Private"), "No rules match the specified criteria.\r\n"]:
-            self.assertFalse(with_native_livekit.blocks(wrong, program), wrong)
+        def state(rules, networks=("Private",), profiles=on):
+            return {"networks": list(networks), "profiles": profiles, "rules": rules}
+
+        unprotected = with_native_livekit.unprotected
+        self.assertIsNone(unprotected(state([rule()]), program))
+        self.assertIsNone(unprotected(state([rule(program=program.upper())]), program))
+        self.assertIsNone(unprotected(state([rule(protocol="UDP")]), program))
+        self.assertIsNone(unprotected(state([rule(profile="Private")]), program))
+        self.assertIsNone(unprotected(state([rule(action="Allow"), rule()]), program))
+        self.assertIsNone(unprotected(state([rule()], networks=("DomainAuthenticated", "Public"),
+                                            profiles=on), program))
+        # A profile whose firewall is off: the rule is in no effect there.
+        private_off = [{"name": "Domain", "enabled": "True"}, {"name": "Private", "enabled": "False"},
+                       {"name": "Public", "enabled": "True"}]
+        self.assertIn("the firewall is off in the profile Private",
+                      unprotected(state([rule()], profiles=private_off), program))
+        # Off in a profile of no connected network is no matter; without a network, every
+        # profile counts.
+        self.assertIsNone(unprotected(state([rule()], networks=("Public",), profiles=private_off), program))
+        self.assertIsNotNone(unprotected(state([rule()], networks=(), profiles=private_off), program))
+        # Rules that leave a way in.
+        for restricted in [rule(protocol="TCP"), rule(remote=["LocalSubnet"]), rule(local=["192.168.5.6"]),
+                           rule(local_port=["17882"]), rule(profile="Domain, Public"), rule(interface="Wired"),
+                           rule(action="Allow"), rule(direction="Outbound"), rule(enabled="False"),
+                           rule(program=program.replace("1.13.9", "1.13.8"))]:
+            with self.subTest(rule=restricted):
+                self.assertIn("no enabled inbound rule junto-test-livekit blocks UDP",
+                              unprotected(state([restricted]), program))
+        self.assertIsNotNone(unprotected(state([]), program))
 
         class Done:
             def __init__(self, code, stdout):
@@ -152,12 +172,19 @@ class LiveKit(unittest.TestCase):
 
         def run(command, **_):
             commands.append(command)
-            return Done(0, shown(program))
+            return Done(0, json.dumps(state([rule()])))
 
-        self.assertTrue(with_native_livekit.has_rule(program, run))
-        self.assertEqual(commands, [with_native_livekit.rule_command()])
-        self.assertFalse(with_native_livekit.has_rule(program, lambda command, **_: Done(1, "No rules match")))
-        self.assertIn("tools/ci/ci.sh setup-windows", with_native_livekit.no_rule(program))
+        self.assertIsNone(with_native_livekit.protection(program, run))
+        self.assertEqual(commands[0][:4], ["powershell", "-NoProfile", "-NonInteractive", "-Command"])
+        script = commands[0][4]
+        for read in ["Get-NetConnectionProfile", "Get-NetFirewallProfile -PolicyStore ActiveStore",
+                     "Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'junto-test-livekit'",
+                     "Get-NetFirewallApplicationFilter", "Get-NetFirewallPortFilter",
+                     "Get-NetFirewallAddressFilter", "Get-NetFirewallInterfaceTypeFilter"]:
+            self.assertIn(read, script)
+        self.assertIn("could not be read", with_native_livekit.protection(program, lambda command, **_: Done(1, "denied")))
+        self.assertIn("could not be read", with_native_livekit.protection(program, lambda command, **_: Done(0, "{")))
+        self.assertIn("tools/ci/ci.sh setup-windows", with_native_livekit.refused(program, "a reason"))
 
     def test_the_setup_blocks_the_program_that_the_job_checks(self):
         setup = (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text()

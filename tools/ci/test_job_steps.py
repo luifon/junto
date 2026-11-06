@@ -279,6 +279,18 @@ class JobSteps(unittest.TestCase):
             self.assertEqual(status, 1, system)
             self.assertIn("Lint each crate alone (exit 1)", output, system)
 
+    def test_the_hosted_windows_job_creates_the_firewall_rule_before_the_job_checks_it(self):
+        workflow = (REPOSITORY / ".github" / "workflows" / "ci.yml").read_text()
+        step = workflow.index("- name: Firewall rule of the LiveKit of the tests")
+        job = workflow.index("run: tools/ci/rust-other-systems.sh")
+        self.assertLess(step, job)
+        block = workflow[step:job]
+        self.assertIn("if: runner.os == 'Windows'", block)
+        self.assertIn("-FunctionsOnly", block)
+        self.assertIn("Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True", block)
+        self.assertIn("Block-TestLiveKit", block)
+        self.assertIn("function Block-TestLiveKit", (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text())
+
     def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)

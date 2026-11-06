@@ -110,6 +110,18 @@ jobs:
         with:
           path: ~/.cache/junto-postgres
           key: postgres-macos-${{ steps.postgres-macos-pin.outputs.sha256 }}
+      # The window tests of calls start LiveKit, whose UDP port on Windows is also on the
+      # private addresses of the machine. The job only checks that a rule of the firewall keeps
+      # other machines from it; this step, elevated as every step of the hosted runner, creates
+      # the rule as the setup of the Windows machine of the project does, and turns the
+      # firewall on in every profile of the runner (ADR 0905).
+      - name: Firewall rule of the LiveKit of the tests
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          . ./tools/windows/ci-setup.ps1 -Directory (Join-Path $env:RUNNER_TEMP 'junto-setup') -FunctionsOnly
+          Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
+          Block-TestLiveKit
       - name: Rust on ${{ matrix.system }}
         shell: bash
         run: tools/ci/rust-other-systems.sh
