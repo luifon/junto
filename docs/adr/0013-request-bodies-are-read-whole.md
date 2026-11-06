@@ -29,6 +29,7 @@ Reading a body before the route runs means that the server holds bytes for a req
 - A client that sends more than 16 MiB can still see a reset. No client of the product sends such a body.
 - The server holds at most 2 MiB of one request in memory while it reads it, and at most 64 MiB for all requests. The routes that read JSON held the same bytes of one request before.
 - A request that is refused for a bound can lose its answer to a reset, because the server does not read the rest of its body. Reading it would cost the time that the bound saves. A client that respects the bounds does not get this answer.
+- How often the answer is lost depends on the system of the client. Linux and macOS keep the bytes of an answer that arrived before the reset, and a read returns them; Windows drops them when the reset arrives, so a client on Windows that still sends sees the reset and not the answer. The tests of the bounds accept a reset in place of the answer on Windows only; a refusal that does not come at once fails on every system.
 - Thirty-two requests of 2 MiB that are read at the same moment fill the bound of the server, and further requests with a body get `busy` until one ends. The largest bodies of the product are avatars of at most 256 KiB (ADR 0119).
 - Many clients behind one address that is not a trusted proxy share the 4 MiB of that address.
 - The work of reading and discarding a body that is too large is bounded by 16 MiB and by the time limit of a request, not by a count of such requests.

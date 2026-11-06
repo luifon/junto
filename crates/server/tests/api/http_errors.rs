@@ -397,18 +397,41 @@ async fn slow_body(
     stream
 }
 
-/// The first line of the response, when one arrives within two seconds.
-async fn early_answer(stream: &mut tokio::net::TcpStream) -> Option<String> {
+/// What a connection gives within two seconds.
+#[derive(Debug, PartialEq)]
+enum Early {
+    /// The first line of a response.
+    Line(String),
+    Closed,
+    Failed(std::io::ErrorKind),
+    Nothing,
+}
+
+async fn early_answer(stream: &mut tokio::net::TcpStream) -> Early {
     use tokio::io::AsyncReadExt;
     let mut buffer = vec![0u8; 512];
     let read = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buffer));
     match read.await {
-        Ok(Ok(count)) if count > 0 => {
+        Ok(Ok(0)) => Early::Closed,
+        Ok(Ok(count)) => {
             let text = String::from_utf8_lossy(&buffer[..count]).into_owned();
-            text.lines().next().map(str::to_owned)
+            Early::Line(text.lines().next().unwrap_or_default().to_owned())
         }
-        _ => None,
+        Ok(Err(error)) => Early::Failed(error.kind()),
+        Err(_) => Early::Nothing,
     }
+}
+
+/// Checks that a request was refused at once with the status `line`. The server does not
+/// read the rest of a refused body, so it closes the connection with unread bytes, which
+/// resets it; Windows drops an answer that arrived before the reset, Unix keeps it for the
+/// read (ADR 0013).
+fn refused_at_once(answer: Early, line: &str) {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionReset};
+    if cfg!(windows) && matches!(answer, Early::Failed(ConnectionReset | ConnectionAborted)) {
+        return;
+    }
+    assert_eq!(answer, Early::Line(line.to_owned()));
 }
 
 /// One address cannot make the server hold more than a bounded number of bytes of request
@@ -420,13 +443,13 @@ async fn slow_requests_of_one_address_hold_a_bounded_number_of_body_bytes() {
     let mut held = Vec::new();
     for _ in 0..2 {
         let mut stream = slow_body(&server, "POST /api/v1/workspaces", None, nearly_full).await;
-        assert_eq!(early_answer(&mut stream).await, None);
+        assert_eq!(early_answer(&mut stream).await, Early::Nothing);
         held.push(stream);
     }
     for _ in 0..3 {
         let mut refused = slow_body(&server, "POST /api/v1/workspaces", None, nearly_full).await;
         let answer = early_answer(&mut refused).await;
-        assert_eq!(answer.as_deref(), Some("HTTP/1.1 429 Too Many Requests"));
+        refused_at_once(answer, "HTTP/1.1 429 Too Many Requests");
     }
     drop(held);
 }
@@ -466,7 +489,7 @@ async fn many_slow_requests_hold_a_bounded_number_of_body_bytes() {
         let address = format!("203.0.113.{}", number + 1);
         let mut refused = slow_body(&server, "POST /api/v1/workspaces", Some(&address), BODY).await;
         let answer = early_answer(&mut refused).await;
-        assert_eq!(answer.as_deref(), Some("HTTP/1.1 503 Service Unavailable"));
+        refused_at_once(answer, "HTTP/1.1 503 Service Unavailable");
         assert!(bodies.held() <= 1024 * 1024);
     }
     settled(HELD * BODY).await;
