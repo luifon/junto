@@ -58,6 +58,13 @@ fn told_of(notices: &[Notice], holds: impl Fn(&Event) -> bool) -> bool {
 }
 
 /// True when the stream replaced the state by a snapshot.
+/// The open timeline of `place` has the page that a new read of the state asked for.
+fn read_again(model: &ServerModel, place: PlaceId) -> bool {
+    model
+        .timeline(place)
+        .is_some_and(|timeline| timeline.loaded && !timeline.stale)
+}
+
 fn reloaded(notices: &[Notice]) -> bool {
     notices
         .iter()
@@ -222,9 +229,17 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
     owner.api().archive_channel(unread.id).await.unwrap();
 
     // The member has the messages of the first channel open and not those of the second.
-    let model = model_when(member, "no archived channel in the list", |model| {
-        model.channel(general.id).is_none() && model.channel(unread.id).is_none()
-    })
+    // The archive of "general" reads the state again: its open timeline is empty until its
+    // page arrives, which can be after the archive of "unread" (ADR 0304).
+    let model = model_when(
+        member,
+        "no archived channel in the list, the open one read again",
+        |model| {
+            model.channel(general.id).is_none()
+                && model.channel(unread.id).is_none()
+                && read_again(model, place)
+        },
+    )
     .await;
     assert_eq!(texts(&model, place), ["before the archive"]);
     let known = model.admin.archived_channel(general.id).unwrap();
@@ -244,9 +259,11 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
     assert_eq!(refusal.category(), Some(ErrorCategory::Conflict));
 
     owner.api().restore_channel(general.id).await.unwrap();
-    let model = model_when(member, "the restored channel in the list", |model| {
-        model.channel(general.id).is_some()
-    })
+    let model = model_when(
+        member,
+        "the restored channel in the list, read again",
+        |model| model.channel(general.id).is_some() && read_again(model, place),
+    )
     .await;
     assert!(model.admin.archived_channel(general.id).is_none());
     assert!(model.channel(unread.id).is_none());
