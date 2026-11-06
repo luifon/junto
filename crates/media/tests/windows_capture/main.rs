@@ -1705,15 +1705,17 @@ fn processor_milliseconds() -> f64 {
         .expect("PowerShell states the processor time")
 }
 
-/// A sink that only counts the pictures, so that the measured time is the time of the
-/// capture and its delivery.
+/// A sink that only counts the pictures and keeps the size of the last one, so that the
+/// measured time is the time of the capture and its delivery.
 #[derive(Default)]
 struct Counted {
     pictures: AtomicUsize,
+    size: Mutex<(u32, u32)>,
 }
 
 impl CaptureSink for Counted {
-    fn picture(&self, _: Arc<dyn VideoBuffer>) {
+    fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
+        *self.size.lock().unwrap() = (buffer.width(), buffer.height());
         self.pictures.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1747,9 +1749,11 @@ fn measured(fixture: &mut Fixture, sink: &Counted, seconds: u64) -> (f64, f64, S
 }
 
 /// The processor time of a window share and of an application share of one and of three
-/// windows, at the size of the screen and 30 pictures a second, against the same process
-/// without a share (ADR 0738, ADR 0914). It prints a table and checks nothing; it runs only
-/// with `JUNTO_TEST_SHARE_COST=1`.
+/// windows, at 30 pictures a second, against the same process without a share (ADR 0738,
+/// ADR 0914). The window covers the screen, so that both shares send pictures of about the
+/// size of the screen: the window share sends the picture of the window, the application
+/// share a picture of the screen. It prints a table with the size of the pictures and checks
+/// nothing; it runs only with `JUNTO_TEST_SHARE_COST=1`.
 #[test]
 fn the_processor_time_of_an_application_share() {
     if std::env::var_os("JUNTO_TEST_SHARE_COST").is_none() {
@@ -1761,30 +1765,34 @@ fn the_processor_time_of_an_application_share() {
     let runtime = runtime();
     let process = fixture.child.id() as i32;
     let sources = runtime.block_on(capture.sources()).unwrap();
-    if let Some(display) = sources
+    let display = sources
         .displays
         .iter()
         .find(|display| display.id == fixture.screen)
-    {
-        let area = fixture.area;
-        println!(
-            "The screen: {} × {} pixels; the inner area of the window: {} × {} pixels.",
-            display.width,
-            display.height,
-            area.2 - area.0,
-            area.3 - area.1
-        );
-    }
+        .expect("the screen of the fixture is listed");
+    // The inner area at the top left corner of the screen and of the size of the screen.
+    let (left, top, _, _) = fixture.area;
+    fixture.answer(&format!("move {} {}", -left, -top), "moved ");
+    let area = fixture.resize((display.width as i32, display.height as i32));
+    println!(
+        "The screen: {} × {} pixels; the inner area of the window: {} × {} pixels at ({}, {}).",
+        display.width,
+        display.height,
+        area.2 - area.0,
+        area.3 - area.1,
+        area.0,
+        area.1
+    );
     let idle = Counted::default();
     let (idle_time, _, idle_phases) = measured(&mut fixture, &idle, SECONDS);
     // The phases: the follow loop of an application share, the copy from the graphics card,
     // the composition of an application picture, the conversion for the encoder; each in
     // milliseconds of one thread per second (ADR 0738).
     println!(
-        "| Share | Windows | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |"
+        "| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |"
     );
-    println!("|---|---|---|---|---|---|---|---|");
-    println!("| none | 0 | 0 | {idle_time:.1} | {idle_phases} |");
+    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("| none | 0 | none | 0 | {idle_time:.1} | {idle_phases} |");
     let share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
         let sink = Arc::new(Counted::default());
         let stream = runtime
@@ -1805,7 +1813,8 @@ fn the_processor_time_of_an_application_share() {
         std::thread::sleep(Duration::from_secs(2));
         let (time, rate, phases) = measured(fixture, &sink, SECONDS);
         runtime.block_on(stream.stop()).unwrap();
-        println!("| {name} | {windows} | {rate:.1} | {time:.1} | {phases} |");
+        let (width, height) = *sink.size.lock().unwrap();
+        println!("| {name} | {windows} | {width} × {height} | {rate:.1} | {time:.1} | {phases} |");
     };
     share(
         "window",
