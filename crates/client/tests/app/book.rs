@@ -518,3 +518,80 @@ fn the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_serv
             .any(|row| row.name == "Harbor" && row.group.is_none())
     });
 }
+
+/// The pointer moves in steps from the icon of a server of the collapsed server book into its
+/// hover menu, rests there longer than the menu lingers, and presses a workspace in it (open
+/// item CD-37). The menu lies over the edge of the icon, so one move enters the menu and
+/// leaves the icon.
+#[gpui::test]
+fn the_pointer_moves_from_a_server_icon_into_its_hover_menu_and_uses_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.own_account();
+    let api = admin.handle.api();
+    let workspace = world.run(api.create_workspace("Lab".to_owned())).unwrap();
+    world
+        .run(api.add_workspace_member(workspace.id, own))
+        .unwrap();
+    window.until("the server book lists the second workspace", |window| {
+        window.workspaces_of_first().len() == 2
+    });
+    window.click("collapse-server-book");
+    let icon = window.cx.debug_bounds("server-0").unwrap();
+    window.move_pointer(icon.center());
+    assert!(window.shows("server-hover-menu"));
+    let row = selector(window.workspace_row("Lab"));
+    let target = window.cx.debug_bounds(row).unwrap().center();
+    let start = icon.center();
+    let steps = 12;
+    for step in 1..=steps {
+        let part = step as f32 / steps as f32;
+        let at = gpui::point(
+            start.x + (target.x - start.x) * part,
+            start.y + (target.y - start.y) * part,
+        );
+        window.move_pointer(at);
+        window
+            .cx
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        window.settle();
+        assert!(
+            window.shows("server-hover-menu"),
+            "the menu closed at step {step} of {steps}, at {at:?}"
+        );
+    }
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    window.settle();
+    assert!(
+        window.shows("server-hover-menu"),
+        "the menu closed while the pointer rested in it"
+    );
+    window.click(row);
+    window.until("Lab is selected", |window| {
+        window.view().servers[0]
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.name == "Lab" && workspace.selected)
+    });
+    assert!(!window.shows("server-hover-menu"));
+
+    // The pointer leaves the menu and the icon: the menu closes after its linger.
+    window.move_pointer(icon.center());
+    assert!(window.shows("server-hover-menu"));
+    window.move_pointer(gpui::point(
+        icon.center().x,
+        icon.bottom() + gpui::px(200.0),
+    ));
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    window.settle();
+    assert!(!window.shows("server-hover-menu"));
+}

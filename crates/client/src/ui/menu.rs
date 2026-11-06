@@ -14,6 +14,7 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type CloseHandler = Box<dyn Fn(&mut Window, &mut App) + 'static>;
+type HoverHandler = Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
 type ClickHandler = std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// The pointer and keyboard triggers of a target's context menu.
@@ -132,6 +133,7 @@ pub struct Menu {
     on_close: Option<CloseHandler>,
     placement: Option<std::rc::Rc<MenuPlacement>>,
     height_limit: Option<Pixels>,
+    on_hover: Option<HoverHandler>,
 }
 
 impl Menu {
@@ -154,7 +156,15 @@ impl Menu {
             on_close: None,
             placement: None,
             height_limit: None,
+            on_hover: None,
         }
+    }
+
+    /// Runs when the pointer enters or leaves the menu. The menu blocks the pointer, so an
+    /// element around it is never hovered while the pointer is over the menu.
+    pub fn on_hover(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_hover = Some(Box::new(handler));
+        self
     }
 
     pub fn header(mut self, header: impl IntoElement) -> Self {
@@ -276,6 +286,7 @@ impl RenderOnce for Menu {
                 menu.debug_selector(|| selector.to_owned())
             })
             .occlude()
+            .when_some(self.on_hover, |frame, handler| frame.on_hover(handler))
             .relative()
             // A menu is a layer: the areas that it lies over are not measured (ADR 0730).
             .child(super::cover())

@@ -309,6 +309,8 @@ pub struct Shell {
     pub(crate) hover_menu: Option<(ServerId, bool)>,
     hover_menu_focus: FocusHandle,
     hover_menu_close: Option<Task<()>>,
+    /// The server icon and whether the open hover menu are under the pointer.
+    hover_menu_pointer: (Option<ServerId>, bool),
     /// The press of the pointer that closed the menu of the server was on the button of
     /// that menu: the click that follows does not open the menu again.
     pub(crate) server_menu_closed_by_press: bool,
@@ -854,6 +856,7 @@ impl Shell {
             hover_menu: None,
             hover_menu_focus: cx.focus_handle(),
             hover_menu_close: None,
+            hover_menu_pointer: (None, false),
             server_menu_closed_by_press: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
@@ -1672,6 +1675,9 @@ impl Shell {
     ) {
         self.hover_menu_close = None;
         let already = self.hover_menu.map(|(open, _)| open) == Some(server_id);
+        if !already {
+            self.hover_menu_pointer.1 = false;
+        }
         let keeps_focus = self.hover_menu.is_some_and(|(_, keyboard)| keyboard);
         if already && (keeps_focus || !by_keyboard) {
             return;
@@ -1684,28 +1690,59 @@ impl Shell {
         cx.notify();
     }
 
-    /// The pointer left the icon or the menu: the menu closes after a short time unless
-    /// the pointer enters one of them again. A menu that the keyboard opened stays.
-    pub(crate) fn leave_hover_menu(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.hover_menu, Some((_, false))) {
+    /// The pointer entered or left the icon of a server of the collapsed server book. The
+    /// pointer opens its menu.
+    pub(crate) fn hover_server_icon(
+        &mut self,
+        server_id: ServerId,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if hovered {
+            self.hover_menu_pointer.0 = Some(server_id);
+            self.open_hover_menu(server_id, false, window, cx);
+        } else if self.hover_menu_pointer.0 == Some(server_id) {
+            self.hover_menu_pointer.0 = None;
+        }
+        self.linger_hover_menu(cx);
+    }
+
+    /// The pointer entered or left the open hover menu.
+    pub(crate) fn hover_in_hover_menu(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.hover_menu_pointer.1 = hovered;
+        self.linger_hover_menu(cx);
+    }
+
+    /// A menu that the pointer opened closes a short time after the pointer left both the
+    /// icon and the menu, unless it enters one of them again. A menu that the keyboard
+    /// opened stays. gpui tells the icon and the menu of one move in either order: the
+    /// menu that the pointer enters can hear of it before the icon hears that the pointer
+    /// left it.
+    fn linger_hover_menu(&mut self, cx: &mut Context<Self>) {
+        let (icon, menu) = self.hover_menu_pointer;
+        if icon.is_some() || menu {
+            self.hover_menu_close = None;
+            return;
+        }
+        if !matches!(self.hover_menu, Some((_, false))) || self.hover_menu_close.is_some() {
             return;
         }
         self.hover_menu_close = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(HOVER_MENU_LINGER).await;
             let _ = this.update(cx, |this, cx| {
-                this.hover_menu = None;
                 this.hover_menu_close = None;
-                cx.notify();
+                if this.hover_menu_pointer == (None, false) {
+                    this.hover_menu = None;
+                    cx.notify();
+                }
             });
         }));
     }
 
-    pub(crate) fn stay_in_hover_menu(&mut self) {
-        self.hover_menu_close = None;
-    }
-
     pub(crate) fn close_hover_menu(&mut self, cx: &mut Context<Self>) {
         self.hover_menu_close = None;
+        self.hover_menu_pointer.1 = false;
         if self.hover_menu.take().is_some() {
             cx.notify();
         }
