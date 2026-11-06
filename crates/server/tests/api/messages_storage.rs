@@ -97,7 +97,9 @@ async fn images_larger_than_the_safe_decode_bound_are_generic_files() {
     .await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
-    let bytes = junto_server::image::samples::png(8192, 8192);
+    // A still PNG without interlacing can be decoded reduced and is a picture up to a higher
+    // bound; an interlaced one keeps the bound of a whole decoding.
+    let bytes = junto_server::image::samples::png_interlaced(8192, 8192);
     let upload = upload(&server, &owner, json!({"channel_id":channel.id}), &bytes).await;
     let message: Message = server
         .post(

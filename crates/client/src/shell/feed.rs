@@ -5484,7 +5484,12 @@ mod tests {
         assert!(is_picture(&file(8192, 4096)));
         assert!(is_picture(&file(16_384, 1)));
         assert!(is_picture(&file(2560, 1440)));
-        assert!(!is_picture(&file(8192, 4097)));
+        // A still PNG is decoded reduced, so it is a picture beyond the bound of a whole
+        // decoding; a WebP of that size is not.
+        assert!(is_picture(&file(8192, 4097)));
+        let mut whole = file(8192, 4097);
+        whole.media_type = "image/webp".to_owned();
+        assert!(!is_picture(&whole));
         assert!(!is_picture(&file(0, 10)));
         let mut moving = file(498, 280);
         moving.media_type = "image/gif".to_owned();
