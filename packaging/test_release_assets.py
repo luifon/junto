@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 import release_assets
 import renew_freshness
@@ -51,6 +52,21 @@ class AssetTests(unittest.TestCase):
         self.root = pathlib.Path(temporary.name)
         self.release = release_directory(self.root / "release")
         self.output = self.root / "assets"
+        notes = tempfile.TemporaryDirectory()
+        self.addCleanup(notes.cleanup)
+        self.notes = pathlib.Path(notes.name)
+        (self.notes / f"{VERSION}.md").write_text(f"# Junto {VERSION}\n\n## What is new\n\n- A change\n")
+        patched = unittest.mock.patch.object(release_assets, "RELEASES", self.notes)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def test_a_version_without_the_notes_that_the_client_carries_is_refused(self):
+        (self.notes / f"{VERSION}.md").write_text(f"# Junto {VERSION}\n\n## Packages\n")
+        self.refused(r"docs/releases/0\.4\.1\.md with the section '## What is new'")
+        (self.notes / f"{VERSION}.md").unlink()
+        self.refused(r"is committed before the first build of the version")
+        code, _, errors = self.collect("--test", "1", "--notes", str(self.root / "notes.md"))
+        self.assertEqual(code, 1, errors)
 
     def collect(self, *extra):
         with contextlib.redirect_stdout(io.StringIO()) as printed, contextlib.redirect_stderr(io.StringIO()) as errors:

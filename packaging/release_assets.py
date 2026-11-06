@@ -12,6 +12,10 @@ import sys
 import tempfile
 
 REPOSITORY = "luifon/junto"
+# The notes of each version. The client compiles in the section "What is new" of the notes of
+# its version, so they are committed before the first build of the version (ADR 0727).
+RELEASES = pathlib.Path(__file__).resolve().parent.parent / "docs" / "releases"
+WHAT_IS_NEW = "## What is new"
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 TEST_NUMBER = re.compile(r"[1-9][0-9]*")
 TARGETS = ("macos-bundle-aarch64", "linux-directory-x86_64", "linux-appimage-x86_64", "windows-directory-x86_64")
@@ -217,6 +221,13 @@ def main(arguments=None):
         files = build(options.release, options.version, options.output, options.test)
     except (AssetError, OSError) as error:
         print(f"release_assets.py: {error}", file=sys.stderr)
+        return 1
+    tracked = RELEASES / f"{options.version}.md"
+    if not tracked.is_file() or WHAT_IS_NEW not in tracked.read_text(encoding="utf-8").splitlines():
+        shutil.rmtree(options.output, ignore_errors=True)
+        print(f"release_assets.py: docs/releases/{options.version}.md with the section {WHAT_IS_NEW!r} is not in "
+              "the checkout; the client carries that section from its build, so it is committed before the "
+              "first build of the version", file=sys.stderr)
         return 1
     for name, size in files:
         print(f"{size:>14,}  {name}")
