@@ -112,6 +112,52 @@ class Select(unittest.TestCase):
         reason = changes.select(["crates/setup/src/apply.rs"], (), ["std::fs::write(a, b)"])["rust-windows"][1]
         self.assertIn("parts server: crates/setup/src/apply.rs", reason)
 
+    def test_an_edit_inside_existing_windows_code_runs_windows_and_the_lint_of_each_crate(self):
+        # The line names no cfg: the file holds code under one.
+        path = "crates/media/src/share/mod.rs"
+        line = ["        let size = std::fs::metadata(&path)?.len();"]
+        self.assertEqual(changes.select([path], (), line, line)["rust-windows"][0], "base+live")
+        chosen = changes.select([path], (), line, line, [path])["rust-windows"]
+        self.assertEqual(chosen[0], "base+live+crates")
+        self.assertIn(f"code under a cfg of the system in {path}", chosen[1])
+        # Also when nothing else of the change can differ on Windows.
+        quiet = ["        let total = first + second;"]
+        self.assertEqual(changes.select([path], (), quiet, quiet)["rust-windows"][0], "skip")
+        self.assertEqual(changes.select([path], (), quiet, quiet, [path])["rust-windows"][0], "base+live+crates")
+
+    def test_the_files_with_code_under_a_cfg_of_the_system_come_from_both_ends_of_the_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            git = ["git", "-C", directory]
+            identity = dict(os.environ, GIT_AUTHOR_NAME="Example", GIT_AUTHOR_EMAIL="ci@example.com",
+                            GIT_COMMITTER_NAME="Example", GIT_COMMITTER_EMAIL="ci@example.com")
+            subprocess.run([*git, "init", "--quiet"], check=True)
+            source = Path(directory) / "crates/media/src/share"
+            source.mkdir(parents=True)
+            windows = source / "mod.rs"
+            windows.write_text('#[cfg(windows)]\nfn open() {\n    let a = 1;\n}\n')
+            plain = source / "plain.rs"
+            plain.write_text("fn a() {}\n")
+            gone = source / "gone.rs"
+            gone.write_text('#[cfg(target_os = "windows")]\nfn b() {}\n')
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "one"], check=True, env=identity)
+            windows.write_text('#[cfg(windows)]\nfn open() {\n    let a = 2;\n}\n')
+            plain.write_text("fn a() { let b = 1; }\n")
+            gone.unlink()
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "two"], check=True, env=identity)
+            here = os.getcwd()
+            os.chdir(directory)
+            try:
+                found = changes.system_files("HEAD~1", "HEAD", ["crates/media/src/share/mod.rs",
+                                                                 "crates/media/src/share/plain.rs",
+                                                                 "crates/media/src/share/gone.rs"])
+                chosen = changes.from_git("HEAD~1", "HEAD")
+            finally:
+                os.chdir(here)
+            self.assertEqual(found, ["crates/media/src/share/gone.rs", "crates/media/src/share/mod.rs"])
+            self.assertEqual(chosen["rust-windows"][0], "base+live+crates")
+
     def test_the_lines_and_paths_of_a_commit_range_come_from_git(self):
         with tempfile.TemporaryDirectory() as directory:
             git = ["git", "-C", directory]
