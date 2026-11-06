@@ -161,8 +161,8 @@ python3 tools/windows/dialogs.py record "$dialogs"
 trap 'python3 tools/windows/dialogs.py check "$dialogs" || exit 1; rm -f "$dialogs"' EXIT
 # The unit tests of the media crate, the reading of the sources of the WebRTC wrapper (ADR 0733),
 # and the capture of the screen against the window of a fixture program, which appears on the
-# desktop of the account for a few seconds without taking the focus. No test plays sound
-# (ADR 0706).
+# desktop of the account for a few seconds without taking the focus. One test makes the fixture
+# play a tone for a few seconds on the default output device (ADR 0706).
 step "Media tests and screen capture on Windows"
 run cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture
 # The keys of a call in every application: the reader of the keyboard against F24, which the
@@ -203,6 +203,7 @@ run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg
     cargo test --no-fail-fast --locked --workspace --test api
 # The window tests of calls against the LiveKit release for Windows of the version of the image
 # of the other jobs, every socket of it on the loopback address (tools/with_native_livekit.py).
+# The share of a window of the fixture program carries the tone that the fixture plays.
 step "Window tests with PostgreSQL and LiveKit"
 run python3 tools/windows/with_test_postgres.py python3 tools/with_native_livekit.py \
     cargo test --no-fail-fast --locked --workspace --test app live:: -- --ignored

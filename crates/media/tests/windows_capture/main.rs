@@ -1,7 +1,7 @@
 //! The capture of Windows against a window of a separate program (ADR 0706). The tests run
 //! in the Windows job of CI, in the desktop session of its account: the window of the
-//! fixture appears above the other windows for a few seconds and takes no focus. No test
-//! plays sound.
+//! fixture appears above the other windows for a few seconds and takes no focus. One test
+//! makes the fixture play a tone for a few seconds on the default output device.
 
 #![cfg(target_os = "windows")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -175,6 +175,8 @@ struct Pictures {
     latest: Mutex<Option<PictureFrame>>,
     count: Mutex<usize>,
     sound: Mutex<Vec<(usize, Format, f32)>>,
+    /// The first channel of the sound, as it came.
+    first_channel: Mutex<Vec<f32>>,
     ended: Mutex<Vec<CaptureError>>,
 }
 
@@ -193,6 +195,12 @@ impl CaptureSink for Pictures {
             .lock()
             .unwrap()
             .push((samples.len(), format, peak));
+        self.first_channel.lock().unwrap().extend(
+            samples
+                .iter()
+                .step_by(usize::from(format.channels.max(1)))
+                .copied(),
+        );
     }
 
     fn ended(&self, error: CaptureError) {
@@ -602,6 +610,54 @@ fn a_share_with_the_sound_of_one_application_or_of_the_system_starts_and_gives_s
         }
         assert!(pictures.ended.lock().unwrap().is_empty(), "{sound:?}");
     }
+}
+
+/// The fixture plays a tone: a share with the sound of its application gives that tone, at
+/// about the level at which it plays (ADR 0706).
+#[test]
+fn a_share_with_the_sound_of_one_application_gives_the_tone_that_the_application_plays() {
+    const TONE_HZ: f32 = 900.0;
+    let mut fixture = Fixture::open();
+    fixture.send(&format!("tone {TONE_HZ}"));
+    assert_eq!(fixture.line(), "tone on");
+    let capture = junto_media::share::system();
+    let runtime = runtime();
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    let application = sources
+        .windows
+        .iter()
+        .find(|window| window.id == fixture.window)
+        .unwrap()
+        .application
+        .clone();
+    let pictures = Arc::new(Pictures::default());
+    let stream = runtime
+        .block_on(capture.start(
+            CaptureRequest {
+                picture: PictureSource::Window(fixture.window),
+                sound: SoundChoice::Application(application),
+                quality: ShareQuality::default(),
+                dialog_parent: None,
+            },
+            pictures.clone(),
+        ))
+        .unwrap();
+    let level = || {
+        let samples = pictures.first_channel.lock().unwrap();
+        let recent = &samples[samples.len().saturating_sub(24_000)..];
+        junto_media::audio::synthetic::tone_level(recent, 48_000, TONE_HZ)
+    };
+    let started = Instant::now();
+    while level() < -20.0 {
+        assert!(
+            started.elapsed() < PATIENCE,
+            "the tone of the application has {} dBFS in the share",
+            level()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    runtime.block_on(stream.stop()).unwrap();
+    assert!(pictures.ended.lock().unwrap().is_empty());
 }
 
 /// The window of the client lists the sound devices on its background threads, which are
