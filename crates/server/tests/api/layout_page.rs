@@ -1,7 +1,9 @@
 //! The layout page of the recorder, served from the built directory (ADR 0615).
 
 use junto_protocol::error::ErrorCode;
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
+#[cfg(unix)]
+use reqwest::StatusCode;
 use serde_json::Value;
 
 use crate::support::{Reply, Scratch, TestServer};

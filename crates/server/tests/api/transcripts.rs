@@ -175,7 +175,9 @@ async fn a_processed_recording_is_handed_to_the_worker_and_its_transcript_is_sto
     assert!(variables.contains(&"JUNTO_TRANSCRIBE_MODELS".to_owned()));
     assert!(variables.contains(&"PATH".to_owned()));
     assert!(std::env::var_os("JUNTO_TEST_DATABASE_URL").is_some());
-    for kept_from_the_worker in ["JUNTO_TEST_DATABASE_URL", "HOME", "USER"] {
+    // The sh of Git for Windows sets HOME itself when its environment has none.
+    let home = if cfg!(windows) { None } else { Some("HOME") };
+    for kept_from_the_worker in ["JUNTO_TEST_DATABASE_URL", "USER"].into_iter().chain(home) {
         assert!(
             !variables.contains(&kept_from_the_worker.to_owned()),
             "{variables:?}"
