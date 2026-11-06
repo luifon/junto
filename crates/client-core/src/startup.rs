@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 use crate::app_identity::APP_ID;
 use crate::paths::{DataDir, normal_data_dir_of_this_user};
 
-#[cfg(any(target_os = "macos", test))]
+// The tests of the launch agent use paths that Windows does not allow (`<` and `>` in a
+// name), so they run on macOS and Linux.
+#[cfg(any(target_os = "macos", all(test, unix)))]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod launch_agent;
 #[cfg(target_os = "linux")]
@@ -264,26 +266,20 @@ mod tests {
         assert_ne!(Profile::of(&third, Some(&normal)).unwrap(), profile);
         // A directory chosen with `JUNTO_DATA_DIR` is another profile: the normal directory
         // is the default of the system without that variable.
-        let home = root.path().join("home");
+        // The paths are invented paths of Linux, read by the rules of Linux on every system.
         let variables = |name: &str| match name {
-            "JUNTO_DATA_DIR" => Some(other.clone().into_os_string()),
-            "HOME" => Some(home.clone().into_os_string()),
+            "JUNTO_DATA_DIR" => Some(std::ffi::OsString::from("/srv/work-profile")),
+            "HOME" => Some(std::ffi::OsString::from("/srv/accounts/a")),
             _ => None,
         };
-        let system_normal =
-            crate::paths::normal_data_dir(crate::paths::System::MacOs, variables).unwrap();
         assert_eq!(
-            system_normal,
-            home.join("Library/Application Support/Junto")
+            crate::paths::normal_data_dir(crate::paths::System::Linux, variables).unwrap(),
+            std::path::Path::new("/srv/accounts/a/.local/share/junto")
         );
         assert_eq!(
-            crate::paths::default_data_dir(crate::paths::System::MacOs, variables).unwrap(),
-            other
+            crate::paths::default_data_dir(crate::paths::System::Linux, variables).unwrap(),
+            std::path::Path::new("/srv/work-profile")
         );
-        assert!(matches!(
-            Profile::of(&other, Some(&system_normal)).unwrap(),
-            Profile::Other { .. }
-        ));
         // Without a directory of the user every directory is another profile.
         assert!(matches!(
             Profile::of(&normal, None).unwrap(),

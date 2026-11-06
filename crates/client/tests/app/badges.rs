@@ -447,6 +447,18 @@ fn a_mention_on_a_server_in_the_background_is_counted_at_its_workspace_its_head_
         let view = window.view();
         view.servers[0].selected && view.workspace().is_some()
     });
+    // The pointer rests on the picture of the server, so its hover menu is open over the
+    // list of the channels; a person moves the pointer away from it, and it closes, before
+    // choosing a channel.
+    let away = window
+        .cx
+        .debug_bounds("composer-input")
+        .expect("the composer is drawn")
+        .center();
+    window.move_pointer(away);
+    window.until("the hover menu closes", |window| {
+        !window.shows("server-hover-menu")
+    });
     window.click_channel("general");
     window.until("the picture of the server counts nothing", |window| {
         window.shows("server-0") && window.drawn_number("server-unread-0").is_none()

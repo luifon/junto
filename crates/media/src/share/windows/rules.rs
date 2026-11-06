@@ -66,6 +66,8 @@ fn switchable(window: &ListedWindow) -> bool {
 
 /// The windows that a person can share: visible application windows of another application
 /// than the client, on the present virtual desktop, not minimized.
+/// The list of windows reads their frames too ([`placed_windows`]); the tests read this.
+#[cfg(test)]
 pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<WindowSource> {
     placed_windows(listed, own)
         .into_iter()
