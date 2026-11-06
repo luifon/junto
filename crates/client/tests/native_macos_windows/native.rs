@@ -17,7 +17,7 @@ use objc2::{MainThreadMarker, rc::Retained};
 use objc2_app_kit::{
     NSApplication, NSApplicationDelegate, NSWindow, NSWindowButton, NSWindowStyleMask,
 };
-use objc2_foundation::NSSize;
+use objc2_foundation::{NSPoint, NSSize};
 use std::{
     cell::RefCell,
     path::Path,
@@ -330,6 +330,55 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                                     .into_iter()
                                     .zip(saved)
                                     .all(|(normal, saved)| same_geometry(normal, saved))
+                        },
+                    )
+                    .await?;
+                    // A zoomed window that is moved, then zoomed and unzoomed again: both
+                    // keep its size and only move it, so AppKit sends no resize. The window
+                    // is then not reported as maximized, and a resize is saved as its normal
+                    // placement (review L1, ADR 0757).
+                    main_native.performZoom(None);
+                    until(cx, "the main window is zoomed again", |cx| {
+                        main_native.isZoomed() && placements(&state, cx)[0].maximized
+                    })
+                    .await?;
+                    let frame = main_native.frame();
+                    main_native
+                        .setFrameOrigin(NSPoint::new(frame.origin.x + 40.0, frame.origin.y - 40.0));
+                    until(cx, "the moved window is no longer zoomed", |_| {
+                        !main_native.isZoomed()
+                    })
+                    .await?;
+                    main_native.performZoom(None);
+                    until(cx, "the moved window is zoomed by a move", |_| {
+                        main_native.isZoomed()
+                    })
+                    .await?;
+                    main_native.performZoom(None);
+                    until(
+                        cx,
+                        "a window unzoomed by a move is not reported as maximized",
+                        |cx| {
+                            !main_native.isZoomed()
+                                && !placements(&state, cx)[0].maximized
+                                && main
+                                    .update(cx, |_, window, _| {
+                                        !matches!(
+                                            window.window_bounds(),
+                                            WindowBounds::Maximized(_)
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                        },
+                    )
+                    .await?;
+                    main_native.setContentSize(NSSize::new(820.0, 560.0));
+                    until(
+                        cx,
+                        "a resize after it is saved as the normal placement",
+                        |cx| {
+                            let saved = placements(&state, cx);
+                            saved[0].width == 820 && !saved[0].maximized
                         },
                     )
                     .await?;

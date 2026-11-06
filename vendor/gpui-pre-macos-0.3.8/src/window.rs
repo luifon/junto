@@ -2230,10 +2230,12 @@ impl PlatformWindow for MacWindow {
     }
 
     fn start_window_move(&self) {
-        let this = self.0.lock();
+        let mut this = self.0.lock();
         if this.simple_fullscreen_state.is_some() {
             return;
         }
+        // Modified: a move by the person is not a zoom animation (ADR 0757).
+        forget_zoom_target(&mut this);
         let window = this.native_window;
 
         unsafe {
@@ -3023,27 +3025,49 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
     report_visibility(&window_state);
 }
 
+// Modified: added. A zoom animation ends when the frame reaches its target; an unzoom then
+// forgets the frame from before the zoom. A zoom that keeps the size only moves the window,
+// so both a resize and a move end it (ADR 0757).
+fn reach_zoom_target(lock: &mut MacWindowState) -> bool {
+    let Some(target) = lock.zoom_target else {
+        return false;
+    };
+    // SAFETY: the native window is valid while its state lives.
+    let frame = unsafe { NSWindow::frame(lock.native_window) };
+    let near = |one: f64, other: f64| (one - other).abs() <= 1.0;
+    if near(frame.origin.x, target.origin.x)
+        && near(frame.origin.y, target.origin.y)
+        && near(frame.size.width, target.size.width)
+        && near(frame.size.height, target.size.height)
+    {
+        forget_zoom_target(lock);
+        return true;
+    }
+    false
+}
+
+// Modified: added. The zoom has ended, or the person moves the window by its header: the
+// window is maximized only as AppKit states it.
+fn forget_zoom_target(lock: &mut MacWindowState) {
+    lock.zoom_target = None;
+    if !lock.is_maximized() {
+        lock.zoom_restore = None;
+    }
+}
+
 extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
-    // Modified: a zoom animation ends when the frame reaches its target; an unzoom then
-    // forgets the frame from before the zoom.
-    if let Some(target) = lock.zoom_target {
-        // SAFETY: the native window is valid while its state lives.
-        let frame = unsafe { NSWindow::frame(lock.native_window) };
-        let near = |one: f64, other: f64| (one - other).abs() <= 1.0;
-        if near(frame.origin.x, target.origin.x)
-            && near(frame.origin.y, target.origin.y)
-            && near(frame.size.width, target.size.width)
-            && near(frame.size.height, target.size.height)
-        {
-            lock.zoom_target = None;
-            if !lock.is_maximized() {
-                lock.zoom_restore = None;
-            }
-        }
-    }
+    // Modified: the end of a zoom animation. The view told its new size before this
+    // notification, while the window was still reported as zooming, so the observers of the
+    // bounds are told again, as a move tells them.
+    let ended = reach_zoom_target(&mut lock);
     lock.move_traffic_light();
+    if ended && let Some(mut callback) = lock.moved_callback.take() {
+        drop(lock);
+        callback();
+        window_state.lock().moved_callback = Some(callback);
+    }
 }
 
 // Modified: added. AppKit asks the delegate before it zooms or unzooms the window, with the
@@ -3132,6 +3156,8 @@ fn ns_error_description(error: id) -> String {
 extern "C" fn window_did_move(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
+    // Modified: the end of a zoom animation that only moves the window.
+    reach_zoom_target(&mut lock);
     if let Some(mut callback) = lock.moved_callback.take() {
         drop(lock);
         callback();

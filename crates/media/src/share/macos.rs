@@ -546,6 +546,9 @@ struct FollowState {
     /// The size of the window that the configuration in force was made for.
     configured: (u32, u32),
     updating: bool,
+    /// A size of the window whose configuration the stream refused: it is not asked for
+    /// again until the window has another size.
+    refused: Option<(u32, u32)>,
 }
 
 /// Two sizes of a window that differ by at most one pixel in each direction are one size:
@@ -562,6 +565,7 @@ impl Follow {
             state: Mutex::new(FollowState {
                 configured: source,
                 updating: false,
+                refused: None,
             }),
         }
     }
@@ -571,7 +575,12 @@ impl Follow {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if state.updating || same_size(size, state.configured) {
+        if state.updating
+            || same_size(size, state.configured)
+            || state
+                .refused
+                .is_some_and(|refused| same_size(size, refused))
+        {
             return;
         }
         state.updating = true;
@@ -591,11 +600,17 @@ impl Follow {
                     state.updating = false;
                     // SAFETY: the system passes a valid error or null.
                     match unsafe { error.as_ref() } {
-                        None => state.configured = size,
-                        Some(error) => tracing::warn!(
-                            error = %error.localizedDescription(),
-                            "the stream of a shared window did not take the new size"
-                        ),
+                        None => {
+                            state.configured = size;
+                            state.refused = None;
+                        }
+                        Some(error) => {
+                            state.refused = Some(size);
+                            tracing::warn!(
+                                error = %error.localizedDescription(),
+                                "the stream of a shared window did not take the new size"
+                            );
+                        }
                     }
                 },
             )

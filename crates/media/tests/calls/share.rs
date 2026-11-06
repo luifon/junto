@@ -2385,6 +2385,224 @@ async fn on_macos_the_own_share_and_camera_are_encoded_by_the_hardware_of_the_sy
     .await;
 }
 
+/// The video encodings of the publisher of a person: the SSRC of each stream, the width of
+/// its pictures and its encoded pictures.
+async fn video_encodings(person: &Person) -> Vec<(u32, u32, u32)> {
+    let Ok(stats) = person.calls.statistics().await else {
+        return Vec::new();
+    };
+    stats
+        .publisher_stats
+        .iter()
+        .filter_map(|stat| match stat {
+            RtcStats::OutboundRtp(stat) if stat.stream.kind == "video" => Some((
+                stat.stream.ssrc,
+                stat.outbound.frame_width,
+                stat.outbound.frames_encoded,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits until a stream of the publisher of `person` encodes pictures of `width`, and returns
+/// its SSRC.
+async fn until_encoded_width(person: &Person, width: u32) -> u32 {
+    let started = tokio::time::Instant::now();
+    loop {
+        let encodings = video_encodings(person).await;
+        if let Some((ssrc, _, _)) = encodings
+            .iter()
+            .find(|(_, encoded, frames)| *encoded == width && *frames > 0)
+        {
+            return *ssrc;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} no stream encodes pictures {width} pixels wide; the encodings \
+             (SSRC, width, pictures): {encodings:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Records each view of `viewer` in which it does not watch `share` or does not list it
+/// once, and each moment at which its watched picture is absent after it was present.
+fn watch_across_a_change(
+    viewer: &Person,
+    share: ShareId,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let lost: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+    let found = lost.clone();
+    let mut views = viewer.calls.watch();
+    let mut pictures = viewer.calls.main_picture();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                changed = views.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let view = views.borrow_and_update().clone();
+                    let call = view.call.as_ref();
+                    let listed = call.map_or(0, |call| {
+                        call.shares
+                            .iter()
+                            .filter(|seen| ShareId::of(seen.account_id, seen.slot) == share)
+                            .count()
+                    });
+                    let watched = call.and_then(|call| call.watched);
+                    if watched != Some(share) || listed != 1 {
+                        found
+                            .lock()
+                            .unwrap()
+                            .push(format!("watched {watched:?}, listed {listed} times"));
+                    }
+                }
+                changed = pictures.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    if pictures.borrow_and_update().is_none() {
+                        found.lock().unwrap().push("no watched picture".to_owned());
+                    }
+                }
+            }
+        }
+    });
+    (task, lost)
+}
+
+/// The publication again of the picture track of a share in the codec of its new size runs on
+/// every system: a test rule makes the sharer choose a second VP8 encoder for pictures wider
+/// than 1500 pixels (ADR 0737). When the shared window grows from 1280 to 1920 pixels, the
+/// pictures of the new width are sent on a new stream, while the viewer keeps watching the
+/// share, lists it once, keeps its picture and hears its sound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_share_whose_size_needs_another_encoder_is_published_again_on_a_new_track() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        ann.calls.set_second_encoder_above(Some(1500));
+        let share = ShareId::of(ann_id, 0);
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1280, 720);
+        ann.calls.start_share(window(player()));
+        ann.until_sharing().await;
+        ben.until_width_stays(ann_id, 1280).await;
+        ben.until_heard_tone(PLAYER.0).await;
+        let first = until_encoded_width(&ann, 1280).await;
+        let (watching, lost) = watch_across_a_change(&ben, share);
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1920, 1080);
+        ben.until_width_stays(ann_id, 1920).await;
+        // The first track encodes pictures of the new width until its replacement takes its
+        // place: the test waits for a stream other than the first one.
+        let started = tokio::time::Instant::now();
+        loop {
+            let encodings = video_encodings(&ann).await;
+            if encodings
+                .iter()
+                .any(|(ssrc, width, frames)| *ssrc != first && *width == 1920 && *frames > 0)
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the pictures of the new width are sent only on the stream \
+                 of the first track ({first}); the encodings (SSRC, width, pictures): \
+                 {encodings:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        ben.until_heard_tone(PLAYER.0).await;
+        watching.abort();
+        let lost = lost.lock().unwrap().clone();
+        assert!(
+            lost.is_empty(),
+            "across the change of the track the viewer: {lost:?}"
+        );
+    })
+    .await;
+}
+
+/// A window that changes size while the first publication of its share waits is published
+/// in the codec of its new size once that publication answers: the check of the codec runs
+/// when the picture track is published, not only at a change of size (review M1). The test
+/// holds the track permissions, so the first publication waits, and the window grows from
+/// 1280 to 1920 pixels in that time. Without the check at the publication the test passed as
+/// well in the runs on a Mac: the set of the bitrate after the publication was refused and
+/// tried again through the message of a new size, which checks the codec too; the check at
+/// the publication does not depend on that refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_window_that_grows_before_its_first_publication_answers_gets_the_codec_of_its_size() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let _ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        ann.calls.set_second_encoder_above(Some(1500));
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1280, 720);
+        ann.calls.hold_permissions(true);
+        ann.calls.start_share(window(player()));
+        // The capture has started at 1280 pixels, and the publication waits for the
+        // permissions.
+        crate::scene::until("the capture of the share runs", || {
+            ann.capture.running() == 1
+        })
+        .await;
+        ann.capture
+            .resize_source(PictureSource::Window(11), 1920, 1080);
+        // The capture sends pictures of the new size, about 30 a second, while the publication
+        // waits: the engine measures the new size before the track is published. A run in
+        // which no such picture arrives in time checks the change of size after the
+        // publication instead, and passes as well.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        ann.calls.hold_permissions(false);
+        ben.until_width_stays(ann_id, 1920).await;
+        // The first track was published with the encoder of 1280 pixels; its replacement in
+        // the encoder of 1920 pixels takes its place on a new stream. The first track can be
+        // replaced before it has encoded a picture, so every stream counts.
+        let started = tokio::time::Instant::now();
+        let mut streams = std::collections::BTreeSet::new();
+        loop {
+            let encodings = video_encodings(&ann).await;
+            streams.extend(encodings.iter().map(|(ssrc, _, _)| *ssrc));
+            let active: Vec<_> = encodings
+                .iter()
+                .filter(|(_, width, frames)| *width == 1920 && *frames > 0)
+                .collect();
+            if streams.len() >= 2 && !active.is_empty() {
+                break;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the share was not published again in the encoder of its \
+                 size: streams {streams:?}, encodings (SSRC, width, pictures) {encodings:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        ben.until_heard_tone(PLAYER.0).await;
+    })
+    .await;
+}
+
 /// On macOS a shared window that starts within the level of H.264 is encoded in H.264; when
 /// it grows beyond that level its picture track is published again in VP8 under the same
 /// share and slot (ADR 0737, ADR 0773). The viewer keeps watching the share across the change

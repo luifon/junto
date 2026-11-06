@@ -112,8 +112,12 @@ pub(super) fn picture_encoding(size: (u32, u32), frame_rate: u32) -> VideoEncodi
 }
 
 /// A lower simulcast layer would permit bandwidth adaptation to replace readable text.
-pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
-    super::sent::encoded(
+pub(super) fn picture_options(
+    size: (u32, u32),
+    frame_rate: u32,
+    encoder: super::sent::Encoder,
+) -> TrackPublishOptions {
+    super::sent::encoded_with(
         TrackPublishOptions {
             source: TrackSource::Screenshare,
             video_encoding: Some(picture_encoding(size, frame_rate)),
@@ -122,8 +126,7 @@ pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublish
             degradation_preference: Some(DegradationPreference::MaintainResolution),
             ..TrackPublishOptions::default()
         },
-        size,
-        frame_rate,
+        encoder,
     )
 }
 
@@ -501,6 +504,33 @@ async fn pump_sound(
     }
 }
 
+/// The shares that the pictures show, in the order of the shares, one entry per share: of two
+/// tracks of one share, while one replaces the other in another codec, the one that has a
+/// size states it (ADR 0737).
+fn one_per_share<T>(
+    mut seen: Vec<T>,
+    share: impl Fn(&T) -> ShareId,
+    order: impl Fn(&T) -> u64,
+    sized: impl Fn(&T) -> bool,
+) -> Vec<T> {
+    seen.sort_by_key(|picture| (order(picture), !sized(picture)));
+    seen.dedup_by(|later, earlier| share(later) == share(earlier));
+    seen
+}
+
+/// The place in the order of the shares of a new track of `share`: the place of the share
+/// when another track already shows it, such as a track that the sharer publishes again in
+/// another codec, and otherwise the next place.
+fn place_of(held: impl IntoIterator<Item = (ShareId, u64)>, share: ShareId, next: &mut u64) -> u64 {
+    match held.into_iter().find(|(other, _)| *other == share) {
+        Some((_, order)) => order,
+        None => {
+            *next += 1;
+            *next
+        }
+    }
+}
+
 /// A share of this device.
 pub(super) struct OwnShare {
     generation: u64,
@@ -524,14 +554,18 @@ pub(super) struct OwnShare {
     cleared_by: Option<(u64, LocalVideoTrack, TrackPublishOptions)>,
     /// The maximum bitrate that the published picture track has, when the engine set it.
     bitrate: Option<u64>,
-    /// A set of the bitrate failed and was tried once more; the next failure is only logged.
-    bitrate_retried: bool,
+    /// The bitrate whose set failed and was tried once more: a second failure of the same
+    /// bitrate is only logged, and another bitrate is tried again at its first failure.
+    bitrate_retried: Option<u64>,
     /// The encoder of the published picture track, from the size of the pictures at its
     /// publication.
     encoder: Option<super::sent::Encoder>,
     /// The picture track that is published again in the codec of a new size, until it takes
     /// the place of the published one (ADR 0737).
     replacement: Option<Replacement>,
+    /// The encoder and the size of a publication again that failed: it is not tried again
+    /// until the size changes.
+    refused: Option<(super::sent::Encoder, (u32, u32))>,
     /// The answer of the system to the start of the capture, until the engine takes it.
     /// The share owns it: a capture that has started when the share ends is stopped with
     /// the share.
@@ -546,6 +580,8 @@ struct Replacement {
     /// The number of the publication again, which its answer names.
     number: u64,
     encoder: super::sent::Encoder,
+    /// The size of the pictures for which the codec was chosen.
+    size: (u32, u32),
     /// The publication, once the media server has answered.
     published: Option<LocalTrackPublication>,
     /// The number of the track permissions that place the track for the viewers.
@@ -578,15 +614,15 @@ impl OwnShare {
         match track.set_max_bitrate(bitrate) {
             Ok(true) => {
                 self.bitrate = Some(bitrate);
-                self.bitrate_retried = false;
+                self.bitrate_retried = None;
             }
             Ok(false) => {}
             // The sender refuses parameters that another set changed in between, such as the
             // layers that the media server asks for; the set is tried once more after the
             // work of the engine that is waiting.
-            Err(error) if !self.bitrate_retried => {
+            Err(error) if self.bitrate_retried != Some(bitrate) => {
                 tracing::info!(%error, slot = self.slot, "the bitrate of the share is set again");
-                self.bitrate_retried = true;
+                self.bitrate_retried = Some(bitrate);
                 let _ = self
                     .sink
                     .internal
@@ -802,11 +838,12 @@ impl Actor {
     /// Tells the state of the shares: the own ones, the ones of the other people in the
     /// order in which they were seen, and the one that is watched.
     pub(super) fn tell_shares(&mut self) {
-        let mut seen: Vec<&RemotePicture> = self.remote_pictures.values().collect();
-        // Two tracks of one share, while one replaces the other, are one share; the one with a
-        // size states it.
-        seen.sort_by_key(|picture| (picture.order, picture.size.is_none()));
-        seen.dedup_by_key(|picture| picture.share);
+        let seen = one_per_share(
+            self.remote_pictures.values().collect(),
+            |picture: &&RemotePicture| picture.share,
+            |picture| picture.order,
+            |picture| picture.size.is_some(),
+        );
         let shares: Vec<SeenShare> = seen
             .iter()
             .filter_map(|picture| match picture.share.person {
@@ -988,17 +1025,13 @@ impl Actor {
         let share = ShareId::of(account_id, stated.map_or(0, |stated| stated.slot));
         // A track that shows a share that another track already shows, such as a track that
         // the sharer publishes again in another codec, keeps the place of the share.
-        let order = match self
-            .remote_pictures
-            .values()
-            .find(|picture| picture.share == share)
-        {
-            Some(other) => other.order,
-            None => {
-                self.share_order += 1;
-                self.share_order
-            }
-        };
+        let order = place_of(
+            self.remote_pictures
+                .values()
+                .map(|picture| (picture.share, picture.order)),
+            share,
+            &mut self.share_order,
+        );
         self.remote_pictures.insert(
             sid,
             RemotePicture {
@@ -1031,11 +1064,21 @@ impl Actor {
     }
 
     pub(super) fn remote_picture_unsubscribed(&mut self, sid: &TrackSid) {
-        if let Some(picture) = self.remote_pictures.get_mut(sid) {
-            if let Some(task) = picture.task.take() {
-                task.abort();
-            }
-            self.pictures.forget(picture.share);
+        let Some(picture) = self.remote_pictures.get_mut(sid) else {
+            return;
+        };
+        if let Some(task) = picture.task.take() {
+            task.abort();
+        }
+        let share = picture.share;
+        // The track that replaces this one in another codec still shows the share: its
+        // picture stays until the new track gives one (ADR 0737).
+        let again = self
+            .remote_pictures
+            .iter()
+            .any(|(other, picture)| other != sid && picture.share == share);
+        if !again {
+            self.pictures.forget(share);
         }
     }
 
@@ -1258,9 +1301,10 @@ impl Actor {
                 waits: 0,
                 cleared_by: None,
                 bitrate: None,
-                bitrate_retried: false,
+                bitrate_retried: None,
                 encoder: None,
                 replacement: None,
+                refused: None,
                 started,
                 tasks,
             },
@@ -1349,6 +1393,7 @@ impl Actor {
                 return;
             }
         };
+        let rule = *self.encoder_rule.borrow();
         let (Some(_), Some(share)) = (&self.room, self.own_shares.get_mut(&slot)) else {
             self.end_share(Some(slot), Some(CaptureError::Interrupted));
             return;
@@ -1375,14 +1420,16 @@ impl Actor {
             slot,
         );
         let track = LocalVideoTrack::create_video_track(&name, RtcVideoSource::Native(source));
-        let options = picture_options(
+        let encoder = rule.encoder(
             (stream.width, stream.height),
             share.request.quality.frame_rate,
         );
-        share.encoder = Some(super::sent::encoder_of(
+        let options = picture_options(
             (stream.width, stream.height),
             share.request.quality.frame_rate,
-        ));
+            encoder,
+        );
+        share.encoder = Some(encoder);
         share.stream = Some(stream);
         share.picture = Publication::Publishing;
         share.cleared_by = Some((u64::MAX, track, options));
@@ -1451,9 +1498,22 @@ impl Actor {
             })
             .map(|share| share.generation)
             .collect();
-        if failure.is_none() {
-            for generation in replaced {
-                self.replace_share_picture(generation);
+        for generation in replaced {
+            match &failure {
+                None => self.replace_share_picture(generation),
+                // The replacement is not placed for the viewers: it is withdrawn, and a later
+                // change of size or a new publication of the picture publishes again.
+                Some(error) => {
+                    tracing::warn!(%error, "the replacement of the picture of a share was withdrawn without its permissions");
+                    let published = self
+                        .own_share_of(generation)
+                        .and_then(|share| share.replacement.take())
+                        .and_then(|replacement| replacement.published);
+                    if let Some(publication) = published {
+                        self.withdraw(publication);
+                    }
+                    self.sync_permissions();
+                }
             }
         }
         let waiting: Vec<u8> = self
@@ -1519,6 +1579,8 @@ impl Actor {
                 share.follow_size();
                 self.sync_share_sound();
                 self.tell_shares();
+                // The size can have changed while the publication waited.
+                self.publish_in_codec_of_size(generation);
             }
             (Some(share), Err(error)) => {
                 let slot = share.slot;
@@ -1626,6 +1688,9 @@ impl Actor {
                 {
                     share.bitrate = None;
                     share.follow_size();
+                    // The size can have changed while the track was away.
+                    let generation = share.generation;
+                    self.publish_in_codec_of_size(generation);
                 }
                 // The permission can have changed while the track was away.
                 self.sync_share_sound();
@@ -1678,13 +1743,16 @@ impl Actor {
             // picture: a sound published at the same moment could take the negotiation of the
             // picture before the call library set the codec of the picture, which was then
             // sent in VP8 instead of H.264 (ADR 0737).
+            // The condition of the picture holds only for a new publication of the sound: a
+            // sound track that the call library returns before the picture track after a new
+            // connection stays published.
             let wanted = share.stream.is_some()
                 && share.cleared_by.is_none()
-                && matches!(share.picture, Publication::Published(_))
                 && share.request.sound.reported() != ShareAudio::None
                 && may_send;
+            let picture_published = matches!(share.picture, Publication::Published(_));
             match (&share.sound, wanted) {
-                (Publication::None, true) => {
+                (Publication::None, true) if picture_published => {
                     let Some(room) = &self.room else {
                         continue;
                     };
@@ -1823,6 +1891,7 @@ impl Actor {
         };
         let participant = room.local_participant();
         let internal = self.internal.clone();
+        let rule = *self.encoder_rule.borrow();
         self.replacements += 1;
         let number = self.replacements;
         let Some(share) = self.own_share_of(generation) else {
@@ -1837,8 +1906,9 @@ impl Actor {
             return;
         };
         let frame_rate = share.request.quality.frame_rate;
-        let wanted = super::sent::encoder_of(size, frame_rate);
-        if wanted == encoder {
+        let wanted = rule.encoder(size, frame_rate);
+        // A publication in this codec failed at this size: it is tried again at another size.
+        if wanted == encoder || share.refused == Some((wanted, size)) {
             return;
         }
         let Some(source) = share
@@ -1852,7 +1922,7 @@ impl Actor {
         };
         let name = track_name(share.request.picture.kind(), frame_rate, share.slot);
         let track = LocalVideoTrack::create_video_track(&name, RtcVideoSource::Native(source));
-        let options = picture_options(size, frame_rate);
+        let options = picture_options(size, frame_rate, wanted);
         tracing::info!(
             slot = share.slot,
             ?encoder,
@@ -1862,6 +1932,7 @@ impl Actor {
         share.replacement = Some(Replacement {
             number,
             encoder: wanted,
+            size,
             published: None,
             waits_for: u64::MAX,
         });
@@ -1918,7 +1989,11 @@ impl Actor {
             }
             Err(error) => {
                 tracing::warn!(%error, slot = share.slot, "the picture of the share was not published again in the codec of its size");
-                share.replacement = None;
+                if let Some(replacement) = share.replacement.take() {
+                    share.refused = Some((replacement.encoder, replacement.size));
+                }
+                // The size can have changed while the publication waited.
+                self.publish_in_codec_of_size(generation);
             }
         }
     }
@@ -1962,6 +2037,33 @@ impl Actor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_share_that_two_tracks_show_is_listed_once_at_its_place() {
+        use junto_client_core::protocol::ids::AccountId;
+        let (one, two) = (AccountId::generate(), AccountId::generate());
+        let first = ShareId::of(one, 0);
+        let second = ShareId::of(two, 0);
+        let mut next = 0;
+        let mut held: Vec<(ShareId, u64)> = Vec::new();
+        for share in [first, second] {
+            let order = place_of(held.clone(), share, &mut next);
+            held.push((share, order));
+        }
+        // The track in the codec of a new size keeps the place of its share.
+        let again = place_of(held.clone(), first, &mut next);
+        assert_eq!(again, 1);
+        assert_eq!(next, 2);
+        // (share, order, has a size): the replacement of the first share has no size yet.
+        let seen = vec![(second, 2, true), (first, 1, false), (first, 1, true)];
+        let listed = one_per_share(seen, |item| item.0, |item| item.1, |item| item.2);
+        assert_eq!(listed, [(first, 1, true), (second, 2, true)]);
+        let only_new = vec![(first, 1, false)];
+        assert_eq!(
+            one_per_share(only_new, |item| item.0, |item| item.1, |item| item.2),
+            [(first, 1, false)]
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -2137,7 +2239,7 @@ mod tests {
 
     #[test]
     fn a_busy_processor_lowers_the_frame_rate_of_a_share_and_keeps_its_size() {
-        let options = picture_options((1920, 1080), 30);
+        let options = picture_options((1920, 1080), 30, super::super::sent::Encoder::Vp8);
         assert_eq!(options.source, TrackSource::Screenshare);
         // The client states the rule itself and does not use the default of the call
         // library for a screen share.
@@ -2155,7 +2257,7 @@ mod tests {
             let encodings = livekit::options::compute_video_encodings(
                 size.0,
                 size.1,
-                &picture_options(size, 30),
+                &picture_options(size, 30, super::super::sent::Encoder::Vp8),
             );
             assert_eq!(encodings.len(), 1);
             assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));

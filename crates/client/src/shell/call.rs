@@ -493,7 +493,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// The stage of the call: the people as tiles, or what the call waits for.
     /// The tile of a person on the stage: at `size`, or in the strip under the focused tile
     /// `focus`.
     fn stage_tile(
@@ -548,6 +547,7 @@ impl Shell {
         .selector(format!("call-tile:{}", occupant.account_id))
     }
 
+    /// The stage of the call: the people as tiles, or what the call waits for.
     pub(crate) fn render_stage(
         &self,
         panel: &CallPanel,

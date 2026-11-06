@@ -10,8 +10,8 @@ use ::windows::Win32::Media::IReferenceClock;
 use ::windows::Win32::Media::MediaFoundation::{
     AM_MEDIA_TYPE, CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, CLSID_SystemDeviceEnum,
     CLSID_VideoInputDeviceCategory, FORMAT_VideoInfo, FORMAT_VideoInfo2, MEDIASUBTYPE_I420,
-    MEDIASUBTYPE_IYUV, MEDIASUBTYPE_MJPG, MEDIASUBTYPE_NV12, MEDIASUBTYPE_YUY2, MEDIATYPE_Video,
-    PIN_CATEGORY_CAPTURE, VIDEOINFOHEADER, VIDEOINFOHEADER2,
+    MEDIASUBTYPE_IYUV, MEDIASUBTYPE_NV12, MEDIASUBTYPE_YUY2, MEDIATYPE_Video, PIN_CATEGORY_CAPTURE,
+    VIDEOINFOHEADER, VIDEOINFOHEADER2,
 };
 use ::windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use ::windows::Win32::System::Com::{
@@ -269,19 +269,12 @@ impl Owned {
         layout_of(pixel, &video)
     }
 
-    /// The capture mode of a type: an uncompressed type that `layout` accepts, or an MJPEG
-    /// type, which a decoder of DirectShow turns into one.
+    /// The capture mode of an uncompressed type that `layout` accepts. An MJPEG type gives no
+    /// mode: the MJPEG decoder of DirectShow gives RGB pictures, which the sink does not
+    /// take (ADR 0770).
     fn mode(&self) -> Option<Mode> {
         let video = self.video()?;
         let rate = rate(video.frame_time);
-        if self.sub == MEDIASUBTYPE_MJPG {
-            return Some(Mode {
-                width: u32::try_from(video.width).ok()?,
-                height: video.height.unsigned_abs(),
-                rate,
-                compressed: true,
-            });
-        }
         let layout = self.layout()?;
         Some(Mode {
             width: layout.width,
@@ -352,6 +345,8 @@ enum Delivered {
     Picture(Vec<u8>, Option<i64>),
     /// The source changed the type of its pictures.
     Changed,
+    /// The stream of the source ended.
+    Ended,
 }
 
 #[derive(Default)]
@@ -365,6 +360,11 @@ struct Input {
     filter: Mutex<Option<IBaseFilter>>,
     state: Mutex<PinState>,
     delivered: mpsc::SyncSender<Delivered>,
+    /// The source changed the type of its pictures. The capture thread reads it before each
+    /// picture, so a change is not lost when the queue is full.
+    changed: std::sync::atomic::AtomicBool,
+    /// The stream of the source ended (`EndOfStream` of the pin).
+    ended: std::sync::atomic::AtomicBool,
     /// The identifier of the device, for the counts of the device check.
     device: String,
 }
@@ -495,6 +495,8 @@ impl IPin_Impl for Input_Impl {
     }
 
     fn EndOfStream(&self) -> ::windows::core::Result<()> {
+        self.ended.store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.delivered.try_send(Delivered::Ended);
         Ok(())
     }
 
@@ -538,6 +540,8 @@ impl IMemInputPin_Impl for Input_Impl {
                         && !changed.is_null()
                     {
                         free_media_type(changed);
+                        self.changed
+                            .store(true, std::sync::atomic::Ordering::Release);
                         let _ = self.delivered.try_send(Delivered::Changed);
                         return Ok(());
                     }
@@ -797,6 +801,9 @@ struct Graph<'a> {
     source: IBaseFilter,
     sink: IBaseFilter,
     input: ComObject<Input>,
+    /// The filters that joined the graph: only these are removed at the end.
+    source_added: bool,
+    sink_added: bool,
 }
 
 impl Drop for Graph<'_> {
@@ -807,10 +814,13 @@ impl Drop for Graph<'_> {
                 self.delivery
                     .cleanup_failed(format!("camera graph stop: {error}"));
             }
-            for (filter, operation) in [
-                (&self.sink, "camera sink removal"),
-                (&self.source, "camera source removal"),
+            for (filter, added, operation) in [
+                (&self.sink, self.sink_added, "camera sink removal"),
+                (&self.source, self.source_added, "camera source removal"),
             ] {
+                if !added {
+                    continue;
+                }
                 if let Err(error) = self.graph.RemoveFilter(filter) {
                     self.delivery
                         .cleanup_failed(format!("{operation}: {error}"));
@@ -934,8 +944,8 @@ fn pin_types(pin: &IPin) -> Vec<Owned> {
     types
 }
 
-/// Asks the capture pin for `media` and connects it to the sink: directly for an uncompressed
-/// type, through the decoders of DirectShow for an MJPEG type.
+/// Asks the capture pin for the uncompressed type `media` and connects the pin directly to
+/// the sink.
 fn connect(
     graph: &IGraphBuilder,
     output: &IPin,
@@ -943,7 +953,6 @@ fn connect(
     config: &IAMStreamConfig,
     media: &mut Owned,
 ) -> Result<(), CameraError> {
-    let compressed = media.sub == MEDIASUBTYPE_MJPG;
     let borrowed = media.borrowed();
     // SAFETY: the borrowed type points into `media`, which outlives both calls; the pins
     // belong to filters of this graph.
@@ -951,15 +960,9 @@ fn connect(
     // its own enumeration, can still take it in the connection.
     let result = unsafe {
         let _ = config.SetFormat(&borrowed);
-        if compressed {
-            graph
-                .Connect(output, input)
-                .map_err(at("the connection through a decoder"))
-        } else {
-            graph
-                .ConnectDirect(output, input, Some(&borrowed))
-                .map_err(at("the direct connection"))
-        }
+        graph
+            .ConnectDirect(output, input, Some(&borrowed))
+            .map_err(at("the direct connection"))
     };
     if result.is_err() {
         // SAFETY: disconnecting pins of this graph that may be half connected.
@@ -1002,6 +1005,8 @@ pub(super) fn capture(
         filter: Mutex::new(None),
         state: Mutex::new(PinState::default()),
         delivered: send,
+        changed: std::sync::atomic::AtomicBool::new(false),
+        ended: std::sync::atomic::AtomicBool::new(false),
         device: chosen.id.clone(),
     });
     let pin: IPin = input.to_interface();
@@ -1017,13 +1022,15 @@ pub(super) fn capture(
     if let Ok(mut filter) = input.filter.lock() {
         *filter = Some(sink.clone());
     }
-    let graph = Graph {
+    let mut graph = Graph {
         delivery,
         graph,
         control,
         source,
         sink,
         input,
+        source_added: false,
+        sink_added: false,
     };
     // SAFETY: both filters join the graph of this thread.
     let output = unsafe {
@@ -1031,10 +1038,12 @@ pub(super) fn capture(
             .graph
             .AddFilter(&graph.source, w!("Camera"))
             .map_err(at("the source in the graph"))?;
+        graph.source_added = true;
         graph
             .graph
             .AddFilter(&graph.sink, w!("Junto"))
             .map_err(at("the sink in the graph"))?;
+        graph.sink_added = true;
         capture_pin(&builder, &graph.source)?
     };
     let config: IAMStreamConfig = output
@@ -1071,6 +1080,20 @@ pub(super) fn capture(
     let mut pacer = worker::Pacer::default();
     while !delivery.stopped() {
         lost(&events)?;
+        // A change of the type and the end of the stream are read before each wait, so they
+        // count also when the queue had no room for their message.
+        if graph
+            .input
+            .changed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CameraError::Interrupted);
+        }
+        // The end of the stream of a source ends the capture as the end of stream of Media
+        // Foundation does: as a device that is gone.
+        if graph.input.ended.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(CameraError::DeviceGone);
+        }
         let delivered = match receive.recv_timeout(Duration::from_millis(100)) {
             Ok(delivered) => delivered,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -1081,9 +1104,17 @@ pub(super) fn capture(
             }
             Err(_) => return Err(CameraError::Interrupted),
         };
+        if graph
+            .input
+            .changed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(CameraError::Interrupted);
+        }
         let (bytes, at) = match delivered {
             Delivered::Picture(bytes, at) => (bytes, at),
             Delivered::Changed => return Err(CameraError::Interrupted),
+            Delivered::Ended => return Err(CameraError::DeviceGone),
         };
         last_picture = Instant::now();
         let at = at
@@ -1134,6 +1165,7 @@ fn lost(events: &IMediaEvent) -> Result<(), CameraError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::windows::Win32::Media::MediaFoundation::MEDIASUBTYPE_MJPG;
 
     fn video_type(subtype: GUID, width: i32, height: i32, frame_time: i64) -> Owned {
         let mut header = VIDEOINFOHEADER {
@@ -1185,8 +1217,9 @@ mod tests {
             (480, 640, Pixel::Nv12)
         );
         assert_eq!(nv12.mode().unwrap().rate, None);
+        // The MJPEG decoder of DirectShow gives RGB pictures, which the sink does not take.
         let mjpeg = video_type(MEDIASUBTYPE_MJPG, 1280, 720, 333_333);
-        assert!(mjpeg.mode().unwrap().compressed);
+        assert!(mjpeg.mode().is_none());
         assert!(mjpeg.layout().is_none());
         assert!(
             video_type(MEDIASUBTYPE_YUY2, 1920, 1080, 333_333)

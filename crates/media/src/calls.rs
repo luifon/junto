@@ -382,6 +382,8 @@ enum SessionCommand {
     #[cfg(feature = "test-support")]
     HoldPermissions(bool),
     #[cfg(feature = "test-support")]
+    SecondEncoderAbove(Option<u32>),
+    #[cfg(feature = "test-support")]
     Statistics(crate::engine::statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(crate::engine::statistics::SoundReply),
@@ -1106,6 +1108,14 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn hold_permissions(&self, held: bool) {
         self.inner.tell(SessionCommand::HoldPermissions(held));
+    }
+
+    /// Makes the shares of the call of this device choose a second VP8 encoder for pictures
+    /// wider than `width`, for a test of the publication again in the codec of a new size on
+    /// every system (ADR 0737). It holds for the call of the moment.
+    #[cfg(feature = "test-support")]
+    pub fn set_second_encoder_above(&self, width: Option<u32>) {
+        self.inner.tell(SessionCommand::SecondEncoderAbove(width));
     }
 
     /// Queries the connection statistics for a failed live test.
@@ -3101,6 +3111,10 @@ impl Session {
             SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
             #[cfg(feature = "test-support")]
             SessionCommand::HoldPermissions(held) => self.engine.hold_permissions(held),
+            #[cfg(feature = "test-support")]
+            SessionCommand::SecondEncoderAbove(width) => {
+                self.engine.set_second_encoder_above(width)
+            }
             // The loop takes this command itself.
             SessionCommand::End { .. } => {}
         }
