@@ -146,27 +146,29 @@ async fn a_processed_recording_is_handed_to_the_worker_and_its_transcript_is_sto
 
     // The run of the worker.
     let directory = server.recordings_dir().join(id.to_string());
-    let directory = directory.to_str().unwrap();
     // Each run has a directory of its own below `<recording>/transcription/`.
     let runs = worker.runs();
     assert_eq!(runs.len(), 1);
     let arguments: Vec<&str> = runs[0].split(' ').collect();
-    let run_directory = arguments[1].strip_suffix("/job.json").unwrap();
-    let run = run_directory
-        .strip_prefix(&format!("{directory}/transcription/"))
-        .unwrap();
+    let run_directory = std::path::Path::new(arguments[1]).parent().unwrap();
+    assert_eq!(
+        run_directory.parent(),
+        Some(&*directory.join("transcription"))
+    );
     // The name states the attempt, here the first.
+    let run = run_directory.file_name().unwrap().to_str().unwrap();
     let unique = run.strip_prefix("1-").unwrap();
     assert!(unique.len() == 32 && unique.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let file = |name: &str| run_directory.join(name).to_str().unwrap().to_owned();
     assert_eq!(
         arguments,
         [
             "run",
-            &format!("{run_directory}/job.json"),
+            &file("job.json"),
             "--out",
-            &format!("{run_directory}/transcript.json"),
+            &file("transcript.json"),
             "--audio-root",
-            directory,
+            directory.to_str().unwrap(),
         ]
     );
     let variables = worker.variables();

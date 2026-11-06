@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use junto_protocol::origin::{Origin, Scheme};
 use time::Duration;
@@ -947,11 +947,16 @@ impl Config {
                 }
                 let recorder_directory =
                     trimmed(Self::RECORDER_DIR).unwrap_or_else(|| directory.clone());
-                for (name, path) in [
-                    (Self::RECORDINGS_DIR, &directory),
-                    (Self::RECORDER_DIR, &recorder_directory),
+                // The recorder runs in a Linux container; a server on Windows also sees its
+                // directory by a path with a drive.
+                for (name, absolute) in [
+                    (
+                        Self::RECORDINGS_DIR,
+                        directory.starts_with('/') || Path::new(&directory).is_absolute(),
+                    ),
+                    (Self::RECORDER_DIR, recorder_directory.starts_with('/')),
                 ] {
-                    if !path.starts_with('/') {
+                    if !absolute {
                         return Err(invalid(name, "the path is absolute".to_owned()));
                     }
                 }
@@ -1564,6 +1569,16 @@ mod tests {
             ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
         ]));
         assert!(matches!(without_media, Err(ConfigError::Invalid { .. })));
+
+        // The directory as a server on Windows sees it, which the recorder cannot share.
+        const DRIVE: [(&str, &str); 2] = [
+            ("JUNTO_RECORDINGS_DIR", r"C:\junto\recordings"),
+            ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+        ];
+        const NAMED: [(&str, &str); 3] = [DRIVE[0], DRIVE[1], ("JUNTO_RECORDER_DIR", "/out")];
+        assert!(matches!(with(&DRIVE), Err(ConfigError::Invalid { .. })));
+        let named = with(&NAMED);
+        assert_eq!(named.is_ok(), cfg!(windows), "{named:?}");
     }
 
     #[test]
@@ -1578,13 +1593,18 @@ mod tests {
     #[test]
     fn attachment_settings_require_an_existing_directory_and_bounded_limits() {
         const DATABASE: (&str, &str) = ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto");
-        let config = Config::from_lookup(lookup(&[
+        let others = lookup(&[
             DATABASE,
-            ("JUNTO_ATTACHMENTS_DIR", "/tmp"),
             ("JUNTO_ATTACHMENT_BYTES", "1024"),
             ("JUNTO_ATTACHMENTS_PER_MESSAGE", "3"),
             ("JUNTO_PICTURE_BYTES", "1048576"),
-        ]))
+        ]);
+        let directory = std::env::temp_dir().to_string_lossy().into_owned();
+        let config = Config::from_lookup(move |key| {
+            (key == "JUNTO_ATTACHMENTS_DIR")
+                .then(|| directory.clone())
+                .or_else(|| others(key))
+        })
         .unwrap();
         assert_eq!(config.limits.avatar_bytes, 1_048_576);
         assert_eq!(config.limits.attachment_bytes, 1024);

@@ -115,8 +115,21 @@ fn directory_of_age(root: &Path, name: &str, age: std::time::Duration) -> PathBu
 /// States that `directory` was last changed `age` ago.
 fn changed_before(directory: &Path, age: std::time::Duration) {
     let changed = std::time::SystemTime::now() - age;
-    let opened = std::fs::File::open(directory).unwrap();
-    opened.set_modified(changed).unwrap();
+    let mut options = std::fs::OpenOptions::new();
+    #[cfg(not(windows))]
+    options.read(true);
+    // Windows opens a directory only with FILE_FLAG_BACKUP_SEMANTICS, and changes its time only
+    // through FILE_WRITE_ATTRIBUTES.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.access_mode(0x0100).custom_flags(0x0200_0000);
+    }
+    options
+        .open(directory)
+        .unwrap()
+        .set_modified(changed)
+        .unwrap();
 }
 
 async fn newest_migration(server: &TestServer) -> i64 {

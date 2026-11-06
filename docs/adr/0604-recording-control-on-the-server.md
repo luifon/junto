@@ -115,6 +115,8 @@ Settings:
 
 - `JUNTO_RECORDINGS_DIR` is the directory of the recordings as the server sees it. `JUNTO_RECORDER_DIR` is the same directory as the recorder sees it; without it the two paths are equal. `JUNTO_RECORDER_LAYOUT_URL` is the address at which the recorder loads the layout page.
 - The directory and the address of the layout page are given together and need the settings of the media server (ADR 0508). Without them the server has no recorder.
+- Both directories are absolute paths. The directory of the recorder starts with `/`, because the recorder runs in a Linux container; the directory of the server is also taken with a drive (`C:\...`) on Windows, where the server runs only in the tests (ADR 0912), and such a server needs `JUNTO_RECORDER_DIR`.
+- `JUNTO_RECORDER_DIR`, `JUNTO_FFMPEG`, `JUNTO_FFPROBE` and `JUNTO_TRANSCRIBE_COMMAND` need the directory of the recordings; a server that has them without it does not start.
 
 ## Consequences
 

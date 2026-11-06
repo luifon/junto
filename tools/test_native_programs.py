@@ -4,6 +4,7 @@ starts the real ones."""
 
 import hashlib
 import io
+import os
 import pathlib
 import re
 import shutil
@@ -151,6 +152,12 @@ class FFmpeg(unittest.TestCase):
             self.assertEqual((ffmpeg.name, ffprobe.name), ("ffmpeg.exe", "ffprobe.exe"))
             self.assertEqual(ffprobe.read_bytes(), with_native_ffmpeg.PROGRAMS[1].encode())
         self.assertEqual(len(extractions), 1)
+
+    def test_the_command_finds_the_programs_on_its_path_and_gets_no_names_of_them(self):
+        # A server of the tests refuses JUNTO_FFMPEG without JUNTO_RECORDINGS_DIR.
+        base = {"PATH": "before", "JUNTO_FFMPEG": "a", "JUNTO_FFPROBE": "b", "OTHER": "c"}
+        given = with_native_ffmpeg.environment(pathlib.Path("programs"), base)
+        self.assertEqual(given, {"PATH": f"programs{os.pathsep}before", "OTHER": "c"})
 
 
 if __name__ == "__main__":
