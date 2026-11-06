@@ -187,8 +187,23 @@ def state_command():
 PROFILE_PROOF = {
     "enabled": {"True"},
     "allow_local_rules": {"True", "NotConfigured"},
-    "disabled_interfaces": {(), ("NotConfigured",)},
 }
+
+
+def no_interface_left_out(value):
+    """`DisabledInterfaceAliases` names no interface: empty, `NotConfigured`, or one empty
+    string, which Windows reports for a profile without an exclusion."""
+    return isinstance(value, list) and all(entry in ("", "NotConfigured") for entry in value)
+
+
+def enforced(value):
+    """`EnforcementStatus` of the rule in the active store proves it in force: Windows reports
+    each status of the rule once (["ProfileInactive", "Enforced"] for a rule of every profile on
+    a machine with one connected network), so the list is read as a set, which holds
+    `Enforced` and else only `ProfileInactive`. A profile of a connected network is not
+    inactive, and every status that leaves the rule out of force is neither value."""
+    return (isinstance(value, list) and "Enforced" in value
+            and all(entry in ("Enforced", "ProfileInactive") for entry in value))
 # The values that prove that the rule blocks UDP to the program from every machine: in force,
 # inbound, every protocol or UDP, every port at both ends, every address at both ends, every
 # interface by type and by name.
@@ -197,7 +212,6 @@ RULE_PROOF = {
     "direction": {"Inbound"},
     "action": {"Block"},
     "primary_status": {"OK"},
-    "enforcement": {("NotApplicable",), ("Full",)},
     "protocol": {"Any", "UDP"},
     "local_port": {("Any",)},
     "remote_port": {("Any",)},
@@ -239,6 +253,8 @@ def unprotected(state, program):
         if len(found) != 1:
             return f"the profile {name} of a connected network was not read"
         why = proven(found[0], PROFILE_PROOF)
+        if why is None and not no_interface_left_out(found[0].get("disabled_interfaces")):
+            why = f"disabled_interfaces is {found[0].get('disabled_interfaces')!r}"
         if why:
             return f"the profile {name} of a connected network is not proven to take the rule: {why}"
     reasons = []
@@ -248,6 +264,8 @@ def unprotected(state, program):
             continue
         profile = rule.get("profile")
         why = proven(rule, RULE_PROOF)
+        if why is None and not enforced(rule.get("enforcement")):
+            why = f"enforcement is {rule.get('enforcement')!r}"
         if why is None and not (isinstance(profile, str)
                                 and (profile == "Any" or all(name in profile for name in needed))):
             why = f"profile is {profile!r}"

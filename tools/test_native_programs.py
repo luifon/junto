@@ -128,15 +128,16 @@ class LiveKit(unittest.TestCase):
         program = r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe"
 
         def profile(name, **changed):
-            fields = {"name": name, "enabled": "True", "allow_local_rules": "NotConfigured",
-                      "disabled_interfaces": ["NotConfigured"]}
+            # As the Windows machine of the project reports them (2026-11-06).
+            fields = {"name": name, "enabled": "True", "allow_local_rules": "True",
+                      "disabled_interfaces": [""]}
             return {**fields, **changed}
 
         on = [profile(name) for name in ("Domain", "Private", "Public")]
 
         def rule(**changed):
             fields = {"enabled": "True", "direction": "Inbound", "action": "Block", "profile": "Any",
-                      "primary_status": "OK", "enforcement": ["NotApplicable"], "program": program,
+                      "primary_status": "OK", "enforcement": ["ProfileInactive", "Enforced"], "program": program,
                       "protocol": "Any", "local_port": ["Any"], "remote_port": ["Any"], "remote": ["Any"],
                       "local": ["Any"], "interface_type": "Any", "interface_alias": ["Any"]}
             return {**fields, **changed}
@@ -146,9 +147,12 @@ class LiveKit(unittest.TestCase):
 
         unprotected = with_native_livekit.unprotected
         for proven in [state([rule()]), state([rule(program=program.upper())]), state([rule(protocol="UDP")]),
-                       state([rule(profile="Private")]), state([rule(enforcement=["Full"])]),
+                       state([rule(profile="Private")]), state([rule(enforcement=["Enforced"])]),
+                       state([rule(enforcement=["Enforced", "ProfileInactive"])]),
                        state([rule(action="Allow"), rule()]),
-                       state([rule()], profiles=[profile(name, allow_local_rules="True", disabled_interfaces=[])
+                       state([rule()], profiles=[profile(name, allow_local_rules="NotConfigured", disabled_interfaces=[])
+                                                 for name in ("Domain", "Private", "Public")]),
+                       state([rule()], profiles=[profile(name, disabled_interfaces=["NotConfigured"])
                                                  for name in ("Domain", "Private", "Public")]),
                        state([rule()], networks=("DomainAuthenticated", "Public"))]:
             with self.subTest(state=proven):
@@ -157,7 +161,9 @@ class LiveKit(unittest.TestCase):
         # A profile of a connected network that does not prove the rule in force.
         for name, value, why in [("enabled", "False", "enabled is 'False'"),
                                  ("allow_local_rules", "False", "allow_local_rules is 'False'"),
-                                 ("disabled_interfaces", ["Ethernet"], "disabled_interfaces is ('Ethernet',)"),
+                                 ("disabled_interfaces", ["Ethernet"], "disabled_interfaces is ['Ethernet']"),
+                                 ("disabled_interfaces", ["", "Ethernet"], "disabled_interfaces is ['', 'Ethernet']"),
+                                 ("disabled_interfaces", "", "disabled_interfaces is ''"),
                                  ("enabled", None, "enabled is None")]:
             with self.subTest(profile=name, value=value):
                 profiles = [profile("Domain"), profile("Private", **{name: value}), profile("Public")]
@@ -172,7 +178,10 @@ class LiveKit(unittest.TestCase):
                       unprotected(state([rule()], profiles=[profile("Public")]), program))
 
         # Rules that are not in force, or that leave a way in, or a field that was not read.
-        for changed in [{"enforcement": ["LocalFirewallRulesDisallowed"]}, {"primary_status": "Degraded"},
+        for changed in [{"enforcement": ["LocalFirewallRulesDisallowed"]},
+                        {"enforcement": ["ProfileInactive", "Enforced", "LocalFirewallRulesDisallowed"]},
+                        {"enforcement": ["ProfileInactive"]}, {"enforcement": ["NotApplicable"]},
+                        {"enforcement": "Enforced"}, {"primary_status": "Degraded"},
                         {"remote_port": ["53"]}, {"interface_alias": ["Ethernet"]}, {"protocol": "TCP"},
                         {"remote": ["LocalSubnet"]}, {"local": ["192.168.5.6"]}, {"local_port": ["17882"]},
                         {"profile": "Domain, Public"}, {"interface_type": "Wired"}, {"action": "Allow"},
@@ -181,6 +190,17 @@ class LiveKit(unittest.TestCase):
             with self.subTest(rule=changed):
                 reason = unprotected(state([rule(**changed)]), program)
                 self.assertIn("no rule junto-test-livekit is proven to block UDP", reason)
+        # The state that the Windows machine of the project reported, as Windows PowerShell
+        # writes it.
+        reported = json.loads(
+            '{"profiles":[{"disabled_interfaces":[""],"name":"Domain","allow_local_rules":"True","enabled":"True"},'
+            '{"disabled_interfaces":[""],"name":"Private","allow_local_rules":"True","enabled":"True"},'
+            '{"disabled_interfaces":[""],"name":"Public","allow_local_rules":"True","enabled":"True"}],'
+            '"networks":["Private"],"rules":[{"interface_alias":["Any"],"program":"' + program.replace("\\", "\\\\")
+            + '","primary_status":"OK","action":"Block","profile":"Any","local_port":["Any"],"direction":"Inbound",'
+            '"interface_type":"Any","remote":["Any"],"enforcement":["ProfileInactive","Enforced"],"enabled":"True",'
+            '"protocol":"Any","local":["Any"],"remote_port":["Any"]}]}')
+        self.assertIsNone(unprotected(reported, program))
         missing = rule()
         del missing["interface_alias"]
         self.assertIn("interface_alias is None", unprotected(state([missing]), program))
