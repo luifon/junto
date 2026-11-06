@@ -146,7 +146,8 @@ check "it sends no notice" '[ "$(notices)" = 0 ]'
 # The forwarders of the compose files in a container with their limit of processes: each
 # stated bound, and the forwarder of the server takes the rest less 256.
 docker rm -f "$container" > /dev/null
-pids=$(awk '/^  link:/ { link = 1 } link && /pids_limit:/ { print $2; exit }' "$deploy/base.yaml")
+pids=$(awk '/^  link:/ { link = 1 } link && /pids_limit:/ { print $2; exit }' "$deploy/base.yaml" |
+    sed -E 's/^\$\{[A-Z_]+:-([0-9]+)\}$/\1/')
 bounds=$(sed -n 's|^        \$.*:\([0-9]*\)=.*/\([0-9]*\)$|\1 \2|p' "$deploy/two-hosts-data.yaml")
 stated=$(echo "$bounds" | awk '{ sum += $2 } END { print sum }')
 start --pids-limit "$pids" \
