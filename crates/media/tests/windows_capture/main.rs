@@ -1759,7 +1759,7 @@ fn the_processor_time_of_an_application_share() {
     println!("| Share | Windows | Pictures a second | Processor ms a second |");
     println!("|---|---|---|---|");
     println!("| none | 0 | 0 | {idle_time:.1} |");
-    let mut share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
+    let share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
         let sink = Arc::new(Counted::default());
         let stream = runtime
             .block_on(capture.start(
