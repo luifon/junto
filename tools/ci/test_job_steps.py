@@ -197,6 +197,11 @@ class JobSteps(unittest.TestCase):
         status, _, output = self.run_job("windows", fail_on="--release -p junto-client")
         self.assertEqual(status, 1)
         self.assertIn("Panic reports of a release build (exit 1)", output)
+        # A change that touches neither the client, gpui nor a Cargo file: no release build.
+        status, commands, output = self.run_job("windows", parts="debug")
+        self.assertEqual(status, 0, output)
+        self.assertNotIn(release, commands)
+        self.assertIn("python3 tools/with_native_livekit.py --fetch", commands)
 
     def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
         media = "cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture"

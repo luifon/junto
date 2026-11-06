@@ -7,7 +7,8 @@ run in a clone that has both commits, prints one line per job of tools/ci/ci.sh:
 
     <job> <tab> run|python|skip <tab> <reason>
 
-"run" runs the whole job, "python" only the Python unit tests of a Rust job, "skip" not the job.
+"run" runs the whole job, "python" only the Python unit tests of a Rust job, "debug" the Windows
+job without its release build, "skip" not the job.
 The rules, for every path that the change adds, changes or removes between <base> and
 <commit>:
 
@@ -28,6 +29,10 @@ paths of the client core, a changed Cargo.toml line of a target, a cfg, the buil
 the features, or an added line of Rust, Python or PowerShell outside tests that names a cfg of
 the system, a file system or process call, or a path join; also a change of tools/ci, of the
 Rust toolchain, of .cargo/ or of a Cargo file. Otherwise the run of main of each night tests it.
+The Windows job builds the client in release form only for a change of the client
+(crates/client/), of the copies of gpui (vendor/gpui-pre*), of a Cargo file, of .cargo/, of the
+Rust toolchain or of tools/ci; for any other change it runs as "debug". A run of every job, of named jobs and the
+run of each night build it.
 """
 import fnmatch
 import re
@@ -52,6 +57,8 @@ WINDOWS_LINES = re.compile(
     r"fs::(write|rename|remove|create|copy|hard_link|OpenOptions)|PathBuf::from|"
     r"\.join\(\"[^\"]*[/\\\\]|std::process::|Command::new|signal|os\.path|subprocess|shutil")
 WINDOWS_CARGO = re.compile(r"target\.|cfg\(|build-dependencies|\[features\]|^[+-]\s*default\s*=")
+RELEASE_PATHS = re.compile(
+    r"^(crates/client/|vendor/gpui-pre|tools/ci/|\.cargo/|rust-toolchain\.toml$|Cargo\.lock$|(.*/)?Cargo\.toml$)")
 TEST_PATH = re.compile(r"(^|/)tests?/|tests?\.rs$|/test_[^/]*\.py$|^test_[^/]*\.py$|_tests\.rs$")
 
 
@@ -105,7 +112,11 @@ def select(paths, cargo_lines=(), code_lines=()):
         if not why:
             result["rust-windows"] = ("skip", "nothing that can behave differently on Windows; the run of main tests it")
         elif result["rust-windows"][0] == "run":
-            result["rust-windows"] = ("run", why)
+            if any(RELEASE_PATHS.match(path) for path in paths):
+                result["rust-windows"] = ("run", why)
+            else:
+                result["rust-windows"] = ("debug", f"{why}; no change of the client, of the copies of gpui "
+                                                   "or of a Cargo file: no release build")
     return result
 
 
