@@ -111,16 +111,25 @@ The list plan is the largest picture of a list at the display scale of 2 (584 ×
 
 ### The processor time of an application share on Windows
 
-Measured on 2026-11-06 on the Windows machine of CI with the optional job `rust-windows-measure` (`windows_capture::the_processor_time_of_an_application_share`, ADR 0905): the processor time of the test process, read by `Get-Process`, over 20 seconds while the window of the fixture program turns its colours ten times a second; each share at the size of the screen and 30 pictures a second, into a sink that only counts the pictures.
+Measured on 2026-11-06 on the Windows machine of CI with the optional job `rust-windows-measure` (`windows_capture::the_processor_time_of_an_application_share`, ADR 0905), in a release build: the processor time of the test process, read by `Get-Process`, over 20 seconds while the window of the fixture program turns its colours ten times a second. The inner area of the window covers the screen of 1920 × 1080 pixels (1920 × 1061 after the change of size that the test asks for), so that both shares send pictures of about the size of the screen; each share asks for 30 pictures a second at the size of its source, into a sink that only counts the pictures. The columns of the phases are the time of one thread in milliseconds a second, from the start to the end of each phase, so they include waits: the follow of the windows of an application, the read of each window picture from the graphics card into memory (a copy on the card and the map of the copy), the composition of the picture of an application, and the conversion for the encoder.
 
-| Share | Windows | Pictures a second | Processor ms a second |
-|---|---|---|---|
-| none | 0 | 0 | 0.8 |
-| window | 1 | 10.0 | 58.4 |
-| application | 1 | 10.0 | 277.8 |
-| application | 3 | 10.0 | 338.5 |
+| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |
+|---|---|---|---|---|---|---|---|---|
+| none | 0 | none | 0 | 2.3 | 0.0 | 0.0 | 0.0 | 0.0 |
+| window | 1 | 1922 × 1092 | 30.4 | 290.0 | 0.0 | 274.7 | 0.0 | 155.0 |
+| application | 1 | 1920 × 1080 | 30.5 | 335.4 | 3.1 | 294.4 | 123.9 | 82.4 |
+| application | 3 | 1920 × 1080 | 30.2 | 365.0 | 3.9 | 326.1 | 130.5 | 83.8 |
 
-The share of an application reads the picture of each of its windows from the graphics card and composes a picture of the size of the screen in memory for each sent picture (ADR 0738); the share of a window passes on the texture that the capture gives. The figures are of one run.
+A run of the same test, on the same day, with the earlier composition, which blended every pixel of each window:
+
+| Share | Windows | Picture | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |
+|---|---|---|---|---|---|---|---|---|
+| none | 0 | none | 0 | 3.1 | 0.0 | 0.0 | 0.0 | 0.0 |
+| window | 1 | 1922 × 1092 | 30.1 | 298.8 | 0.0 | 268.8 | 0.0 | 156.6 |
+| application | 1 | 1920 × 1080 | 30.4 | 523.1 | 2.4 | 227.8 | 312.9 | 83.9 |
+| application | 3 | 1920 × 1080 | 30.3 | 567.5 | 3.2 | 322.9 | 323.9 | 81.7 |
+
+Both shares read each window picture from the graphics card into memory; the share of an application also composes a picture of the size of the screen (ADR 0738). The conversion of a window share also makes the transparent pixels of the window picture black (`Frame::hide_transparent`), one more pass over the picture that a composed picture of an application does not need; the time of that pass was not measured apart. A build without optimization ran the pixel loops many times slower: the application share then reached 4.3 pictures a second, because the composition took the whole time of the delivery thread. Each table is of one run.
 
 ### The emoji of the fonts are measured once per installation and font set
 
