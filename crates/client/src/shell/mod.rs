@@ -314,6 +314,9 @@ pub struct Shell {
     hover_menu_close: Option<Task<()>>,
     /// The server icon and whether the open hover menu are under the pointer.
     hover_menu_pointer: (Option<ServerId>, bool),
+    /// A press of the pointer on this icon closed its menu: the pointer opens it again
+    /// only after it left the icon.
+    hover_menu_pressed: Option<ServerId>,
     /// The press of the pointer that closed the menu of the server was on the button of
     /// that menu: the click that follows does not open the menu again.
     pub(crate) server_menu_closed_by_press: bool,
@@ -860,6 +863,7 @@ impl Shell {
             hover_menu_focus: cx.focus_handle(),
             hover_menu_close: None,
             hover_menu_pointer: (None, false),
+            hover_menu_pressed: None,
             server_menu_closed_by_press: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
@@ -1711,11 +1715,30 @@ impl Shell {
     ) {
         if hovered {
             self.hover_menu_pointer.0 = Some(server_id);
-            self.open_hover_menu(server_id, false, window, cx);
-        } else if self.hover_menu_pointer.0 == Some(server_id) {
-            self.hover_menu_pointer.0 = None;
+            if self.hover_menu_pressed != Some(server_id) {
+                self.open_hover_menu(server_id, false, window, cx);
+            }
+        } else {
+            if self.hover_menu_pointer.0 == Some(server_id) {
+                self.hover_menu_pointer.0 = None;
+            }
+            if self.hover_menu_pressed == Some(server_id) {
+                self.hover_menu_pressed = None;
+            }
         }
         self.linger_hover_menu(cx);
+    }
+
+    /// The pointer pressed the icon of a server: it selects the server, and the menu of the
+    /// icon closes, as the menu of a server in Discord does, until the pointer comes to the
+    /// icon again.
+    pub(crate) fn press_server_icon(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.hover_menu_pressed = Some(server_id);
+        if matches!(self.hover_menu, Some((open, false)) if open == server_id) {
+            self.close_hover_menu(cx);
+        }
+        self.state
+            .update(cx, |state, cx| state.select_server(server_id, cx));
     }
 
     /// The pointer entered or left the open hover menu.

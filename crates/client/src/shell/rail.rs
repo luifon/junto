@@ -783,12 +783,11 @@ impl Shell {
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // The keyboard opens the menu and moves into it. The pointer selects the
-                // server; its menu is open already.
+                // server and closes the menu that its hover opened.
                 if matches!(event, ClickEvent::Keyboard(_)) {
                     this.open_hover_menu(server_id, true, window, cx);
                 } else {
-                    this.state
-                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                    this.press_server_icon(server_id, cx);
                 }
             }))
             .focus_visible(move |style| style.shadow(focused_ring))

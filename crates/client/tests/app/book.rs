@@ -595,3 +595,69 @@ fn the_pointer_moves_from_a_server_icon_into_its_hover_menu_and_uses_it(cx: &mut
     window.settle();
     assert!(!window.shows("server-hover-menu"));
 }
+
+/// A press of the pointer on the icon of a server in the collapsed server book selects the
+/// server and closes the menu that the hover opened, also while the pointer stays on the
+/// icon; the menu opens again when the pointer comes back to the icon. Before, the menu
+/// stayed open over the channel list after the press.
+#[gpui::test]
+fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let harbor = world.server("Harbor");
+    let harbor_admin = world.owner(&harbor);
+    window.join_further(&world, &harbor, &harbor_admin);
+    window.click("collapse-server-book");
+    let second = window.view().servers[1].id;
+    let icon = window.cx.debug_bounds("server-1").unwrap();
+    window.move_pointer(icon.center());
+    assert!(window.shows("server-hover-menu"));
+    window.click("server-1");
+    window.until("the second server is selected", |window| {
+        window
+            .view()
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.id == second)
+    });
+    assert!(
+        !window.shows("server-hover-menu"),
+        "the menu stayed open after the press on the icon"
+    );
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    window.settle();
+    assert!(!window.shows("server-hover-menu"));
+    // The pointer goes on to the channel list, over the place of the menu, in steps.
+    for step in 1..=8 {
+        window.move_pointer(gpui::point(
+            icon.center().x + gpui::px(30.0 * step as f32),
+            icon.center().y,
+        ));
+        window
+            .cx
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        window.settle();
+    }
+    window
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    window.settle();
+    assert!(
+        !window.shows("server-hover-menu"),
+        "the menu is open over the channel list after the press"
+    );
+    // The pointer leaves the icon and comes back: the menu opens again.
+    window.move_pointer(gpui::point(
+        icon.center().x,
+        icon.bottom() + gpui::px(300.0),
+    ));
+    window.move_pointer(icon.center());
+    assert!(window.shows("server-hover-menu"));
+}
