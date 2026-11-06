@@ -205,7 +205,7 @@ fn measure_with(studio: &mut Studio, count: u32) -> Result<(), String> {
 }
 
 /// The frames of the window with 601 members in the shown workspace and the People page of
-/// the administration with 2,001 accounts open (open item CD8): each answer of a profile
+/// the administration with 2,001 accounts open: each answer of a profile
 /// that the window reads makes the state change, and the next frame derives the whole view
 /// again. The time of a frame without a change is the cost of one such answer.
 pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {

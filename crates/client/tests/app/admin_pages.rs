@@ -821,7 +821,7 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
         (Ok(()), Err(Blocked::Banned), Ok(()))
     );
     // The row keeps the height of the question while the pointer is on the confirmation,
-    // and that space states the result instead of staying empty (open item UP2).
+    // and that space states the result instead of staying empty.
     assert!(
         window.shows("kept-result"),
         "the kept space of the row is empty"

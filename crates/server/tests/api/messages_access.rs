@@ -707,8 +707,7 @@ async fn a_late_joiner_cannot_read_hidden_lines_written_before_joining() {
 }
 
 /// A channel that does not exist and one that the caller may not see answer with the same
-/// statements, so that the time of the answer does not tell them apart (open item CD5, ADR
-/// 0304).
+/// statements, so that the time of the answer does not tell them apart (ADR 0304).
 #[tokio::test]
 async fn an_absent_and_a_hidden_channel_run_the_same_statements() {
     use crate::messages_queries::{measure_requests, since, statements};

@@ -1118,7 +1118,7 @@ impl Shell {
             PanelPlace::Direct(_) => Vec::new(),
         });
         // The list lays out only the rows in view: a call in a workspace of hundreds of
-        // members lists all of them outside the call (open item CD8). Each workspace has a
+        // members lists all of them outside the call. Each workspace has a
         // list of its own, so another one does not open at the scroll position of the last.
         // A list of another server, account or workspace keeps only its scroll position; the
         // list of a server whose account changed, and of a workspace that the server does not

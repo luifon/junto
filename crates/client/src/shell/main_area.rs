@@ -1647,7 +1647,7 @@ impl Shell {
     }
 
     /// The member list of the side panel. It lays out only the rows in view, so a
-    /// workspace of hundreds of members costs no more per frame than a few (open item CD8:
+    /// workspace of hundreds of members costs no more per frame than a few (before,
     /// 601 members took 181 ms of each frame).
     fn member_list(
         &mut self,
