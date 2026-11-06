@@ -174,6 +174,82 @@ class Commands(unittest.TestCase):
             self.assertIn("no start", printed.getvalue())
             self.assertIn("FATAL: port in use", printed.getvalue())
 
+    def start_with(self, logs, tries=postgres.PORT_TRIES):
+        """Starts with a program in place of pg_ctl that writes the next of `logs` into the log
+        of the server and fails, or succeeds when the entry is None. Returns the port, the
+        ports that were tried and what was printed."""
+        ports = iter(range(6001, 6100))
+        tried = []
+
+        def next_port():
+            tried.append(next(ports))
+            return tried[-1]
+
+        entries = iter(logs)
+
+        def check(command, what, output, log):
+            entry = next(entries)
+            if entry is None:
+                return
+            with open(log, "a") as file:
+                file.write(entry)
+            raise postgres.Failure(what)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                try:
+                    port = postgres.start(root / "pgsql", root / "data", root / "server.log", root / "output",
+                                          next_port, check, tries)
+                except postgres.Failure:
+                    port = None
+            return port, tried, printed.getvalue()
+
+    def test_a_port_that_another_lane_took_before_the_server_bound_it_is_replaced(self):
+        taken = 'LOG:  could not bind IPv4 address "127.0.0.1": Address already in use\n'
+        port, tried, printed = self.start_with([taken, taken, None])
+        self.assertEqual((port, tried), (6003, [6001, 6002, 6003]))
+        self.assertIn("port 6001 was taken before PostgreSQL bound it", printed)
+        # A start that fails for another reason ends at once; a taken port only for a while.
+        port, tried, _ = self.start_with(["FATAL:  data directory has wrong ownership\n"])
+        self.assertEqual((port, tried), (None, [6001]))
+        port, tried, _ = self.start_with([taken] * 3, tries=3)
+        self.assertEqual((port, tried), (None, [6001, 6002, 6003]))
+        # Only what this start wrote counts: an earlier taken port does not make a later
+        # failure look like one.
+        port, tried, _ = self.start_with([taken, "FATAL:  out of memory\n"])
+        self.assertEqual((port, tried), (None, [6001, 6002]))
+
+    def test_two_starts_at_the_same_time_with_the_same_chosen_port_both_get_a_port(self):
+        # The race itself: the port that the first start chose is bound by another program, as
+        # a lane that chose the same port, before the server binds it.
+        import socket
+
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        held = holder.getsockname()[1]
+        self.addCleanup(holder.close)
+        ports = iter([held, postgres.free_port()])
+
+        def check(command, what, output, log):
+            port = int(command[command.index("-o") + 1].split("-p ")[1].split()[0])
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+                try:
+                    server.bind(("127.0.0.1", port))
+                except OSError:
+                    with open(log, "a") as file:
+                        file.write('LOG:  could not bind IPv4 address "127.0.0.1": Address already in use\n')
+                    raise postgres.Failure(what)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            with contextlib.redirect_stdout(io.StringIO()):
+                port = postgres.start(root / "pgsql", root / "data", root / "server.log", root / "output",
+                                      lambda: next(ports), check)
+        self.assertNotEqual(port, held)
+
     def test_the_command_gets_the_address_of_the_database(self):
         environment = postgres.command_environment({"PATH": "x"}, 5999)
         self.assertEqual(environment["JUNTO_TEST_DATABASE_URL"], "postgres://postgres@127.0.0.1:5999/postgres")

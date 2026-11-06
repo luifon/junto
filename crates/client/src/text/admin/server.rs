@@ -42,6 +42,8 @@ pub const LOGO_TOO_LARGE: &str =
     "The server did not take the image: it is larger than this server takes.";
 pub const LOGO_UNSUPPORTED: &str = "The server did not take the image. It takes a still PNG, JPEG or WebP image of at most \
      1024 by 1024 pixels.";
+pub const LOGO_CHANGED: &str = "Another administrator changed the logo while yours was sent, and the \
+     server kept theirs. Look at the logo and send yours again if you still want it.";
 pub const LOGO_NOT_ALLOWED: &str =
     "Your account may not do this. Only an administrator can change the logo.";
 

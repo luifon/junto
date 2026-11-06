@@ -46,8 +46,8 @@ pub(crate) struct Outline {
     pub(crate) path: String,
     pub(crate) query: Vec<(&'static str, String)>,
     pub(crate) body: Option<RequestBody>,
-    /// The body is one part of a file: the request gets the time of a slow connection.
-    pub(crate) part: bool,
+    /// When the request is sent again (ADR 0714).
+    pub(crate) repeat: Repeat,
 }
 
 pub(crate) type AuthorityFuture =
@@ -106,18 +106,13 @@ pub(crate) async fn send_with_token(
     token: &SecretToken,
     outline: Outline,
 ) -> Result<HttpResponse, ApiError> {
-    let repeat = if outline.part {
-        Repeat::Part
-    } else {
-        Repeat::WhenUnchanged
-    };
     api.send(
         outline.method,
         &outline.path,
         &outline.query,
         Some(token),
         outline.body,
-        repeat,
+        outline.repeat,
     )
     .await
 }
@@ -206,7 +201,29 @@ impl ServerApi {
                 path,
                 query,
                 body,
-                part: false,
+                repeat: Repeat::WhenUnchanged,
+            })
+            .await
+    }
+
+    /// Stores a picture with `PUT`, on the condition that the stored picture is still `seen`,
+    /// the hash of the picture that the client read before (`None`: no picture), or already
+    /// the new one. The request is also sent again when its connection is cut: a repetition
+    /// after the first attempt was stored changes nothing, and one after another picture was
+    /// stored in between gets `conflict` (ADR 0013, ADR 0119, ADR 0714).
+    pub(super) async fn call_picture(
+        &self,
+        path: String,
+        seen: Option<String>,
+        body: RequestBody,
+    ) -> Result<HttpResponse, ApiError> {
+        self.authority
+            .send(Outline {
+                method: Method::Put,
+                path,
+                query: vec![("before", seen.unwrap_or_else(|| "none".to_owned()))],
+                body: Some(body),
+                repeat: Repeat::SameResult,
             })
             .await
     }
@@ -223,7 +240,7 @@ impl ServerApi {
                 path,
                 query: Vec::new(),
                 body: Some(body),
-                part: true,
+                repeat: Repeat::Part,
             })
             .await
     }
@@ -234,7 +251,7 @@ impl ServerApi {
             path,
             query: Vec::new(),
             body: None,
-            part: false,
+            repeat: Repeat::WhenUnchanged,
         };
         self.authority.open(outline, from).await
     }
@@ -299,11 +316,25 @@ impl ServerApi {
 
     /// Stores the avatar of the account. The body of the request is the image itself. An
     /// image that no server accepts by its size or its first bytes is not sent.
+    /// A picture of another device of the account that is stored after the avatar was read
+    /// here is not replaced: the answer is `conflict`.
     pub async fn set_avatar(&self, image: Vec<u8>) -> Result<Avatar, ApiError> {
+        profile::check_avatar(&image)?;
+        let seen = self.own_account().await?.avatar.map(|avatar| avatar.hash);
+        self.set_avatar_over(image, seen).await
+    }
+
+    /// Stores the avatar while the account has the picture `seen` (its hash; `None`: no
+    /// picture) or already this one; any other picture gets `conflict` (ADR 0119).
+    pub async fn set_avatar_over(
+        &self,
+        image: Vec<u8>,
+        seen: Option<String>,
+    ) -> Result<Avatar, ApiError> {
         let kind = profile::check_avatar(&image)?;
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/account/avatar".to_owned();
-        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+        read_json(&self.call_picture(path, seen, body).await?)
     }
 
     pub async fn remove_avatar(&self) -> Result<(), ApiError> {

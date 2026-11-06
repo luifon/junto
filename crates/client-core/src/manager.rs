@@ -2383,13 +2383,20 @@ impl Server {
                 return Err(error.into());
             }
         };
-        let stored = api.with_token(token).set_avatar(image).await;
+        // The preset is for an account that this device created without a picture, and every
+        // try keeps that condition: a picture that another device stored first is not
+        // replaced, at no try (ADR 0119).
+        let stored = api.with_token(token).set_avatar_over(image, None).await;
         match &stored {
             Ok(_) => self.answered(),
             Err(error) => self.note(error),
         }
         match stored {
             Ok(_) => Ok(self.record_sync(owner, ProfileSync::Applied)),
+            // Another picture of the account came first: the preset is not wanted any more.
+            Err(error) if error.code() == Some(ErrorCode::Conflict) => {
+                Ok(self.record_sync(owner, ProfileSync::NotNeeded))
+            }
             Err(error) => {
                 // A server that refuses the image itself refuses it at every try.
                 let refused = matches!(error, ApiError::Avatar(_))

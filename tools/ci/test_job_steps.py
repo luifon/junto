@@ -6,14 +6,17 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 JOB = Path(__file__).with_name("rust-other-systems.sh")
 REPOSITORY = JOB.parents[2]
 # A program in place of cargo and python3: it records its name and its arguments, one
-# command per line, and fails when its arguments hold FAIL_ON.
+# command per line, and fails when its arguments hold FAIL_ON. tools/ci/lanes.py runs in the
+# Python of the test, so that the commands of its plan are recorded.
 RECORDER = """#!/bin/sh
+if [ "$(basename "$0")" = python3 ] && [ "${1:-}" = tools/ci/lanes.py ]; then exec "$REAL_PYTHON" "$@"; fi
 line=$(basename "$0")
 for argument in "$@"; do line="$line $argument"; done
 echo "$line" >>"$RECORD"
@@ -43,7 +46,8 @@ class JobSteps(unittest.TestCase):
         root = temporary / "repository"
         (root / "tools" / "ci").mkdir(parents=True)
         shutil.copy(JOB, root / "tools" / "ci")
-        shutil.copy(REPOSITORY / "tools" / "ci" / "pins.sh", root / "tools" / "ci")
+        for name in ("pins.sh", "lanes.py", "budget.py"):
+            shutil.copy(REPOSITORY / "tools" / "ci" / name, root / "tools" / "ci")
         programs = temporary / "programs"
         programs.mkdir()
         for name in ("cargo", "python3"):
@@ -62,6 +66,7 @@ class JobSteps(unittest.TestCase):
             "FAIL_ON": fail_on,
             "CARGO_TARGET_DIR": str(temporary / "target"),
             "JUNTO_CI_PARTS": parts,
+            "REAL_PYTHON": sys.executable,
             **(extra or {}),
         }
         result = subprocess.run(["bash", str(root / "tools" / "ci" / "rust-other-systems.sh")], env=environment,
@@ -212,15 +217,55 @@ class JobSteps(unittest.TestCase):
             self.assertEqual(status, 0, output)
             self.assertEqual(release in commands, system == "windows", system)
         script = JOB.read_text()
-        self.assertIn(f"run env CARGO_PROFILE_RELEASE_DEBUG=line-tables-only {release}", script)
+        self.assertIn(f"env CARGO_PROFILE_RELEASE_DEBUG=line-tables-only {release}", script)
         status, _, output = self.run_job("windows", fail_on="--release -p junto-client")
         self.assertEqual(status, 1)
         self.assertIn("Panic reports of a release build (exit 1)", output)
         # A change that touches neither the client, gpui nor a Cargo file: no release build.
-        status, commands, output = self.run_job("windows", parts="debug")
+        status, commands, output = self.run_job("windows", parts="base+server+live+crates")
         self.assertEqual(status, 0, output)
         self.assertNotIn(release, commands)
         self.assertIn("python3 tools/with_native_livekit.py --fetch", commands)
+
+    def test_windows_runs_only_the_parts_that_a_change_selects_and_every_part_in_a_full_run(self):
+        server = "-p junto-server --lib"
+        live = "--test app live:: -- --ignored"
+        release = "--release -p junto-client --lib panics::"
+        crates = "tools/ci/each_crate.py clippy"
+        everything = (server, live, release, crates)
+        for parts, expected in [("", everything), ("base", ()), ("base+server", (server,)),
+                                ("base+release+live", (release, live)), ("base+crates", (crates,))]:
+            with self.subTest(parts=parts):
+                status, commands, output = self.run_job("windows", parts=parts)
+                self.assertEqual(status, 0, output)
+                for part in everything:
+                    self.assertEqual(any(part in c for c in commands), part in expected, part)
+                # Every part runs the base: the window tests, the package and the tests without a database.
+                self.assertIn(f"{DATABASE['windows']} python3 tools/with_native_ffmpeg.py {WINDOW_TESTS} --skip updates::",
+                              commands)
+                self.assertIn("python3 packaging/check_windows.py", commands)
+                self.assertIn("cargo test --no-fail-fast --locked -p junto-authz -p junto-protocol", commands)
+        # The parts are for Windows: the macOS job runs its server tests and the lint of each crate.
+        status, commands, output = self.run_job("macos")
+        self.assertEqual(status, 0, output)
+        self.assertTrue(any(server in c for c in commands) and any(crates in c for c in commands))
+
+    def test_windows_runs_the_tests_after_the_desktop_steps_in_lanes_with_the_output_of_each_step(self):
+        status, commands, output = self.run_job("windows")
+        self.assertEqual(status, 0, output)
+        self.assertIn("Lanes: server, window, release, live, checks, each when its memory fits", output)
+        desktop = [commands.index(c) for c in ("python3 packaging/check_windows.py",
+                                               "cargo test --no-fail-fast --locked --workspace --test native_panics")]
+        lanes = [commands.index(c) for c in commands if c.startswith(("cargo test --no-fail-fast --locked -p junto-authz",
+                                                                          f"{DATABASE['windows']} "))
+                 and "--fetch" not in c]
+        self.assertTrue(lanes)
+        self.assertLess(max(desktop), min(lanes))
+        for step in ("Server tests with PostgreSQL", "Window tests without a database", "Window tests with PostgreSQL",
+                     "Panic reports of a release build", "Window tests with PostgreSQL and LiveKit",
+                     "Tests that need no database", "Packaging unit tests", "Windows tool unit tests",
+                     "Emoji of the fonts of the system"):
+            self.assertRegex(output, rf"=== {step}  lane [a-z]+  \S+Z to \S+Z", step)
 
     def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
         media = "cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture"
@@ -252,6 +297,18 @@ class JobSteps(unittest.TestCase):
             status, _, output = self.run_job(system, fail_on="each_crate.py clippy --locked --all-targets")
             self.assertEqual(status, 1, system)
             self.assertIn("Lint each crate alone (exit 1)", output, system)
+
+    def test_the_hosted_windows_job_creates_the_firewall_rule_before_the_job_checks_it(self):
+        workflow = (REPOSITORY / ".github" / "workflows" / "ci.yml").read_text()
+        step = workflow.index("- name: Firewall rule of the LiveKit of the tests")
+        job = workflow.index("run: tools/ci/rust-other-systems.sh")
+        self.assertLess(step, job)
+        block = workflow[step:job]
+        self.assertIn("if: runner.os == 'Windows'", block)
+        self.assertIn("-FunctionsOnly", block)
+        self.assertIn("Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True", block)
+        self.assertIn("Block-TestLiveKit", block)
+        self.assertIn("function Block-TestLiveKit", (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text())
 
     def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
         for system in SYSTEMS:

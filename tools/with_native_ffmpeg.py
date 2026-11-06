@@ -1,7 +1,8 @@
-"""Runs a command with JUNTO_FFMPEG and JUNTO_FFPROBE naming the pinned FFmpeg build for Windows
-(ADR 0905). The tests of recordings need `ffmpeg` and `ffprobe` with the encoders `libopus` and
-`libx264` (ADR 0606); the Windows machine has no FFmpeg of its own. The folder of the two
-programs also comes first on PATH.
+"""Runs a command with the folder of the pinned FFmpeg build for Windows first on PATH (ADR 0905).
+The tests of recordings need `ffmpeg` and `ffprobe` with the encoders `libopus` and `libx264`
+(ADR 0606); the Windows machine has no FFmpeg of its own. The command gets no JUNTO_FFMPEG or
+JUNTO_FFPROBE: a server that the tests start refuses them without JUNTO_RECORDINGS_DIR, and a
+server with recordings finds the programs on its path, as on the other systems.
 
     python3 tools/with_native_ffmpeg.py <command> [arguments]
     python3 tools/with_native_ffmpeg.py --fetch
@@ -43,6 +44,15 @@ def programs(downloads, fetch=native_downloads.fetch, extract=native_downloads.e
     return extracted
 
 
+def environment(folder, base):
+    """The environment of the command: the folder of the programs first on PATH, without
+    JUNTO_FFMPEG and JUNTO_FFPROBE."""
+    names = ("JUNTO_FFMPEG", "JUNTO_FFPROBE")
+    given = {name: value for name, value in base.items() if name not in names}
+    given["PATH"] = os.pathsep.join([str(folder), base.get("PATH", "")])
+    return given
+
+
 def main(arguments):
     if not arguments:
         print("usage: with_native_ffmpeg.py --fetch | <command> [arguments]", file=sys.stderr)
@@ -53,16 +63,14 @@ def main(arguments):
     default = pathlib.Path.home() / ".cache" / "junto-ffmpeg"
     downloads = pathlib.Path(os.environ.get("JUNTO_TEST_FFMPEG_DOWNLOADS", default))
     try:
-        ffmpeg, ffprobe = programs(downloads)
+        ffmpeg, _ = programs(downloads)
     except (native_downloads.Failure, OSError) as failure:
         print(f"FFmpeg {VERSION} is not available: {failure}", flush=True)
         return 1
     if arguments == ["--fetch"]:
         return 0
-    # The unit tests of the tools of recordings run the programs by their names.
-    path = os.pathsep.join([str(ffmpeg.parent), os.environ.get("PATH", "")])
-    environment = {**os.environ, "JUNTO_FFMPEG": str(ffmpeg), "JUNTO_FFPROBE": str(ffprobe), "PATH": path}
-    return subprocess.run(arguments, env=environment).returncode
+    given = environment(ffmpeg.parent, dict(os.environ))
+    return subprocess.run(arguments, env=given).returncode
 
 
 if __name__ == "__main__":

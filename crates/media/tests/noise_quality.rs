@@ -7,6 +7,9 @@
 //!   JUNTO_NOISE_CLIPS=<folder> cargo test -p junto-media --release --test noise_quality \
 //!       -- --ignored --nocapture
 //!
+//! Without JUNTO_NOISE_CLIPS it prints that it was skipped and passes, so that the run of every
+//! ignored test of the crate, which has no clips, does not fail.
+//!
 //! Each figure compares the output of a variant with the output of the same chain without a
 //! suppressor, so the gain control, which runs before the suppressor, acts on the same sound
 //! in both:
@@ -255,7 +258,10 @@ fn variants() -> Vec<(String, Option<GateSettings>)> {
 #[test]
 #[ignore = "a measurement: run it by name with JUNTO_NOISE_CLIPS"]
 fn the_suppressor_through_the_capture_chain() {
-    let folder = std::env::var_os("JUNTO_NOISE_CLIPS").expect("JUNTO_NOISE_CLIPS names the clips");
+    let Some(folder) = std::env::var_os("JUNTO_NOISE_CLIPS") else {
+        println!("skipped: JUNTO_NOISE_CLIPS names no folder of the clips of tools/noise_clips.py");
+        return;
+    };
     let folder = Path::new(&folder);
     let speech = read(&folder.join("speech.wav"));
     let marks = marks(&speech);
