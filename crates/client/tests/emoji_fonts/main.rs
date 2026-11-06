@@ -34,7 +34,7 @@ const ENGLAND: &str = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{
 
 /// Segoe UI Emoji has no country flags: a flag is two letters. It draws the chequered flag.
 /// It draws the black flag of a subdivision flag and ignores its tags, so the flag of
-/// England is a plain black flag (RB-09).
+/// England is a plain black flag.
 #[cfg(target_os = "windows")]
 const THIS_SYSTEM: &[(&str, &[Drawing])] = &[
     ("\u{1f1e7}\u{1f1f7}", &[Drawing::Broken]),

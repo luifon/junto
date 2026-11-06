@@ -82,7 +82,7 @@ async fn an_account_leaves_a_thread_follows_it_again_and_reads_every_notice_in_o
     })
     .await;
     // A failure states what the client held: it happened once and was not seen again in
-    // runs under load (CD-24).
+    // runs under load.
     assert_eq!(
         model.unread_notices().count(),
         0,
