@@ -520,9 +520,9 @@ fn the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_serv
 }
 
 /// The pointer moves in steps from the icon of a server of the collapsed server book into its
-/// hover menu, rests there longer than the menu lingers, and presses a workspace in it (open
-/// item CD-37). The menu lies over the edge of the icon, so one move enters the menu and
-/// leaves the icon.
+/// hover menu, rests there longer than the menu lingers, and presses a workspace in it: the
+/// menu closed on that path before. The menu lies over the edge of the icon, so one move
+/// enters the menu and leaves the icon.
 #[gpui::test]
 fn the_pointer_moves_from_a_server_icon_into_its_hover_menu_and_uses_it(cx: &mut TestAppContext) {
     let world = World::new();
