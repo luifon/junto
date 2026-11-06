@@ -126,43 +126,71 @@ class LiveKit(unittest.TestCase):
 
     def test_livekit_starts_only_while_the_firewall_keeps_other_machines_from_its_program(self):
         program = r"C:\Users\ci\.cache\junto-livekit\livekit-1.13.9\livekit-server.exe"
-        on = [{"name": name, "enabled": "True"} for name in ("Domain", "Private", "Public")]
+
+        def profile(name, **changed):
+            fields = {"name": name, "enabled": "True", "allow_local_rules": "NotConfigured",
+                      "disabled_interfaces": ["NotConfigured"]}
+            return {**fields, **changed}
+
+        on = [profile(name) for name in ("Domain", "Private", "Public")]
 
         def rule(**changed):
             fields = {"enabled": "True", "direction": "Inbound", "action": "Block", "profile": "Any",
-                      "program": program, "protocol": "Any", "local_port": ["Any"], "remote": ["Any"],
-                      "local": ["Any"], "interface": "Any"}
+                      "primary_status": "OK", "enforcement": ["NotApplicable"], "program": program,
+                      "protocol": "Any", "local_port": ["Any"], "remote_port": ["Any"], "remote": ["Any"],
+                      "local": ["Any"], "interface_type": "Any", "interface_alias": ["Any"]}
             return {**fields, **changed}
 
         def state(rules, networks=("Private",), profiles=on):
             return {"networks": list(networks), "profiles": profiles, "rules": rules}
 
         unprotected = with_native_livekit.unprotected
-        self.assertIsNone(unprotected(state([rule()]), program))
-        self.assertIsNone(unprotected(state([rule(program=program.upper())]), program))
-        self.assertIsNone(unprotected(state([rule(protocol="UDP")]), program))
-        self.assertIsNone(unprotected(state([rule(profile="Private")]), program))
-        self.assertIsNone(unprotected(state([rule(action="Allow"), rule()]), program))
-        self.assertIsNone(unprotected(state([rule()], networks=("DomainAuthenticated", "Public"),
-                                            profiles=on), program))
-        # A profile whose firewall is off: the rule is in no effect there.
-        private_off = [{"name": "Domain", "enabled": "True"}, {"name": "Private", "enabled": "False"},
-                       {"name": "Public", "enabled": "True"}]
-        self.assertIn("the firewall is off in the profile Private",
-                      unprotected(state([rule()], profiles=private_off), program))
-        # Off in a profile of no connected network is no matter; without a network, every
-        # profile counts.
-        self.assertIsNone(unprotected(state([rule()], networks=("Public",), profiles=private_off), program))
-        self.assertIsNotNone(unprotected(state([rule()], networks=(), profiles=private_off), program))
-        # Rules that leave a way in.
-        for restricted in [rule(protocol="TCP"), rule(remote=["LocalSubnet"]), rule(local=["192.168.5.6"]),
-                           rule(local_port=["17882"]), rule(profile="Domain, Public"), rule(interface="Wired"),
-                           rule(action="Allow"), rule(direction="Outbound"), rule(enabled="False"),
-                           rule(program=program.replace("1.13.9", "1.13.8"))]:
-            with self.subTest(rule=restricted):
-                self.assertIn("no enabled inbound rule junto-test-livekit blocks UDP",
-                              unprotected(state([restricted]), program))
+        for proven in [state([rule()]), state([rule(program=program.upper())]), state([rule(protocol="UDP")]),
+                       state([rule(profile="Private")]), state([rule(enforcement=["Full"])]),
+                       state([rule(action="Allow"), rule()]),
+                       state([rule()], profiles=[profile(name, allow_local_rules="True", disabled_interfaces=[])
+                                                 for name in ("Domain", "Private", "Public")]),
+                       state([rule()], networks=("DomainAuthenticated", "Public"))]:
+            with self.subTest(state=proven):
+                self.assertIsNone(unprotected(proven, program))
+
+        # A profile of a connected network that does not prove the rule in force.
+        for name, value, why in [("enabled", "False", "enabled is 'False'"),
+                                 ("allow_local_rules", "False", "allow_local_rules is 'False'"),
+                                 ("disabled_interfaces", ["Ethernet"], "disabled_interfaces is ('Ethernet',)"),
+                                 ("enabled", None, "enabled is None")]:
+            with self.subTest(profile=name, value=value):
+                profiles = [profile("Domain"), profile("Private", **{name: value}), profile("Public")]
+                reason = unprotected(state([rule()], profiles=profiles), program)
+                self.assertIn(f"the profile Private of a connected network is not proven to take the rule: {why}",
+                              reason)
+                # The same profile of no connected network is no matter; without a network,
+                # every profile counts.
+                self.assertIsNone(unprotected(state([rule()], networks=("Public",), profiles=profiles), program))
+                self.assertIsNotNone(unprotected(state([rule()], networks=(), profiles=profiles), program))
+        self.assertIn("the profile Private of a connected network was not read",
+                      unprotected(state([rule()], profiles=[profile("Public")]), program))
+
+        # Rules that are not in force, or that leave a way in, or a field that was not read.
+        for changed in [{"enforcement": ["LocalFirewallRulesDisallowed"]}, {"primary_status": "Degraded"},
+                        {"remote_port": ["53"]}, {"interface_alias": ["Ethernet"]}, {"protocol": "TCP"},
+                        {"remote": ["LocalSubnet"]}, {"local": ["192.168.5.6"]}, {"local_port": ["17882"]},
+                        {"profile": "Domain, Public"}, {"interface_type": "Wired"}, {"action": "Allow"},
+                        {"direction": "Outbound"}, {"enabled": "False"}, {"remote_port": None},
+                        {"interface_alias": "Any"}, {"enforcement": []}]:
+            with self.subTest(rule=changed):
+                reason = unprotected(state([rule(**changed)]), program)
+                self.assertIn("no rule junto-test-livekit is proven to block UDP", reason)
+        missing = rule()
+        del missing["interface_alias"]
+        self.assertIn("interface_alias is None", unprotected(state([missing]), program))
+        self.assertIsNotNone(unprotected(state([rule(program=program.replace("1.13.9", "1.13.8"))]), program))
         self.assertIsNotNone(unprotected(state([]), program))
+        for broken in [[], {"networks": ["Private"]}, {"networks": [1], "profiles": on, "rules": [rule()]},
+                       {"networks": ["Private"], "profiles": ["Private"], "rules": [rule()]},
+                       {"networks": ["Private"], "profiles": on, "rules": ["rule"]}]:
+            with self.subTest(broken=broken):
+                self.assertIsNotNone(unprotected(broken, program))
 
         class Done:
             def __init__(self, code, stdout):
@@ -180,7 +208,9 @@ class LiveKit(unittest.TestCase):
         for read in ["Get-NetConnectionProfile", "Get-NetFirewallProfile -PolicyStore ActiveStore",
                      "Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'junto-test-livekit'",
                      "Get-NetFirewallApplicationFilter", "Get-NetFirewallPortFilter",
-                     "Get-NetFirewallAddressFilter", "Get-NetFirewallInterfaceTypeFilter"]:
+                     "Get-NetFirewallAddressFilter", "Get-NetFirewallInterfaceTypeFilter",
+                     "Get-NetFirewallInterfaceFilter", "AllowLocalFirewallRules", "DisabledInterfaceAliases",
+                     "EnforcementStatus", "PrimaryStatus", "RemotePort"]:
             self.assertIn(read, script)
         self.assertIn("could not be read", with_native_livekit.protection(program, lambda command, **_: Done(1, "denied")))
         self.assertIn("could not be read", with_native_livekit.protection(program, lambda command, **_: Done(0, "{")))
