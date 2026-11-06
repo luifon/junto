@@ -144,11 +144,15 @@ check "a read of wg that fails does not end a link that works" "running && [ ! -
 check "it sends no notice" '[ "$(notices)" = 0 ]'
 
 # The forwarders of the compose files in a container with their limit of processes: each
-# stated bound, and the forwarder of the server takes the rest less 256.
+# stated bound, and the forwarder of the server takes the rest less 256. The two files state
+# the same bounds, since each connection passes both links.
 docker rm -f "$container" > /dev/null
 pids=$(awk '/^  link:/ { link = 1 } link && /pids_limit:/ { print $2; exit }' "$deploy/base.yaml" |
     sed -E 's/^\$\{[A-Z_]+:-([0-9]+)\}$/\1/')
-bounds=$(sed -n 's|^        \$.*:\([0-9]*\)=.*/\([0-9]*\)$|\1 \2|p' "$deploy/two-hosts-data.yaml")
+compose_bounds() { sed -n 's|^        \$.*:\([0-9]*\)=.*/\([0-9]*\)$|\1 \2|p' "$1"; }
+bounds=$(compose_bounds "$deploy/two-hosts-data.yaml")
+check "the two compose files state the same bounds of the forwarders" \
+    '[ -n "$bounds" ] && [ "$bounds" = "$(compose_bounds "$deploy/two-hosts-public.yaml")" ]'
 stated=$(echo "$bounds" | awk '{ sum += $2 } END { print sum }')
 start --pids-limit "$pids" \
     -e LINK_FORWARDS="$(echo "$bounds" | awk '{ printf "127.0.0.1:%d=127.0.0.1:9/%d ", 7000 + NR, $2 }')127.0.0.1:7009=127.0.0.1:9"
