@@ -467,7 +467,7 @@ impl Dir {
         })
     }
 
-    pub(crate) fn try_lock_file(&self, name: &str) -> Result<Option<File>, StorageError> {
+    pub(crate) fn try_lock_file(&self, name: &str) -> Result<Option<FileLock>, StorageError> {
         self.entry(name, "lock")?;
         let path = self.path.join(name);
         let file = self
@@ -475,7 +475,7 @@ impl Dir {
             .open_checked_lock(name)
             .map_err(|fault| storage_error(fault, "lock", &path))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
+            Ok(()) => Ok(Some(FileLock(file))),
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(error)) => Err(StorageError::io("lock", &path, error)),
         }
@@ -484,6 +484,17 @@ impl Dir {
 
 thread_local! {
     static HELD: RefCell<Vec<Identity>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The lock of a file of a directory, given back when dropped. It is unlocked before the file
+/// is closed: a program that this process starts holds a copy of the open file from its start
+/// until its exec, and a close alone would leave the lock with that copy (ADR 0710).
+pub(crate) struct FileLock(File);
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// The check that a test of an application gives: true on a thread that must not wait for
@@ -617,6 +628,12 @@ pub(crate) struct DirectoryLock {
 
 impl Drop for DirectoryLock {
     fn drop(&mut self) {
+        // The lock is given back before the file is closed: a program that this process
+        // started holds a copy of the open file until its start ends, and a close alone would
+        // leave the lock with that copy for that time (ADR 0710).
+        if let Some((file, _)) = &self._file {
+            let _ = file.unlock();
+        }
         HELD.with_borrow_mut(|held| {
             if let Some(index) = held.iter().rposition(|held| *held == self.directory) {
                 held.remove(index);
@@ -1168,6 +1185,51 @@ mod tests {
             );
             assert!(!error.to_string().contains("hidden"), "{error}");
         }
+    }
+
+    /// A program that the process starts holds a copy of the open lock file from its start
+    /// until its exec. A thread that gives the lock back meanwhile unlocks the file before it
+    /// closes it, so the copy does not keep the lock and a try of another thread is not told
+    /// that another program holds the data (ADR 0710). Two threads take and give back the
+    /// lock, two threads start a program, and a third thread tries for two seconds.
+    #[cfg(unix)]
+    #[test]
+    fn a_started_program_does_not_keep_the_lock_that_a_thread_gave_back() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_directory, private) = private();
+        let path = private.path().to_owned();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let mut threads = Vec::new();
+        for starts in [false, false, true, true] {
+            let (path, stop) = (path.clone(), stop.clone());
+            threads.push(std::thread::spawn(move || {
+                let dir = Dir::open(&path).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    if starts {
+                        let _ = std::process::Command::new("true").status();
+                    } else {
+                        drop(dir.lock().unwrap());
+                    }
+                }
+            }));
+        }
+        let dir = Dir::open(&path).unwrap();
+        let started = std::time::Instant::now();
+        let (mut held, mut tries) = (0, 0);
+        while started.elapsed() < std::time::Duration::from_secs(2) {
+            tries += 1;
+            if matches!(dir.try_lock(), Err(StorageError::Held { .. })) {
+                held += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            held, 0,
+            "{held} of {tries} tries were told that the data is held"
+        );
     }
 
     /// Another program holds the lock file, and a thread of this process waits for it in
