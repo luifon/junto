@@ -1112,7 +1112,7 @@ pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
 pub const NOISE_SUPPRESSION: &str = "Noise suppression";
 pub const NOISE_SUPPRESSION_HELP: &str =
-    "Removes background noise, and typing and clicks between your words.";
+    "Removes steady background noise, such as a fan, and lowers typing and clicks a little.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
 /// The section of the settings with the switches of the sounds (ADR 0707).

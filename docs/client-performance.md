@@ -90,7 +90,7 @@ The processing module of WebRTC worked at 32 kHz inside, the default of its vers
 
 ### The noise suppressor of the microphone
 
-The microphone goes through RNNoise (`nnnoiseless` 0.5.2) and a gate on its probability of voice while "Noise suppression" is on, in place of the noise suppressor of the WebRTC module (ADR 0733). Measured on 2026-11-05 on one core of an x86-64 Linux machine, in a release build of a program that runs the suppressor over clips of 39.3 s at 48 kHz mono, as processor time of the process per second of audio: 6.1 to 6.9 ms with the gate (0.6 to 0.7 % of one core), over speech alone and speech with typing, clicks, a fan and a second voice. On an Apple M1 Pro with macOS 26.6.1, in the same way: 3.8 to 4.2 ms (0.4 % of one core). DeepFilterNet 3, measured in the same way for the choice, took 50 to 158 ms and 16.6 to 48.2 ms. The suppressor of the WebRTC module that it replaces is off, so the module itself does less.
+The microphone goes through RNNoise (`nnnoiseless` 0.5.2) while "Noise suppression" is on, in place of the noise suppressor of the WebRTC module (ADR 0733). Measured on 2026-11-06 with `timing::the_capture_of_one_frame_with_and_without_the_noise_suppressor` of the media engine on two processors of an x86-64 Linux machine shared with other work, in a release build: one frame of the microphone through `Processor::capture` with the default settings took a median of 121.6 µs with the suppressor and 56.6 µs without it (each over six rounds of 3,000 frames), so the suppressor adds 65 µs for each 10 ms, 6.5 ms of processor time per second of sound (0.65 % of one core). The earlier measurement of the suppressor alone over clips of 39.3 s gave 5.5 to 7.2 ms on that machine and 3.8 to 4.2 ms on an Apple M1 Pro with macOS 26.6.1 (0.4 % of one core); DeepFilterNet 3, measured in the same way for the choice, took 50 to 158 ms and 16.6 to 48.2 ms. The suppressor of the WebRTC module that it replaces is off, so the module itself does less.
 
 ### The scale of a received picture reads its planes where they are
 
@@ -117,7 +117,6 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 - Share: the VP8 encoder of the own share holds about 38 MiB and takes about half of the busy samples on three threads, although the share is published as screen content. The decoder of the watched share holds about 17 MiB of frame buffers. Before the change of the watched share, the client held the watched picture converted to BGRA at the size of the view (about 13.5 MiB over 5 pictures), a copy of it as an image of the window (about 9 MiB), and the textures on the GPU (about 11 MiB).
 
 ## Open points
-
 
 - The modes have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
 - A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes (ADR 0774). The cost on the receiving side is not measured.
