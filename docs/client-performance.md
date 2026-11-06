@@ -109,6 +109,19 @@ A still JPEG of sequential coding and a still PNG without interlacing are decode
 
 The list plan is the largest picture of a list at the display scale of 2 (584 × 440 pixels). The EXIF orientation of a JPEG is read from the block that the JPEG decoder reads before the frame header: an earlier version read it with a second decoder that copied the whole file, which the reservation of the decoding gate did not count. That copy was not measured; for a list plan it is larger than the reservation of the decoding (4.8 MiB held against a file of 14.3 MiB above), and the bound check of the target fails when a decoding holds more than its reservation besides the file. The JPEG decoder reduces by a power of two to the smallest size that covers the plan: 6000 × 4000 is decoded at 3000 × 2000 for this plan and 9000 × 6000 at 2250 × 1500, which is why the larger photo holds less. The memory figures of a debug build on a Mac were the same. A JPEG of progressive coding and an interlaced PNG are still decoded whole, within 33,554,432 pixels.
 
+### The processor time of an application share on Windows
+
+Measured on 2026-11-06 on the Windows machine of CI with the optional job `rust-windows-measure` (`windows_capture::the_processor_time_of_an_application_share`, ADR 0905): the processor time of the test process, read by `Get-Process`, over 20 seconds while the window of the fixture program turns its colours ten times a second; each share at the size of the screen and 30 pictures a second, into a sink that only counts the pictures.
+
+| Share | Windows | Pictures a second | Processor ms a second |
+|---|---|---|---|
+| none | 0 | 0 | 0.8 |
+| window | 1 | 10.0 | 58.4 |
+| application | 1 | 10.0 | 277.8 |
+| application | 3 | 10.0 | 338.5 |
+
+The share of an application reads the picture of each of its windows from the graphics card and composes a picture of the size of the screen in memory for each sent picture (ADR 0738); the share of a window passes on the texture that the capture gives. The figures are of one run.
+
 ### The emoji of the fonts are measured once per installation and font set
 
 At a start the client measures which emoji of the table the fonts of the system draw (ADR 0758). It lays out 14 probes on the background executor and reads the kept measurement of `emoji-fonts.json`; only when the key of the fonts differs does it lay out the whole table of 3,944 emoji, and on Linux it does so with a text system of its own, which is dropped afterwards. Measured on 2026-10-25 with the target `emoji_fonts` in a release build, the measurement on a thread other than the main thread:
