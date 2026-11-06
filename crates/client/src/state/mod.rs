@@ -467,7 +467,7 @@ pub struct AppState {
     /// keys of push to mute, and whether their hold closed the microphone.
     mute_holds: HashSet<Option<gpui::EntityId>>,
     /// The hold closed the microphone, with the count of closes after its close.
-    muted_by_hold: Option<u64>,
+    muted_by_hold: Option<junto_media::calls::Reopen>,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -2533,11 +2533,11 @@ impl AppState {
         } else {
             // While the key is still held, its release opens the microphone.
             let held = !self.mute_holds.is_empty();
-            if let Some(closes) = self
+            if let Some(reopen) = self
                 .calls
                 .sound_on_reopening(self.calls.seat().as_ref(), held)
             {
-                self.muted_by_hold = Some(closes);
+                self.muted_by_hold = Some(reopen);
             }
         }
     }

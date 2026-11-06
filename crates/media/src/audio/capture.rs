@@ -44,6 +44,9 @@ pub struct CaptureLink {
     stops: AtomicU64,
     /// The number of those closes that the engine task has taken into what it holds.
     stops_taken: AtomicU64,
+    /// How often the engine opened the microphone on another device while the gate held it
+    /// closed.
+    replacements: AtomicU64,
     /// The level in whole dBFS below which voice activation sends silence, or
     /// `NO_THRESHOLD` (ADR 0701).
     threshold: AtomicI32,
@@ -79,6 +82,7 @@ impl Default for CaptureLink {
             taken: Taken::default(),
             stops: AtomicU64::default(),
             stops_taken: AtomicU64::default(),
+            replacements: AtomicU64::default(),
             threshold: AtomicI32::new(NO_THRESHOLD),
         }
     }
@@ -122,6 +126,19 @@ impl CaptureLink {
         let stops = self.stops.fetch_add(1, Ordering::Relaxed) + 1;
         self.closures.fetch_add(1, Ordering::AcqRel);
         stops
+    }
+
+    /// The engine opened the microphone on another device than the one of the call while
+    /// the gate held it closed: a close of the gate, which refuses every open that was
+    /// permitted before it, and one more replacement for the calls to tell (ADR 0794).
+    pub fn replace_while_closed(&self) {
+        self.stop_now();
+        self.replacements.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How often [`CaptureLink::replace_while_closed`] was told.
+    pub fn replacements(&self) -> u64 {
+        self.replacements.load(Ordering::Acquire)
     }
 
     /// The number of closes from outside the engine task.

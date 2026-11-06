@@ -190,13 +190,14 @@ impl AppState {
             }
             return;
         };
-        if !self.mute_holds.is_empty() && !calls.muted {
-            self.muted_by_hold = Some(self.calls.mute_for_hold());
+        if !self.mute_holds.is_empty() && self.muted_by_hold.is_none() && !calls.muted {
+            // The calls decide in one lock whether the microphone is still open.
+            self.muted_by_hold = self.calls.mute_for_hold();
         } else if self.mute_holds.is_empty()
-            && let Some(closes) = self.muted_by_hold.take()
+            && let Some(reopen) = self.muted_by_hold.take()
         {
             // A close by a rule of the call during the hold keeps the microphone closed.
-            self.calls.release_hold(Some(&call.seat()), closes);
+            self.calls.release_hold(Some(&call.seat()), reopen);
         }
     }
 
