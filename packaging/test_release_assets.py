@@ -67,6 +67,24 @@ class AssetTests(unittest.TestCase):
         self.refused(r"is committed before the first build of the version")
         code, _, errors = self.collect("--test", "1", "--notes", str(self.root / "notes.md"))
         self.assertEqual(code, 1, errors)
+        # A section without text is no notes either.
+        (self.notes / f"{VERSION}.md").write_text(f"# Junto {VERSION}\n\n## What is new\n\n## Packages\n- a\n")
+        self.refused(r"is committed before the first build of the version")
+
+    def test_the_section_ends_at_the_next_heading_of_its_level_as_the_client_reads_it(self):
+        self.assertEqual(release_assets.what_is_new("# J\n\n## What is new\n\n- a\n\n### b\n- c\n## Files\n- d\n"),
+                         "- a\n\n### b\n- c")
+        self.assertIsNone(release_assets.what_is_new("## What is new\n\n# Junto\n"))
+        self.assertIsNone(release_assets.what_is_new("## Contents\n- a\n"))
+
+    def test_the_notes_of_0_1_0_published_before_the_section_are_accepted(self):
+        release = release_directory(self.root / "release-0.1.0", version="0.1.0")
+        (self.notes / "0.1.0.md").write_text("# Junto 0.1.0\n\n## Contents\n\n- Chat\n")
+        for extra in ([], ["--test", "1", "--notes", str(self.notes / "0.1.0.md")]):
+            output = self.root / f"assets-{len(extra)}"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+                code = release_assets.main(["0.1.0", str(release), str(output), *extra])
+            self.assertEqual(code, 0, errors.getvalue())
 
     def collect(self, *extra):
         with contextlib.redirect_stdout(io.StringIO()) as printed, contextlib.redirect_stderr(io.StringIO()) as errors:

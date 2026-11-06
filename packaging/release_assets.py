@@ -16,6 +16,23 @@ REPOSITORY = "luifon/junto"
 # its version, so they are committed before the first build of the version (ADR 0727).
 RELEASES = pathlib.Path(__file__).resolve().parent.parent / "docs" / "releases"
 WHAT_IS_NEW = "## What is new"
+# The versions whose notes were published before the section existed; the client shows none of them.
+WITHOUT_WHAT_IS_NEW = {"0.1.0"}
+
+
+def what_is_new(text):
+    """The text of the section "What is new", up to the next heading of its level or above, as the client
+    reads it (release_notes::what_is_new)."""
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line.rstrip() == WHAT_IS_NEW:
+            section = []
+            for following in lines[index + 1:]:
+                if following.startswith("# ") or following.startswith("## "):
+                    break
+                section.append(following)
+            return "\n".join(section).strip() or None
+    return None
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 TEST_NUMBER = re.compile(r"[1-9][0-9]*")
 TARGETS = ("macos-bundle-aarch64", "linux-directory-x86_64", "linux-appimage-x86_64", "windows-directory-x86_64")
@@ -223,7 +240,8 @@ def main(arguments=None):
         print(f"release_assets.py: {error}", file=sys.stderr)
         return 1
     tracked = RELEASES / f"{options.version}.md"
-    if not tracked.is_file() or WHAT_IS_NEW not in tracked.read_text(encoding="utf-8").splitlines():
+    if options.version not in WITHOUT_WHAT_IS_NEW and (
+            not tracked.is_file() or what_is_new(tracked.read_text(encoding="utf-8")) is None):
         shutil.rmtree(options.output, ignore_errors=True)
         print(f"release_assets.py: docs/releases/{options.version}.md with the section {WHAT_IS_NEW!r} is not in "
               "the checkout; the client carries that section from its build, so it is committed before the "
