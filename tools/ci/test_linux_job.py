@@ -67,7 +67,8 @@ class LinuxSteps(unittest.TestCase):
         status, commands, output = self.run_job()
         self.assertEqual(status, 0, output)
         for targets in ("", "--all-targets "):
-            self.assertIn(f"python3 tools/ci/each_crate.py clippy --locked {targets}--keep-going -- -D warnings", commands)
+            command = f"python3 tools/ci/each_crate.py clippy --locked {targets}--keep-going -- -D warnings"
+            self.assertEqual(commands.count(command), 1)
         status, commands, output = self.run_job(fail_on="each_crate.py clippy --locked --all-targets")
         self.assertEqual(status, 17)
         self.assertIn("Lint each crate alone (exit 17)", output.split("=== Failed steps", 1)[1])

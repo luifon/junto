@@ -81,11 +81,6 @@ run cargo clippy --locked -p junto-media --features native-device-tests --all-ta
 step "Lint each crate alone"
 run python3 tools/ci/each_crate.py clippy --locked --keep-going -- -D warnings
 run python3 tools/ci/each_crate.py clippy --locked --all-targets --keep-going -- -D warnings
-# Each package alone, with only the features that it and its dependencies ask for: its library
-# and programs, then every target (tools/ci/each_crate.py, ADR 0905).
-step "Lint each crate alone"
-run python3 tools/ci/each_crate.py clippy --locked --keep-going -- -D warnings
-run python3 tools/ci/each_crate.py clippy --locked --all-targets --keep-going -- -D warnings
 step "Build every target"
 run cargo build --workspace --all-targets --locked
 if [ "$system" = macos ]; then
