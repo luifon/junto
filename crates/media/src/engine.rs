@@ -324,6 +324,8 @@ enum Internal {
     ShareEnded(u64, CaptureError),
     /// The pictures of the capture of a share have a new size.
     ShareSized(u64),
+    /// A refused set of the bitrate of the picture track of a share is tried once more.
+    ShareBitrateAgain(u64),
     /// The media server answered the publication again of the picture track of a share in
     /// the codec of its new size: the generation of the share and the number of the
     /// publication.
@@ -1263,6 +1265,7 @@ impl Actor {
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
             Internal::ShareSized(generation) => self.share_sized(generation),
+            Internal::ShareBitrateAgain(generation) => self.share_bitrate_again(generation),
             Internal::ShareReplacementPublished(generation, number, result) => {
                 self.share_replacement_published(generation, number, result);
             }

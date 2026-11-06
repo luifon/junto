@@ -2538,12 +2538,11 @@ async fn a_share_whose_size_needs_another_encoder_is_published_again_on_a_new_tr
 
 /// A window that changes size while the first publication of its share waits is published
 /// in the codec of its new size once that publication answers: the check of the codec runs
-/// when the picture track is published, not only at a change of size (review M1). The test
-/// holds the track permissions, so the first publication waits, and the window grows from
-/// 1280 to 1920 pixels in that time. Without the check at the publication the test passed as
-/// well in the runs on a Mac: the set of the bitrate after the publication was refused and
-/// tried again through the message of a new size, which checks the codec too; the check at
-/// the publication does not depend on that refusal.
+/// when the picture track is published, not only at a change of size (review M1). The
+/// first publication of a second share of a device waits for the track permissions (ADR
+/// 0737), which the test holds; the window of that share grows from 1280 to 1920 pixels in
+/// that time. Without the check at the publication the share kept the stream of its first
+/// track, and the test failed with one stream for the second share.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_window_that_grows_before_its_first_publication_answers_gets_the_codec_of_its_size() {
@@ -2552,53 +2551,69 @@ async fn a_window_that_grows_before_its_first_publication_answers_gets_the_codec
         let (ann, ben) = (Person::new(440.0), Person::new(880.0));
         let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
         let _ben_at = room.member(&ann_at, &ben, "Ben").await;
-        let ann_id = account(&ann_at);
         for person in [&ann, &ben] {
             person.enter(room.target).await;
         }
         ann.calls.set_second_encoder_above(Some(1500));
+        // The first share, of a display of 800 pixels, is published at once.
+        ann.capture
+            .resize_source(PictureSource::Display(1), 800, 600);
+        ann.calls.start_share(screen(SoundChoice::None));
+        ann.until_sharing_in(0).await;
+        let first_share = until_encoded_width(&ann, 800).await;
+        // The second share waits for the permissions that place it, which the test holds.
         ann.capture
             .resize_source(PictureSource::Window(11), 1280, 720);
         ann.calls.hold_permissions(true);
-        ann.calls.start_share(window(player()));
-        // The capture has started at 1280 pixels, and the publication waits for the
-        // permissions.
-        crate::scene::until("the capture of the share runs", || {
-            ann.capture.running() == 1
+        ann.calls.start_share(window(SoundChoice::None));
+        crate::scene::until("the capture of the second share runs", || {
+            ann.capture.running() == 2
         })
         .await;
         ann.capture
             .resize_source(PictureSource::Window(11), 1920, 1080);
-        // The capture sends pictures of the new size, about 30 a second, while the publication
-        // waits: the engine measures the new size before the track is published. A run in
-        // which no such picture arrives in time checks the change of size after the
-        // publication instead, and passes as well.
+        // The capture sends pictures of the new size, about 30 a second, while the
+        // publication waits, so the engine measures the new size before the track is
+        // published.
         tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            ann.calls
+                .view()
+                .call
+                .and_then(|call| call.own_shares.get(&1).cloned()),
+            Some(ShareState::Starting),
+            "the second share did not wait for its permissions"
+        );
         ann.calls.hold_permissions(false);
-        ben.until_width_stays(ann_id, 1920).await;
-        // The first track was published with the encoder of 1280 pixels; its replacement in
-        // the encoder of 1920 pixels takes its place on a new stream. The first track can be
-        // replaced before it has encoded a picture, so every stream counts.
+        ann.until_sharing_in(1).await;
+        // The track of the second share was published with the encoder of 1280 pixels; its
+        // replacement in the encoder of 1920 pixels takes its place on another stream. The
+        // first track can be replaced before it has encoded a picture, so every stream of
+        // the second share counts.
         let started = tokio::time::Instant::now();
         let mut streams = std::collections::BTreeSet::new();
         loop {
             let encodings = video_encodings(&ann).await;
-            streams.extend(encodings.iter().map(|(ssrc, _, _)| *ssrc));
-            let active: Vec<_> = encodings
+            streams.extend(
+                encodings
+                    .iter()
+                    .map(|(ssrc, _, _)| *ssrc)
+                    .filter(|ssrc| *ssrc != first_share),
+            );
+            let active = encodings
                 .iter()
-                .filter(|(_, width, frames)| *width == 1920 && *frames > 0)
-                .collect();
-            if streams.len() >= 2 && !active.is_empty() {
+                .any(|(ssrc, width, frames)| *ssrc != first_share && *width == 1920 && *frames > 0);
+            if streams.len() >= 2 && active {
                 break;
             }
             assert!(
                 started.elapsed() < PATIENCE,
-                "after {PATIENCE:?} the share was not published again in the encoder of its \
-                 size: streams {streams:?}, encodings (SSRC, width, pictures) {encodings:?}"
+                "after {PATIENCE:?} the second share was not published again in the encoder \
+                 of its size: its streams {streams:?}, the encodings (SSRC, width, pictures) \
+                 {encodings:?}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        ben.until_heard_tone(PLAYER.0).await;
     })
     .await;
 }

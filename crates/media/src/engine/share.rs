@@ -626,7 +626,7 @@ impl OwnShare {
                 let _ = self
                     .sink
                     .internal
-                    .send(Internal::ShareSized(self.generation));
+                    .send(Internal::ShareBitrateAgain(self.generation));
             }
             Err(error) => {
                 tracing::warn!(%error, slot = self.slot, "the bitrate of the share was not changed");
@@ -1872,6 +1872,15 @@ impl Actor {
     }
 
     /// The pictures of the capture of a share have a new size.
+    /// A refused set of the bitrate is tried once more. Only the bitrate: the size of the
+    /// pictures did not change, and the codec is checked where the size or the publication
+    /// changes.
+    pub(super) fn share_bitrate_again(&mut self, generation: u64) {
+        if let Some(share) = self.own_share_of(generation) {
+            share.follow_size();
+        }
+    }
+
     pub(super) fn share_sized(&mut self, generation: u64) {
         if let Some(share) = self.own_share_of(generation) {
             share.follow_size();
