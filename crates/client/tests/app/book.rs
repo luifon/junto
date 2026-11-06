@@ -597,9 +597,10 @@ fn the_pointer_moves_from_a_server_icon_into_its_hover_menu_and_uses_it(cx: &mut
 }
 
 /// A press of the pointer on the icon of a server in the collapsed server book selects the
-/// server and closes the menu that the hover opened, also while the pointer stays on the
-/// icon; the menu opens again when the pointer comes back to the icon. Before, the menu
-/// stayed open over the channel list after the press.
+/// server and keeps its menu closed after the release, until the pointer leaves the icon
+/// and comes back. The icon counts as hovered again after a release: after a press without a
+/// move to the icon before it, and after a move during the press. Before, the menu opened
+/// then over the channel list.
 #[gpui::test]
 fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
     let world = World::new();
@@ -610,10 +611,20 @@ fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
     let harbor_admin = world.owner(&harbor);
     window.join_further(&world, &harbor, &harbor_admin);
     window.click("collapse-server-book");
+    let wait = |window: &mut Window| {
+        window
+            .cx
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        window.settle();
+    };
     let second = window.view().servers[1].id;
     let icon = window.cx.debug_bounds("server-1").unwrap();
-    window.move_pointer(icon.center());
-    assert!(window.shows("server-hover-menu"));
+    let away = point(icon.center().x + px(400.0), icon.center().y);
+
+    // A press without a move to the icon before it.
+    window.move_pointer(away);
+    assert!(!window.shows("server-hover-menu"));
     window.click("server-1");
     window.until("the second server is selected", |window| {
         window
@@ -622,42 +633,34 @@ fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
             .as_ref()
             .is_some_and(|selected| selected.id == second)
     });
+    wait(&mut window);
     assert!(
         !window.shows("server-hover-menu"),
-        "the menu stayed open after the press on the icon"
+        "the menu opened after a press without a move before it"
     );
-    window
-        .cx
-        .executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    window.settle();
-    assert!(!window.shows("server-hover-menu"));
-    // The pointer goes on to the channel list, over the place of the menu, in steps.
-    for step in 1..=8 {
-        window.move_pointer(gpui::point(
-            icon.center().x + gpui::px(30.0 * step as f32),
-            icon.center().y,
-        ));
+
+    // A press on the icon of the first server, with a move of one pixel while it is held.
+    let first = window.cx.debug_bounds("server-0").unwrap().center();
+    window.move_pointer(away);
+    window.move_pointer(first);
+    assert!(window.shows("server-hover-menu"));
+    window.press_down_at(first, MouseButton::Left);
+    let moved = point(first.x + px(1.0), first.y);
+    window.holding(|window| {
         window
             .cx
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        window.settle();
-    }
-    window
-        .cx
-        .executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    window.settle();
+            .simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::none());
+    });
+    window.release_at(moved, MouseButton::Left);
+    window.move_pointer(point(first.x + px(2.0), first.y));
+    wait(&mut window);
     assert!(
         !window.shows("server-hover-menu"),
-        "the menu is open over the channel list after the press"
+        "the menu opened after a press with a move during it"
     );
+
     // The pointer leaves the icon and comes back: the menu opens again.
-    window.move_pointer(gpui::point(
-        icon.center().x,
-        icon.bottom() + gpui::px(300.0),
-    ));
-    window.move_pointer(icon.center());
+    window.move_pointer(away);
+    window.move_pointer(first);
     assert!(window.shows("server-hover-menu"));
 }
