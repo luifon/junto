@@ -646,11 +646,7 @@ fn a_press_on_a_server_icon_closes_its_hover_menu(cx: &mut TestAppContext) {
     assert!(window.shows("server-hover-menu"));
     window.press_down_at(first, MouseButton::Left);
     let moved = point(first.x + px(1.0), first.y);
-    window.holding(|window| {
-        window
-            .cx
-            .simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::none());
-    });
+    window.move_pointer_pressed(moved, MouseButton::Left);
     window.release_at(moved, MouseButton::Left);
     window.move_pointer(point(first.x + px(2.0), first.y));
     wait(&mut window);

@@ -588,6 +588,19 @@ impl Window {
         });
     }
 
+    /// Moves the pointer with a button of it held, between [`Window::press_down_at`] and
+    /// [`Window::release_at`].
+    pub fn move_pointer_pressed(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        self.holding(|this| {
+            this.cx
+                .simulate_mouse_move(position, Some(button), Modifiers::none());
+        });
+    }
+
     /// Releases a button of the pointer that [`Window::press_down_at`] pressed.
     pub fn release_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
         let (_, up) = pointer_press(position, button, 1);
