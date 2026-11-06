@@ -369,6 +369,7 @@ mod platform {
         let settings = found.or(clock.map(|(_, settings)| settings))?;
         let setting = |name: &str| settings.get(name).map(String::as_str);
         match setting("mode").unwrap_or("2") {
+            "2" if setting("digital-layout") == Some("2") => None,
             "2" => strftime_pattern(
                 setting("digital-time-format")
                     .or(setting("digital-format"))
@@ -721,6 +722,18 @@ mod desktop_tests {
         )]);
         assert_eq!(
             read("XFCE", Some(analog.path()), &programs),
+            Some(HourCycle::Twelve)
+        );
+        // A digital clock with the date only (layout 2) shows no time of day either.
+        let date = config(&[(
+            XFCE_PANEL,
+            &xfce_panel(
+                "      <property name=\"digital-layout\" type=\"uint\" value=\"2\"/>\n      \
+                 <property name=\"digital-time-format\" type=\"string\" value=\"%R\"/>\n",
+            ),
+        )]);
+        assert_eq!(
+            read("XFCE", Some(date.path()), &programs),
             Some(HourCycle::Twelve)
         );
     }
