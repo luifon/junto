@@ -235,7 +235,7 @@ impl ServerApi {
         let kind = profile::check_avatar(&image)?;
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/server/logo".to_owned();
-        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+        read_json(&self.call_picture(path, body).await?)
     }
 
     pub async fn remove_server_logo(&self) -> Result<(), ApiError> {

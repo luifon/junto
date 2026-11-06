@@ -46,8 +46,8 @@ pub(crate) struct Outline {
     pub(crate) path: String,
     pub(crate) query: Vec<(&'static str, String)>,
     pub(crate) body: Option<RequestBody>,
-    /// The body is one part of a file: the request gets the time of a slow connection.
-    pub(crate) part: bool,
+    /// When the request is sent again (ADR 0714).
+    pub(crate) repeat: Repeat,
 }
 
 pub(crate) type AuthorityFuture =
@@ -106,18 +106,13 @@ pub(crate) async fn send_with_token(
     token: &SecretToken,
     outline: Outline,
 ) -> Result<HttpResponse, ApiError> {
-    let repeat = if outline.part {
-        Repeat::Part
-    } else {
-        Repeat::WhenUnchanged
-    };
     api.send(
         outline.method,
         &outline.path,
         &outline.query,
         Some(token),
         outline.body,
-        repeat,
+        outline.repeat,
     )
     .await
 }
@@ -206,7 +201,25 @@ impl ServerApi {
                 path,
                 query,
                 body,
-                part: false,
+                repeat: Repeat::WhenUnchanged,
+            })
+            .await
+    }
+
+    /// Stores a picture with `PUT`. The server takes the same picture again as no change, so
+    /// the request is also sent again when its connection is cut (ADR 0013, ADR 0714).
+    pub(super) async fn call_picture(
+        &self,
+        path: String,
+        body: RequestBody,
+    ) -> Result<HttpResponse, ApiError> {
+        self.authority
+            .send(Outline {
+                method: Method::Put,
+                path,
+                query: Vec::new(),
+                body: Some(body),
+                repeat: Repeat::SameResult,
             })
             .await
     }
@@ -223,7 +236,7 @@ impl ServerApi {
                 path,
                 query: Vec::new(),
                 body: Some(body),
-                part: true,
+                repeat: Repeat::Part,
             })
             .await
     }
@@ -234,7 +247,7 @@ impl ServerApi {
             path,
             query: Vec::new(),
             body: None,
-            part: false,
+            repeat: Repeat::WhenUnchanged,
         };
         self.authority.open(outline, from).await
     }
@@ -303,7 +316,7 @@ impl ServerApi {
         let kind = profile::check_avatar(&image)?;
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/account/avatar".to_owned();
-        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+        read_json(&self.call_picture(path, body).await?)
     }
 
     pub async fn remove_avatar(&self) -> Result<(), ApiError> {
