@@ -27,8 +27,8 @@ The Windows job runs only when the change can behave differently on Windows: a p
 tools/windows/, of the native LiveKit and FFmpeg of the Windows tests, packaging/, vendor/, a build script, a Windows source file, the storage and the
 paths of the client core, a changed Cargo.toml line of a target, a cfg, the build dependencies or
 the features, or an added line of Rust, Python or PowerShell outside tests that names a cfg of
-the system, a file system or process call, or a path join, or a changed Rust file that holds
-code under a cfg of the system; also a change of tools/ci, of the
+the system, a file system or process call, or a path join, or a changed Rust file that has one
+of the words of a condition of the system; also a change of tools/ci, of the
 Rust toolchain, of .cargo/ or of a Cargo file. Otherwise the run of main of each night tests it.
 
 The Windows job has four parts that only some changes need; the Linux job runs each of them on
@@ -43,10 +43,10 @@ Rust toolchain, and:
   allocation counter, the server, the protocol or the permissions, of tools/windows/, of the LiveKit of the tests or its
   settings, or of vendor/;
 - crates (the lint of each crate alone): of vendor/, of a Windows source file, of a Rust file
-  that holds code under a cfg of the system before or after the change (an edit inside an
-  existing Windows block names no cfg), or an added line of Rust outside tests with a cfg of
-  the system or of a feature, which is the code that only a lint on Windows of a crate alone
-  checks.
+  that has the word windows, unix, target_os or target_family anywhere before or after the
+  change (an edit inside an existing Windows block names no cfg), or an added line of Rust
+  outside tests with a cfg of the system or of a feature, which is the code that only a lint on
+  Windows of a crate alone checks.
 
 A change that needs every part runs the whole job ("run"); another runs "base" and the parts
 that it needs. A run of every job, of named jobs and the run of each night run every part.
@@ -84,11 +84,10 @@ PART_PATHS = {
     "crates": re.compile(rf"^({EVERY_PART}|vendor/|crates/.*/windows[^/]*\.rs$|crates/.*/windows/)"),
 }
 PARTS = list(PART_PATHS)
-# A condition of the system anywhere in the text of a file, also one written over several
-# lines: a key of the system, `windows` or `unix` in a cfg of one line, or a line that is only
-# `windows` or `unix`, an item of a list of `any(`, `all(` or `not(`. `git grep -E` reads it.
-SYSTEM_CODE = (r"target_os|target_family|cfg!?\(.*(windows|unix)"
-               r"|^[[:space:]]*(not\()?(windows|unix)[[:space:]]*[,)]*[[:space:]]*$")
+# The words of a condition of the system, anywhere in the text of a file: in a cfg of one line,
+# of several lines, nested or in cfg_attr. A file that has one of them only in a comment is
+# taken as well; a run too many costs less than a missed one. `git grep -w -E` reads it.
+SYSTEM_CODE = r"windows|unix|target_os|target_family"
 CRATE_LINES = re.compile(r"cfg\((not\()?(any\(|all\()?(windows|unix|target_os|target_family|feature)|cfg!\(")
 TEST_PATH = re.compile(r"(^|/)tests?/|tests?\.rs$|/test_[^/]*\.py$|^test_[^/]*\.py$|_tests\.rs$")
 
@@ -201,7 +200,7 @@ def system_files(base, commit, paths):
     for revision in (base, commit):
         if not paths:
             break
-        listed = subprocess.run(["git", "grep", "-l", "-E", SYSTEM_CODE, revision, "--", *paths],
+        listed = subprocess.run(["git", "grep", "-l", "-w", "-E", SYSTEM_CODE, revision, "--", *paths],
                                 capture_output=True, text=True)
         if listed.returncode not in (0, 1):
             raise subprocess.CalledProcessError(listed.returncode, listed.args, listed.stdout, listed.stderr)
