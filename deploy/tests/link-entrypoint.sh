@@ -6,7 +6,8 @@
 # - a loss ends at a renewal of the keys after the first handshake of a start, not at that
 #   first handshake;
 # - the address of the notices is not in the arguments of curl;
-# - the forwarders together leave the loop a reserve of the limit of processes, and a link at
+# - each forwarder keeps its stated bound and the others share the rest of the limit of
+#   processes less a reserve; bounds that the limit does not hold end the start; a link at
 #   that limit waits without a fork and keeps running.
 # Takes about a minute. Everything is removed at the end.
 #
@@ -142,21 +143,31 @@ reach "the link reads again after the read that fails" 10 looping
 check "a read of wg that fails does not end a link that works" "running && [ ! -e $work/keys/down ]"
 check "it sends no notice" '[ "$(notices)" = 0 ]'
 
-# Three forwarders in a container with the limit of processes of the compose files.
+# The forwarders of the compose files in a container with their limit of processes: each
+# stated bound, and the forwarder of the server takes the rest less 256.
 docker rm -f "$container" > /dev/null
 pids=$(awk '/^  link:/ { link = 1 } link && /pids_limit:/ { print $2; exit }' "$deploy/base.yaml")
+bounds=$(sed -n 's|^        \$.*:\([0-9]*\)=.*/\([0-9]*\)$|\1 \2|p' "$deploy/two-hosts-data.yaml")
+stated=$(echo "$bounds" | awk '{ sum += $2 } END { print sum }')
 start --pids-limit "$pids" \
-    -e LINK_FORWARDS="127.0.0.1:7001=127.0.0.1:9 127.0.0.1:7002=127.0.0.1:9 127.0.0.1:7003=127.0.0.1:9"
-reach "the link with three forwarders reads its handshake" 10 looping
+    -e LINK_FORWARDS="$(echo "$bounds" | awk '{ printf "127.0.0.1:%d=127.0.0.1:9/%d ", 7000 + NR, $2 }')127.0.0.1:7009=127.0.0.1:9"
+reach "the link with the forwarders of the compose files reads its handshake" 10 looping
 bounded() {
-    [ "$(grep -c max-children= "$work/state/listeners")" -eq 3 ] || return 1
-    total=0
-    for children in $(sed -n 's/.*,max-children=\([0-9]*\),.*/\1/p' "$work/state/listeners"); do
-        total=$((total + children))
+    [ "$(grep -c max-children= "$work/state/listeners")" -eq "$(($(echo "$bounds" | wc -l) + 1))" ] || return 1
+    for bound in $(echo "$bounds" | awk '{ print $2 }'); do
+        grep -q ",max-children=$bound," "$work/state/listeners" || return 1
     done
-    [ "$((total + 256))" -le "$pids" ]
+    grep -q "TCP-LISTEN:7009,.*,max-children=$((pids - 256 - stated))," "$work/state/listeners"
 }
-check "the forwarders take at most the limit of $pids processes less 256" bounded
+check "the forwarders keep their stated bounds ($(echo $bounds)) and the server forwarder takes the rest of $pids processes less 256" bounded
+check "the server forwarder of the compose files has at least 1024 connections" \
+    "[ $((pids - 256 - stated)) -ge 1024 ]"
+
+# Stated bounds that the limit does not hold end the start.
+docker rm -f "$container" > /dev/null
+start --pids-limit 512 -e LINK_FORWARDS="127.0.0.1:7001=127.0.0.1:9/256 127.0.0.1:7002=127.0.0.1:9"
+check "bounds that the limit of processes does not hold end the start with 2" \
+    "until_true 10 sh -c '! docker inspect -f {{.State.Running}} $container | grep -q true' && [ \"\$(docker inspect -f '{{.State.ExitCode}}' $container)\" = 2 ] && docker logs $container 2>&1 | grep -q 'does not hold the connections of the forwarders'"
 
 # A link at the limit of its processes: no fork, no read of wg, no end.
 docker rm -f "$container" > /dev/null
