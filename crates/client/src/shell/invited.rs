@@ -123,6 +123,10 @@ impl Shell {
                     div()
                         .id("invitation-list")
                         .debug_selector(|| "invitation-list".to_owned())
+                        .relative()
+                        // The cards lie over the content: the areas under them are not
+                        // measured (ADR 0730).
+                        .child(crate::ui::cover())
                         .flex()
                         .flex_col()
                         .gap(u(8.0))
