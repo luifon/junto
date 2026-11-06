@@ -207,4 +207,8 @@ run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg
 step "Window tests with PostgreSQL and LiveKit"
 run python3 tools/windows/with_test_postgres.py python3 tools/with_native_livekit.py \
     cargo test --no-fail-fast --locked --workspace --test app live:: -- --ignored
+# The client in release form with the line tables of a release package (packaging/README.md):
+# the backtrace of a panic report names the functions of the program (ADR 0757).
+step "Panic reports of a release build"
+run env CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo test --no-fail-fast --locked --release -p junto-client --lib panics::
 finish

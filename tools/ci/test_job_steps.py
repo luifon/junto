@@ -186,6 +186,18 @@ class JobSteps(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("Window tests with PostgreSQL and LiveKit (exit 1)", output)
 
+    def test_windows_tests_the_panic_reports_of_a_release_build_with_line_tables(self):
+        release = "cargo test --no-fail-fast --locked --release -p junto-client --lib panics::"
+        for system in SYSTEMS:
+            status, commands, output = self.run_job(system)
+            self.assertEqual(status, 0, output)
+            self.assertEqual(release in commands, system == "windows", system)
+        script = JOB.read_text()
+        self.assertIn(f"run env CARGO_PROFILE_RELEASE_DEBUG=line-tables-only {release}", script)
+        status, _, output = self.run_job("windows", fail_on="--release -p junto-client")
+        self.assertEqual(status, 1)
+        self.assertIn("Panic reports of a release build (exit 1)", output)
+
     def test_windows_checks_the_dialogs_of_the_system_after_the_tests_also_after_a_failure(self):
         media = "cargo test --no-fail-fast --locked -p junto-media --lib --test native_exceptions --test windows_capture"
         for fail_on, expected in [("", 0), ("windows_capture", None), ("dialogs.py check", 1)]:
