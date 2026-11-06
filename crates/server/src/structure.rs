@@ -752,6 +752,9 @@ async fn apply_one(
             let category =
                 channels::create_category_in(&mut *connection, access, now, ids, &name, *position)
                     .await?;
+            if position.is_some() {
+                departures.placed_category(ids.0);
+            }
             register(connection, created, Category, *id, category.id.as_uuid()).await
         }
         StructureChange::UpdateCategory { id, name, position } => {
@@ -767,6 +770,9 @@ async fn apply_one(
             let name = name.as_deref();
             let target = position.map(channels::Target::Position);
             channels::update_category_in(connection, access, now, ids, name, target).await?;
+            if position.is_some() {
+                departures.placed_category(workspace_id);
+            }
             Ok(())
         }
         StructureChange::CreateChannel {
@@ -797,6 +803,9 @@ async fn apply_one(
                 position: *position,
             };
             channels::create_channel_in(&mut *connection, access, now, &new).await?;
+            if position.is_some() {
+                departures.placed((new.workspace_id, new.category_id));
+            }
             register(connection, created, Channel, *id, new.id.as_uuid()).await
         }
         StructureChange::UpdateChannel {
@@ -825,9 +834,14 @@ async fn apply_one(
             };
             let channel_id = ChannelId::from_uuid(channel_id);
             let name = name.as_deref();
-            let order = (channels::Order::Now, departures);
-            channels::update_channel_in(connection, access, now, channel_id, name, &update, order)
-                .await?;
+            let order = (channels::Order::Now, &mut *departures);
+            let channel = channels::update_channel_in(
+                connection, access, now, channel_id, name, &update, order,
+            )
+            .await?;
+            if position.is_some() {
+                departures.placed((channel.workspace_id, channel.category_id));
+            }
             Ok(())
         }
         StructureChange::UpdateCallSettings {

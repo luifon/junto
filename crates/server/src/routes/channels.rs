@@ -103,15 +103,16 @@ pub(crate) async fn create_category_in(
         permission: WorkspacePermission::ManageChannel,
     })?;
 
+    let end = end_of_categories(connection, now, workspace_id).await?;
     sqlx::query(
         "insert into categories (id, workspace_id, name, position, created_at)
-         select $1, $2, $3, coalesce(max(position), -1) + 1, $4 from categories
-         where workspace_id = $2",
+         values ($1, $2, $3, $5, $4)",
     )
     .bind(id)
     .bind(workspace_id)
     .bind(name)
     .bind(now)
+    .bind(end)
     .execute(&mut *connection)
     .await?;
     let position = order_categories(
@@ -263,20 +264,64 @@ pub(crate) async fn followed_in_group(
     .await?)
 }
 
-/// The stored position after the last channel of a group that is not deleted.
+/// The stored position after the last channel of a group that is not deleted. When the last
+/// one holds the largest position that the API accepts, as a client of API v1 can store it,
+/// the group is numbered from 0 first, so that the end does not overflow (ADR 0304).
 async fn end_of_group(
     connection: &mut PgConnection,
-    workspace_id: WorkspaceId,
-    category_id: Option<CategoryId>,
+    now: OffsetDateTime,
+    (workspace_id, category_id): (WorkspaceId, Option<CategoryId>),
 ) -> ApiResult<i32> {
-    Ok(sqlx::query_scalar(
-        "select coalesce(max(position), -1) + 1 from channels
+    let last: Option<i32> = sqlx::query_scalar(
+        "select max(position) from channels
          where workspace_id = $1 and category_id is not distinct from $2 and deleted_at is null",
     )
     .bind(workspace_id)
     .bind(category_id)
-    .fetch_one(connection)
-    .await?)
+    .fetch_one(&mut *connection)
+    .await?;
+    match last {
+        None => Ok(0),
+        Some(i32::MAX) => {
+            close_channel_gap(connection, now, (workspace_id, category_id), false).await?;
+            Ok(sqlx::query_scalar(
+                "select count(*)::integer from channels
+                 where workspace_id = $1 and category_id is not distinct from $2
+                   and deleted_at is null",
+            )
+            .bind(workspace_id)
+            .bind(category_id)
+            .fetch_one(connection)
+            .await?)
+        }
+        Some(last) => Ok(last + 1),
+    }
+}
+
+/// The same for the categories of a workspace.
+async fn end_of_categories(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<i32> {
+    let last: Option<i32> =
+        sqlx::query_scalar("select max(position) from categories where workspace_id = $1")
+            .bind(workspace_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    match last {
+        None => Ok(0),
+        Some(i32::MAX) => {
+            close_category_gap(connection, now, workspace_id).await?;
+            Ok(sqlx::query_scalar(
+                "select count(*)::integer from categories where workspace_id = $1",
+            )
+            .bind(workspace_id)
+            .fetch_one(connection)
+            .await?)
+        }
+        Some(last) => Ok(last + 1),
+    }
 }
 
 /// The groups that a channel left and the workspaces that a category left during one request
@@ -304,6 +349,17 @@ impl Departures {
             close_channel_gap(connection, now, group, hidden_left).await?;
         }
         Ok(())
+    }
+
+    /// A change of a structure apply set a position in the group: the group is numbered at the
+    /// end of the apply, so that the numbers of the file leave no gap (ADR 0304).
+    pub(crate) fn placed(&mut self, group: (WorkspaceId, Option<CategoryId>)) {
+        self.groups.entry(group).or_default();
+    }
+
+    /// The same for the categories of a workspace.
+    pub(crate) fn placed_category(&mut self, workspace_id: WorkspaceId) {
+        self.categories.insert(workspace_id);
     }
 
     /// The channel `left` leaves the group. Whether a rule may have hidden it is read now: a
@@ -770,7 +826,7 @@ pub(crate) async fn create_channel_in(
         require_root(connection, access, workspace_id).await?;
     }
 
-    let position = end_of_group(connection, workspace_id, new.category_id).await?;
+    let position = end_of_group(connection, now, (workspace_id, new.category_id)).await?;
     let mut channel = Channel {
         id: new.id,
         workspace_id,
@@ -1079,7 +1135,7 @@ pub(crate) async fn update_channel_in(
     let moved_group = channel.category_id != category_before;
     if moved_group {
         channel.position =
-            end_of_group(connection, channel.workspace_id, channel.category_id).await?;
+            end_of_group(connection, now, (channel.workspace_id, channel.category_id)).await?;
     }
     if let Some(permanent_messages) = change.permanent_messages {
         channel.permanent_messages = permanent_messages;

@@ -841,3 +841,81 @@ async fn a_structure_apply_numbers_a_group_that_a_channel_left_after_its_last_ch
     let positions: Vec<i32> = group.iter().map(|(position, _, _)| *position).collect();
     assert!(without_gap(&positions), "{positions:?}");
 }
+
+/// A group whose last entry holds the largest position that the API accepts, as a client of
+/// API v1 can store it, takes a new entry at its end: a created channel, a channel moved into
+/// it and a created category go last, and no request fails (ADR 0304).
+#[tokio::test]
+async fn a_group_at_the_largest_position_takes_a_new_entry_at_its_end() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace_id = server.default_workspace(&owner).await.id;
+    let largest = server.channel(&owner, workspace_id, "largest").await;
+    let _: Channel = server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", largest.id),
+            &json!({"position": i32::MAX}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let created = server.channel(&owner, workspace_id, "created").await;
+    let projects = server.category(&owner, workspace_id, "Projects", 0).await;
+    let moved: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/channels"),
+            &json!({"name": "moved", "kind": "text", "category_id": projects.id}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let _: Channel = server
+        .patch(
+            &owner,
+            &format!("/api/v1/channels/{}", moved.id),
+            &json!({"category_id": null}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let order: Vec<ChannelId> = root(&server, &owner, workspace_id)
+        .await
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(order[order.len() - 3..], [largest.id, created.id, moved.id]);
+
+    let _: Category = server
+        .patch(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{workspace_id}/categories/{}",
+                projects.id
+            ),
+            &json!({"position": i32::MAX}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let last = server.category(&owner, workspace_id, "Last", 0).await;
+    let _: Category = server
+        .patch(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/categories/{}", last.id),
+            &json!({"position": i32::MAX}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let after: Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{workspace_id}/categories"),
+            &json!({"name": "After"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let order: Vec<CategoryId> = categories(&server, &owner, workspace_id)
+        .await
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(order.last(), Some(&after.id));
+}

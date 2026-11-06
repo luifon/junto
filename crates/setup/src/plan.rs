@@ -826,9 +826,12 @@ struct Placed {
 /// compared, not the numbers (ADR 0304): when those entries are already in the order of the
 /// file on the server and none of them enters the group, nothing is sent, also when the
 /// numbers differ, for example by the gap of a deleted entry that the server numbered away.
-/// Otherwise each such entry gets its place among them, and the entries whose stored position
-/// differs from their place send it. An entry without a stated position keeps its position
-/// or goes to the end, and an entry that the file does not hold keeps its position.
+/// Otherwise the file's own number is sent for each entry whose stored position differs from
+/// it and for each entry that enters the group, as the setup tool of release 0.1.0 sent them;
+/// an entry whose number the file keeps, such as an archived channel, is not sent. An entry
+/// that the file does not hold, or holds without a position, keeps its stored number, so it
+/// stays where the file's numbers put it relative to it. The server numbers the group at the
+/// end of the apply, after which the file's entries are still in the file's order.
 fn group_order(entries: &mut [Placed], into: &mut HashMap<StructureId, i32>) {
     entries.sort_by_key(|entry| (entry.stated, entry.id));
     let entering = entries.iter().any(|entry| entry.stored.is_none());
@@ -841,12 +844,9 @@ fn group_order(entries: &mut [Placed], into: &mut HashMap<StructureId, i32>) {
     if same && !entering {
         return;
     }
-    for (place, entry) in entries.iter().enumerate() {
-        let Ok(place) = i32::try_from(place) else {
-            break;
-        };
-        if entry.stored != Some(place) {
-            into.insert(entry.id, place);
+    for entry in entries.iter() {
+        if entry.stored != Some(entry.stated) {
+            into.insert(entry.id, entry.stated);
         }
     }
 }

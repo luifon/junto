@@ -1202,3 +1202,135 @@ async fn a_file_applied_again_does_not_write_back_the_gap_of_a_deleted_channel()
         assert_eq!(group, [(0, "a".to_owned()), (1, "c".to_owned())]);
     }
 }
+
+/// The ids of the channels of a category in their stored order, archived channels included, as
+/// the structure document of an administrator gives them.
+async fn category_order(server: &TestServer, owner: &Member, category: &str) -> Vec<String> {
+    let export: StructureExport = server
+        .get(owner, "/api/v1/structure")
+        .await
+        .ok(StatusCode::OK);
+    let workspace = &export.structure.workspaces[0];
+    let category = workspace
+        .categories
+        .iter()
+        .find(|entry| entry.name == category)
+        .unwrap()
+        .id;
+    let mut channels: Vec<(i32, String)> = workspace
+        .channels
+        .iter()
+        .filter(|channel| channel.category == Some(Some(category)))
+        .map(|channel| (channel.position.unwrap(), channel.name.clone()))
+        .collect();
+    channels.sort();
+    channels.into_iter().map(|(_, name)| name).collect()
+}
+
+/// Three channels of the category "Projects", made in the order of `names`.
+async fn projects_with(server: &TestServer, owner: &Member, names: &[&str]) -> Vec<String> {
+    let workspace_id = server.default_workspace(owner).await.id;
+    let projects = server.category(owner, workspace_id, "Projects", 0).await;
+    let mut made = Vec::new();
+    for name in names {
+        let channel: junto_protocol::structure::Channel = server
+            .post(
+                owner,
+                &format!("/api/v1/workspaces/{workspace_id}/channels"),
+                &json!({"name": name, "kind": "text", "category_id": projects.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        made.push(channel.id.to_string());
+    }
+    made
+}
+
+/// Sets the positions of the named channels in an exported file.
+fn with_positions(file: &mut Value, positions: &[(&str, i32)]) {
+    for channel in file["workspaces"][0]["channels"].as_array_mut().unwrap() {
+        if let Some((_, position)) = positions
+            .iter()
+            .find(|(name, _)| channel["name"] == json!(name))
+        {
+            channel["position"] = json!(position);
+        }
+    }
+}
+
+/// A file that reorders a group with an archived channel whose number it keeps applies: the
+/// archived channel takes no change, so the tool sends it no position, and the server numbers
+/// the group after the apply. A second plan changes nothing (ADR 0304).
+#[tokio::test]
+async fn a_file_reorders_a_group_with_an_archived_channel_that_it_keeps() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let made = projects_with(&server, &owner, &["a", "z", "b"]).await;
+    let _: Value = server
+        .put(
+            &owner,
+            &format!("/api/v1/channels/{}/archive", made[1]),
+            &json!({}),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        category_order(&server, &owner, "Projects").await,
+        ["a", "z", "b"]
+    );
+    let exported = scratch.0.join("exported.json");
+    let exported = exported.to_str().unwrap();
+    tool(&server, &token, &["export", "--out", exported])
+        .await
+        .succeeded();
+    let mut file: Value =
+        serde_json::from_str(&std::fs::read_to_string(exported).unwrap()).unwrap();
+    // b to the top: b 0, a 1; the archived z keeps its number 1, after a by its identifier.
+    with_positions(&mut file, &[("b", 0), ("a", 1)]);
+    let path = write(&scratch, "reordered.json", &file);
+    tool(&server, &token, &["apply", &path]).await.succeeded();
+    assert_eq!(
+        category_order(&server, &owner, "Projects").await,
+        ["b", "a", "z"]
+    );
+    let second = tool(&server, &token, &["plan", &path]).await.succeeded();
+    assert!(second.out.starts_with("No changes:"), "{}", second.out);
+}
+
+/// A file that does not hold every channel of a group keeps the place of the channel that it
+/// does not hold among its own numbers: the tool sends the file's numbers, not places among
+/// the file's entries. A second plan changes nothing (ADR 0304).
+#[tokio::test]
+async fn a_file_reorders_a_group_around_a_channel_that_it_does_not_hold() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let made = projects_with(&server, &owner, &["a", "x", "b"]).await;
+    // a 0, x 1, b 2 by their numbers; the file holds a and b only and gives b 1, a 2: x at 1
+    // stays before b (the lower identifier at the same number), and a goes last. Places among
+    // the file's entries (b 0, a 1) put a before x.
+    let exported = scratch.0.join("exported.json");
+    let exported = exported.to_str().unwrap();
+    tool(&server, &token, &["export", "--out", exported])
+        .await
+        .succeeded();
+    let mut file: Value =
+        serde_json::from_str(&std::fs::read_to_string(exported).unwrap()).unwrap();
+    let x = made[1].clone();
+    file["workspaces"][0]["channels"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|channel| channel["id"] != json!(x));
+    with_positions(&mut file, &[("b", 1), ("a", 2)]);
+    let path = write(&scratch, "without-x.json", &file);
+    tool(&server, &token, &["apply", &path]).await.succeeded();
+    assert_eq!(
+        category_order(&server, &owner, "Projects").await,
+        ["x", "b", "a"]
+    );
+    let second = tool(&server, &token, &["plan", &path]).await.succeeded();
+    assert!(second.out.starts_with("No changes:"), "{}", second.out);
+}

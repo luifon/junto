@@ -1084,19 +1084,19 @@ fn numbers_that_keep_the_order_change_nothing() {
     assert_eq!(changes(&desired, &current), Vec::<Value>::new());
 }
 
-/// A file with another order sends the place of each entry among the entries of its group,
-/// for the entries whose stored position differs from it.
+/// A file with another order sends its own numbers, for the entries whose stored position
+/// differs from them; an entry whose number the file keeps is not sent.
 #[test]
-fn another_order_sends_the_places_of_the_entries_that_move() {
+fn another_order_sends_the_numbers_of_the_file_that_differ() {
     let current = ordered([0, 1, 2], [0, 1, 2]);
-    let desired = ordered([10, 5, 20], [0, 9, 5]);
+    let desired = ordered([10, 5, 2], [0, 9, 5]);
     assert_eq!(
         changes(&desired, &current),
         [
-            json!({ "change": "update_category", "id": id(20), "position": 1 }),
-            json!({ "change": "update_category", "id": id(21), "position": 0 }),
-            json!({ "change": "update_channel", "id": id(31), "position": 2 }),
-            json!({ "change": "update_channel", "id": id(32), "position": 1 }),
+            json!({ "change": "update_category", "id": id(20), "position": 10 }),
+            json!({ "change": "update_category", "id": id(21), "position": 5 }),
+            json!({ "change": "update_channel", "id": id(31), "position": 9 }),
+            json!({ "change": "update_channel", "id": id(32), "position": 5 }),
         ]
     );
 }
