@@ -415,8 +415,9 @@ mod tests {
 
     #[test]
     fn a_row_is_drawn_as_each_pixel_by_its_own_rule() {
-        // Runs of opaque, transparent and partly transparent pixels of every alpha value, in
-        // a fixed order of numbers that are not related to each other.
+        // Each alpha value from 0 to 255 has one pixel of its own, followed by up to four
+        // pixels that are opaque, transparent or of that alpha, in a fixed order of numbers
+        // that are not related to each other, so that the row has runs of each kind.
         let mut seed = 0x2545_f491_u32;
         let mut next = move || {
             seed ^= seed << 13;
@@ -426,18 +427,26 @@ mod tests {
         };
         let mut source = Vec::new();
         for alpha in 0..=255_u8 {
-            for _ in 0..(next() % 5 + 1) {
+            let value = next().to_le_bytes();
+            // Premultiplied colours are at most the alpha; the rule also holds above it.
+            source.extend_from_slice(&[value[0], value[1], value[2], alpha]);
+            for _ in 0..next() % 5 {
                 let value = next().to_le_bytes();
-                let run = next() % 3;
-                let alpha = match run {
+                let alpha = match next() % 3 {
                     0 => 255,
                     1 => 0,
                     _ => alpha,
                 };
-                // Premultiplied colours are at most the alpha; the rule also holds above it.
                 source.extend_from_slice(&[value[0], value[1], value[2], alpha]);
             }
         }
+        let alphas: std::collections::HashSet<u8> = source
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect();
+        assert_eq!(alphas.len(), 256);
         // The picture under a layer is opaque: the black ground or layers drawn before.
         let under: Vec<u8> = (0..source.len() / 4)
             .flat_map(|_| {
