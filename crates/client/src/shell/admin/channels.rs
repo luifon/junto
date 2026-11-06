@@ -1050,13 +1050,13 @@ impl Shell {
         }
         let list = rows
             .iter()
-            .map(|(key, line)| {
-                let row = Row::new(key.clone(), true);
-                if matches!(line, Line::Channel(..)) {
-                    row
-                } else {
-                    row.part()
-                }
+            .map(|(key, line)| match line {
+                Line::Channel(group, index) => Row::item(
+                    key.clone(),
+                    true,
+                    page.groups[*group].channels[*index].name.clone(),
+                ),
+                _ => Row::part(key.clone(), true),
             })
             .collect();
         self.admin.list.take(Some(view), list, window, cx);

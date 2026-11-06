@@ -26,18 +26,21 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescription};
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFType, CGRect};
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess, kCGColorSpaceSRGB, kCGDisplayStreamYCbCrMatrix_ITU_R_601_4,
+    CGRectMakeWithDictionaryRepresentation, CGRequestScreenCaptureAccess, kCGColorSpaceSRGB,
+    kCGDisplayStreamYCbCrMatrix_ITU_R_601_4,
 };
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
 };
-use objc2_foundation::{NSArray, NSBundle, NSError, NSProcessInfo};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSProcessInfo, NSString};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCRunningApplication, SCScreenshotManager, SCShareableContent,
-    SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
+    SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamFrameInfoContentRect,
+    SCStreamFrameInfoContentScale, SCStreamFrameInfoScaleFactor, SCStreamOutput,
+    SCStreamOutputType,
 };
 use tokio::sync::oneshot;
 
@@ -200,6 +203,8 @@ struct OutputIvars {
     one_window: bool,
     /// The samples of one sound buffer, kept between the calls of one stream.
     samples: Mutex<Vec<f32>>,
+    /// The stream of one window follows the size of the window.
+    follow: Option<Arc<Follow>>,
 }
 
 define_class!(
@@ -215,7 +220,7 @@ define_class!(
         #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
         fn stream_did_output_sample_buffer_of_type(
             &self,
-            _stream: &SCStream,
+            stream: &SCStream,
             sample: &CMSampleBuffer,
             kind: SCStreamOutputType,
         ) {
@@ -229,7 +234,7 @@ define_class!(
                 || self.end_after_a_panic(),
                 || {
                     if kind == SCStreamOutputType::Screen {
-                        self.picture(sample);
+                        self.picture(stream, sample);
                     } else if kind == SCStreamOutputType::Audio {
                         self.sound(sample);
                     }
@@ -291,20 +296,27 @@ impl Output {
         sink: Arc<dyn CaptureSink>,
         ended: Arc<AtomicBool>,
         closed: Arc<AtomicBool>,
-        one_window: bool,
+        follow: Option<Arc<Follow>>,
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(OutputIvars {
             sink,
             ended,
             closed,
-            one_window,
+            one_window: follow.is_some(),
             samples: Mutex::new(Vec::new()),
+            follow,
         });
         // SAFETY: the ivars are set, and `NSObject` is initialized with `init`.
         unsafe { msg_send![super(this), init] }
     }
 
-    fn picture(&self, sample: &CMSampleBuffer) {
+    fn picture(&self, stream: &SCStream, sample: &CMSampleBuffer) {
+        if let Some(follow) = &self.ivars().follow {
+            // SAFETY: the system passes a valid sample buffer for the time of this call.
+            if let Some(size) = unsafe { window_size(sample) } {
+                follow.window_size(stream, size);
+            }
+        }
         // A sample without a picture tells that the screen did not change.
         // SAFETY: the sample buffer is valid for the time of this call, and the method
         // returns a retained reference to its image buffer.
@@ -444,6 +456,172 @@ unsafe fn read_sound(sample: &CMSampleBuffer, out: &mut Vec<f32>) -> Option<Form
     format
 }
 
+/// The configuration of the picture stream of a share at this size in pixels.
+fn picture_configuration(size: (u32, u32), frame_rate: u32) -> Retained<SCStreamConfiguration> {
+    // SAFETY: the configuration is new and used on this thread; the setters take plain
+    // values, and the colour setters retain their values.
+    unsafe {
+        let configuration = SCStreamConfiguration::new();
+        configuration.setWidth(size.0 as usize);
+        configuration.setHeight(size.1 as usize);
+        configuration.setScalesToFit(true);
+        configuration.setPixelFormat(PIXEL_FORMAT);
+        configure_color(&configuration);
+        configuration.setShowsCursor(true);
+        configuration.setMinimumFrameInterval(CMTime::new(1, frame_rate.clamp(1, 120) as i32));
+        configuration
+    }
+}
+
+/// The size in pixels of the window that a picture of a stream shows, from the frame
+/// information of ScreenCaptureKit: the rectangle of the content in points, divided by the
+/// scale that fitted the content into the frame, times the scale factor of the display.
+///
+/// # Safety
+///
+/// `sample` is a valid sample buffer.
+unsafe fn window_size(sample: &CMSampleBuffer) -> Option<(u32, u32)> {
+    // SAFETY: the sample buffer is valid; without creating one, the call returns the array of
+    // the attachments of the sample, retained, or nothing.
+    let attachments = unsafe { sample.sample_attachments_array(false) }?;
+    if attachments.count() < 1 {
+        return None;
+    }
+    // SAFETY: index 0 lies inside the array, whose values are Core Foundation objects; the
+    // array, held until the end of this function, keeps the value alive.
+    let info = unsafe { attachments.value_at_index(0).cast::<CFType>().as_ref() }?
+        .downcast_ref::<CFDictionary>()?;
+    let value = |key: &NSString| {
+        // SAFETY: the key is a string of Foundation, which is the same object as a string of
+        // Core Foundation; the value is a Core Foundation object that the dictionary keeps
+        // alive while the array is held.
+        unsafe {
+            info.value((key as *const NSString).cast())
+                .cast::<CFType>()
+                .as_ref()
+        }
+    };
+    // SAFETY: the keys are constant strings of the framework.
+    let (rect_key, content_scale_key, scale_factor_key) = unsafe {
+        (
+            SCStreamFrameInfoContentRect,
+            SCStreamFrameInfoContentScale,
+            SCStreamFrameInfoScaleFactor,
+        )
+    };
+    let rect = value(rect_key)?.downcast_ref::<CFDictionary>()?;
+    let mut content = CGRect::default();
+    // SAFETY: the dictionary and the rectangle are valid for the call, which writes the
+    // rectangle.
+    if !unsafe { CGRectMakeWithDictionaryRepresentation(Some(rect), &mut content) } {
+        return None;
+    }
+    let content_scale = value(content_scale_key)?
+        .downcast_ref::<CFNumber>()?
+        .as_f64()?;
+    let scale_factor = value(scale_factor_key)?
+        .downcast_ref::<CFNumber>()?
+        .as_f64()?;
+    let pixels = |points: f64| (points / content_scale * scale_factor).round();
+    let (width, height) = (pixels(content.size.width), pixels(content.size.height));
+    (content_scale > 0.0
+        && width >= 1.0
+        && height >= 1.0
+        && width.is_finite()
+        && height.is_finite())
+    .then_some((width as u32, height as u32))
+}
+
+/// The stream of one shared window follows the size of the window (ADR 0737). When a picture
+/// shows the window at another size than the configuration of the stream was made for, the
+/// stream is given a configuration of the new size, within the resolution of the share. One
+/// update runs at a time; a picture that arrives after it compares its size again.
+struct Follow {
+    resolution: super::Resolution,
+    frame_rate: u32,
+    state: Mutex<FollowState>,
+}
+
+struct FollowState {
+    /// The size of the window that the configuration in force was made for.
+    configured: (u32, u32),
+    updating: bool,
+    /// A size of the window whose configuration the stream refused: it is not asked for
+    /// again until the window has another size.
+    refused: Option<(u32, u32)>,
+}
+
+/// Two sizes of a window that differ by at most one pixel in each direction are one size:
+/// the frame information is in points, and the conversion rounds.
+fn same_size(one: (u32, u32), other: (u32, u32)) -> bool {
+    one.0.abs_diff(other.0) <= 1 && one.1.abs_diff(other.1) <= 1
+}
+
+impl Follow {
+    fn new(source: (u32, u32), resolution: super::Resolution, frame_rate: u32) -> Self {
+        Self {
+            resolution,
+            frame_rate,
+            state: Mutex::new(FollowState {
+                configured: source,
+                updating: false,
+                refused: None,
+            }),
+        }
+    }
+
+    /// A picture of `stream` shows the window at this size.
+    fn window_size(self: &Arc<Self>, stream: &SCStream, size: (u32, u32)) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.updating
+            || same_size(size, state.configured)
+            || state
+                .refused
+                .is_some_and(|refused| same_size(size, refused))
+        {
+            return;
+        }
+        state.updating = true;
+        drop(state);
+        let configuration =
+            picture_configuration(self.resolution.fit(size.0, size.1), self.frame_rate);
+        let follow = self.clone();
+        let handler = RcBlock::new(move |error: *mut NSError| {
+            // A panic cannot unwind into the system that calls the block (ADR 0757).
+            crate::callback::stop_panic(
+                "share size update",
+                || (),
+                || {
+                    let Ok(mut state) = follow.state.lock() else {
+                        return;
+                    };
+                    state.updating = false;
+                    // SAFETY: the system passes a valid error or null.
+                    match unsafe { error.as_ref() } {
+                        None => {
+                            state.configured = size;
+                            state.refused = None;
+                        }
+                        Some(error) => {
+                            state.refused = Some(size);
+                            tracing::warn!(
+                                error = %error.localizedDescription(),
+                                "the stream of a shared window did not take the new size"
+                            );
+                        }
+                    }
+                },
+            )
+        });
+        // SAFETY: the stream and the configuration are valid objects for the time of this
+        // call; the system copies the block and calls it once on a queue of its own, and the
+        // block owns what it uses.
+        unsafe { stream.updateConfiguration_completionHandler(&configuration, Some(&handler)) };
+    }
+}
+
 /// One stream of the system with the object that takes its output.
 struct Stream {
     life: Arc<Life>,
@@ -461,10 +639,10 @@ impl Stream {
         kind: SCStreamOutputType,
         sink: Arc<dyn CaptureSink>,
         ended: Arc<AtomicBool>,
-        one_window: bool,
+        follow: Option<Arc<Follow>>,
         life: Arc<Life>,
     ) -> Result<Self, CaptureError> {
-        let output = Output::new(sink, ended, Arc::new(AtomicBool::new(false)), one_window);
+        let output = Output::new(sink, ended, Arc::new(AtomicBool::new(false)), follow);
         // SAFETY: the filter and the configuration are valid objects. The stream keeps no
         // strong reference to its delegate; `Stream` holds the object for as long as the
         // stream lives.
@@ -922,24 +1100,22 @@ impl Content {
         unsafe {
             let displays = self.content.displays();
             let (width, height) = request.quality.resolution.fit(source.0, source.1);
-            let configuration = SCStreamConfiguration::new();
-            configuration.setWidth(width as usize);
-            configuration.setHeight(height as usize);
-            configuration.setScalesToFit(true);
-            configuration.setPixelFormat(PIXEL_FORMAT);
-            configure_color(&configuration);
-            configuration.setShowsCursor(true);
-            configuration.setMinimumFrameInterval(CMTime::new(
-                1,
-                request.quality.frame_rate.clamp(1, 120) as i32,
-            ));
+            let configuration = picture_configuration((width, height), request.quality.frame_rate);
+            // The stream of one window follows the size of the window (ADR 0737).
+            let follow = matches!(request.picture, PictureSource::Window(_)).then(|| {
+                Arc::new(Follow::new(
+                    source,
+                    request.quality.resolution,
+                    request.quality.frame_rate,
+                ))
+            });
             let picture = Stream::new(
                 &filter,
                 &configuration,
                 SCStreamOutputType::Screen,
                 sink.clone(),
                 ended.clone(),
-                matches!(request.picture, PictureSource::Window(_)),
+                follow,
                 life.clone(),
             )?;
 
@@ -992,7 +1168,7 @@ impl Content {
                         SCStreamOutputType::Audio,
                         sink.clone(),
                         ended,
-                        false,
+                        None,
                         life.clone(),
                     )?)
                 }

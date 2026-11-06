@@ -382,9 +382,13 @@ enum SessionCommand {
     #[cfg(feature = "test-support")]
     HoldPermissions(bool),
     #[cfg(feature = "test-support")]
+    SecondEncoderAbove(Option<u32>),
+    #[cfg(feature = "test-support")]
     Statistics(crate::engine::statistics::Reply),
     #[cfg(feature = "test-support")]
     SoundCheck(crate::engine::statistics::SoundReply),
+    #[cfg(feature = "test-support")]
+    CameraCheck(crate::engine::statistics::CameraReply),
     #[cfg(feature = "test-support")]
     HoldEngine(oneshot::Sender<(oneshot::Receiver<()>, crate::engine::HeldEngine)>),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
@@ -1168,6 +1172,14 @@ impl Calls {
         self.inner.tell(SessionCommand::HoldPermissions(held));
     }
 
+    /// Makes the shares of the call of this device choose a second VP8 encoder for pictures
+    /// wider than `width`, for a test of the publication again in the codec of a new size on
+    /// every system (ADR 0737). It holds for the call of the moment.
+    #[cfg(feature = "test-support")]
+    pub fn set_second_encoder_above(&self, width: Option<u32>) {
+        self.inner.tell(SessionCommand::SecondEncoderAbove(width));
+    }
+
     /// Queries the connection statistics for a failed live test.
     #[cfg(feature = "test-support")]
     pub fn statistics(
@@ -1192,6 +1204,17 @@ impl Calls {
     {
         let (reply, check) = oneshot::channel();
         self.inner.tell(SessionCommand::SoundCheck(reply));
+        async move { check.await.ok() }
+    }
+
+    /// What the engine of the call of this device knows of the cameras now, for a live test.
+    /// Nothing when this device has no call.
+    #[cfg(feature = "test-support")]
+    pub fn camera_check(
+        &self,
+    ) -> impl Future<Output = Option<crate::engine::CameraCheck>> + Send + 'static + use<> {
+        let (reply, check) = oneshot::channel();
+        self.inner.tell(SessionCommand::CameraCheck(reply));
         async move { check.await.ok() }
     }
 
@@ -3146,6 +3169,8 @@ impl Session {
             #[cfg(feature = "test-support")]
             SessionCommand::SoundCheck(reply) => self.engine.sound_check(reply),
             #[cfg(feature = "test-support")]
+            SessionCommand::CameraCheck(reply) => self.engine.camera_check_to(reply),
+            #[cfg(feature = "test-support")]
             SessionCommand::HoldEngine(reply) => {
                 let _ = reply.send(self.engine.hold());
             }
@@ -3155,6 +3180,10 @@ impl Session {
             SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
             #[cfg(feature = "test-support")]
             SessionCommand::HoldPermissions(held) => self.engine.hold_permissions(held),
+            #[cfg(feature = "test-support")]
+            SessionCommand::SecondEncoderAbove(width) => {
+                self.engine.set_second_encoder_above(width)
+            }
             // The loop takes this command itself.
             SessionCommand::End { .. } => {}
         }

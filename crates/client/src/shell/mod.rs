@@ -2079,6 +2079,7 @@ impl Render for Shell {
             .font_features(tabular_numerals())
             .ink(theme.colors.ink)
             .map(|shell| Self::presses_and_escape(shell, cx))
+            .children(press_end_hook())
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
@@ -2186,13 +2187,7 @@ impl Shell {
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.presses_over()))
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    #[cfg(feature = "test-support")]
-                    crate::panics::test_support::reached(
-                        crate::panics::test_support::Handler::PressEnd,
-                    );
-                    this.presses_over();
-                }),
+                cx.listener(|this, _, _, _| this.presses_over()),
             )
             // Escape closes the details of a recording and the list of the members who
             // can be invited. Neither is a layer of the window.
@@ -2507,6 +2502,36 @@ fn pressed_combo(keystroke: &gpui::Keystroke) -> Option<KeyCombo> {
         keys.push(key);
     }
     KeyCombo::new(keys).ok()
+}
+
+/// For the panic tests (ADR 0757): a listener of the window for the end of every press of the
+/// left button in the window, also on an element that covers the shell, such as the cover of a
+/// layer.
+fn press_end_hook() -> Option<gpui::AnyElement> {
+    #[cfg(feature = "test-support")]
+    {
+        Some(
+            gpui::canvas(
+                |_, _, _| (),
+                |_, (), window, _| {
+                    window.on_mouse_event(|event: &gpui::MouseUpEvent, phase, _, _| {
+                        if phase == gpui::DispatchPhase::Bubble
+                            && event.button == gpui::MouseButton::Left
+                        {
+                            crate::panics::test_support::reached(
+                                crate::panics::test_support::Handler::PressEnd,
+                            );
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+            .into_any_element(),
+        )
+    }
+    #[cfg(not(feature = "test-support"))]
+    None
 }
 
 #[cfg(test)]

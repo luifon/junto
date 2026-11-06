@@ -972,82 +972,45 @@ impl Shell {
                     .map(|voice| voice.occupants.as_slice())
                     .unwrap_or_default();
                 after_occupants = !occupants.is_empty();
-                for (seat, occupant) in occupants.iter().enumerate() {
-                    let account_id = occupant.account_id;
-                    let menu = open_menu
-                        .as_ref()
-                        .filter(|(menu, _)| {
-                            menu.channel_id == channel_id && menu.account_id == account_id
-                        })
-                        .map(|(menu, moving)| self.render_person_menu(menu, *moving, window, cx));
-                    let row = OccupantRow::new(
-                        ("occupant", index * 1000 + seat),
-                        occupant_name(occupant),
-                        account_id.as_uuid().as_u128(),
-                    )
-                    .picture(faces.image(account_id))
-                    .presence(faces.presence(account_id))
-                    .name_color(faces.color(account_id))
-                    .when_some(faces.server_id(), |row, server| {
-                        row.profile(crate::ui::OpenProfile {
-                            server,
-                            account: account_id,
-                        })
-                    })
-                    .marks(occupant_marks(occupant))
-                    .selector(format!("occupant:{account_id}"))
-                    .open(menu.is_some());
-                    // Other people keep the volume and moderation menu.
-                    let row = if occupant.is_self {
-                        row
-                    } else {
-                        row.on_menu(Self::handler(cx, move |this, window, cx| {
-                            this.open_person_menu(channel_id, account_id, window, cx);
-                        }))
-                    };
-                    let dragged =
-                        (!occupant.is_self)
-                            .then_some(server_id)
-                            .flatten()
-                            .map(|server_id| PersonDrag {
-                                server_id,
-                                channel_id,
-                                account_id,
-                            });
-                    let name = occupant_name(occupant);
+                // The people of a call of hundreds build only the rows in view of the channel
+                // list (ADR 0735).
+                if !occupants.is_empty() {
+                    let occupants = occupants.to_vec();
+                    let faces = faces.clone();
+                    let open_menu = open_menu.clone();
+                    let shell = cx.weak_entity();
+                    let heights = vec![theme.metrics.occupant_row_height; occupants.len()];
                     rows.push(
-                        div()
-                            .id(("person-drag", index * 1000 + seat))
-                            .relative()
-                            .flex_none()
-                            .when_some(dragged, |row, person| {
-                                row.on_drag(person, move |_, _, _, cx| {
-                                    cx.new(|_| super::person_drag::DragLabel(name.clone()))
-                                })
-                            })
-                            .child(if occupant.is_self {
-                                super::account_menus::account_target(
-                                    SharedString::from(format!(
-                                        "own-occupant:{channel_id}:{account_id}"
-                                    )),
-                                    account_owner,
-                                    Some(super::account_menus::AccountTarget {
-                                        account_id,
-                                        name: occupant_name(occupant).to_string(),
-                                        departed: false,
-                                    }),
-                                    Some(super::account_menus::AccountSource::VoiceOccupant {
-                                        channel_id,
-                                        account_id,
-                                    }),
-                                    row,
-                                    cx,
-                                )
-                            } else {
-                                row.into_any_element()
-                            })
-                            .children(menu)
-                            .into_any_element(),
+                        crate::ui::in_view::in_view(
+                            ("occupants", index),
+                            heights,
+                            0.0,
+                            move |range, window, cx| {
+                                shell
+                                    .update(cx, |this, cx| {
+                                        range
+                                            .map(|seat| {
+                                                this.occupant_row(
+                                                    &occupants[seat],
+                                                    OccupantPlace {
+                                                        channel_id,
+                                                        index,
+                                                        seat,
+                                                        server_id,
+                                                        account_owner,
+                                                    },
+                                                    &faces,
+                                                    open_menu.as_ref(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            },
+                        )
+                        .into_any_element(),
                     );
                 }
                 if let (Some(server_id), Some(voice)) = (server_id, channel.voice.as_ref())
@@ -1109,6 +1072,94 @@ impl Shell {
             }
         }
         (rows, entries)
+    }
+
+    /// The row of a person in a voice channel of the channel list, at the place `seat` of
+    /// the channel `index` of the list.
+    fn occupant_row(
+        &mut self,
+        occupant: &Occupant,
+        place: OccupantPlace,
+        faces: &crate::state::people::ServerFaces,
+        open_menu: Option<&(crate::state::view::PersonMenu, bool)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let OccupantPlace {
+            channel_id,
+            index,
+            seat,
+            server_id,
+            account_owner,
+        } = place;
+        let account_id = occupant.account_id;
+        let menu = open_menu
+            .filter(|(menu, _)| menu.channel_id == channel_id && menu.account_id == account_id)
+            .map(|(menu, moving)| self.render_person_menu(menu, *moving, window, cx));
+        let row = OccupantRow::new(
+            ("occupant", index * 1000 + seat),
+            occupant_name(occupant),
+            account_id.as_uuid().as_u128(),
+        )
+        .picture(faces.image(account_id))
+        .presence(faces.presence(account_id))
+        .name_color(faces.color(account_id))
+        .when_some(faces.server_id(), |row, server| {
+            row.profile(crate::ui::OpenProfile {
+                server,
+                account: account_id,
+            })
+        })
+        .marks(occupant_marks(occupant))
+        .selector(format!("occupant:{account_id}"))
+        .open(menu.is_some());
+        // Other people keep the volume and moderation menu.
+        let row = if occupant.is_self {
+            row
+        } else {
+            row.on_menu(Self::handler(cx, move |this, window, cx| {
+                this.open_person_menu(channel_id, account_id, window, cx);
+            }))
+        };
+        let dragged = (!occupant.is_self)
+            .then_some(server_id)
+            .flatten()
+            .map(|server_id| PersonDrag {
+                server_id,
+                channel_id,
+                account_id,
+            });
+        let name = occupant_name(occupant);
+        div()
+            .id(("person-drag", index * 1000 + seat))
+            .relative()
+            .flex_none()
+            .when_some(dragged, |row, person| {
+                row.on_drag(person, move |_, _, _, cx| {
+                    cx.new(|_| super::person_drag::DragLabel(name.clone()))
+                })
+            })
+            .child(if occupant.is_self {
+                super::account_menus::account_target(
+                    SharedString::from(format!("own-occupant:{channel_id}:{account_id}")),
+                    account_owner,
+                    Some(super::account_menus::AccountTarget {
+                        account_id,
+                        name: occupant_name(occupant).to_string(),
+                        departed: false,
+                    }),
+                    Some(super::account_menus::AccountSource::VoiceOccupant {
+                        channel_id,
+                        account_id,
+                    }),
+                    row,
+                    cx,
+                )
+            } else {
+                row.into_any_element()
+            })
+            .children(menu)
+            .into_any_element()
     }
 
     /// The section of the direct conversations of the server: its title, "New direct
@@ -1590,4 +1641,14 @@ mod tests {
         voice.locked = false;
         assert_eq!(count(&voice), None);
     }
+}
+
+/// The place of a row of a person in the channel list (`Shell::occupant_row`).
+#[derive(Clone, Copy)]
+struct OccupantPlace {
+    channel_id: junto_client_core::protocol::ids::ChannelId,
+    index: usize,
+    seat: usize,
+    server_id: Option<junto_client_core::protocol::ids::ServerId>,
+    account_owner: Option<junto_client_core::book::Owner>,
 }

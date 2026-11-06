@@ -224,5 +224,5 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 core-foundation = "0.10"
 # The native panic test posts a press to the application through AppKit.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSGraphicsContext", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSArray", "NSEnumerator", "NSGeometry"] }

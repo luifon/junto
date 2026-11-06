@@ -302,5 +302,91 @@ pub(crate) fn measure_people(studio: &mut Studio) -> Result<(), String> {
             .map_err(|error| format!("{error:#}"))?;
         studio.cx.run_until_parked();
     }
+    measure_call_members(studio)
+}
+
+/// What the window shows of the call in a case of [`measure_call_members`].
+#[derive(Clone, Copy)]
+enum CallView {
+    /// The stage of the call, with the panel of the call on its first tab.
+    Stage,
+    /// The stage of the call with the members of the call in its panel.
+    Members,
+    /// A text channel: no stage, and the channel list holds the people under the voice
+    /// channel.
+    Text,
+}
+
+/// The time of a frame of a call of 7 and of 601 people in three views: the stage, the stage
+/// with the members of the call, and a text channel with the call in the channel list
+/// (ADR 0914). The cases separate the stage, the member list of the call and the rows of the
+/// people under the voice channel.
+pub(crate) fn measure_call_members(studio: &mut Studio) -> Result<(), String> {
+    const WARM_UP: usize = 5;
+    for (people, view) in [
+        (7u32, CallView::Stage),
+        (601, CallView::Stage),
+        (7, CallView::Members),
+        (601, CallView::Members),
+        (7, CallView::Text),
+        (601, CallView::Text),
+    ] {
+        let servers = vec![
+            super::acme_with_luca(move |call| {
+                let known = call.participants.len() as u32;
+                for index in known..people {
+                    let mut participant = super::participant("Ana");
+                    participant.account_id = super::id(6_000 + index);
+                    participant.identity = format!("seat-{index}");
+                    call.participants.push(participant);
+                }
+            }),
+            harbor(),
+        ];
+        let (window, _, _) = studio.open(
+            Screen::call(
+                "call-member-frames",
+                super::in_call(super::Phase::Connected),
+            )
+            .servers(servers),
+            match view {
+                CallView::Stage => Box::new(super::show_daily),
+                CallView::Members => Box::new(super::show_daily_tab(super::CallTab::Members)),
+                CallView::Text => Box::new(
+                    |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+                        super::select_channel(shell, "general", cx);
+                    },
+                ),
+            },
+        )?;
+        let mut times = Vec::new();
+        for step in 0..WARM_UP + 60 {
+            let started = Instant::now();
+            studio
+                .cx
+                .update_window(window.into(), |_, window, _| window.refresh())
+                .map_err(|error| format!("{error:#}"))?;
+            studio.cx.run_until_parked();
+            if step >= WARM_UP {
+                times.push(started.elapsed());
+            }
+        }
+        println!(
+            "{}",
+            Times(times).line(&format!(
+                "a call of {people} people, {}",
+                match view {
+                    CallView::Stage => "the stage of the call shown",
+                    CallView::Members => "the stage and the members of the call shown",
+                    CallView::Text => "a text channel shown, the call in the channel list",
+                }
+            ))
+        );
+        studio
+            .cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        studio.cx.run_until_parked();
+    }
     Ok(())
 }

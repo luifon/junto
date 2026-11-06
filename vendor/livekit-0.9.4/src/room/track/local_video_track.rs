@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified: this file differs from the published livekit 0.9.4. `set_max_bitrate` sets the
+// maximum bitrate of the published encodings of the track.
+
 use std::{
     fmt::{Debug, Display},
     pin::Pin,
@@ -320,6 +323,23 @@ impl LocalVideoTrack {
 
     pub(crate) fn transceiver(&self) -> Option<RtpTransceiver> {
         self.inner.info.read().transceiver.clone()
+    }
+
+    // Modified: added. The application gives a track whose pictures changed size the bitrate of
+    // the new size; the published version has no way to change it after the publication.
+    /// Sets the maximum bitrate of every encoding of the published track, in bits per second.
+    /// Returns `false` when the track is not published.
+    pub fn set_max_bitrate(&self, bitrate: u64) -> Result<bool, libwebrtc::RtcError> {
+        let Some(transceiver) = self.transceiver() else {
+            return Ok(false);
+        };
+        let sender = transceiver.sender();
+        let mut parameters = sender.parameters();
+        for encoding in &mut parameters.encodings {
+            encoding.max_bitrate = Some(bitrate);
+        }
+        sender.set_parameters(parameters)?;
+        Ok(true)
     }
 
     pub(crate) fn set_transceiver(&self, transceiver: Option<RtpTransceiver>) {

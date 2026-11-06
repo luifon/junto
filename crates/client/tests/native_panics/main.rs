@@ -51,14 +51,39 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let data_dir = tempfile::tempdir().unwrap();
-    let outcome: Rc<RefCell<Option<Result<(), String>>>> = Rc::default();
-    let result = outcome.clone();
     // The client creates its data directory itself, private to the account.
     let directory = data_dir.path().join("junto");
+    // The temporary directory is removed before an end of the process with a failure, which
+    // runs no destructors.
+    let held = Rc::new(RefCell::new(Some(data_dir)));
+    let outcome: Rc<RefCell<Option<Result<(), String>>>> = Rc::default();
+    let result = outcome.clone();
+    // On macOS `App::quit` ends the process inside AppKit with exit code 0 and `run` does not
+    // return, so the result is stated before the application quits, and a failure ends the
+    // process with its own code.
+    let fail = {
+        let held = held.clone();
+        move |failure: &str| -> ! {
+            eprintln!("native_panics: failed: {failure}");
+            drop(held.borrow_mut().take());
+            std::process::exit(1);
+        }
+    };
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
             app::init(cx).unwrap();
+            // The client quits when its last window closes: an end before the result is a
+            // failure.
+            let ended = result.clone();
+            let fail_at_quit = fail.clone();
+            cx.on_app_quit(move |_| {
+                if ended.borrow().is_none() {
+                    fail_at_quit("the application ended before the test did");
+                }
+                async {}
+            })
+            .detach();
             let client = Client::open(ClientOptions::new(directory.clone())).unwrap();
             let start = WindowStart {
                 activate: false,
@@ -68,21 +93,20 @@ fn main() -> ExitCode {
             let window = app::open_main_window(state.clone(), start, cx).unwrap();
             cx.spawn(async move |cx| {
                 let checked = stages(&state, window, &directory, cx).await;
+                match &checked {
+                    Ok(()) => println!("native_panics: passed"),
+                    Err(failure) => fail(failure),
+                }
                 *result.borrow_mut() = Some(checked);
                 cx.update(|cx| cx.quit());
             })
             .detach();
         });
     let outcome = outcome.borrow_mut().take();
+    drop(held.borrow_mut().take());
     match outcome {
-        Some(Ok(())) => {
-            println!("native_panics: passed");
-            ExitCode::SUCCESS
-        }
-        Some(Err(failure)) => {
-            eprintln!("native_panics: failed: {failure}");
-            ExitCode::FAILURE
-        }
+        Some(Ok(())) => ExitCode::SUCCESS,
+        Some(Err(_)) => ExitCode::FAILURE,
         None => {
             eprintln!("native_panics: failed: the application ended before the test did");
             ExitCode::FAILURE

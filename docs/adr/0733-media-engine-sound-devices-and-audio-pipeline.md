@@ -168,6 +168,20 @@ Track permissions after a new connection:
 - `crates/media/tests/mute_order.rs` reads the source of the room: `handle_restarted` sends the permissions before its first `publish_track`. The media live test `share::a_client_of_a_release_before_several_shares_never_receives_a_further_share` makes the call library of a person with two shares connect anew while a test participant of a release from before several shares is in the room, and fails when that participant is given a track of the share of the higher slot.
 - This correction is removed when a pinned upstream version sends the track permissions before it publishes the tracks again, or when the pinned media server keeps the permissions of a participant over a new connection of its session.
 
+The bitrate of a published video track:
+
+- The published version computes the encodings of a video track once, at its publication, and gives the application no way to change them later. The pictures of a shared window change size with the window (ADR 0737), and the bitrate of the share must follow the size.
+- The vendored copy adds `LocalVideoTrack::set_max_bitrate` (`src/room/track/local_video_track.rs`): it sets the maximum bitrate of every encoding of the sender of the published track through `RtpSender::set_parameters` of `libwebrtc`, and returns `false` for a track that is not published.
+- The media live test `share::the_bitrate_of_a_shared_window_follows_its_size` checks that the encoder of a window that grows from 640 × 400 to 1920 × 1080 aims above the bitrate of the first size.
+- This correction is removed when a pinned upstream version can change the encodings of a published track.
+
+The enabled state of a received track:
+
+- The published version disables the native track of a remote publication when the application disables the publication (`RemoteTrackPublication::set_enabled`), and then asks the media server to stop sending it. A disabled native video track of `libwebrtc` gives its sinks a black frame for each frame that arrives, and frames still arrive until the server has the request. The engine disables the camera of a person whom no tile shows (ADR 0770), and when a tile showed the camera again, the last of those black frames was its picture until the next real frame. The window live test `live::received::the_main_window_draws_a_received_camera_after_a_nested_frame` found such a black picture in 11 of 30 runs on two processors of the Linux host, and in none of 30 runs after the correction.
+- The vendored copy (`src/room/publication/remote.rs`) keeps the enabled state in the publication, sends it to the media server as before, and leaves the native track enabled; `is_enabled` reads that state, and a new subscription starts enabled, as it does at the server.
+- The media live test `camera::a_hidden_camera_keeps_its_native_track_enabled_and_returns_with_its_pictures` reads, through the camera check of the engine, that the native track of a hidden camera stays enabled (it was disabled before the correction in every run), and that the first picture after the camera is shown again has the colours of the camera.
+- This correction is removed when a pinned upstream version leaves the native track enabled while the publication is disabled.
+
 Call diagnostics:
 
 - Each media engine has a process-local numeric log identifier. Logs name connection attempts, room connection and closure, sound-state changes, local publication and remote subscription changes and failures. They never log join tokens.

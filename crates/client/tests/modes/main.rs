@@ -18,6 +18,9 @@
 //! unless `JUNTO_TEST_MODES` is `1` and the variables of the media server of the tests are
 //! set. `JUNTO_TEST_MODES_ONLY` names the modes to run, separated by commas (default all).
 //! `JUNTO_TEST_MODES_SECONDS` sets the measured time of each mode (default 120).
+//! `JUNTO_TEST_MODES_CODEC` names the codec of the pictures of the other people, `vp8`
+//! (default) or `h264`: a Mac decodes received H.264 into a pixel buffer of its decoder,
+//! and VP8 into planes (ADR 0774).
 //! `JUNTO_TEST_MODES_PROFILE` names a directory: in the middle of the measured time of each
 //! mode the program writes there what uses the memory and the processor of the process
 //! (`footprint -v`, `vmmap -summary`, `heap`, a `sample` of the threads, and with
@@ -373,6 +376,7 @@ fn main() -> ExitCode {
             Err(failure) => failures.push(format!("{}: {failure}", mode.name())),
         }
     }
+    println!("modes: the other people send their pictures in {}", codec());
     println!(
         "modes: {:<8} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9} {:>8} {:>6} {:>8} {:>8}",
         "mode",
@@ -513,6 +517,20 @@ fn run_mode(mode: Mode) -> ExitCode {
     }
     let (all_draws, picture_draws) = draws(&mut window);
     let drawn = (all_draws - draws_before.0, picture_draws - draws_before.1);
+    // The width at which each camera picture that the window holds was received: the media
+    // server sends the layer of the size at which the window draws the camera.
+    let mut received: Vec<u32> = window
+        .in_shell(|shell, _, _| shell.camera_widths())
+        .into_values()
+        .collect();
+    received.sort_unstable();
+    if !received.is_empty() {
+        println!(
+            "modes: {}: the camera pictures were received {:?} pixels wide",
+            mode.name(),
+            received
+        );
+    }
     let mut failures = check_mode(&mut window, mode, &text, drawn);
     for other in &mut others {
         if let Some(status) = other.child.try_wait().unwrap() {
@@ -766,6 +784,16 @@ impl Drop for Other {
     }
 }
 
+/// The codec of the pictures of the other people (`JUNTO_TEST_MODES_CODEC`).
+#[cfg(target_os = "macos")]
+fn codec() -> String {
+    match std::env::var("JUNTO_TEST_MODES_CODEC").as_deref() {
+        Ok("h264") => "h264".to_owned(),
+        Ok("vp8") | Err(_) => "vp8".to_owned(),
+        Ok(other) => panic!("modes: JUNTO_TEST_MODES_CODEC is vp8 or h264, not {other}"),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn participant_tool() -> String {
     // The directory of this package in the checkout that runs the test, which `cargo test`
@@ -808,6 +836,7 @@ fn enter_call(
             .arg("publish")
             .args(["--url", &join.media_url, "--token", join.token.expose()])
             .args(arguments)
+            .args(["--video-codec", &codec()])
             .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

@@ -1,5 +1,6 @@
 // Modified: this file differs from the published gpui-pre 0.3.8. The test window keeps the
-// accessibility callbacks and can activate them as a screen reader does.
+// accessibility callbacks of its window, and a test can activate accessibility as a screen
+// reader does through the platform (`simulate_a11y_activation`).
 use crate::{
     AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler,
@@ -58,8 +59,8 @@ pub(crate) struct TestWindowState {
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
-    // Modified: the accessibility callbacks that the window gave the platform.
-    a11y_callbacks: Option<crate::A11yCallbacks>,
+    // Modified: the accessibility callbacks of the window.
+    a11y: Option<crate::A11yCallbacks>,
 }
 
 #[derive(Clone)]
@@ -120,7 +121,6 @@ impl TestWindow {
             virtual_keyboard_requests: 0,
             virtual_keyboard_dismissals: 0,
             moved_callback: None,
-            a11y_callbacks: None,
             appearance_change_callback: None,
             request_frame_callback: None,
             frame_wake_count: Rc::new(Cell::new(0)),
@@ -135,6 +135,7 @@ impl TestWindow {
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
+            a11y: None,
         })))
     }
     pub fn simulate_scheduled_frame(&self) -> bool {
@@ -262,16 +263,6 @@ impl TestWindow {
         self.0.lock().frame_wake_count.get()
     }
 
-    // Modified: added. A screen reader connects to the window: the window builds its
-    // accessibility tree from the next frame on, as with a platform adapter.
-    /// Activates the accessibility of the window, as a screen reader that connects does.
-    pub fn simulate_a11y_activation(&self) {
-        let lock = self.0.lock();
-        if let Some(callbacks) = &lock.a11y_callbacks {
-            let _ = (callbacks.activation)();
-        }
-    }
-
     /// Delivers a frame request to the window, as the platform's frame source
     /// would.
     pub fn simulate_frame_request(&self, options: RequestFrameOptions) {
@@ -299,15 +290,29 @@ impl TestWindow {
         self.0.lock().external_drag_files.clone()
     }
 
+    // Modified: added. A test activates accessibility as a screen reader does; the window then
+    // builds its accessibility tree at each draw (`Window::debug_a11y_tree_json`).
+    /// Activates accessibility for the window, as the platform does when a screen reader
+    /// connects. Returns `false` when the window gave no accessibility callbacks.
+    pub fn simulate_a11y_activation(&self) -> bool {
+        let callbacks = self.0.lock().a11y.take();
+        let Some(callbacks) = callbacks else {
+            return false;
+        };
+        let _ = (callbacks.activation)();
+        self.0.lock().a11y = Some(callbacks);
+        true
+    }
+
     pub fn set_start_external_drag_result(&self, result: bool) {
         self.0.lock().start_external_drag_result = result;
     }
 }
 
 impl PlatformWindow for TestWindow {
-    // Modified: the callbacks are kept for `TestWindow::simulate_a11y_activation`.
+    // Modified: the callbacks are kept for `simulate_a11y_activation`.
     fn a11y_init(&self, callbacks: crate::A11yCallbacks) {
-        self.0.lock().a11y_callbacks = Some(callbacks);
+        self.0.lock().a11y = Some(callbacks);
     }
 
     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {

@@ -116,9 +116,51 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 - Camera: the VP8 encoders of the own camera in three simulcast layers (about 16 MiB), the VP8 decoder of the other camera, and the conversion of each received camera picture into a pixel buffer of Core Video on a thread of the runtime of the client.
 - Share: the VP8 encoder of the own share holds about 38 MiB and takes about half of the busy samples on three threads, although the share is published as screen content. The decoder of the watched share holds about 17 MiB of frame buffers. Before the change of the watched share, the client held the watched picture converted to BGRA at the size of the view (about 13.5 MiB over 5 pictures), a copy of it as an image of the window (about 9 MiB), and the textures on the GPU (about 11 MiB).
 
+### Received H.264 pictures on a Mac
+
+Measured on 2026-11-05 on the Mac of the table above, with the code of that day: the own camera of the client is encoded in H.264 by the hardware encoder (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The target `modes` ran the modes `camera` and `cameras` with `JUNTO_TEST_MODES_CODEC` set to the codec of the participants (release build, 120 seconds measured per mode; the participants send cameras of 1280 × 720 at 30 pictures a second in simulcast layers). The widths are those at which the window received the camera pictures that it held, the own camera of 640 × 360 included; the media server sends the layer of the size at which the window draws a camera. The figures differ from the table above, which is from 2026-10-17 and from the code before the changes of ADR 0733 and ADR 0737; the difference is not analysed.
+
+| Mode | Codec | Received widths | Footprint | Processor (average) | Processor (busiest 5 s) |
+|---|---|---|---|---|---|
+| camera | VP8 | 640, 1280 | 80.9 MiB | 29.4 % | 34.4 % |
+| camera | H.264 | 640, 1280 | 77.5 MiB | 27.9 % | 29.2 % |
+| cameras | VP8 | 640, 640, 640, 640 | 85.0 MiB | 31.9 % | 33.9 % |
+| cameras | H.264 | 480, 480, 640, 1280 | 73.7 MiB | 31.5 % | 37.2 % |
+
+A `sample` of 5 seconds in the middle of each mode (about 3,390 samples per thread, one sample about 1.5 ms) counts the work of the pictures. With H.264 the decoder of the system decodes the received pictures (`RTCVideoDecoderH264` with VideoToolbox), and the client converts each decoded pixel buffer into planes (`ObjCFrameBuffer::ToI420`, `NV12ToI420`): 9 samples in the mode `camera` (about 0.3 % of one core) and 6 in the mode `cameras` (about 0.2 %). With VP8 the decoder gives planes and there is no such conversion. For both codecs the follower writes the planes of each camera picture into the pixel buffer that the window paints (`share::picture::surface::convert`): in the mode `camera`, with one received camera at 1280 × 720 and the own camera, 189 samples with VP8 (about 5.6 % of one core) and 176 with H.264 (about 5.2 %); in the mode `cameras` 132 with VP8 and 82 with H.264, at the smaller widths of that mode.
+
+### The call with many people
+
+The time of a frame of the window with a call of many people, with the method of ADR 0914 for many members: the release build of `junto-screens` with `JUNTO_SCREENS_ONLY=call-frames`, the headless renderer, the median and the longest of 60 frames after 5 frames of warming up, each frame a full drawing of the window (`Window::refresh`). The cases separate the stage, the member list of the call and the rows of the people under the voice channel in the channel list: the stage with the first tab of the panel of the call, the stage with the members of the call in the panel, and a text channel, where the window draws no stage and the channel list holds the people of the call. Each case is a call of 7 and of 601 people. The window shows the stage of 601 people in tiles of the size of the strip, and the stage scrolls.
+
+Two processors of the Linux host, on 2026-11-05. "Before" is the code before CD-33, where the stage built one tile and the channel list one row for each person at each frame; "after" is the code with the columns of `ui::in_view` (ADR 0735), which build only the lines in view:
+
+| Case | Before, median | Before, longest | After, median | After, longest |
+|---|---|---|---|---|
+| Stage, 7 people | 16.3 ms | 19.8 ms | 16.4 ms | 18.8 ms |
+| Stage, 601 people | 462.2 ms | 575.5 ms | 27.1 ms | 43.7 ms |
+| Stage and members of the call, 7 people | 20.6 ms | 24.0 ms | 17.8 ms | 23.7 ms |
+| Stage and members of the call, 601 people | 471.6 ms | 577.6 ms | 33.4 ms | 41.5 ms |
+| Text channel, call of 7 in the channel list | 8.6 ms | 14.1 ms | 10.9 ms | 16.6 ms |
+| Text channel, call of 601 in the channel list | 230.8 ms | 280.4 ms | 15.7 ms | 20.6 ms |
+
+The Mac of the table "Junto, per mode", on 2026-11-05, with the code after CD-33 (two runs; the medians of the second run differ by at most 0.2 ms):
+
+| Case | Median | Longest |
+|---|---|---|
+| Stage, 7 people | 3.9 ms | 4.9 ms |
+| Stage, 601 people | 7.2 ms | 8.0 ms |
+| Stage and members of the call, 7 people | 4.8 ms | 6.0 ms |
+| Stage and members of the call, 601 people | 8.4 ms | 10.5 ms |
+| Text channel, call of 7 in the channel list | 3.1 ms | 4.2 ms |
+| Text channel, call of 601 in the channel list | 3.4 ms | 4.3 ms |
+
+Before CD-33, with 601 people the rows of the channel list took about 220 ms of a frame and the tiles of the stage about 240 ms; the member list of the call, a gpui list, added about 9 ms. A first version of the columns built the lines in view at the previous paint with half a view more on each side, and asked for another frame after a scroll: 38.4 ms for the stage of 601 people and 17.5 ms for the text channel on the Linux host. A `sample` of the stage of 601 people on the Mac (3 seconds, with that version and again with the current one) gave most of the thread of the window to the layout, prepaint and paint of the tiles that it built: gpui `request_layout`, `prepaint` and `paint` with the insertion of the bounds of each element, and the generated avatars. The columns now choose their lines in the prepaint of the frame that draws them, without lines out of view. A frame of the stage of 601 people now costs the tiles in view: on the Mac it is within one frame of a display at 60 Hz (16.7 ms), at about twice the frame of the call of 7 people, and on the two processors of the Linux host, where a frame of the call of 7 people already takes about 16 ms, it takes about 1.7 times that frame.
+
 ## Open points
 
-- The modes have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table above is from before both changes.
-- A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes (ADR 0774). The cost on the receiving side is not measured.
+- The modes idle, text, voice, share and `share-camera` have not been measured on macOS since the own camera, and a share of at most 1280 × 720 at 30 pictures per second, are encoded in H.264 by the hardware encoder of the system (ADR 0737), and the processing of the voice works at 48 kHz (ADR 0733). The table "Junto, per mode" is from before both changes; the modes `camera` and `cameras` were measured again (section "Received H.264 pictures on a Mac").
+- A Mac converts each received H.264 picture from the pixel buffer of its decoder into new planes and writes them into a new pixel buffer (ADR 0774). A direct paint of the decoder buffer is not built. By the measurement above it would remove the conversion and the write of each received H.264 picture: for one camera received at 1280 × 720 at 30 pictures a second about 4 to 5 % of one core, for smaller layers less. It needs a new unsafe call (ADR 0774).
+- A call of hundreds of people: a frame of the stage costs the tiles in view (section "The call with many people"). A full drawing of the window builds each tile in view again; a tile whose person did not change is not kept from the previous frame.
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 

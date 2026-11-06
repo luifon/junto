@@ -956,35 +956,11 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
         "the window does not hold the watched share"
     );
     #[cfg(target_os = "macos")]
-    {
-        assert!(
-            images.is_empty(),
-            "the window holds {} images of gpui for the watched share",
-            images.len()
-        );
-        // The window draws again, and paints the pixel buffer inside the picture of the
-        // share.
-        let record = junto_client::ui::record_painted_surfaces();
-        window.cx.update(|window, _| window.refresh());
-        window.settle();
-        let painted = junto_client::ui::take_painted_surfaces();
-        drop(record);
-        let viewport = window.cx.debug_bounds("share-picture").unwrap();
-        let inside = |bounds: gpui::Bounds<gpui::Pixels>| {
-            let near = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other) >= -1.0;
-            near(bounds.left(), viewport.left())
-                && near(bounds.top(), viewport.top())
-                && near(viewport.right(), bounds.right())
-                && near(viewport.bottom(), bounds.bottom())
-                && bounds.size.width > gpui::px(0.0)
-        };
-        assert!(
-            painted
-                .iter()
-                .any(|surface| surface.size == (64, 36) && inside(surface.bounds)),
-            "no pixel buffer of the watched share was painted inside {viewport:?}: {painted:?}"
-        );
-    }
+    assert!(
+        images.is_empty(),
+        "the window holds {} images of gpui for the watched share",
+        images.len()
+    );
     #[cfg(not(target_os = "macos"))]
     {
         assert_eq!(images.len(), 1);
@@ -996,6 +972,227 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
             "the window did not draw the image of the watched share"
         );
     }
+    // The window draws again, and paints the picture inside the picture of the share.
+    let painted = window.painted_pictures();
+    let area = window.cx.debug_bounds("share-picture").unwrap();
+    assert_fitted(&painted, (64, 36), area, "the watched share");
+}
+
+/// The bounds lie inside the area, with one pixel allowed for rounding.
+fn inside(bounds: gpui::Bounds<gpui::Pixels>, area: gpui::Bounds<gpui::Pixels>) -> bool {
+    let near = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other) >= -1.0;
+    near(bounds.left(), area.left())
+        && near(bounds.top(), area.top())
+        && near(area.right(), bounds.right())
+        && near(area.bottom(), bounds.bottom())
+}
+
+/// The picture of `size` whose middle lies in `area` was painted inside `area` with its
+/// proportions, as large as the area allows: it reaches the two edges of the area in one
+/// direction.
+#[track_caller]
+pub(crate) fn assert_fitted(
+    painted: &[junto_client::ui::PaintedPicture],
+    size: (u32, u32),
+    area: gpui::Bounds<gpui::Pixels>,
+    place: &str,
+) {
+    let Some(picture) = painted
+        .iter()
+        .find(|picture| picture.size == size && area.contains(&picture.bounds.center()))
+    else {
+        panic!(
+            "no picture of {size:?} of {place} was painted with its middle in {area:?}: {painted:?}"
+        );
+    };
+    let bounds = picture.bounds;
+    assert!(
+        inside(bounds, area),
+        "the picture of {place} was painted at {bounds:?}, outside its area {area:?}"
+    );
+    let drawn = f32::from(bounds.size.width) / f32::from(bounds.size.height);
+    let own = size.0 as f32 / size.1 as f32;
+    assert!(
+        (drawn / own - 1.0).abs() < 0.01,
+        "the picture of {place} was painted at {bounds:?}, not in its proportions {size:?}"
+    );
+    let full = |one: gpui::Pixels, other: gpui::Pixels| f32::from(one - other).abs() <= 1.0;
+    assert!(
+        full(bounds.size.width, area.size.width) || full(bounds.size.height, area.size.height),
+        "the picture of {place} was painted at {bounds:?}, smaller than its area {area:?} allows"
+    );
+}
+
+/// Shows the own share, with pictures of `size`, as the watched share of a window of
+/// `window_size`, and checks that the window paints the picture inside the picture area of
+/// the stage. Returns that area.
+fn a_watched_share_is_drawn_inside_its_stage(
+    cx: &mut TestAppContext,
+    size: (u32, u32),
+    window_size: gpui::Size<gpui::Pixels>,
+) -> gpui::Bounds<gpui::Pixels> {
+    let (_directory, mut window) = watch_own_share(cx, size, window_size);
+    watched_share_fits(&mut window, size, "the watched share")
+}
+
+/// A window of `window_size` that watches the own share, with pictures of `size`.
+fn watch_own_share(
+    cx: &mut TestAppContext,
+    size: (u32, u32),
+    window_size: gpui::Size<gpui::Pixels>,
+) -> (tempfile::TempDir, Window) {
+    use std::sync::Arc;
+
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_media::engine::{MainPicture, ShareId, ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(window_size));
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let mut call = connected_call(&mut window, "Daily");
+    call.own_shares = std::collections::BTreeMap::from([(
+        0,
+        ShareState::Running(ShareInfo {
+            id: uuid::Uuid::from_u128(2),
+            kind: ShareKind::Window,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size,
+            frame_rate: 30,
+        }),
+    )]);
+    call.watched = Some(ShareId::own(0));
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let pixels = two_colours(size.0, size.1, (200, 30, 30), (30, 30, 200));
+    calls.show_main_picture_for_test(Some(MainPicture {
+        share: ShareId::own(0),
+        frame: Arc::new(VideoPicture::new(&pixels, false, size).unwrap()),
+    }));
+    window.until_pictures_taken();
+    (directory, window)
+}
+
+/// Draws the window once and checks that it paints the watched share, with pictures of
+/// `size`, inside the picture area, and the area inside the stage. Returns the area.
+#[track_caller]
+fn watched_share_fits(
+    window: &mut Window,
+    size: (u32, u32),
+    place: &str,
+) -> gpui::Bounds<gpui::Pixels> {
+    let painted = window.painted_pictures();
+    let area = window.cx.debug_bounds("share-picture").unwrap();
+    let viewport = window.cx.debug_bounds("share-viewport").unwrap();
+    assert!(
+        inside(area, viewport),
+        "{place}: the picture area {area:?} passes the edge of the stage {viewport:?}"
+    );
+    assert_fitted(&painted, size, area, place);
+    area
+}
+
+/// CD-26: a viewer on an ultrawide monitor changes the size of the window while a share of a
+/// screen of 3440 × 1440 (21:9) is watched, in the main window and in the call window in full
+/// screen. After each change the first drawing paints the picture inside the stage, with its
+/// proportions, as large as the stage allows.
+#[gpui::test]
+fn a_very_wide_share_fits_the_stage_at_each_size_of_the_window(cx: &mut TestAppContext) {
+    let size = (3440, 1440);
+    let (_directory, mut window) =
+        watch_own_share(cx, size, gpui::size(gpui::px(1600.0), gpui::px(900.0)));
+    watched_share_fits(&mut window, size, "1600 × 900");
+    for (width, height) in [
+        (3440.0, 1400.0),
+        (1000.0, 800.0),
+        (2560.0, 700.0),
+        (800.0, 1000.0),
+        (5120.0, 1440.0),
+        (1280.0, 720.0),
+    ] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(&mut window, size, &format!("{width} × {height}"));
+    }
+    // The call window in full screen on the ultrawide monitor, then smaller again.
+    window.click("detach-call");
+    let mut detached = window.call_window();
+    watched_share_fits(&mut detached, size, "the call window");
+    detached.click("call-fullscreen");
+    for (width, height) in [
+        (3440.0, 1440.0),
+        (1200.0, 800.0),
+        (3440.0, 1440.0),
+        (640.0, 900.0),
+    ] {
+        detached.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(
+            &mut detached,
+            size,
+            &format!("the call window at {width} × {height}"),
+        );
+    }
+}
+
+/// CD-26: a 16:9 share in a stage that is much wider than high (a window across an ultrawide
+/// monitor) is drawn at the height of the stage, inside it, at each change of the size.
+#[gpui::test]
+fn a_16_9_share_fits_a_very_wide_stage(cx: &mut TestAppContext) {
+    let size = (1920, 1080);
+    let (_directory, mut window) =
+        watch_own_share(cx, size, gpui::size(gpui::px(3440.0), gpui::px(900.0)));
+    let area = watched_share_fits(&mut window, size, "3440 × 900");
+    assert!(
+        f32::from(area.size.width) > 2.0 * f32::from(area.size.height),
+        "the stage {area:?} is not very wide"
+    );
+    for (width, height) in [
+        (5120.0, 900.0),
+        (3440.0, 600.0),
+        (2560.0, 1080.0),
+        (5120.0, 1440.0),
+    ] {
+        window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
+        watched_share_fits(&mut window, size, &format!("{width} × {height}"));
+    }
+}
+
+/// CD-26: a portrait share in a stage that is wider than the picture is drawn at the height
+/// of the stage, inside it, and is not enlarged to the width of the stage.
+#[gpui::test]
+fn a_portrait_share_is_drawn_inside_a_wide_stage(cx: &mut TestAppContext) {
+    let area = a_watched_share_is_drawn_inside_its_stage(
+        cx,
+        (820, 1048),
+        gpui::size(gpui::px(1600.0), gpui::px(900.0)),
+    );
+    assert!(
+        area.size.width > area.size.height,
+        "the stage {area:?} is not wide"
+    );
+}
+
+/// CD-26: a landscape share in a stage that is narrow and short, but wider in its proportions
+/// than the picture, is drawn at the height of the stage, inside it.
+#[gpui::test]
+fn a_landscape_share_is_drawn_inside_a_narrow_and_short_stage(cx: &mut TestAppContext) {
+    let area = a_watched_share_is_drawn_inside_its_stage(
+        cx,
+        (1512, 1048),
+        gpui::size(gpui::px(860.0), gpui::px(540.0)),
+    );
+    assert!(
+        f32::from(area.size.width) / f32::from(area.size.height) > 1512.0 / 1048.0,
+        "the height of the stage {area:?} does not bound the picture"
+    );
 }
 
 /// The small pictures of the shares are drawn as camera pictures are (ADR 0774): on macOS
@@ -1031,7 +1228,7 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
             kind: ShareKind::Window,
             sound: ShareAudio::None,
             sound_held: false,
-            size: (64, 36),
+            size: (36, 64),
             frame_rate: 30,
         }),
     )]);
@@ -1047,45 +1244,42 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
-    let small = || {
-        let pixels = two_colours(64, 36, (200, 30, 30), (30, 30, 200));
-        Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap())
+    // The own share is a portrait window, the other one a landscape screen.
+    let small = |width: u32, height: u32| {
+        let pixels = two_colours(width, height, (200, 30, 30), (30, 30, 200));
+        Arc::new(VideoPicture::new(&pixels, false, (width, height)).unwrap())
     };
     calls.show_small_pictures_for_test(HashMap::from([
-        (ShareId::own(0), small()),
-        (ShareId::of(other, 0), small()),
+        (ShareId::own(0), small(36, 64)),
+        (ShareId::of(other, 0), small(64, 36)),
     ]));
     window.until_pictures_taken();
     let images = window
         .shell
         .read_with(&window.cx, |shell, _| shell.picture_images());
     #[cfg(target_os = "macos")]
-    {
-        assert!(
-            images.is_empty(),
-            "the window holds {} images of gpui for the small pictures",
-            images.len()
-        );
-        let record = junto_client::ui::record_painted_surfaces();
-        window.cx.update(|window, _| window.refresh());
-        window.settle();
-        let painted = junto_client::ui::take_painted_surfaces();
-        drop(record);
-        // The selectors of gpui live as long as the program.
-        let other_card: &'static str = format!("share-card:{other}:0").leak();
-        for card in ["share-card:own:0", other_card] {
-            let bounds = window.cx.debug_bounds(card).unwrap();
-            assert!(
-                painted
-                    .iter()
-                    .any(|surface| surface.size == (64, 36)
-                        && bounds.contains(&surface.bounds.center())),
-                "no pixel buffer of a small picture was painted inside {card} {bounds:?}: {painted:?}"
-            );
-        }
-    }
+    assert!(
+        images.is_empty(),
+        "the window holds {} images of gpui for the small pictures",
+        images.len()
+    );
     #[cfg(not(target_os = "macos"))]
     assert_eq!(images.len(), 2);
+    let painted = window.painted_pictures();
+    // The selectors of gpui live as long as the program.
+    let other_thumbnail: &'static str = format!("share-thumbnail:{other}:0").leak();
+    for (thumbnail, size) in [
+        ("share-thumbnail:own:0", (36, 64)),
+        (other_thumbnail, (64, 36)),
+    ] {
+        // The picture lies inside the border of one pixel of the frame.
+        let area = window
+            .cx
+            .debug_bounds(thumbnail)
+            .unwrap()
+            .inset(gpui::px(1.0));
+        assert_fitted(&painted, size, area, thumbnail);
+    }
 }
 
 /// Sound settings that cannot be read are not replaced by an open microphone without a
@@ -1311,6 +1505,274 @@ fn without_a_graphics_processor_the_cameras_are_taken_at_most_once_in_200_ms(
         .advance_clock(Duration::from_millis(200));
     window.park();
     assert_eq!(held(&mut window).1, Some(22));
+}
+
+/// Shows the call `call` of the window with these people in it, as the server states them.
+pub(crate) fn show_call_with_people(
+    window: &mut Window,
+    world: &World,
+    call: junto_media::calls::ActiveCall,
+    people: &[junto_client_core::protocol::ids::AccountId],
+) {
+    use std::sync::Arc;
+
+    use junto_client::state::view::ServerSnapshot;
+    use junto_client_core::model::ServerModel;
+    use junto_client_core::protocol::call::{Call, CallParticipant, ChannelCall};
+    use junto_client_core::protocol::ids::CallId;
+
+    let CallPlace::Channel {
+        workspace_id,
+        channel_id,
+    } = call.target.place
+    else {
+        unreachable!("a call of a voice channel")
+    };
+    let handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers()[0].clone());
+    let mut snapshot = world.run(handle.api().snapshot()).unwrap().snapshot;
+    show_call(window, call);
+    let workspace = (snapshot.workspaces.iter_mut())
+        .find(|state| state.workspace.id == workspace_id)
+        .unwrap();
+    workspace.calls.retain(|call| call.channel_id != channel_id);
+    workspace.calls.push(ChannelCall {
+        workspace_id,
+        channel_id,
+        in_use: true,
+        call: Some(Call {
+            id: CallId::generate(),
+            place: CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            started_at: Some(time::OffsetDateTime::now_utc()),
+            lock: None,
+            meeting: None,
+            hides_occupants: false,
+            participants: people
+                .iter()
+                .map(|account_id| CallParticipant {
+                    avatar: None,
+                    account_id: *account_id,
+                    identity: format!("seat-{account_id}"),
+                    joined_at: time::OffsetDateTime::now_utc(),
+                    muted: false,
+                    deafened: false,
+                    microphone_block: None,
+                    sound_block: None,
+                    hand_raised: false,
+                    watching: None,
+                    screen_share: None,
+                    screen_shares: Vec::new(),
+                })
+                .collect(),
+            recording: None,
+        }),
+    });
+    let fixture = ServerSnapshot {
+        model: Some(Arc::new(ServerModel::from_snapshot(snapshot))),
+        ..ServerSnapshot::of(&handle)
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_fixture(vec![fixture], cx));
+    });
+    window.settle();
+}
+
+/// CD-26: a portrait camera picture in a tile that is wider than high is drawn inside the
+/// tile, at its height, with its proportions.
+#[gpui::test]
+fn a_portrait_camera_is_drawn_inside_a_wide_tile(cx: &mut TestAppContext) {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use junto_media::camera::CameraState;
+    use junto_media::engine::Person;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let mut call = connected_call(&mut window, "Daily");
+    call.camera = CameraState::Running;
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let pixels = two_colours(36, 64, (200, 30, 30), (30, 30, 200));
+    calls.show_camera_pictures_for_test(HashMap::from([(
+        Person::Own,
+        Arc::new(VideoPicture::new(&pixels, true, (36, 64)).unwrap()),
+    )]));
+    window.until_pictures_taken();
+    let painted = window.painted_pictures();
+    let tile = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
+        .unwrap();
+    assert!(
+        tile.size.width > tile.size.height,
+        "the tile {tile:?} is not wide"
+    );
+    // The picture lies inside the border of one pixel of the tile.
+    assert_fitted(
+        &painted,
+        (36, 64),
+        tile.inset(gpui::px(1.0)),
+        "the camera tile",
+    );
+}
+
+/// An avatar of a picture that is higher than wide, set through the API, is drawn as a square
+/// inside its call tile: the window holds the middle square of the picture, and the avatar
+/// element is a square whatever image it draws.
+#[gpui::test]
+fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let handle = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers()[0].clone());
+    world
+        .run(handle.api().set_avatar(crate::pictures::png(48, 200)))
+        .unwrap();
+    let call = connected_call(&mut window, "Daily");
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let avatar = crate::harness::selector(format!("avatar-image:{}", own.as_uuid().as_u128()));
+    window.until("the avatar picture is drawn in the tile", |window| {
+        window.shows(avatar)
+    });
+    let drawn = window.cx.debug_bounds(avatar).unwrap();
+    let tile = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("call-tile:{own}")))
+        .unwrap();
+    assert!(
+        (f32::from(drawn.size.width) - f32::from(drawn.size.height)).abs() <= 1.0,
+        "the avatar was laid out at {drawn:?}, not as a square"
+    );
+    assert!(
+        inside(drawn, tile),
+        "the avatar {drawn:?} passes the edge of the tile {tile:?}"
+    );
+}
+
+/// CD-33: the stage and the channel list of a call of 601 people build the tiles and the rows
+/// in view only, and a scroll of each brings the last people into view (ADR 0735). The window
+/// holds the profiles of the people, so it reads none: each answer of a read costs a frame
+/// (open item CD8), and 601 reads took longer than the limit of a wait on two processors.
+#[gpui::test]
+fn a_call_of_many_people_draws_the_tiles_and_the_rows_in_view(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ids::AccountId;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(1600.0), gpui::px(900.0))));
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let people: Vec<AccountId> = std::iter::once(own)
+        .chain((1..601).map(|_| AccountId::generate()))
+        .collect();
+    let call = connected_call(&mut window, "Daily");
+    let server_id = admin.handle.id();
+    let profiles = people
+        .iter()
+        .enumerate()
+        .map(|(seat, account)| (*account, format!("Person {seat}"), None))
+        .collect();
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.show_people_fixture(server_id, profiles, cx)
+        })
+    });
+    show_call_with_people(&mut window, &world, call, &people);
+    let tile = |account: &AccountId| crate::harness::selector(format!("call-tile:{account}"));
+    let drawn = |window: &mut Window| {
+        window.settle();
+        people
+            .iter()
+            .filter(|account| window.cx.debug_bounds(tile(account)).is_some())
+            .count()
+    };
+    let at_start = drawn(&mut window);
+    assert!(
+        (1..150).contains(&at_start),
+        "the stage draws {at_start} tiles of 601 people"
+    );
+    let last = people.last().unwrap();
+    assert!(
+        window.cx.debug_bounds(tile(last)).is_none(),
+        "the tile of the last person is drawn before a scroll"
+    );
+    // One turn of the wheel to the end of the stage.
+    window.wheel_by("call-area", -20_000.0);
+    let area = window.cx.debug_bounds("call-area").unwrap();
+    let shown = window.cx.debug_bounds(tile(last));
+    assert!(
+        shown.is_some_and(|shown| shown.top() >= area.top() && shown.bottom() <= area.bottom()),
+        "the tile of the last person is not in view at the end of the stage: {shown:?} in {area:?}"
+    );
+    assert!(
+        window.cx.debug_bounds(tile(&people[0])).is_none(),
+        "the tile of the first person is still drawn at the end of the stage"
+    );
+    let at_end = drawn(&mut window);
+    assert!(
+        (1..150).contains(&at_end),
+        "the stage draws {at_end} tiles of 601 people at its end"
+    );
+
+    // The people under the voice channel in the channel list.
+    let row = |account: &AccountId| crate::harness::selector(format!("occupant:{account}"));
+    let rows = |window: &mut Window| {
+        window.settle();
+        people
+            .iter()
+            .filter(|account| window.cx.debug_bounds(row(account)).is_some())
+            .count()
+    };
+    let at_start = rows(&mut window);
+    assert!(
+        (1..150).contains(&at_start),
+        "the channel list draws {at_start} rows of 601 people"
+    );
+    assert!(
+        window.cx.debug_bounds(row(last)).is_none(),
+        "the row of the last person is drawn before a scroll"
+    );
+    window.wheel_by("channel-list", -40_000.0);
+    let list = window.cx.debug_bounds("channel-list").unwrap();
+    let shown = window.cx.debug_bounds(row(last));
+    assert!(
+        shown.is_some_and(|shown| shown.top() >= list.top() && shown.bottom() <= list.bottom()),
+        "the row of the last person is not in view at the end of the list: {shown:?} in {list:?}"
+    );
+    assert!(
+        window.cx.debug_bounds(row(&people[0])).is_none(),
+        "the row of the first person is still drawn at the end of the list"
+    );
+    let at_end = rows(&mut window);
+    assert!(
+        (1..150).contains(&at_end),
+        "the channel list draws {at_end} rows of 601 people at its end"
+    );
 }
 
 /// ADR 0735: the tiles of the people fill the free area of the stage, with the largest 16:9

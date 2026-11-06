@@ -3350,6 +3350,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("frames") => frames::measure(&mut studio),
         Some("audit-frames") => frames::measure_audit(&mut studio),
         Some("people-frames") => frames::measure_people(&mut studio),
+        Some("call-frames") => frames::measure_call_members(&mut studio),
         // Not a picture: the cost of an animation in view (review M5).
         Some("gif-frames") => messages::measure_animation(&mut studio),
         Some("admin") => admin::draw(&mut studio),

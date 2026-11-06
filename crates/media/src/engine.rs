@@ -58,7 +58,7 @@ pub use share::{
 };
 use share::{MAX_SLOTS, OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 #[cfg(feature = "test-support")]
-pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
+pub use statistics::{CameraCheck, CameraPublication, HeldEngine, RemoteCameraCheck};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;
@@ -326,6 +326,14 @@ enum Internal {
     /// The capture of a share has answered. The share holds the answer.
     ShareStarted(u64),
     ShareEnded(u64, CaptureError),
+    /// The pictures of the capture of a share have a new size.
+    ShareSized(u64),
+    /// A refused set of the bitrate of the picture track of a share is tried once more.
+    ShareBitrateAgain(u64),
+    /// The media server answered the publication again of the picture track of a share in
+    /// the codec of its new size: the generation of the share and the number of the
+    /// publication.
+    ShareReplacementPublished(u64, u64, Result<LocalTrackPublication, String>),
     ShareStopFailed(CaptureNotice),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
@@ -400,6 +408,9 @@ pub struct Engine {
     /// Holds the track permissions of the room back while it holds `true` (a test sets it).
     #[cfg(feature = "test-support")]
     permissions_held: Arc<watch::Sender<bool>>,
+    /// The rule of the encoders of the picture tracks of the shares (a test sets it).
+    #[cfg(feature = "test-support")]
+    encoder_rule: Arc<watch::Sender<sent::EncoderRule>>,
 }
 
 impl Engine {
@@ -490,6 +501,7 @@ impl Engine {
         let camera_pictures = watch::Sender::new(HashMap::new());
         let camera_seen = camera_pictures.subscribe();
         let permissions_held = Arc::new(watch::Sender::new(false));
+        let encoder_rule = Arc::new(watch::Sender::new(sent::EncoderRule::default()));
         let actor = Actor {
             id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
             camera: None,
@@ -513,6 +525,7 @@ impl Engine {
             input_held: false,
             input_used: None,
             camera_wait: (0, false),
+            #[cfg(feature = "test-support")]
             camera_answers: 0,
             frames,
             source,
@@ -536,11 +549,13 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             share_generation: 0,
+            replacements: 0,
             permissions: None,
             permissions_told: None,
             permissions_sent: 0,
             permissions_applied: 0,
             permissions_held: permissions_held.clone(),
+            encoder_rule: encoder_rule.clone(),
             arriving: HashSet::new(),
             remote_pictures: HashMap::new(),
             remote_sounds: HashMap::new(),
@@ -571,7 +586,19 @@ impl Engine {
             small_pictures,
             #[cfg(feature = "test-support")]
             permissions_held,
+            #[cfg(feature = "test-support")]
+            encoder_rule,
         }
+    }
+
+    /// Makes the shares of this engine choose a second VP8 encoder for pictures wider than
+    /// `width`, or the encoder of the system again with `None`, for a test of the publication
+    /// again in the codec of a new size on every system (ADR 0737).
+    #[cfg(feature = "test-support")]
+    pub fn set_second_encoder_above(&self, width: Option<u32>) {
+        self.encoder_rule.send_replace(sent::EncoderRule {
+            second_above: width,
+        });
     }
 
     /// Holds back the track permissions of the room, or applies them again, for a test.
@@ -819,7 +846,9 @@ struct Actor {
     /// The wait of a camera for a media connection: its number, and whether its time
     /// runs. A connection ends the wait.
     camera_wait: (u64, bool),
-    /// The answers of the media server to publications of the camera that were taken.
+    /// The answers of the media server to publications of the camera that were taken. Only
+    /// the camera check of the tests reads it.
+    #[cfg(feature = "test-support")]
     camera_answers: u64,
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,
@@ -858,12 +887,17 @@ struct Actor {
     permissions_sent: u64,
     permissions_applied: u64,
     permissions_held: Arc<watch::Sender<bool>>,
+    /// The rule of the encoders of the picture tracks of the shares.
+    encoder_rule: Arc<watch::Sender<sent::EncoderRule>>,
     /// The share tracks whose publication has not answered and that no share uses any more.
     arriving: HashSet<share::Arriving>,
     /// Why the last own share that ended by itself ended, until the person acts.
     share_ended: Option<CaptureNotice>,
     /// Counts the shares that were started. The result of an earlier one is not used.
     share_generation: u64,
+    /// The number of the last publication again of the picture track of a share in another
+    /// codec (ADR 0737).
+    replacements: u64,
     remote_pictures: HashMap<TrackSid, RemotePicture>,
     remote_sounds: HashMap<TrackSid, RemoteSound>,
     share_order: u64,
@@ -1235,6 +1269,11 @@ impl Actor {
             Internal::ShareStarted(generation) => self.share_started(generation),
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
+            Internal::ShareSized(generation) => self.share_sized(generation),
+            Internal::ShareBitrateAgain(generation) => self.share_bitrate_again(generation),
+            Internal::ShareReplacementPublished(generation, number, result) => {
+                self.share_replacement_published(generation, number, result);
+            }
             Internal::ShareStopFailed(error) => {
                 self.share_ended = Some(error);
                 self.tell_shares();

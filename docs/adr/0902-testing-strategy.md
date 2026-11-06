@@ -165,4 +165,4 @@ Tests on real systems:
 - A release needs a macOS machine, a Linux desktop with both session types, a Windows 11 virtual machine and a clean system of each kind.
 - Capture on Windows is tested in a virtual machine. Real microphones and GPUs on Windows are covered only by the physical-machine tests before a release.
 
-The media engine’s external track-permission hold control is stored only with the `test-support` feature, as is its setter. The actor always owns the operative sender; production builds do not retain a second, unread test-control field.
+The media engine’s external track-permission hold control is stored only with the `test-support` feature, as is its setter. The actor always owns the operative sender; production builds do not retain a second, unread test-control field. The count of the answers of the media server to publications of the camera, which only the camera check of the tests reads, is also compiled only with `test-support`.

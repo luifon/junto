@@ -439,6 +439,9 @@ fn main() -> Result<(), check::Failure> {
         camera.access()
     );
     if std::env::args().any(|arg| arg == "--list") {
+        for (index, device) in devices.iter().enumerate() {
+            println!("{index}: {} ({})", device.name, device.id);
+        }
         return Ok(());
     }
     if std::env::var("JUNTO_TEST_CAMERA_DEVICE").as_deref() != Ok("1") {

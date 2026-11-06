@@ -375,26 +375,24 @@ impl Shell {
         let rows = page.channels.loaded().cloned().unwrap_or_default();
         // "Open" and "Settings" of an archived channel take the focus whatever the
         // permission; "Restore" is the only action that needs "manage channel".
-        let list = std::iter::once(
-            Row::new("archive-header", matches!(page.channels, Listed::Failed(_))).part(),
-        )
+        let list = std::iter::once(Row::part(
+            "archive-header",
+            matches!(page.channels, Listed::Failed(_)),
+        ))
         .chain(
             rows.iter()
-                .map(|row| Row::new(format!("archived-{}", row.id), true)),
+                .map(|row| Row::item(format!("archived-{}", row.id), true, row.name.clone())),
         )
-        .chain(std::iter::once(
-            Row::new(
-                "archive-footer",
-                page.settings
+        .chain(std::iter::once(Row::part(
+            "archive-footer",
+            page.settings
+                .as_ref()
+                .is_some_and(|days| !matches!(days, Listed::Loading))
+                || page
+                    .direct_retention
                     .as_ref()
-                    .is_some_and(|days| !matches!(days, Listed::Loading))
-                    || page
-                        .direct_retention
-                        .as_ref()
-                        .is_some_and(|days| !matches!(days, Listed::Loading)),
-            )
-            .part(),
-        ))
+                    .is_some_and(|days| !matches!(days, Listed::Loading)),
+        )))
         .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();

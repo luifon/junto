@@ -528,6 +528,23 @@ impl Window {
         });
     }
 
+    /// Activates accessibility for the window, as the platform does when a screen reader
+    /// connects (ADR 0702). Returns `false` when the window gave no accessibility callbacks.
+    pub fn activate_accessibility(&mut self) -> bool {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation()
+    }
+
+    /// Draws every window again and returns the call pictures that they painted (ADR 0774).
+    pub fn painted_pictures(&mut self) -> Vec<junto_client::ui::PaintedPicture> {
+        let record = junto_client::ui::record_painted_pictures();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let painted = junto_client::ui::take_painted_pictures();
+        drop(record);
+        painted
+    }
+
     /// Runs the application until it has no work, with one frame of the display.
     #[track_caller]
     pub fn settle(&mut self) {
@@ -1044,6 +1061,24 @@ impl Window {
     #[track_caller]
     pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
         self.wheel_until(list, target, 300.0);
+    }
+
+    /// Turns the wheel once over the element with the name `list` by `by` pixels: negative
+    /// toward the end of the list.
+    #[track_caller]
+    pub fn wheel_by(&mut self, list: &'static str, by: f32) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let area = self
+            .cx
+            .debug_bounds(list)
+            .unwrap_or_else(|| panic!("{list} is not drawn"));
+        self.dispatch(ScrollWheelEvent {
+            position: area.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+        self.settle();
     }
 
     #[track_caller]
@@ -1681,6 +1716,33 @@ pub fn view_input(cx: &mut VisualTestContext, event: impl gpui::InputEvent) {
 pub fn view_redraw(cx: &mut VisualTestContext) {
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
+}
+
+/// Types text into the window, through its platform input handler when no binding takes a
+/// key, as the keyboard does.
+pub fn type_text(cx: &mut VisualTestContext, text: &str) {
+    cx.simulate_input(text);
+}
+
+/// Presses the left button at `from` and moves the pointer to `to` with the button held,
+/// through the input callback of the test window: a drag of the element at `from` starts.
+pub fn drag(
+    cx: &mut VisualTestContext,
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+) {
+    use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent};
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: from,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.simulate_event(MouseMoveEvent {
+        position: to,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test

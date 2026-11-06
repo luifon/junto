@@ -33,9 +33,14 @@ pub const TILE_GAP: f32 = 8.0;
 /// The height that the strip of `count` tiles takes under a focused tile in a stage of
 /// `width`, with the gap above it: the strip wraps into as many rows as its tiles need.
 pub fn strip_height(count: usize, width: f32) -> f32 {
-    let across = (((width + TILE_GAP) / (STRIP_TILE_SIZE.0 + TILE_GAP)).floor() as usize).max(1);
+    let across = strip_across(width);
     let rows = count.div_ceil(across).max(1) as f32;
     rows * STRIP_TILE_SIZE.1 + rows * TILE_GAP
+}
+
+/// The tiles of the strip under a focused tile that fit across a stage of `width`.
+pub fn strip_across(width: f32) -> usize {
+    (((width + TILE_GAP) / (STRIP_TILE_SIZE.0 + TILE_GAP)).floor() as usize).max(1)
 }
 
 /// The columns of a grid of `count` tiles and the size of each tile: the largest 16:9 size

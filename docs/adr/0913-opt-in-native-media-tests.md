@@ -72,11 +72,24 @@ tests need permissions and must never select a physical sound output by fallback
   the rate that capture asked the driver for, limited to 30. A real camera may give fewer
   pictures than asked: a USB camera with exposure priority lowers its rate for a longer
   exposure in low light, so for it the rate is printed and does not decide. Media Foundation does not number its samples, so on Windows the
-  check of lost pictures is absent. It requests no permission dialog and saves no
+  check of lost pictures is absent. A DirectShow device (ADR 0770) counts as lost each picture that its pin could not hand to the capture thread, so for it the check applies. It requests no permission dialog and saves no
   pictures. The optional `rust-linux-devices` job of ADR 0905 authorizes this step
   explicitly; ordinary CI and its ignored tests retain synthetic devices. Linux device
   passthrough exposes only video character devices and their groups. The streaming API
   requires read/write device access even though the test only captures pictures.
+- On Windows, a camera that only DirectShow lists is checked with the same capture of its
+  listed index: `camera-device --list` prints each camera with its identifier, and a
+  DirectShow device is named by its device path or by the display name of its moniker
+  (ADR 0770). The virtual camera of OBS Studio offers no format while OBS does not run, and
+  OBS hands its pictures to the virtual camera only in its own desktop session, so the check
+  runs in the desktop session of the account (a scheduled task with the logon type
+  Interactive, removed after the run), with OBS started with `--startvirtualcam` and a
+  profile whose scene is two colours at 1280 by 720, and OBS is ended after the check. On
+  the Windows machine of the project, OBS Studio 33.0.0 gave 30 checked pictures at 1280 by
+  720 at 30.0 per second with none lost in a release build; a debug build lost about a
+  quarter (21 of the pictures of three seconds), because its conversion of each picture is slower than the camera. NVIDIA
+  Broadcast needs an NVIDIA graphics card, which that machine does not have, and is not
+  checked.
 - On Windows, `camera-device --virtual` checks the production capture against two virtual
   cameras of Media Foundation (`MFCreateVirtualCamera`, Windows 11) without hardware. The
   example `virtual-camera-source` is a COM server with two sources that generate pictures

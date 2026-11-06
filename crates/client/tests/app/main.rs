@@ -25,6 +25,7 @@ mod recording_server;
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+mod accessibility;
 mod account;
 mod admin;
 mod admin_pages;

@@ -1150,12 +1150,11 @@ impl Shell {
             .filter(|row| filter == Filter::All || row.status == AccountStatus::Banned)
             .cloned()
             .collect();
-        let list = std::iter::once(Row::new("people-header", true).part())
-            .chain(
-                rows.iter()
-                    .map(|row| Row::new(format!("account-{}", row.id), true).account(row.id)),
-            )
-            .chain(std::iter::once(Row::new("people-footer", false).part()))
+        let list = std::iter::once(Row::part("people-header", true))
+            .chain(rows.iter().map(|row| {
+                Row::item(format!("account-{}", row.id), true, row.name.clone()).account(row.id)
+            }))
+            .chain(std::iter::once(Row::part("people-footer", false)))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
@@ -1338,25 +1337,29 @@ impl Shell {
         } else {
             Vec::new()
         };
-        let list = std::iter::once(
-            Row::new("members-header", matches!(page.members, MemberList::Failed)).part(),
-        )
+        let list = std::iter::once(Row::part(
+            "members-header",
+            matches!(page.members, MemberList::Failed),
+        ))
         .chain(members.iter().map(|row| {
-            Row::new(
+            Row::item(
                 format!("member-{}", row.account_id),
                 row.assignable.is_some() || matches!(row.remove, Some(Ok(()))),
+                row.name.clone(),
             )
             .account(row.account_id)
         }))
-        .chain(std::iter::once(
-            Row::new(
-                "members-add-header",
-                matches!(page.addable, Some(Listed::Failed(_))),
-            )
-            .part(),
-        ))
+        .chain(std::iter::once(Row::part(
+            "members-add-header",
+            matches!(page.addable, Some(Listed::Failed(_))),
+        )))
         .chain(addable.iter().map(|row| {
-            Row::new(format!("member-addable-{}", row.account_id), true).account(row.account_id)
+            Row::item(
+                format!("member-addable-{}", row.account_id),
+                true,
+                row.name.clone(),
+            )
+            .account(row.account_id)
         }))
         .collect();
         self.admin.list.take(Some(view), list, window, cx);
@@ -2023,11 +2026,19 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        let list = std::iter::once(Row::new("invites-header", true).part())
-            .chain(
-                rows.iter()
-                    .map(|row| Row::new(format!("invite-{}", row.id), row.may_revoke)),
-            )
+        let cycle = self.state.read(cx).hour_cycle();
+        let list = std::iter::once(Row::part("invites-header", true))
+            .chain(rows.iter().map(|row| {
+                Row::item(
+                    format!("invite-{}", row.id),
+                    row.may_revoke,
+                    format!(
+                        "{}, {}",
+                        txt::invite_creator(row.creator.as_deref()),
+                        txt::invite_times(row.created, row.expires, cycle)
+                    ),
+                )
+            }))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
@@ -2142,10 +2153,10 @@ impl Shell {
     ) -> AnyElement {
         self.settle_people(view, window, cx);
         let rows = page.requests.loaded().cloned().unwrap_or_default();
-        let list = std::iter::once(Row::new("requests-header", true).part())
+        let list = std::iter::once(Row::part("requests-header", true))
             .chain(
                 rows.iter()
-                    .map(|row| Row::new(format!("request-{}", row.id), true)),
+                    .map(|row| Row::item(format!("request-{}", row.id), true, row.name.clone())),
             )
             .collect();
         self.admin.list.take(Some(view), list, window, cx);

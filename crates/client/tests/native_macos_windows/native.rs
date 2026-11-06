@@ -14,8 +14,10 @@ use junto_media::{
     share::synthetic::SyntheticCapture,
 };
 use objc2::{MainThreadMarker, rc::Retained};
-use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSWindow};
-use objc2_foundation::NSSize;
+use objc2_app_kit::{
+    NSApplication, NSApplicationDelegate, NSWindow, NSWindowButton, NSWindowStyleMask,
+};
+use objc2_foundation::{NSPoint, NSSize};
 use std::{
     cell::RefCell,
     path::Path,
@@ -90,6 +92,66 @@ fn windows() -> Vec<Retained<NSWindow>> {
         .collect()
 }
 
+/// The main window draws its content up to its top edge, and its headers act as the title bar
+/// (ADR 0703): the client asks gpui for a transparent title bar, for the window controls at
+/// `MAIN_WINDOW_CONTROLS` and for the move of the window by the application (the options that
+/// `open_main_window` gave gpui, `app::OpenedTitleBar`); the native window
+/// has a content view of its full size with a transparent title bar, its close button at that
+/// place, and the content of the window reaches the band of the title bar.
+///
+/// That the content view takes the presses in the title bar (`app_owns_titlebar_drag`) is
+/// answered by a private method of AppKit (`_opaqueRectForWindowMoveWhenInTitlebar`), which
+/// only an untyped message, unsafe code, can call; the test reads that setting in the options
+/// that `open_main_window` gave gpui.
+fn title_bar(window: &NSWindow, opened: app::OpenedTitleBar, reaches: bool) -> Result<(), String> {
+    let controls = app::MAIN_WINDOW_CONTROLS;
+    if !opened.app_owns_titlebar_drag
+        || !opened.appears_transparent
+        || opened.traffic_light_position
+            != Some(gpui::point(gpui::px(controls.0), gpui::px(controls.1)))
+    {
+        return Err(format!(
+            "the main window was opened without its own title bar: {opened:?}"
+        ));
+    }
+    if !window
+        .styleMask()
+        .contains(NSWindowStyleMask::FullSizeContentView)
+    {
+        return Err("the content view of the main window is not of its full size".into());
+    }
+    if !window.titlebarAppearsTransparent() {
+        return Err("the title bar of the main window is not transparent".into());
+    }
+    let content = window
+        .contentView()
+        .ok_or("the main window has no content view")?;
+    let layout = window.contentLayoutRect();
+    if content.frame().size.height <= layout.size.height + 1.0 {
+        return Err(format!(
+            "the content of the main window ({:?}) does not reach above its layout area ({layout:?})",
+            content.frame()
+        ));
+    }
+    let close = window
+        .standardWindowButton(NSWindowButton::CloseButton)
+        .ok_or("the main window has no close button")?;
+    let place = close.frame().origin;
+    if (place.x - f64::from(controls.0)).abs() > 1.0
+        || (place.y - f64::from(controls.1)).abs() > 1.0
+    {
+        return Err(format!(
+            "the close button of the main window is at {place:?}, not at {controls:?}"
+        ));
+    }
+    if !reaches {
+        return Err(
+            "the client does not treat the headers of the main window as its title bar".into(),
+        );
+    }
+    Ok(())
+}
+
 async fn until(
     cx: &mut AsyncApp,
     description: &str,
@@ -131,8 +193,19 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
     let directory = directory.to_owned();
     let application = gpui_platform::application().with_assets(Assets);
     application.on_reopen(|cx| junto_client::notify::bring_to_front(None, cx));
+    let ended = outcome.clone();
     application.run(move |cx| {
         app::init(cx).unwrap();
+        // `quit` ends the process inside AppKit with exit code 0, and the client quits when its
+        // last window closes: an end before the result is a failure.
+        cx.on_app_quit(move |_| {
+            if ended.borrow().is_none() {
+                eprintln!("native_macos_windows: the application ended before the native checks");
+                std::process::exit(1);
+            }
+            async {}
+        })
+        .detach();
         let client = Client::open(ClientOptions::new(directory.join("profile"))).unwrap();
         junto_client::panics::record_into(client.data_dir().root());
         let start = WindowStart {
@@ -155,6 +228,17 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                 })
                 .await?;
                 let main_native = windows().pop().unwrap();
+                if !restoring {
+                    let (reaches, opened) = cx.update(|cx| {
+                        let reaches = main
+                            .update(cx, |_, window, cx| {
+                                junto_client::shell::title_bar::reaches_title_bar(window, cx)
+                            })
+                            .unwrap();
+                        (reaches, *cx.global::<app::OpenedTitleBar>())
+                    });
+                    title_bar(&main_native, opened, reaches)?;
+                }
                 cx.update(|cx| detached::open(state.clone(), cx));
                 until(cx, "the detached call window appears", |_| {
                     windows().len() == 2
@@ -202,7 +286,10 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                         .zip(maximized)
                         .all(|(normal, saved)| same_geometry(normal, saved))
                     {
-                        return Err("maximizing replaced the normal placement".into());
+                        return Err(format!(
+                            "maximizing replaced the normal placement: {normal:?} before, \
+                             {maximized:?} after"
+                        ));
                     }
                 } else {
                     let normal: [WindowPlacement; 2] = serde_json::from_slice(
@@ -246,6 +333,55 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                         },
                     )
                     .await?;
+                    // A zoomed window that is moved, then zoomed and unzoomed again: both
+                    // keep its size and only move it, so AppKit sends no resize. The window
+                    // is then not reported as maximized, and a resize is saved as its normal
+                    // placement (review L1, ADR 0757).
+                    main_native.performZoom(None);
+                    until(cx, "the main window is zoomed again", |cx| {
+                        main_native.isZoomed() && placements(&state, cx)[0].maximized
+                    })
+                    .await?;
+                    let frame = main_native.frame();
+                    main_native
+                        .setFrameOrigin(NSPoint::new(frame.origin.x + 40.0, frame.origin.y - 40.0));
+                    until(cx, "the moved window is no longer zoomed", |_| {
+                        !main_native.isZoomed()
+                    })
+                    .await?;
+                    main_native.performZoom(None);
+                    until(cx, "the moved window is zoomed by a move", |_| {
+                        main_native.isZoomed()
+                    })
+                    .await?;
+                    main_native.performZoom(None);
+                    until(
+                        cx,
+                        "a window unzoomed by a move is not reported as maximized",
+                        |cx| {
+                            !main_native.isZoomed()
+                                && !placements(&state, cx)[0].maximized
+                                && main
+                                    .update(cx, |_, window, _| {
+                                        !matches!(
+                                            window.window_bounds(),
+                                            WindowBounds::Maximized(_)
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                        },
+                    )
+                    .await?;
+                    main_native.setContentSize(NSSize::new(820.0, 560.0));
+                    until(
+                        cx,
+                        "a resize after it is saved as the normal placement",
+                        |cx| {
+                            let saved = placements(&state, cx);
+                            saved[0].width == 820 && !saved[0].maximized
+                        },
+                    )
+                    .await?;
                     main_native.performClose(None);
                     until(cx, "only the detached call window remains", |cx| {
                         cx.windows().len() == 1 && call_native.isVisible()
@@ -275,15 +411,25 @@ fn child(restoring: bool, directory: &Path) -> Result<(), String> {
                 }
                 Ok(())
             }
-            .await;
+            .await
+            .and_then(|()| {
+                if junto_client::panics::panics_in_this_process() == 0 {
+                    Ok(())
+                } else {
+                    Err("a native window callback panicked".to_owned())
+                }
+            });
+            // `quit` ends the process inside AppKit with exit code 0 and `run` does not
+            // return, so a failure is stated here and ends the process with its own code.
+            if let Err(error) = &result {
+                eprintln!("native_macos_windows: {error}");
+                std::process::exit(1);
+            }
             *answer.borrow_mut() = Some(result);
             cx.update(|cx| cx.quit());
         })
         .detach();
     });
     let result = outcome.borrow_mut().take();
-    if junto_client::panics::panics_in_this_process() != 0 {
-        return Err("a native window callback panicked".into());
-    }
     result.unwrap_or_else(|| Err("the application ended before the native checks".into()))
 }
