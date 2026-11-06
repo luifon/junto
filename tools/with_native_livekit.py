@@ -149,25 +149,31 @@ RULE = "junto-test-livekit"
 # The firewall profile of each category of a connected network.
 PROFILE_OF = {"Public": "Public", "Private": "Private", "DomainAuthenticated": "Domain"}
 # Reads, without elevation, the state of the firewall that decides whether the server may start:
-# the categories of the connected networks, whether the firewall of each profile is on, and the
-# rules of the name in the store that is in effect, with their filters.
+# the categories of the connected networks; for each profile whether its firewall is on, whether
+# it takes the local rules and which interfaces it leaves out; and the rules of the name in the
+# store that is in effect, with their status and every filter.
 STATE_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 function Texts($values) { ,@($values | ForEach-Object { [string]$_ }) }
 $networks = Texts (Get-NetConnectionProfile | ForEach-Object { $_.NetworkCategory })
 $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object {
-    @{ name = [string]$_.Name; enabled = [string]$_.Enabled } })
+    @{ name = [string]$_.Name; enabled = [string]$_.Enabled
+       allow_local_rules = [string]$_.AllowLocalFirewallRules
+       disabled_interfaces = Texts $_.DisabledInterfaceAliases } })
 $rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'RULE_NAME' -ErrorAction SilentlyContinue |
     ForEach-Object {
         $application = $_ | Get-NetFirewallApplicationFilter
         $port = $_ | Get-NetFirewallPortFilter
         $address = $_ | Get-NetFirewallAddressFilter
-        $interface = $_ | Get-NetFirewallInterfaceTypeFilter
+        $type = $_ | Get-NetFirewallInterfaceTypeFilter
+        $interface = $_ | Get-NetFirewallInterfaceFilter
         @{ enabled = [string]$_.Enabled; direction = [string]$_.Direction; action = [string]$_.Action
-           profile = [string]$_.Profile; program = [string]$application.Program
+           profile = [string]$_.Profile; primary_status = [string]$_.PrimaryStatus
+           enforcement = Texts $_.EnforcementStatus; program = [string]$application.Program
            protocol = [string]$port.Protocol; local_port = Texts $port.LocalPort
-           remote = Texts $address.RemoteAddress; local = Texts $address.LocalAddress
-           interface = [string]$interface.InterfaceType } })
+           remote_port = Texts $port.RemotePort; remote = Texts $address.RemoteAddress
+           local = Texts $address.LocalAddress; interface_type = [string]$type.InterfaceType
+           interface_alias = Texts $interface.InterfaceAlias } })
 ConvertTo-Json -Depth 4 -Compress @{ networks = $networks; profiles = $profiles; rules = $rules }
 """.replace("RULE_NAME", RULE)
 
@@ -176,32 +182,99 @@ def state_command():
     return ["powershell", "-NoProfile", "-NonInteractive", "-Command", STATE_SCRIPT]
 
 
-def unprotected(state, program):
-    """Why the firewall does not keep other machines from the UDP port of `program`, or None.
-    The firewall of the profile of every connected network is on (of every profile when no
-    network is connected), and an enabled inbound rule of the name blocks every protocol or
-    UDP to the program, on every port, from every remote address, to every local address, on
-    every interface, in those profiles."""
-    needed = {PROFILE_OF.get(network, network) for network in state.get("networks") or []}
-    needed = needed or set(PROFILE_OF.values())
-    enabled = {profile.get("name"): profile.get("enabled") for profile in state.get("profiles") or []}
-    off = sorted(name for name in needed if enabled.get(name) != "True")
-    if off:
-        return f"the firewall is off in the profile {', '.join(off)} of a connected network"
+# The values that prove that a profile keeps other machines out with the rule: the firewall on,
+# the local rules taken (not left out by a policy), and no interface left out.
+PROFILE_PROOF = {
+    "enabled": {"True"},
+    "allow_local_rules": {"True", "NotConfigured"},
+}
 
-    def blocks(rule):
-        profile = rule.get("profile", "")
-        return (rule.get("enabled") == "True" and rule.get("direction") == "Inbound"
-                and rule.get("action") == "Block" and rule.get("program", "").lower() == str(program).lower()
-                and rule.get("protocol") in ("Any", "UDP") and rule.get("local_port") == ["Any"]
-                and rule.get("remote") == ["Any"] and rule.get("local") == ["Any"]
-                and rule.get("interface") == "Any"
-                and (profile == "Any" or all(name in profile for name in needed)))
 
-    if not any(blocks(rule) for rule in state.get("rules") or []):
-        return (f"no enabled inbound rule {RULE} blocks UDP to {program} from every address in the "
-                f"profile {', '.join(sorted(needed))}")
+def no_interface_left_out(value):
+    """`DisabledInterfaceAliases` names no interface: empty, `NotConfigured`, or one empty
+    string, which Windows reports for a profile without an exclusion."""
+    return isinstance(value, list) and all(entry in ("", "NotConfigured") for entry in value)
+
+
+def enforced(value):
+    """`EnforcementStatus` of the rule in the active store proves it in force: Windows reports
+    each status of the rule once (["ProfileInactive", "Enforced"] for a rule of every profile on
+    a machine with one connected network), so the list is read as a set, which holds
+    `Enforced` and else only `ProfileInactive`. A profile of a connected network is not
+    inactive, and every status that leaves the rule out of force is neither value."""
+    return (isinstance(value, list) and "Enforced" in value
+            and all(entry in ("Enforced", "ProfileInactive") for entry in value))
+# The values that prove that the rule blocks UDP to the program from every machine: in force,
+# inbound, every protocol or UDP, every port at both ends, every address at both ends, every
+# interface by type and by name.
+RULE_PROOF = {
+    "enabled": {"True"},
+    "direction": {"Inbound"},
+    "action": {"Block"},
+    "primary_status": {"OK"},
+    "protocol": {"Any", "UDP"},
+    "local_port": {("Any",)},
+    "remote_port": {("Any",)},
+    "remote": {("Any",)},
+    "local": {("Any",)},
+    "interface_type": {"Any"},
+    "interface_alias": {("Any",)},
+}
+
+
+def proven(fields, proof):
+    """The first field of `proof` whose value in `fields` is absent or not a proving value."""
+    for name, values in proof.items():
+        value = fields.get(name) if isinstance(fields, dict) else None
+        value = tuple(value) if isinstance(value, list) else value
+        if not isinstance(value, (str, tuple)) or value not in values:
+            return f"{name} is {value!r}"
     return None
+
+
+def unprotected(state, program):
+    """Why the firewall is not proven to keep other machines from the UDP port of `program`, or
+    None. Every value that is not read, or that is not one that proves it, refuses: the
+    profile of every connected network (every profile when no network is connected) passes
+    PROFILE_PROOF, and an inbound rule of the name for the program, in every such profile,
+    passes RULE_PROOF."""
+    if not isinstance(state, dict):
+        return "the state of the firewall was not read"
+    networks = state.get("networks")
+    profiles = state.get("profiles")
+    rules = state.get("rules")
+    if not all(isinstance(part, list) for part in (networks, profiles, rules)):
+        return "the state of the firewall was not read whole"
+    if not all(isinstance(network, str) for network in networks):
+        return "the categories of the networks were not read"
+    needed = {PROFILE_OF.get(network, network) for network in networks} or set(PROFILE_OF.values())
+    for name in sorted(needed):
+        found = [held for held in profiles if isinstance(held, dict) and held.get("name") == name]
+        if len(found) != 1:
+            return f"the profile {name} of a connected network was not read"
+        why = proven(found[0], PROFILE_PROOF)
+        if why is None and not no_interface_left_out(found[0].get("disabled_interfaces")):
+            why = f"disabled_interfaces is {found[0].get('disabled_interfaces')!r}"
+        if why:
+            return f"the profile {name} of a connected network is not proven to take the rule: {why}"
+    reasons = []
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("program"), str) \
+                or rule["program"].lower() != str(program).lower():
+            continue
+        profile = rule.get("profile")
+        why = proven(rule, RULE_PROOF)
+        if why is None and not enforced(rule.get("enforcement")):
+            why = f"enforcement is {rule.get('enforcement')!r}"
+        if why is None and not (isinstance(profile, str)
+                                and (profile == "Any" or all(name in profile for name in needed))):
+            why = f"profile is {profile!r}"
+        if why is None:
+            return None
+        reasons.append(why)
+    detail = f": {'; '.join(reasons)}" if reasons else ""
+    return (f"no rule {RULE} is proven to block UDP to {program} from every machine in the profile "
+            f"{', '.join(sorted(needed))}{detail}")
 
 
 def protection(program, run=subprocess.run):

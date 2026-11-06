@@ -146,12 +146,18 @@ class Select(unittest.TestCase):
             listed.write_text("#[cfg(any(\n    windows,\n    unix\n))]\nfn d() {\n    let a = 1;\n}\n")
             alone = source / "alone.rs"
             alone.write_text("#[cfg(\n    windows\n)]\nfn e() {\n    let a = 1;\n}\n")
+            nested = source / "nested.rs"
+            nested.write_text("#[cfg(\n    any(windows)\n)]\npub fn limit() -> usize {\n    let a = 1;\n    a\n}\n")
+            attribute = source / "attribute.rs"
+            attribute.write_text('#[cfg_attr(windows, path = "w.rs")]\nmod part;\nfn g() {\n    let a = 1;\n}\n')
+            commented = source / "commented.rs"
+            commented.write_text("// The same on windows.\nfn h() {\n    let a = 1;\n}\n")
             neither = source / "neither.rs"
-            neither.write_text("// windows of the call\nfn f() {\n    let unix_time = 1;\n}\n")
+            neither.write_text("// The share of a window.\nfn f() {\n    let unix_time = 1;\n    let windows_share = 1;\n}\n")
             subprocess.run([*git, "add", "."], check=True)
             subprocess.run([*git, "commit", "--quiet", "-m", "one"], check=True, env=identity)
             windows.write_text('#[cfg(windows)]\nfn open() {\n    let a = 2;\n}\n')
-            for path in (spread, listed, alone, neither):
+            for path in (spread, listed, alone, nested, attribute, commented, neither):
                 path.write_text(path.read_text().replace("= 1;", "= 2;"))
             plain.write_text("fn a() { let b = 1; }\n")
             gone.unlink()
@@ -160,13 +166,15 @@ class Select(unittest.TestCase):
             here = os.getcwd()
             os.chdir(directory)
             try:
-                names = ["mod", "plain", "gone", "spread", "listed", "alone", "neither"]
+                names = ["mod", "plain", "gone", "spread", "listed", "alone", "nested", "attribute", "commented",
+                         "neither"]
                 found = changes.system_files("HEAD~1", "HEAD", [f"crates/media/src/share/{name}.rs" for name in names])
                 chosen = changes.from_git("HEAD~1", "HEAD")
             finally:
                 os.chdir(here)
-            self.assertEqual(found, [f"crates/media/src/share/{name}.rs"
-                                     for name in ["alone", "gone", "listed", "mod", "spread"]])
+            # A word in a comment counts too; a longer word that holds one does not.
+            self.assertEqual(found, [f"crates/media/src/share/{name}.rs" for name in
+                                     ["alone", "attribute", "commented", "gone", "listed", "mod", "nested", "spread"]])
             self.assertEqual(chosen["rust-windows"][0], "base+live+crates")
 
     def test_the_lines_and_paths_of_a_commit_range_come_from_git(self):
