@@ -1107,6 +1107,9 @@ pub const PUSH_TO_TALK: &str = "Push to talk";
 pub const TALK_KEY: &str = "Key";
 pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
      sends it only while you hold the key.";
+pub const SOUND_OFF_MUTES: &str = "Turning the sound off also mutes the microphone";
+pub const SOUND_OFF_MUTES_HELP: &str =
+    "Turning the sound on returns the microphone to how it was. Unmuting turns the sound on.";
 pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";

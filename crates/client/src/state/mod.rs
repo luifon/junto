@@ -504,6 +504,8 @@ pub struct AppState {
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
+    /// Whether the microphone was muted when the sound was turned off and muted it.
+    muted_before_sound_off: Option<bool>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
     device_checks: Option<device_checks::CheckSession>,
     device_check_sequence: u64,
@@ -1050,6 +1052,7 @@ impl AppState {
             client,
             calls,
             voice_failed,
+            muted_before_sound_off: None,
             camera_devices: Vec::new(),
             device_checks: None,
             device_check_sequence: 0,
@@ -2499,13 +2502,41 @@ impl AppState {
     pub fn use_microphone(&mut self, action: &MicrophoneAction) {
         match action {
             MicrophoneAction::Close => self.calls.mute(),
-            MicrophoneAction::Open(seat) => self.calls.unmute_in(seat.as_ref()),
+            MicrophoneAction::Open(seat) => {
+                self.sound_on_for_microphone();
+                self.calls.unmute_in(seat.as_ref());
+            }
         }
     }
 
-    /// Turns the sound off or on, as the control showed when it was drawn.
+    /// Turns the sound off or on, as the control showed when it was drawn. With the setting
+    /// "Turning the sound off also mutes the microphone", turning the sound off mutes the
+    /// microphone, and turning it on returns the microphone to its state before.
     pub fn set_sound_off(&mut self, off: bool) {
+        let calls = self.calls.view();
+        if self.known.media.voice.sound_off_mutes && off != calls.deafened {
+            if off {
+                self.muted_before_sound_off = Some(calls.muted);
+                self.calls.mute();
+            } else if self.muted_before_sound_off.take() == Some(false) {
+                self.calls.unmute_in(self.calls.seat().as_ref());
+            }
+        }
         self.calls.set_deafened(off);
+    }
+
+    /// Opening the microphone while the sound is off also turns the sound on, with the
+    /// setting "Turning the sound off also mutes the microphone".
+    fn sound_on_for_microphone(&mut self) {
+        if self.known.media.voice.sound_off_mutes && self.calls.view().deafened {
+            self.muted_before_sound_off = None;
+            self.calls.set_deafened(false);
+        }
+    }
+
+    pub fn set_sound_off_mutes(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.muted_before_sound_off = None;
+        self.change_voice(cx, move |voice| voice.sound_off_mutes = on);
     }
 
     /// The push-to-talk key is held or released.

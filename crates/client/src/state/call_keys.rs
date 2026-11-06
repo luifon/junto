@@ -127,6 +127,7 @@ impl AppState {
             return;
         };
         if calls.muted {
+            self.sound_on_for_microphone();
             self.calls.unmute_in(Some(&call.seat()));
         } else {
             self.calls.mute();

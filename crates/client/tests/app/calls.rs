@@ -199,7 +199,36 @@ fn the_microphone_and_the_sound_button_hold_the_setting_of_the_person_outside_a_
     window.until("the sound is off", |window| {
         window.view().controls.sound_off
     });
-    // The keyboard reaches both buttons.
+    // Unmuting while the sound is off turns the sound on (ADR 0739).
+    window.click("microphone");
+    window.until("the microphone is open and the sound on", |window| {
+        let controls = window.view().controls;
+        controls.microphone == MicrophoneButton::Open && !controls.sound_off
+    });
+    // The sound off mutes the open microphone, and the sound on opens it again.
+    window.click("sound-output");
+    window.until("the sound off muted the microphone", |window| {
+        let controls = window.view().controls;
+        controls.sound_off && controls.microphone == MicrophoneButton::Muted
+    });
+    window.click("sound-output");
+    window.until("the microphone is open again", |window| {
+        let controls = window.view().controls;
+        !controls.sound_off && controls.microphone == MicrophoneButton::Open
+    });
+    // With the setting off the two are apart.
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_sound_off_mutes(false, cx)
+    });
+    window.click("sound-output");
+    window.until("the sound is off", |window| {
+        window.view().controls.sound_off
+    });
+    assert_eq!(window.view().controls.microphone, MicrophoneButton::Open);
+    window.click("microphone");
+    window.until("the microphone is closed", |window| {
+        window.view().controls.microphone == MicrophoneButton::Muted
+    });
     window.click("microphone");
     window.until("the microphone is open", |window| {
         window.view().controls.microphone == MicrophoneButton::Open
@@ -269,9 +298,15 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.click_in_settings("noise-suppression");
     window.click_in_settings("echo-cancellation");
     window.click_in_settings("echo-cancellation");
+    assert!(
+        voice(&mut window).sound_off_mutes,
+        "the sound off mutes by default"
+    );
+    window.click_in_settings("sound-off-mutes");
     window.until("the settings are used", |window| {
         let voice = voice(window);
-        voice.input_mode == InputMode::PushToTalk
+        !voice.sound_off_mutes
+            && voice.input_mode == InputMode::PushToTalk
             && voice.talk_key == TalkKey::Control
             && !voice.noise_suppression
             && voice.echo_cancellation
@@ -293,6 +328,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     assert!(text.contains("\"talk_key\": \"control\""), "{text}");
     assert!(text.contains("\"voice_threshold\": -45"), "{text}");
+    assert!(text.contains("\"sound_off_mutes\": false"), "{text}");
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");

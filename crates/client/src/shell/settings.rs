@@ -1196,21 +1196,28 @@ impl Shell {
         }
         for (part, on, title, sentence, selector) in [
             (
-                ProcessingPart::EchoCancellation,
+                None,
+                voice.sound_off_mutes,
+                text::SOUND_OFF_MUTES,
+                text::SOUND_OFF_MUTES_HELP,
+                "sound-off-mutes",
+            ),
+            (
+                Some(ProcessingPart::EchoCancellation),
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                ProcessingPart::NoiseSuppression,
+                Some(ProcessingPart::NoiseSuppression),
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                ProcessingPart::AutomaticGain,
+                Some(ProcessingPart::AutomaticGain),
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
@@ -1246,8 +1253,10 @@ impl Shell {
                         Toggle::new(selector, title, on, (text::ON, text::OFF))
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
+                                this.state.update(cx, |state, cx| match part {
+                                    Some(part) => state.set_processing(part, !on, cx),
+                                    None => state.set_sound_off_mutes(!on, cx),
+                                });
                             })),
                     )
                     .into_any_element(),

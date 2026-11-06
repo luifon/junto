@@ -46,6 +46,8 @@ pub struct CallMarks {
     pub held: bool,
     /// The person turned the sound off.
     pub deafened: bool,
+    /// Turning the sound off also mutes the microphone: the sound off means both.
+    pub sound_off_mutes: bool,
     /// The call and the seat that an entry of the menu acts on (ADR 0788).
     pub seat: Seat,
 }
@@ -141,6 +143,7 @@ pub fn derive(calls: &CallsView) -> TrayState {
             muted: calls.muted,
             held: call.microphone_block.is_some(),
             deafened: calls.deafened,
+            sound_off_mutes: false,
             seat: call.seat(),
         }),
         generation: 0,
@@ -155,13 +158,15 @@ pub fn entry_code(generation: u32, kind: u32) -> u32 {
 }
 
 impl TrayState {
-    /// The picture of the call state. A closed microphone with the sound off takes precedence,
-    /// then the sound off, then a microphone that the server holds closed, then a microphone
-    /// that the person closed.
+    /// The picture of the call state. A closed microphone with the sound off takes precedence
+    /// when the two are apart, then the sound off, then a microphone that the server holds
+    /// closed, then a microphone that the person closed.
     pub fn picture(&self) -> Picture {
         match &self.call {
             None => Picture::Plain,
-            Some(call) if call.deafened && call.muted => Picture::MutedAndSoundOff,
+            Some(call) if call.deafened && call.muted && !call.sound_off_mutes => {
+                Picture::MutedAndSoundOff
+            }
             Some(call) if call.deafened => Picture::SoundOff,
             Some(call) if call.held => Picture::Held,
             Some(call) if call.muted => Picture::Muted,

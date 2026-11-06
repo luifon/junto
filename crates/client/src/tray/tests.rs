@@ -130,6 +130,17 @@ fn sound_off_shows_its_own_picture_and_offers_the_sound_again() {
 }
 
 #[test]
+fn with_the_sound_off_muting_the_microphone_the_sound_off_alone_shows_both() {
+    let mut state = derive(&calls(Some(call()), true, true));
+    if let Some(call) = &mut state.call {
+        call.sound_off_mutes = true;
+    }
+    assert_eq!(state.picture(), Picture::SoundOff);
+    assert_eq!(state.tooltip(), text::IN_A_CALL_SOUND_OFF);
+    assert_eq!(state.menu()[0].label, text::UNMUTE_MICROPHONE);
+}
+
+#[test]
 fn a_closed_microphone_with_the_sound_off_shows_one_picture_that_names_both() {
     let state = derive(&calls(Some(call()), true, true));
     assert_eq!(state.picture(), Picture::MutedAndSoundOff);
