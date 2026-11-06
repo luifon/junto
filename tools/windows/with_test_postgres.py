@@ -44,6 +44,10 @@ SERVER_SETTINGS = [
 # and the C headers, about 18,000 of its 21,903 files.
 PARTS = ("bin", "lib", "share")
 START_SECONDS = 120
+# How many ports a start tries. Several lanes of the Windows job start a PostgreSQL each at the
+# same time (tools/ci/lanes.py), and the port that one chose can be taken by another program
+# before the server binds it.
+PORT_TRIES = 5
 
 
 class Failure(Exception):
@@ -128,6 +132,35 @@ def command_environment(environment, port):
     return {**environment, "JUNTO_TEST_DATABASE_URL": f"postgres://postgres@127.0.0.1:{port}/postgres"}
 
 
+def taken(text):
+    """Whether the log of a start says that the port was taken: PostgreSQL could not bind it."""
+    return "could not bind" in text or "Address already in use" in text
+
+
+def start(installation, data, log, output, ports=None, check=None, tries=PORT_TRIES):
+    """Starts the server of `data` on a free port and returns the port. A port that another
+    program took between its choice and the start of the server is replaced by another one,
+    `tries` times at most; any other failure ends the start."""
+    ports = ports or free_port
+    check = check or checked
+    for attempt in range(1, tries + 1):
+        port = ports()
+        before = log.stat().st_size if log.exists() else 0
+        try:
+            check(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
+            return port
+        except Failure:
+            written = ""
+            if log.exists():
+                with open(log, "rb") as file:
+                    file.seek(before)
+                    written = file.read().decode(errors="replace")
+            if attempt == tries or not taken(written):
+                raise
+            print(f"port {port} was taken before PostgreSQL bound it; another port", flush=True)
+    raise Failure("no port")
+
+
 def checked(command, what, output, log=None):
     """Runs a PostgreSQL program with its output in the file `output`; on a failure prints that
     output and the log of the server. On Windows the server that `pg_ctl start` starts holds
@@ -178,12 +211,9 @@ def main(arguments):
                 extract(fetch(downloads), installation)
                 started = time.monotonic()
                 checked(init_command(installation, data), "initdb", output)
-                # The runner has no other process that takes a port between this choice and
-                # the start; a taken port ends the start with the log of the server.
-                port = free_port()
                 # On Windows, pg_ctl starts the server with the administrator rights removed
                 # from its token, which the server requires.
-                checked(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
+                port = start(installation, data, log, output)
             except (Failure, OSError) as failure:
                 print(f"PostgreSQL {VERSION} did not start: {failure}", flush=True)
                 return 1
