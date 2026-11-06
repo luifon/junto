@@ -15,7 +15,8 @@ SHA-256, with the settings of that script and of deploy/livekit-common.yaml.
 `--fetch` only downloads and checks the archive. The download is kept in
 JUNTO_TEST_LIVEKIT_DOWNLOADS (default: .cache/junto-livekit in the home folder). The ports are
 those of tools/with-test-livekit.sh (JUNTO_TEST_LIVEKIT_PORT, JUNTO_TEST_LIVEKIT_UDP_PORT,
-JUNTO_TEST_WEBHOOK_ADDRESS, with its defaults). Every socket of the server is bound to 127.0.0.1:
+JUNTO_TEST_WEBHOOK_ADDRESS, with its defaults; the webhook address must be 127.0.0.1:<port>, where
+the server posts its notifications). Every socket of the server is bound to 127.0.0.1:
 the media go over UDP on the loopback interface, and the server has no TCP port for media, so
 it opens no port that another machine reaches and Windows asks nothing of its firewall. The
 log of the server is printed when the command or the start fails.
@@ -66,8 +67,19 @@ def settings(environment):
     }
 
 
+def webhook_port(address):
+    """The port of JUNTO_TEST_WEBHOOK_ADDRESS. The server runs on this machine and posts to the
+    loopback address, so the test server must listen there."""
+    host, _, port = address.rpartition(":")
+    if host != "127.0.0.1" or not port.isdigit():
+        raise native_downloads.Failure(
+            f"JUNTO_TEST_WEBHOOK_ADDRESS is {address}: the native LiveKit posts its notifications to "
+            "127.0.0.1, so the address must be 127.0.0.1:<port>")
+    return port
+
+
 def config(chosen, common):
-    webhook_port = chosen["webhook"].rsplit(":", 1)[1]
+    port = webhook_port(chosen["webhook"])
     return f"""port: {chosen["port"]}
 keys:
   {chosen["key"]}: {chosen["secret"]}
@@ -82,7 +94,7 @@ rtc:
 webhook:
   api_key: {chosen["key"]}
   urls:
-    - http://127.0.0.1:{webhook_port}/internal/media/notifications
+    - http://127.0.0.1:{port}/internal/media/notifications
 {common}"""
 
 
@@ -126,6 +138,11 @@ def main(arguments):
     if arguments == ["--fetch"]:
         return 0
     chosen = settings(os.environ)
+    try:
+        webhook_port(chosen["webhook"])
+    except native_downloads.Failure as failure:
+        print(failure, flush=True)
+        return 2
     with tempfile.TemporaryDirectory(prefix="junto-livekit-", ignore_cleanup_errors=True) as temporary:
         root = pathlib.Path(temporary)
         log_path = root / "server.log"

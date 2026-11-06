@@ -111,6 +111,13 @@ class LiveKit(unittest.TestCase):
         self.assertEqual(environment["OTHER"], "kept")
         self.assertNotIn("JUNTO_TEST_LIVEKIT_CONTAINER", environment)
 
+    def test_a_webhook_address_on_another_host_is_refused(self):
+        self.assertEqual(with_native_livekit.webhook_port("127.0.0.1:18510"), "18510")
+        for address in ("192.0.2.4:18510", "localhost:18510", "127.0.0.1:"):
+            with self.subTest(address=address):
+                with self.assertRaisesRegex(native_downloads.Failure, "127.0.0.1:<port>"):
+                    with_native_livekit.webhook_port(address)
+
     def test_the_defaults_are_those_of_the_docker_script(self):
         script = (REPOSITORY / "tools" / "with-test-livekit.sh").read_text()
         chosen = with_native_livekit.settings({})
