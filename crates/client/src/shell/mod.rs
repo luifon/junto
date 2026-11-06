@@ -217,6 +217,7 @@ impl Layer {
             | Layer::RecordLanguage => false,
             Layer::Welcome
             | Layer::Settings
+            | Layer::ReleaseNotes(..)
             | Layer::Prejoin(..)
             | Layer::Join(..)
             | Layer::Presence(..)
