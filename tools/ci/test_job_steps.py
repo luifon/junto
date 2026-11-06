@@ -24,12 +24,6 @@ exit 0
 """
 SYSTEMS = {"macos": "Darwin", "windows": "MINGW64_NT-10.0-26100"}
 WINDOW_TESTS = "cargo test --no-fail-fast --locked --workspace --test app --"
-WINDOWS_RECORDING_SKIPS = [
-    'recordings::',
-    'transcripts::',
-    'admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts',
-    'system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed',
-]
 DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
 
@@ -160,13 +154,15 @@ class JobSteps(unittest.TestCase):
         status, _, _ = self.run_job("macos", fail_on=f"{WINDOW_TESTS} --skip updates::")
         self.assertNotEqual(status, 0)
 
-    def test_windows_runs_file_window_tests_and_starts_no_bundle(self):
+    def test_windows_runs_every_window_test_with_ffmpeg_skips_no_test_by_name_and_starts_no_bundle(self):
         status, commands, output = self.run_job("windows")
         self.assertEqual(status, 0, output)
-        without, with_database = self.window_steps(commands, "windows")
+        without, _ = self.window_steps(commands, "windows")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
-        skips = " ".join(f"--skip {name}" for name in ["updates::", *WINDOWS_RECORDING_SKIPS])
-        self.assertEqual(with_database, [f"{DATABASE['windows']} {WINDOW_TESTS} {skips}"])
+        with_ffmpeg = f"{DATABASE['windows']} python3 tools/with_native_ffmpeg.py {WINDOW_TESTS} --skip updates::"
+        self.assertIn(with_ffmpeg, commands)
+        self.assertEqual([c for c in commands if "--skip" in c], [with_ffmpeg])
+        self.assertLess(commands.index("python3 tools/with_native_ffmpeg.py --fetch"), commands.index(with_ffmpeg))
         self.assertNotIn("python3 tools/with_native_postgres.py --fetch", commands)
         self.assertIn("python3 packaging/check_windows.py", commands)
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))

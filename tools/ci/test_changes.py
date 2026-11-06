@@ -66,7 +66,7 @@ class Select(unittest.TestCase):
                          ["rust-windows"], "run")
         for path in ["tools/windows/lock.py", "packaging/windows.py", "crates/media/build.rs",
                      "crates/client-core/src/paths.rs", "crates/server/src/storage/free.rs", "Cargo.lock",
-                     "tools/with_native_livekit.py", "tools/native_downloads.py"]:
+                     "tools/with_native_livekit.py", "tools/with_native_ffmpeg.py", "tools/native_downloads.py"]:
             with self.subTest(path=path):
                 self.assertEqual(decisions([path])["rust-windows"], "run")
 

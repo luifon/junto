@@ -1,5 +1,6 @@
-"""Unit tests of tools/native_downloads.py and tools/with_native_livekit.py. They download
-nothing and start no server: the Windows job of CI starts the real one."""
+"""Unit tests of tools/native_downloads.py, tools/with_native_livekit.py and
+tools/with_native_ffmpeg.py. They download nothing and start no server: the Windows job of CI
+starts the real ones."""
 
 import hashlib
 import io
@@ -16,6 +17,7 @@ TOOLS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
 import native_downloads  # noqa: E402
+import with_native_ffmpeg  # noqa: E402
 import with_native_livekit  # noqa: E402
 
 REPOSITORY = TOOLS.parent
@@ -118,6 +120,30 @@ class LiveKit(unittest.TestCase):
                                 ("JUNTO_TEST_LIVEKIT_API_KEY", chosen["key"]),
                                 ("JUNTO_TEST_LIVEKIT_API_SECRET", chosen["secret"])]:
             self.assertIn(f"${{{variable}:-{value}}}", script)
+
+
+class FFmpeg(unittest.TestCase):
+    def test_the_version_is_that_of_the_server_image(self):
+        dockerfile = (REPOSITORY / "deploy" / "images" / "server" / "Dockerfile").read_text()
+        self.assertIn(f"ARG FFMPEG_VERSION={with_native_ffmpeg.VERSION}\n", dockerfile)
+        self.assertRegex(with_native_ffmpeg.SHA256, "^[0-9a-f]{64}$")
+
+    def test_the_programs_are_extracted_once_for_a_download(self):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="junto-ffmpeg-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        archive = directory / "build.zip"
+        archive.write_bytes(zip_bytes({name: name.encode() for name in with_native_ffmpeg.PROGRAMS}))
+        extractions = []
+
+        def extract(path, members, destination):
+            extractions.append(path)
+            return native_downloads.extract(path, members, destination)
+
+        for _ in range(2):
+            ffmpeg, ffprobe = with_native_ffmpeg.programs(directory, lambda *_: archive, extract)
+            self.assertEqual((ffmpeg.name, ffprobe.name), ("ffmpeg.exe", "ffprobe.exe"))
+            self.assertEqual(ffprobe.read_bytes(), with_native_ffmpeg.PROGRAMS[1].encode())
+        self.assertEqual(len(extractions), 1)
 
 
 if __name__ == "__main__":

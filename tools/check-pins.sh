@@ -120,6 +120,16 @@ if [ "$(grep -c '^ *"[0-9a-f]\{64\}"),$' tools/with_native_livekit.py)" = "$(gre
 else
     fail "tools/with_native_livekit.py downloads a LiveKit release without a SHA-256"
 fi
+# The FFmpeg build of the window tests of recordings on Windows (ADR 0905): the version of the
+# server image, with a SHA-256.
+same "FFmpeg version of the server image and of the tests on Windows" \
+    "$(sed -n 's/^ARG FFMPEG_VERSION=\([0-9.]*\)$/\1/p' deploy/images/server/Dockerfile)" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' tools/with_native_ffmpeg.py)"
+if grep -q '^SHA256 = "[0-9a-f]\{64\}"$' tools/with_native_ffmpeg.py; then
+    echo "ok    the FFmpeg download of the Windows tests is checked by its SHA-256"
+else
+    fail "tools/with_native_ffmpeg.py downloads FFmpeg without a SHA-256"
+fi
 # The tools of the Windows CI machine (ADR 0905): each download of the setup has a SHA-256 of
 # its own and is fetched through the function that checks it; its Python has the minor
 # version of the Python image.

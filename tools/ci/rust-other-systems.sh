@@ -185,20 +185,18 @@ run env JUNTO_TEST_NATIVE_PANICS=1 cargo test --no-fail-fast --locked --workspac
 # step, so that Cargo builds nothing again.
 step "Window tests without a database"
 run cargo test --no-fail-fast --locked --workspace --test app -- updates::
-step "PostgreSQL and LiveKit for Windows"
+step "PostgreSQL, LiveKit and FFmpeg for Windows"
 run python3 tools/windows/with_test_postgres.py --fetch
 run python3 tools/with_native_livekit.py --fetch
+run python3 tools/with_native_ffmpeg.py --fetch
 run python3 tools/test_native_programs.py
-# The remaining window tests use native PostgreSQL and the Windows file store (ADR 0912).
-# The live tier needs LiveKit; finished-recording fixtures need FFmpeg and /bin/sh.
+# The remaining window tests use native PostgreSQL, the Windows file store (ADR 0912) and the
+# FFmpeg build for Windows; the stand-in of the transcription worker runs in the sh of Git for
+# Windows.
 step "Window tests with PostgreSQL"
 run python3 -m unittest discover -s tools/windows -p "test_*.py"
-run python3 tools/windows/with_test_postgres.py cargo test --no-fail-fast --locked --workspace --test app -- \
-    --skip updates:: \
-    --skip recordings:: \
-    --skip transcripts:: \
-    --skip admin_pages::exports_actions::a_saved_channel_export_contains_messages_threads_files_recordings_and_transcripts \
-    --skip system_lines::the_end_of_a_transcript_is_a_line_that_states_whether_it_is_ready_or_failed
+run python3 tools/windows/with_test_postgres.py python3 tools/with_native_ffmpeg.py \
+    cargo test --no-fail-fast --locked --workspace --test app -- --skip updates::
 # The window tests of calls against the LiveKit release for Windows of the version of the image
 # of the other jobs, every socket of it on the loopback address (tools/with_native_livekit.py).
 step "Window tests with PostgreSQL and LiveKit"
