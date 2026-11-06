@@ -2140,20 +2140,27 @@ impl Shell {
             )
             .when(away, |frame| {
                 frame.child(
-                    div().absolute().right(u(18.0)).bottom(u(8.0)).child(
-                        Button::new("go-to-end")
-                            .icon(Icon::ChevronDown)
-                            .label(if feed.unread > 0 {
-                                SharedString::from(text::unread_tooltip(feed.unread, 0))
-                            } else {
-                                text::GO_TO_END.into()
-                            })
-                            .tooltip(text::GO_TO_END)
-                            .selector(pane.id("go-to-end"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.go_to_end(pane, window, cx);
-                            })),
-                    ),
+                    // The button lies over the rows: it takes the pointer, so that the row under
+                    // it is not hovered and does not take the press as well (ADR 0740).
+                    div()
+                        .absolute()
+                        .right(u(18.0))
+                        .bottom(u(8.0))
+                        .occlude()
+                        .child(
+                            Button::new("go-to-end")
+                                .icon(Icon::ChevronDown)
+                                .label(if feed.unread > 0 {
+                                    SharedString::from(text::unread_tooltip(feed.unread, 0))
+                                } else {
+                                    text::GO_TO_END.into()
+                                })
+                                .tooltip(text::GO_TO_END)
+                                .selector(pane.id("go-to-end"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.go_to_end(pane, window, cx);
+                                })),
+                        ),
                 )
             })
             .into_any_element()
@@ -4772,6 +4779,13 @@ impl Shell {
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
+    }
+
+    /// The jump that the list of a pane went to last: the message and the number of the jump.
+    /// A test tells by it whether a list took a jump of the state.
+    #[cfg(feature = "test-support")]
+    pub fn feed_jump(&self, pane: Pane) -> Option<(MessageId, u64)> {
+        self.list(pane).target
     }
 
     /// The bounds in which the last frame drew the list of a pane. A test that measures a

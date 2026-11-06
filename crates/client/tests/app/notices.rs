@@ -649,11 +649,77 @@ fn a_second_press_on_a_notice_goes_to_its_message_again(cx: &mut TestAppContext)
             .is_some_and(|panel| panel.rows.len() == 1 && panel.rows.iter().all(|row| row.read))
     });
     // The person goes to the end of the list and presses the same row again: the list
-    // goes to the message again.
+    // goes to the message again. Each step is a wait of its own, so that a failure tells
+    // whether the press was lost (the state has no new jump), the list did not take the
+    // jump, or the list took it and does not show the message.
     window.click("go-to-end");
     window.until("the end of the list", |window| at_end(window));
+    let before = window.feed().and_then(|feed| feed.target);
     window.click_named(format!("notice:{}", first.id.as_uuid()));
+    let jump = window.until_value(
+        "the press reaches the row: the state has a new jump",
+        |window| {
+            window
+                .feed()
+                .and_then(|feed| feed.target)
+                .filter(|jump| Some(*jump) != before)
+        },
+    );
+    window.until("the list takes the new jump", |window| {
+        window.in_shell(|shell, _, _| shell.feed_jump(Pane::Main)) == Some(jump)
+    });
     window.until("the message of the notice is shown again", at_message);
+}
+
+/// The button to the end of the list lies over the rows of the list. The pointer on it does not
+/// reach the message under it: that message draws no actions, and a press on the button does
+/// not also press one of them, which once opened the reaction picker of the message under it
+/// (ADR 0740).
+#[gpui::test]
+fn the_button_to_the_end_keeps_the_pointer_from_the_message_under_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    let first = admin.mention(&world, general, "far above, ", own);
+    for number in 0..60 {
+        admin.send(&world, general, document(&format!("filler {number}")));
+    }
+    window.until("the notice is counted", |window| {
+        window.unread_notices() == 1
+    });
+    window.open_notices();
+    window.until("the notice is listed", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.iter().all(|row| row.jump.is_some()))
+    });
+    window.click_named(format!("notice:{}", first.id.as_uuid()));
+    window.until("the list is away from its end", |window| {
+        window.shows("go-to-end")
+            && !window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main))
+    });
+    let button = window.cx.debug_bounds("go-to-end").unwrap();
+    window.move_pointer(button.center());
+    let messages: Vec<_> = window.messages().iter().map(|row| row.message.id).collect();
+    for id in messages {
+        assert!(
+            !window.shows_named(format!("message-actions:{id}")),
+            "the message {id} under the button draws its actions"
+        );
+    }
+    window.press_at(button.center(), gpui::MouseButton::Left);
+    window.until("the end of the list", |window| {
+        window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main))
+    });
+    assert!(
+        !window.shows("dialog-content"),
+        "a dialog opened with the press"
+    );
 }
 
 /// After a jump to the message of a notice the list stays at the message, and follows the end
