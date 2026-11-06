@@ -15,6 +15,8 @@ pub(crate) mod listing;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod macos;
+#[cfg(feature = "test-support")]
+pub mod phases;
 pub mod picture;
 pub mod sound;
 #[cfg(feature = "test-support")]

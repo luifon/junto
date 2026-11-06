@@ -1726,18 +1726,24 @@ impl CaptureSink for Counted {
 
 /// The processor time of this process over `seconds` while the fixture turns its colours
 /// ten times a second: the time in milliseconds per second, and the pictures per second.
-fn measured(fixture: &mut Fixture, sink: &Counted, seconds: u64) -> (f64, f64) {
+fn measured(fixture: &mut Fixture, sink: &Counted, seconds: u64) -> (f64, f64, String) {
     let pictures = sink.pictures.load(Ordering::Relaxed);
     let before = processor_milliseconds();
+    junto_media::share::phases::take();
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(seconds) {
         fixture.send("turn");
         std::thread::sleep(Duration::from_millis(100));
     }
     let elapsed = started.elapsed().as_secs_f64();
+    let phases = junto_media::share::phases::take()
+        .iter()
+        .map(|(_, millis)| format!("{:.1}", millis / elapsed))
+        .collect::<Vec<_>>()
+        .join(" | ");
     let time = (processor_milliseconds() - before) / elapsed;
     let rate = (sink.pictures.load(Ordering::Relaxed) - pictures) as f64 / elapsed;
-    (time, rate)
+    (time, rate, phases)
 }
 
 /// The processor time of a window share and of an application share of one and of three
@@ -1754,11 +1760,31 @@ fn the_processor_time_of_an_application_share() {
     let capture = junto_media::share::system();
     let runtime = runtime();
     let process = fixture.child.id() as i32;
+    let sources = runtime.block_on(capture.sources()).unwrap();
+    if let Some(display) = sources
+        .displays
+        .iter()
+        .find(|display| display.id == fixture.screen)
+    {
+        let area = fixture.area;
+        println!(
+            "The screen: {} × {} pixels; the inner area of the window: {} × {} pixels.",
+            display.width,
+            display.height,
+            area.2 - area.0,
+            area.3 - area.1
+        );
+    }
     let idle = Counted::default();
-    let (idle_time, _) = measured(&mut fixture, &idle, SECONDS);
-    println!("| Share | Windows | Pictures a second | Processor ms a second |");
-    println!("|---|---|---|---|");
-    println!("| none | 0 | 0 | {idle_time:.1} |");
+    let (idle_time, _, idle_phases) = measured(&mut fixture, &idle, SECONDS);
+    // The phases: the follow loop of an application share, the copy from the graphics card,
+    // the composition of an application picture, the conversion for the encoder; each in
+    // milliseconds of one thread per second (ADR 0738).
+    println!(
+        "| Share | Windows | Pictures a second | Processor ms a second | Follow | Read | Compose | Convert |"
+    );
+    println!("|---|---|---|---|---|---|---|---|");
+    println!("| none | 0 | 0 | {idle_time:.1} | {idle_phases} |");
     let share = |name: &str, windows: usize, picture: PictureSource, fixture: &mut Fixture| {
         let sink = Arc::new(Counted::default());
         let stream = runtime
@@ -1777,9 +1803,9 @@ fn the_processor_time_of_an_application_share() {
             .unwrap();
         // The first pictures, before the measured interval.
         std::thread::sleep(Duration::from_secs(2));
-        let (time, rate) = measured(fixture, &sink, SECONDS);
+        let (time, rate, phases) = measured(fixture, &sink, SECONDS);
         runtime.block_on(stream.stop()).unwrap();
-        println!("| {name} | {windows} | {rate:.1} | {time:.1} |");
+        println!("| {name} | {windows} | {rate:.1} | {time:.1} | {phases} |");
     };
     share(
         "window",

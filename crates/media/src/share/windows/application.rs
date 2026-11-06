@@ -124,7 +124,11 @@ pub(super) fn picture(
         while !life.stopped() {
             if Instant::now() >= next {
                 let first = ready.is_some();
+                #[cfg(feature = "test-support")]
+                let started = Instant::now();
                 follow(&shared, &life, &pictures, &drawn, &mut following);
+                #[cfg(feature = "test-support")]
+                crate::share::phases::add(crate::share::phases::Phase::Follow, started);
                 // The first reading gives a picture also when no window is captured: the
                 // screen is black then, and the viewers are not left without a picture.
                 if first {
@@ -270,7 +274,12 @@ pub(super) fn draw(drawn: &Drawn, size: (u32, u32)) -> Result<Option<Frame>, Cap
         }
     }
     let placed: Vec<(&Frame, (i32, i32))> = frames.iter().map(|(frame, at)| (frame, *at)).collect();
-    Frame::compose(size, &placed).map(Some)
+    #[cfg(feature = "test-support")]
+    let started = Instant::now();
+    let composed = Frame::compose(size, &placed).map(Some);
+    #[cfg(feature = "test-support")]
+    crate::share::phases::add(crate::share::phases::Phase::Compose, started);
+    composed
 }
 
 /// The preview of a shared application: a still picture of each of its windows on its
