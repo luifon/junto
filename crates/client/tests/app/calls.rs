@@ -1101,7 +1101,7 @@ fn watched_share_fits(
     area
 }
 
-/// CD-26: a viewer on an ultrawide monitor changes the size of the window while a share of a
+/// A viewer on an ultrawide monitor changes the size of the window while a share of a
 /// screen of 3440 × 1440 (21:9) is watched, in the main window and in the call window in full
 /// screen. After each change the first drawing paints the picture inside the stage, with its
 /// proportions, as large as the stage allows.
@@ -1142,7 +1142,7 @@ fn a_very_wide_share_fits_the_stage_at_each_size_of_the_window(cx: &mut TestAppC
     }
 }
 
-/// CD-26: a 16:9 share in a stage that is much wider than high (a window across an ultrawide
+/// A 16:9 share in a stage that is much wider than high (a window across an ultrawide
 /// monitor) is drawn at the height of the stage, inside it, at each change of the size.
 #[gpui::test]
 fn a_16_9_share_fits_a_very_wide_stage(cx: &mut TestAppContext) {
@@ -1165,7 +1165,7 @@ fn a_16_9_share_fits_a_very_wide_stage(cx: &mut TestAppContext) {
     }
 }
 
-/// CD-26: a portrait share in a stage that is wider than the picture is drawn at the height
+/// A portrait share in a stage that is wider than the picture is drawn at the height
 /// of the stage, inside it, and is not enlarged to the width of the stage.
 #[gpui::test]
 fn a_portrait_share_is_drawn_inside_a_wide_stage(cx: &mut TestAppContext) {
@@ -1180,7 +1180,7 @@ fn a_portrait_share_is_drawn_inside_a_wide_stage(cx: &mut TestAppContext) {
     );
 }
 
-/// CD-26: a landscape share in a stage that is narrow and short, but wider in its proportions
+/// A landscape share in a stage that is narrow and short, but wider in its proportions
 /// than the picture, is drawn at the height of the stage, inside it.
 #[gpui::test]
 fn a_landscape_share_is_drawn_inside_a_narrow_and_short_stage(cx: &mut TestAppContext) {
@@ -1709,7 +1709,7 @@ pub(crate) fn show_call_with_people(
     window.settle();
 }
 
-/// CD-26: a portrait camera picture in a tile that is wider than high is drawn inside the
+/// A portrait camera picture in a tile that is wider than high is drawn inside the
 /// tile, at its height, with its proportions.
 #[gpui::test]
 fn a_portrait_camera_is_drawn_inside_a_wide_tile(cx: &mut TestAppContext) {
@@ -1797,7 +1797,7 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
     );
 }
 
-/// CD-33: the stage and the channel list of a call of 601 people build the tiles and the rows
+/// The stage and the channel list of a call of 601 people build the tiles and the rows
 /// in view only, and a scroll of each brings the last people into view (ADR 0735). The window
 /// holds the profiles of the people, so it reads none: each answer of a read costs a frame
 /// (open item CD8), and 601 reads took longer than the limit of a wait on two processors.

@@ -44,7 +44,7 @@ fn nodes(tree: &serde_json::Value) -> Vec<Node> {
         .collect()
 }
 
-/// TG-16: the window gives the accessibility interface a name for every item of a list, the
+/// The window gives the accessibility interface a name for every item of a list, the
 /// role of a list item, and for the items of a list of the administration their place in the
 /// list and the size of the list.
 #[gpui::test]
@@ -142,7 +142,7 @@ fn listed(window: &mut crate::harness::Window) -> Vec<(u64, u64, Option<String>)
     items
 }
 
-/// TG-16: the lists of people, invites, access tokens, roles and audit entries of the
+/// The lists of people, invites, access tokens, roles and audit entries of the
 /// administration name each of their items and state its place and the size of the list.
 #[gpui::test]
 fn the_items_of_the_administration_lists_have_names_and_places(cx: &mut TestAppContext) {

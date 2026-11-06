@@ -351,7 +351,7 @@ async fn camera_frames_follow_the_visible_tile_size_and_stop_when_hidden() {
     .await;
 }
 
-/// CD-36: a received camera that no tile shows is not sent by the media server, and its native
+/// A received camera that no tile shows is not sent by the media server, and its native
 /// track stays enabled, so the pictures that still arrive before the server stops sending
 /// keep their content. A disabled native track turned each of them into a black picture, and
 /// the last one was drawn when the tile showed the camera again.

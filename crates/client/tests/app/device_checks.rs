@@ -180,7 +180,7 @@ fn devices_can_be_checked_in_settings_before_a_call(cx: &mut TestAppContext) {
     assert_eq!(voice.camera_device, None);
 }
 
-/// CD-31: in each device list of Settings → Voice the selected choice has the check, and
+/// In each device list of Settings → Voice the selected choice has the check, and
 /// every other choice has the icon of its kind of device, as the device lists of a call have.
 #[gpui::test]
 fn each_device_list_of_the_voice_settings_has_the_icon_of_its_kind(cx: &mut TestAppContext) {
@@ -240,7 +240,7 @@ fn each_device_list_of_the_voice_settings_has_the_icon_of_its_kind(cx: &mut Test
     }
 }
 
-/// CD-30: the camera preview of Settings → Voice is drawn inside its area, with the
+/// The camera preview of Settings → Voice is drawn inside its area, with the
 /// proportions of the camera picture, and not over the rows below it.
 #[gpui::test]
 fn the_camera_preview_is_drawn_inside_its_area(cx: &mut TestAppContext) {

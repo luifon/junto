@@ -296,7 +296,7 @@ pub async fn capture(audio_only: bool) {
                 );
             }
             if !display {
-                // CD-27: the shared window becomes half as wide. The stream follows the size of
+                // The shared window becomes half as wide. The stream follows the size of
                 // the window: the native pictures show the whole window at its new size, the
                 // share states that size, and the other side receives it (ADR 0737).
                 let before = (fixture.geometry.width, fixture.geometry.height);
