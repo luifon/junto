@@ -22,6 +22,13 @@ step built), the service processors of the job, and its own containers and netwo
 (JUNTO_LINUX_INSTANCE=<lane name>). In both cases a lane runs on the image that an earlier step built (JUNTO_LINUX_IMAGE_BUILT=1), with
 a lock of tools/serial.sh of its own, and a lane without services sets JUNTO_LINUX_SERVICES=none.
 
+With JUNTO_CI_LANES=machine (the Windows job), the lanes run on the machine itself: a
+lane starts, in the order of the plan, when its memory and that of the lanes that run fit into
+the memory that the machine has available at the start, less RESERVE, which the desktop of the
+machine keeps; a lane that does not fit even alone runs when no other lane runs. Each lane gets
+CARGO_BUILD_JOBS, its part of the processors of the machine in proportion to its share, for a
+step that compiles; the test programs keep their own number of threads.
+
 The output of each step goes to a file. After the last lane has ended, the output of each step is
 printed in the order of the plan, under a line with the step, its lane, its start and end (UTC)
 and its duration, and then the table of the steps. Each failed command is appended to the
@@ -41,6 +48,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget  # noqa: E402
 
 LANE_MEMORY = 4 * budget.GIB
+# The memory that the lanes on the machine itself leave to the desktop and the other programs.
+RESERVE = 4 * budget.GIB
 
 
 class Lane:
@@ -168,9 +177,76 @@ def run_lane(steps, environment, directory, root):
         step.output = path
 
 
-def run(plan, failures_file, environment, root, decide=None):
+def machine_memory():
+    """The memory that is available on this machine now, in bytes."""
+    if sys.platform != "win32":
+        return budget.available_memory()
+    import ctypes
+
+    class Status(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_uint32), ("load", ctypes.c_uint32)] + [
+            (name, ctypes.c_uint64) for name in ("total", "available", "total_page", "available_page",
+                                                 "total_virtual", "available_virtual", "extended")]
+
+    status = Status()
+    status.length = ctypes.sizeof(Status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError("GlobalMemoryStatusEx failed")
+    return status.available
+
+
+def run_on_machine(lanes, steps, environment, directory, root, machine):
+    """Runs the lanes on this machine: each when its memory fits beside the lanes that run."""
+    processors, available = machine
+    room = max(0, available - RESERVE)
+    total = sum(lane.share for lane in lanes)
+    print(f"Machine: {processors} processors, {budget.text_of_size(available)} available, "
+          f"{budget.text_of_size(room)} for the lanes", flush=True)
+    names = [lane.name for lane in lanes]
+    print(f"Lanes: {', '.join(names)}, each when its memory fits", flush=True)
+    ended = threading.Condition()
+    running = {}
+
+    def lane_run(lane, lane_environment, lane_directory):
+        try:
+            run_lane([s for s in steps if s.lane == lane.name], lane_environment, lane_directory, root)
+        finally:
+            with ended:
+                del running[lane.name]
+                ended.notify()
+
+    waiting = list(lanes)
+    threads = []
+    with ended:
+        while waiting or running:
+            used = sum(lane.memory for lane in lanes if lane.name in running)
+            fits = [lane for lane in waiting if not running or used + lane.memory <= room]
+            for lane in fits[:1]:
+                waiting.remove(lane)
+                jobs = max(1, processors * lane.share // total)
+                lane_environment = dict(environment, CARGO_BUILD_JOBS=str(jobs))
+                lane_directory = Path(directory) / lane.name
+                lane_directory.mkdir()
+                running[lane.name] = True
+                print(f"{stamp(now())} lane {lane.name} starts: {budget.text_of_size(lane.memory)}, "
+                      f"{jobs} Cargo jobs", flush=True)
+                work = threading.Thread(target=lane_run, args=(lane, lane_environment, lane_directory))
+                threads.append(work)
+                work.start()
+            if not fits:
+                ended.wait()
+    for work in threads:
+        work.join()
+
+
+def run(plan, failures_file, environment, root, decide=None, machine=None):
     lanes, steps = parse(plan)
     base = budget.base_from(environment)
+    if environment.get("JUNTO_CI_LANES") == "machine" and len(lanes) > 1:
+        machine = machine or (os.cpu_count() or 1, machine_memory())
+        with tempfile.TemporaryDirectory(prefix="junto-ci-lanes-") as directory:
+            run_on_machine(lanes, steps, environment, directory, root, machine)
+            return report(steps, failures_file)
     allocation = None
     together = False
     if base is not None and len(lanes) > 1:
@@ -200,20 +276,26 @@ def run(plan, failures_file, environment, root, decide=None):
             work.join()
         if allocation:
             budget.release(allocation.locks)
-        first = 0
-        with open(failures_file, "a", encoding="utf-8") as failures:
-            for step in steps:
-                print(f"\n=== {step.name}  lane {step.lane}  {stamp(step.start)} to {stamp(step.end)}  "
-                      f"{duration(step.start, step.end)}", flush=True)
-                sys.stdout.buffer.write(step.output.read_bytes())
-                sys.stdout.flush()
-                for status, command in step.failures:
-                    failures.write(f"{step.name} (exit {status}): {command}\n")
-                    first = first or status
-        print("\n=== Lanes", flush=True)
+        return report(steps, failures_file)
+
+
+def report(steps, failures_file):
+    """Prints the output of each step in the order of the plan and the table of the steps,
+    appends each failed command to the failures file, and returns the first failed status."""
+    first = 0
+    with open(failures_file, "a", encoding="utf-8") as failures:
         for step in steps:
-            print(f"{step.lane:<8} {stamp(step.start)}  {stamp(step.end)}  {duration(step.start, step.end):>8}  "
-                  f"{'failed' if step.failures else 'passed'}  {step.name}", flush=True)
+            print(f"\n=== {step.name}  lane {step.lane}  {stamp(step.start)} to {stamp(step.end)}  "
+                  f"{duration(step.start, step.end)}", flush=True)
+            sys.stdout.buffer.write(step.output.read_bytes())
+            sys.stdout.flush()
+            for status, command in step.failures:
+                failures.write(f"{step.name} (exit {status}): {command}\n")
+                first = first or status
+    print("\n=== Lanes", flush=True)
+    for step in steps:
+        print(f"{step.lane:<8} {stamp(step.start)}  {stamp(step.end)}  {duration(step.start, step.end):>8}  "
+              f"{'failed' if step.failures else 'passed'}  {step.name}", flush=True)
     return first
 
 

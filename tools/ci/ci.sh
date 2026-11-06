@@ -12,8 +12,8 @@
 #                                   skipped; --all runs every job.
 #   ci.sh local <commit> [job...]   runs the macOS jobs here, through tools/serial.sh, with
 #                                   the same selection.
-#   ci.sh select <commit>           prints that selection: each job, run, python, debug or skip,
-#                                   and the reason.
+#   ci.sh select <commit>           prints that selection: each job, run, python, skip or
+#                                   (Windows) base+<part>+..., and the reason.
 #   ci.sh status <commit or run>    prints each job of a run: passed, failed, running or
 #                                   waiting, with its time, and copies the log of a failed
 #                                   job to target/ci-logs/<run>/. For a commit: each job in
@@ -78,14 +78,14 @@ local_dir=${JUNTO_CI_LOCAL_DIR:-$HOME/.cache/junto-ci}
 checked() {
     case "$1" in '' | *[!A-Za-z0-9-]*) echo "not a run or job name: $1" >&2; exit 2 ;; esac
 }
-# A job of a run: <name>, <name>:python, <name>:debug or <name>:skip (tools/ci/run-jobs.sh).
+# A job of a run: <name>, <name>:python, <name>:base+<part>+... or <name>:skip (tools/ci/run-jobs.sh).
 checked_job() {
-    case "$1" in *:python | *:debug | *:skip) checked "${1%:*}" ;; *) checked "$1" ;; esac
+    case "$1" in *:python | *:base | *:base+* | *:skip) checked "${1%%:*}" ;; *) checked "$1" ;; esac
 }
 
 # selection <commit>: each default job of every runner as tools/ci/changes.py selects it for the
 # change from the merge base of the commit with main (for a commit of main, from its first
-# parent): <job>, <job>:python, <job>:debug or <job>:skip. The reasons go to the standard error. Without main
+# parent): <job>, <job>:python, <job>:base+<part>+... or <job>:skip. The reasons go to the standard error. Without main
 # or a parent, every job.
 selection() {
     base=$(git -C "$root" merge-base main "$1" 2>/dev/null) || base=""

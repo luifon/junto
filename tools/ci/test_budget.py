@@ -224,6 +224,62 @@ class Lanes(unittest.TestCase):
         self.assertIn("/nonexistent/program: ", output)
         self.assertEqual(failures, "Window tests (exit 127): /nonexistent/program\n")
 
+    def run_on_machine(self, text, machine):
+        """Runs a plan without the budget of the Linux job, as the Windows job does."""
+        with tempfile.TemporaryDirectory(prefix="junto-lanes-") as directory:
+            failures = Path(directory) / "failures"
+            failures.touch()
+            environment = {name: value for name, value in os.environ.items() if not name.startswith("JUNTO_LINUX_")}
+            environment["JUNTO_CI_LANES"] = "machine"
+            started = time.monotonic()
+            read, write = os.pipe()
+            saved = os.dup(1)
+            os.dup2(write, 1)
+            os.close(write)
+            try:
+                status = lanes.run(text, str(failures), environment, directory, machine=machine)
+            finally:
+                os.dup2(saved, 1)
+                os.close(saved)
+            output = b""
+            while chunk := os.read(read, 65536):
+                output += chunk
+            os.close(read)
+            return status, time.monotonic() - started, output.decode(), failures.read_text()
+
+    def test_on_the_machine_itself_lanes_whose_memory_fits_run_at_the_same_time(self):
+        show = "sh -c 'echo \"$CARGO_BUILD_JOBS ${JUNTO_LINUX_INSTANCE-none}\"; sleep 2'"
+        text = plan("lane server share 1 memory 3g", "step Server tests", show,
+                    "lane window share 3 memory 4g", "step Window tests", show, "step Unit tests", "sh -c 'exit 4'")
+        # 8 processors and 12 GiB available leave 8 GiB for the lanes.
+        status, seconds, output, failures = self.run_on_machine(text, (8, 12 * GIB))
+        self.assertEqual(status, 4, output)
+        self.assertLess(seconds, 3.9)
+        self.assertIn("Machine: 8 processors, 12288m available, 8192m for the lanes", output)
+        self.assertIn("Lanes: server, window, each when its memory fits", output)
+        self.assertIn("lane server starts: 3072m, 2 Cargo jobs", output)
+        self.assertIn("lane window starts: 4096m, 6 Cargo jobs", output)
+        self.assertIn("\n2 none\n", output)
+        self.assertIn("\n6 none\n", output)
+        self.assertEqual(failures, "Unit tests (exit 4): sh -c 'exit 4'\n")
+        positions = [output.index(f"=== {name}  lane ") for name in ("Server tests", "Window tests", "Unit tests")]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_on_the_machine_itself_a_lane_waits_until_its_memory_is_free(self):
+        mark = "sh -c 'date +%s.%N >> \"$0\"; sleep 1; date +%s.%N >> \"$0\"' {}"
+        with tempfile.TemporaryDirectory(prefix="junto-lanes-marks-") as marks:
+            files = [Path(marks) / name for name in ("first", "second", "large")]
+            text = plan("lane first memory 3g", "step First", mark.format(files[0]),
+                        "lane second memory 3g", "step Second", mark.format(files[1]),
+                        "lane large memory 9g", "step Large", mark.format(files[2]))
+            # 9 GiB available leave 5 GiB: one lane of 3 GiB at a time, and the lane of 9 GiB alone.
+            status, _, output, _ = self.run_on_machine(text, (4, 9 * GIB))
+            self.assertEqual(status, 0, output)
+            times = [[float(line) for line in path.read_text().split()] for path in files]
+        spans = sorted(times)
+        for earlier, later in zip(spans, spans[1:]):
+            self.assertLessEqual(earlier[1], later[0], output)
+
     def test_a_plan_with_an_error_is_refused(self):
         for text in ["step Window tests\ntrue\n", "lane App\nstep x\ntrue\n", "lane app\ntrue\n",
                      "lane a\nstep x\ntrue\nlane a\nstep y\ntrue\n", "lane a\n"]:
