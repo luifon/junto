@@ -499,7 +499,7 @@ TRAY = ROOT / "packaging/icon/tray"
 TRAY_SOURCES = {
     "headphones-off": "headphone-off",
     "microphone": "mic",
-    "microphone-and-headphones-off": "headset and headphone-off",
+    "microphone-and-headphones-off": "headphone-off and mic-off",
     "microphone-held": "mic-off and lock",
     "microphone-off": "mic-off",
 }
