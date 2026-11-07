@@ -256,14 +256,19 @@ mod tests {
                 Happens::Calls(Event::SoundOn) if !sound_off => continue,
                 Happens::Calls(event) => event,
             };
+            // The calls read the replacements before an open of the person, and the notice of
+            // both steps shows.
+            let before = mic;
+            let mut notice = false;
             if event == Event::Unmute {
                 let (read, effects) = step(mic, Event::Replaced(replacements), gate);
                 gate += effects.closes;
+                notice = effects.device_changed;
                 mic = read;
             }
-            let before = mic;
             let (after, effects) = step(mic, event, gate);
             gate += effects.closes;
+            let notice = notice || effects.device_changed;
             match event {
                 Event::Mute | Event::RuleClose => closed = true,
                 Event::Unmute => closed = false,
@@ -281,15 +286,17 @@ mod tests {
                     "an automatic open sent after a close: {sequence:?}"
                 );
             }
-            if let Event::Replaced(_) = event
-                && after.replacements != before.replacements
-                && (before.sound_off.is_some() || before.hold.is_some() || before.refused)
-            {
-                assert!(
-                    effects.device_changed,
-                    "a replacement cancelled an automatic open without the notice: {sequence:?}"
-                );
-            }
+            // Every step that takes a replacement tells it exactly when the setting was open,
+            // or an automatic open was due or refused; no other step tells it.
+            let due = after.replacements != before.replacements
+                && (!before.muted
+                    || before.sound_off.is_some()
+                    || before.hold.is_some()
+                    || before.refused);
+            assert_eq!(
+                notice, due,
+                "the notice of the changed device: {sequence:?}"
+            );
             assert!(after.muted || after.open.is_some(), "{sequence:?}");
             assert!(after.open.is_none_or(|open| open <= gate), "{sequence:?}");
             mic = after;

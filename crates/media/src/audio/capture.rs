@@ -132,10 +132,10 @@ impl CaptureLink {
         stops
     }
 
-    /// The engine opened the microphone on another device than the one of the call while
-    /// the gate held it closed: a close of the gate, which refuses every open that was
-    /// permitted before it, and one more replacement for the calls to tell (ADR 0794).
-    pub fn replace_while_closed(&self) {
+    /// The engine opened the microphone on another device than the one of the call: a close
+    /// of the gate, which refuses every open that was permitted before it, and one more
+    /// replacement for the calls to tell (ADR 0794). Each replacement is counted once.
+    pub fn replace_input(&self) {
         let _replacing = self.hold_replacements();
         self.stop_now();
         self.replacements.fetch_add(1, Ordering::AcqRel);
@@ -149,7 +149,7 @@ impl CaptureLink {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// How often [`CaptureLink::replace_while_closed`] was told.
+    /// How often [`CaptureLink::replace_input`] was told.
     pub fn replacements(&self) -> u64 {
         self.replacements.load(Ordering::Acquire)
     }

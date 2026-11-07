@@ -505,8 +505,8 @@ impl Shared {
             Some(gate) if event == MicrophoneEvent::Unmute => {
                 let _replacing = gate.hold_replacements();
                 let read = MicrophoneEvent::Replaced(gate.replacements());
-                self.step_at(read, Some(gate));
-                self.step_at(event, Some(gate))
+                // The notice of a replacement that cancelled an automatic open stays.
+                self.step_at(read, Some(gate)) | self.step_at(event, Some(gate))
             }
             gate => self.step_at(event, gate),
         };
@@ -3721,8 +3721,8 @@ impl Session {
         self.show_with(state);
     }
 
-    /// Takes the replacements of the input device that the engine made while the gate held
-    /// the microphone closed. The engine closed its gate for each, so no open that was
+    /// Takes the replacements of the input device that the engine made. The engine closed
+    /// its gate for each, so no open that was
     /// permitted before it sends from the device that the person did not choose; the calls
     /// close the setting too, and tell the person when an open was due or the setting was
     /// open: the sound on after the sound off, the release of push to mute (ADR 0739,
@@ -3793,6 +3793,17 @@ impl Session {
                         // when the stream has already described that seat at a later cursor.
                         let new_seat = self.place.renewed(&answer.identity, now);
                         if new_seat {
+                            // An unmute names the seat that it was drawn for: from now on the
+                            // new one.
+                            if let Some(active) = self
+                                .inner
+                                .shared()
+                                .active
+                                .as_mut()
+                                .filter(|active| active.key == self.key)
+                            {
+                                active.identity.clone_from(&answer.identity);
+                            }
                             self.grants = MeetingHistory::new(
                                 read_at,
                                 &answer.call,

@@ -1061,11 +1061,8 @@ impl Actor {
                 let before = std::mem::replace(&mut self.controls, controls);
                 if controls.muted && self.input_held {
                     // The person's own setting is closed: it holds the microphone now. The
-                    // replacement came before the close; it counts as one while the setting
-                    // is closed, so a microphone that the close keeps closed is not opened
-                    // again on that device (ADR 0739).
+                    // replacement was counted when it opened (ADR 0739).
                     self.input_held = false;
-                    self.link.replace_while_closed();
                     self.change(|state| state.input_replaced = false);
                 }
                 if before.microphone_blocked != controls.microphone_blocked {
@@ -1666,8 +1663,10 @@ impl Actor {
                     replaces(used.as_ref(), &device.id, self.config.input_device.as_ref());
                 self.input_held |= replaced && !self.controls.muted;
                 let held = self.input_held;
-                if replaced && self.controls.muted {
-                    self.link.replace_while_closed();
+                if replaced {
+                    // Counted once, here: a close that the calls make for it, and an open of
+                    // the person after that close, come after this count.
+                    self.link.replace_input();
                 }
                 self.capture = Some(stream);
                 self.change(|state| {

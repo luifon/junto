@@ -3153,7 +3153,7 @@ async fn a_replacement_after_an_open_keeps_the_gate_closed_through_later_control
     calls.release_hold();
     take(&mut f, &mut taken);
     assert!(!microphone(&f).muted && gate_sends(&f));
-    f.session.engine.gate().replace_while_closed();
+    f.session.engine.gate().replace_input();
     assert!(
         !gate_sends(&f),
         "the open from before the replacement opened the gate"
@@ -3187,7 +3187,7 @@ async fn a_replacement_refuses_the_open_that_a_held_key_took_from_the_sound_on()
         }
         calls.sound_on_reopening();
         assert!(microphone(&f).hold.is_some(), "key first: {key_first}");
-        f.session.engine.gate().replace_while_closed();
+        f.session.engine.gate().replace_input();
         read_engine(&mut f);
         assert_eq!(
             f.session.inner.view.borrow().closed,
@@ -3210,7 +3210,7 @@ async fn a_replacement_before_the_session_takes_an_automatic_open_refuses_it() {
     let (calls, mut taken) = active_calls(&mut f);
     calls.sound_off_muting();
     calls.sound_on_reopening();
-    f.session.engine.gate().replace_while_closed();
+    f.session.engine.gate().replace_input();
     take(&mut f, &mut taken);
     assert!(!gate_sends(&f));
     read_engine(&mut f);
@@ -3228,7 +3228,7 @@ async fn an_open_of_the_person_after_a_replacement_that_the_calls_had_not_read_o
     let (calls, mut taken) = active_calls(&mut f);
     calls.mute();
     take(&mut f, &mut taken);
-    f.session.engine.gate().replace_while_closed();
+    f.session.engine.gate().replace_input();
     calls.unmute_in(Some(&seat(&f)));
     take(&mut f, &mut taken);
     assert!(
@@ -3322,7 +3322,7 @@ async fn no_order_of_closes_and_automatic_opens_opens_the_gate_after_a_rule() {
                     (ruled, opened) = (true, false);
                 }
                 Replace => {
-                    f.session.engine.gate().replace_while_closed();
+                    f.session.engine.gate().replace_input();
                     (ruled, opened) = (true, false);
                 }
                 Take => {
@@ -3407,7 +3407,7 @@ async fn a_replacement_during_an_open_sends_no_frame_of_the_replaced_device() {
                 if !replaced_first {
                     released.wait();
                 }
-                link.replace_while_closed();
+                link.replace_input();
                 replaced.wait();
                 if replaced_first {
                     released.wait();
@@ -3458,4 +3458,66 @@ async fn a_replacement_during_an_open_sends_no_frame_of_the_replaced_device() {
             "the open of the person sent nothing"
         );
     }
+}
+
+/// The server gives a new seat at a renewal: an unmute drawn for the new seat opens, and one
+/// drawn for the old seat does not.
+#[tokio::test]
+async fn an_unmute_names_the_seat_that_a_renewal_gave() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.mute();
+    take(&mut f, &mut taken);
+    // The fixture asks for a new token, as after a lost connection.
+    f.session.rejoining = true;
+    renewed_at_another_seat(&mut f, 43);
+    assert_eq!(f.session.place.identity(), "seat-2");
+    calls.unmute_in(Some(&seat(&f)));
+    assert_eq!(unused(&f), Some(Unused::Microphone));
+    assert!(microphone(&f).muted, "an unmute for the old seat opened");
+    let new_seat = Seat {
+        target: f.session.target,
+        identity: "seat-2".into(),
+    };
+    calls.unmute_in(Some(&new_seat));
+    assert_eq!(unused(&f), None);
+    assert!(
+        !microphone(&f).muted,
+        "an unmute for the new seat was refused"
+    );
+    f.session.engine.close().await;
+}
+
+/// The engine counts a replacement when it opens the other device, also while the setting
+/// is open; the session closes the setting for it, and an unmute of the person before the
+/// engine has taken that close opens, with the notice of the replacement kept.
+#[tokio::test]
+async fn an_unmute_after_a_replacement_opens_once_and_keeps_its_notice() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    // A held key of push to mute owns a permission when the device is replaced.
+    calls.press_hold();
+    take(&mut f, &mut taken);
+    f.session.engine.gate().replace_input();
+    calls.unmute_in(Some(&seat(&f)));
+    take(&mut f, &mut taken);
+    assert!(!microphone(&f).muted && gate_sends(&f));
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged),
+        "the unmute dropped the notice of the replacement"
+    );
+    // The setting is open when the engine replaces the device; the session reads it and
+    // closes, and the person unmutes before more happens.
+    f.session.engine.gate().replace_input();
+    read_engine(&mut f);
+    assert!(microphone(&f).muted);
+    calls.unmute_in(Some(&seat(&f)));
+    take(&mut f, &mut taken);
+    read_engine(&mut f);
+    assert!(
+        !microphone(&f).muted && gate_sends(&f),
+        "the replacement was counted again after the unmute"
+    );
+    f.session.engine.close().await;
 }
