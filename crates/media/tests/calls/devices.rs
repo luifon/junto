@@ -471,3 +471,59 @@ async fn a_device_replaced_around_the_sound_off_is_not_opened_by_the_sound_on() 
     })
     .await;
 }
+
+/// The engine counts a replacement of the microphone once, when it opens another device
+/// while the setting is open (ADR 0794). The task of the engine is held at the end of that
+/// turn: the session closes the setting for the replacement, and the person unmutes before
+/// the engine takes that close. The unmute opens the microphone, and the gate does not
+/// close again when the engine takes the close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn an_unmute_before_the_engine_takes_the_close_for_a_replacement_opens() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        room.member(&ann_at, &ben, "Ben").await;
+        ann.host
+            .add_input("desk", "Desk microphone", Tone::new(660.0));
+        let mut voice = plain_voice();
+        voice.input_device = id("desk");
+        ann.calls.set_voice(voice);
+        ann.enter(room.target).await;
+        ben.enter(room.target).await;
+        ben.until_level(660.0, "the tone of the desk microphone", |level| {
+            level > HEARD_DBFS
+        })
+        .await;
+        let (waits, held) = ann.calls.hold_engine_at_replacement().await.unwrap();
+        let (_, before) = ann.calls.gate_counts().unwrap();
+        ann.host.remove_input("desk");
+        ann.host.break_input(AudioError::NoDevice);
+        waits.await.unwrap();
+        let view = ann
+            .until("the session closes the setting for the change", |view| {
+                view.muted && view.closed == Some(MicrophoneClosed::DeviceChanged)
+            })
+            .await;
+        ann.calls.unmute_in(Some(&view.call.unwrap().seat()));
+        let at_unmute = ann.calls.gate_counts().unwrap();
+        assert_eq!(
+            at_unmute.1,
+            before + 1,
+            "the replacement was not counted once"
+        );
+        drop(held);
+        ben.until_level(440.0, "the default microphone after the unmute", |level| {
+            level > HEARD_DBFS
+        })
+        .await;
+        assert_eq!(
+            ann.calls.gate_counts().unwrap(),
+            at_unmute,
+            "the engine closed the gate again when it took the close"
+        );
+        assert!(!ann.calls.view().muted);
+    })
+    .await;
+}

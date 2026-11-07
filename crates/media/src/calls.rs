@@ -386,6 +386,8 @@ enum SessionCommand {
     SoundCheck(crate::engine::statistics::SoundReply),
     #[cfg(feature = "test-support")]
     HoldEngine(oneshot::Sender<(oneshot::Receiver<()>, crate::engine::HeldEngine)>),
+    #[cfg(feature = "test-support")]
+    HoldEngineAtReplacement(oneshot::Sender<EngineHeldAtReplacement>),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -409,6 +411,14 @@ struct Joining {
     key: u64,
     target: CallTarget,
 }
+
+/// The answer of the engine to a hold at the next replacement: taken, held, and the hold.
+#[cfg(feature = "test-support")]
+type EngineHeldAtReplacement = (
+    oneshot::Receiver<()>,
+    oneshot::Receiver<()>,
+    crate::engine::HeldEngine,
+);
 
 /// What a step of the microphone changed, for the caller to tell.
 #[derive(Debug, Clone, Copy)]
@@ -1338,6 +1348,34 @@ impl Calls {
             waits.await.ok()?;
             Some(held)
         }
+    }
+
+    /// As [`Calls::hold_engine`], at the end of the turn in which the engine counts the next
+    /// replacement of the input device. Ends when the engine took the request; the receiver
+    /// that it gives ends when the task waits.
+    #[cfg(feature = "test-support")]
+    pub fn hold_engine_at_replacement(
+        &self,
+    ) -> impl Future<Output = Option<(oneshot::Receiver<()>, crate::engine::HeldEngine)>>
+    + Send
+    + 'static
+    + use<> {
+        let (reply, held) = oneshot::channel();
+        self.inner
+            .tell(SessionCommand::HoldEngineAtReplacement(reply));
+        async move {
+            let (taken, waits, held) = held.await.ok()?;
+            taken.await.ok()?;
+            Some((waits, held))
+        }
+    }
+
+    /// The closes and the replacements that the gate of the microphone of the call counted.
+    #[cfg(feature = "test-support")]
+    pub fn gate_counts(&self) -> Option<(u64, u64)> {
+        let shared = self.inner.shared();
+        let gate = &shared.active.as_ref()?.gate;
+        Some((gate.stops(), gate.replacements()))
     }
 
     /// Starts the camera of this device at the seat that the person saw. At another seat
@@ -3262,6 +3300,10 @@ impl Session {
             #[cfg(feature = "test-support")]
             SessionCommand::HoldEngine(reply) => {
                 let _ = reply.send(self.engine.hold());
+            }
+            #[cfg(feature = "test-support")]
+            SessionCommand::HoldEngineAtReplacement(reply) => {
+                let _ = reply.send(self.engine.hold_at_replacement());
             }
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),

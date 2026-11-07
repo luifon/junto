@@ -299,8 +299,17 @@ enum Command {
     /// one ends.
     #[cfg(feature = "test-support")]
     Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
+    /// As `Hold`, at the end of the turn of the task in which the engine counts the next
+    /// replacement of the input device. The first value tells that the engine took this.
+    #[cfg(feature = "test-support")]
+    HoldAtReplacement(oneshot::Sender<()>, EngineHold),
     Close(oneshot::Sender<()>),
 }
+
+/// What holds the task of the engine: it tells the first value, and waits until the second
+/// one ends.
+#[cfg(feature = "test-support")]
+type EngineHold = (oneshot::Sender<()>, oneshot::Receiver<()>);
 
 type Events = mpsc::UnboundedReceiver<RoomEvent>;
 
@@ -506,6 +515,8 @@ impl Engine {
             link: link.clone(),
             stops: stops.clone(),
             input_held: false,
+            #[cfg(feature = "test-support")]
+            replacement_hold: (None, None),
             input_used: None,
             camera_wait: (0, false),
             camera_answers: 0,
@@ -819,6 +830,10 @@ struct Actor {
     /// The microphone runs on another device than the call used before, and nothing is
     /// sent from it until the person's own setting was closed once.
     input_held: bool,
+    /// The hold that waits for the next replacement of the input device, and the one that
+    /// holds the task at the end of the turn that counted it, for a test.
+    #[cfg(feature = "test-support")]
+    replacement_hold: (Option<EngineHold>, Option<EngineHold>),
     /// The input device that the call opened last.
     input_used: Option<DeviceId>,
     /// The wait of a camera for a media connection: its number, and whether its time
@@ -987,6 +1002,11 @@ impl Actor {
                     }
                 },
             }
+            #[cfg(feature = "test-support")]
+            if let Some((held, released)) = self.replacement_hold.1.take() {
+                let _ = held.send(());
+                let _ = released.await;
+            }
         };
         self.leave(&mut events).await;
         tracing::info!("the media engine finished leaving its room");
@@ -1145,6 +1165,11 @@ impl Actor {
             Command::Hold(held, released) => {
                 let _ = held.send(());
                 let _ = released.await;
+            }
+            #[cfg(feature = "test-support")]
+            Command::HoldAtReplacement(armed, hold) => {
+                self.replacement_hold.0 = Some(hold);
+                let _ = armed.send(());
             }
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
@@ -1667,6 +1692,10 @@ impl Actor {
                     // Counted once, here: a close that the calls make for it, and an open of
                     // the person after that close, come after this count.
                     self.link.replace_input();
+                    #[cfg(feature = "test-support")]
+                    {
+                        self.replacement_hold.1 = self.replacement_hold.0.take();
+                    }
                 }
                 self.capture = Some(stream);
                 self.change(|state| {
