@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -223,6 +224,47 @@ class Lanes(unittest.TestCase):
         self.assertEqual(status, 127)
         self.assertIn("/nonexistent/program: ", output)
         self.assertEqual(failures, "Window tests (exit 127): /nonexistent/program\n")
+
+    def test_a_command_that_writes_nothing_for_the_bound_is_ended_after_its_threads(self):
+        with tempfile.TemporaryDirectory(prefix="junto-silence-") as work:
+            started = Path(work) / "child"
+            silent = f"sh -c 'echo started; sleep 60 & echo $! > {started}; wait; echo late'"
+            text = plan("lane app", "step Window tests", silent, "sh -c 'echo after'",
+                        "lane other", "step Other", "true")
+            reader = ["sh", "-c", "echo the threads of the test programs of $JUNTO_LINUX_INSTANCE"]
+            with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}), \
+                    unittest.mock.patch.object(lanes, "threads_command", lambda environment: reader):
+                status, seconds, output, failures = self.run_plan(text, wide=True)
+            self.assertEqual(status, 124, output)
+            self.assertLess(seconds, 20)
+            self.assertIn("wrote nothing for 1 s", output)
+            self.assertIn("the threads of the test programs of app", output)
+            self.assertIn("=== ended after 1 s without output", output)
+            self.assertNotIn("\nlate\n", output)
+            self.assertIn("after", output)
+            self.assertEqual(failures, f"Window tests (exit 124): {silent}\n")
+            child = int(started.read_text())
+            with self.assertRaises(ProcessLookupError, msg="the child of the ended command still runs"):
+                os.kill(child, 0)
+
+    def test_a_command_that_keeps_writing_runs_past_the_bound(self):
+        text = plan("lane app", "step Window tests", "sh -c 'for i in 1 2 3 4 5 6; do echo $i; sleep 0.5; done'",
+                    "lane other", "step Other", "true")
+        with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}):
+            status, seconds, output, failures = self.run_plan(text, wide=True)
+        self.assertEqual((status, failures), (0, ""), output)
+        self.assertGreaterEqual(seconds, 3)
+        self.assertNotIn("wrote nothing", output)
+
+    def test_the_threads_are_read_in_the_build_container_of_the_lane(self):
+        command = lanes.threads_command({"JUNTO_LINUX_PREFIX": "junto-linux-x", "JUNTO_LINUX_INSTANCE": "app"})
+        self.assertEqual(command[:6], ["docker", "exec", "--privileged", "--user", "0", "junto-linux-x-app-build"])
+        self.assertIn("gdb -p", command[-1])
+        self.assertEqual(lanes.threads_command({})[5], "junto-linux-build")
+        self.assertIsNone(lanes.threads_command({"JUNTO_CI_LANES": "machine"}))
+        self.assertEqual(lanes.silence_of({}), 20 * 60)
+        self.assertEqual(lanes.silence_of({"JUNTO_CI_SILENCE": "90"}), 90)
+        self.assertEqual(lanes.silence_of({"JUNTO_CI_SILENCE": "x"}), 20 * 60)
 
     def run_on_machine(self, text, machine):
         """Runs a plan without the budget of the Linux job, as the Windows job does."""

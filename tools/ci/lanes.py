@@ -29,6 +29,10 @@ machine keeps; a lane that does not fit even alone runs when no other lane runs.
 CARGO_BUILD_JOBS, its part of the processors of the machine in proportion to its share, for a
 step that compiles; the test programs keep their own number of threads.
 
+A command that writes nothing for 20 minutes (JUNTO_CI_SILENCE seconds) is ended: in the Linux
+job the threads of the test programs in the build container of its lane are first written to
+its output, and its step fails with the status 124.
+
 The output of each step goes to a file. After the last lane has ended, the output of each step is
 printed in the order of the plan, under a line with the step, its lane, its start and end (UTC)
 and its duration, and then the table of the steps. Each failed command is appended to the
@@ -43,11 +47,25 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget  # noqa: E402
 
 LANE_MEMORY = 4 * budget.GIB
+# The time that a command of a step may write nothing. A command that is silent for longer is
+# ended after the threads of its test programs are written to its output, so a test that waits
+# forever fails its step within the bound and does not hold the job (ADR 0905).
+# JUNTO_CI_SILENCE sets another number of seconds.
+SILENCE = 20 * 60
+# The threads of the test programs in the build container of a lane: every process whose
+# program is a test program of Cargo (`deps/` of the target directory), with gdb.
+THREADS = r"""for p in /proc/[0-9]*; do
+    program=$(readlink "$p/exe" 2>/dev/null) || continue
+    case "$program" in */deps/*) ;; *) continue ;; esac
+    echo "--- process ${p#/proc/}: $(tr '\0' ' ' < "$p/cmdline")"
+    timeout 120 gdb -p "${p#/proc/}" -batch -ex "thread apply all bt 40" 2>&1
+done"""
 # The memory that the lanes on the machine itself leave to the desktop and the other programs.
 RESERVE = 4 * budget.GIB
 
@@ -158,6 +176,83 @@ def lane_environments(lanes, environment, allocation):
     return result
 
 
+def silence_of(environment):
+    value = environment.get("JUNTO_CI_SILENCE", "")
+    return int(value) if value.isascii() and value.isdecimal() and int(value) > 0 else SILENCE
+
+
+def threads_command(environment):
+    """The command that writes the threads of the test programs of a lane, or None where the
+    job cannot read them. On the machine itself (the Windows job) there is no such reader; in
+    the Linux job it runs in the build container of the lane (tools/linux/run.sh names it), with
+    the privileges that gdb needs to attach to a process that is not its child."""
+    if environment.get("JUNTO_CI_LANES") == "machine":
+        return None
+    prefix = environment.get("JUNTO_LINUX_PREFIX") or "junto-linux"
+    instance = environment.get("JUNTO_LINUX_INSTANCE")
+    container = f"{prefix}-{instance}-build" if instance else f"{prefix}-build"
+    return ["docker", "exec", "--privileged", "--user", "0", container, "sh", "-c", THREADS]
+
+
+def end(process):
+    """Ends a command and every process that it started."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        import signal
+        for sent, wait in ((signal.SIGTERM, 30), (signal.SIGKILL, 30)):
+            try:
+                os.killpg(process.pid, sent)
+            except ProcessLookupError:
+                break
+            try:
+                process.wait(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    process.wait()
+
+
+def run_command(command, environment, root, output):
+    """Runs a command with its output in the file `output`, and returns its exit status. A
+    command that writes nothing for the silence bound gets the threads of its test programs
+    written to its output and is ended, with the status 124."""
+    bound = silence_of(environment)
+    process = subprocess.Popen(command, env=environment, cwd=root, stdout=output, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL, start_new_session=os.name != "nt")
+    interval = min(5.0, bound / 4)
+    written, since = -1, time.monotonic()
+    while True:
+        try:
+            return process.wait(timeout=interval)
+        except subprocess.TimeoutExpired:
+            pass
+        size = os.fstat(output.fileno()).st_size
+        if size != written:
+            written, since = size, time.monotonic()
+        elif time.monotonic() - since >= bound:
+            break
+    output.write(f"\n=== {shlex.join(command)} wrote nothing for {bound} s; the threads of its test "
+                 f"programs follow, and then it is ended\n".encode())
+    output.flush()
+    reader = threads_command(environment)
+    if reader is None:
+        output.write(b"(the threads of a program are read only in the build container of the Linux job)\n")
+        output.flush()
+    else:
+        try:
+            subprocess.run(reader, env=environment, stdout=output, stderr=subprocess.STDOUT,
+                           stdin=subprocess.DEVNULL, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            output.write(f"the threads could not be read: {error}\n".encode())
+            output.flush()
+    end(process)
+    output.write(f"=== ended after {bound} s without output\n".encode())
+    output.flush()
+    return 124
+
+
 def run_lane(steps, environment, directory, root):
     for step in steps:
         step.start = now()
@@ -165,8 +260,7 @@ def run_lane(steps, environment, directory, root):
         with open(path, "wb") as output:
             for command in step.commands:
                 try:
-                    status = subprocess.run(command, env=environment, cwd=root, stdout=output,
-                                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+                    status = run_command(command, environment, root, output)
                 except OSError as error:
                     output.write(f"{shlex.join(command)}: {error}\n".encode())
                     output.flush()
