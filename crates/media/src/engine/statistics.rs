@@ -177,6 +177,27 @@ impl Engine {
             },
         )
     }
+
+    /// As [`Engine::hold`], at the end of the turn of the task in which the engine counts the
+    /// next replacement of the input device. The first value ends when the engine took the
+    /// request, the second when the task waits.
+    pub fn hold_at_replacement(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Receiver<()>, HeldEngine) {
+        let (armed, taken) = oneshot::channel();
+        let (held, waits) = oneshot::channel();
+        let (released, release) = oneshot::channel();
+        let _ = self
+            .commands
+            .send(Command::HoldAtReplacement(armed, (held, release)));
+        (
+            taken,
+            waits,
+            HeldEngine {
+                _released: released,
+            },
+        )
+    }
 }
 
 #[cfg(feature = "test-support")]

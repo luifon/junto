@@ -182,17 +182,21 @@ impl AppState {
         } else {
             self.mute_holds.remove(&window);
         }
-        let calls = self.calls.view();
-        let Some(call) = &calls.call else {
+        if self.calls.view().call.is_none() {
             self.mute_holds.clear();
-            self.muted_by_hold = false;
+            if std::mem::take(&mut self.hold_told) {
+                self.calls.forget_hold();
+            }
             return;
-        };
-        if !self.mute_holds.is_empty() && !calls.muted {
-            self.calls.mute();
-            self.muted_by_hold = true;
-        } else if self.mute_holds.is_empty() && std::mem::take(&mut self.muted_by_hold) {
-            self.calls.unmute_in(Some(&call.seat()));
+        }
+        // The calls decide whether the hold closes the microphone, and whether its release
+        // opens it: a close by a rule of the call during the hold keeps it closed.
+        if !self.mute_holds.is_empty() && !self.hold_told {
+            self.hold_told = true;
+            self.calls.press_hold();
+        } else if self.mute_holds.is_empty() && self.hold_told {
+            self.hold_told = false;
+            self.calls.release_hold();
         }
     }
 

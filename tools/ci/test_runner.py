@@ -323,7 +323,7 @@ class Ended(unittest.TestCase):
                 process.kill()
             here = directory / "runs" / "sample-run"
             # Every file of the run, for the message of a failed assertion: the test failed now
-            # and then without a record of why (CD9).
+            # and then without a record of why.
             files = "\n".join(f"--- {path.relative_to(root)}\n{path.read_text(errors='replace')}"
                               for path in sorted([*here.rglob("*"), root / "ended"])
                               if path.is_file() and path.stat().st_size < 65536)

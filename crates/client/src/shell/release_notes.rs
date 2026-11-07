@@ -14,7 +14,7 @@ use super::{Layer, Shell};
 use crate::state::feed::Names;
 use crate::text;
 use crate::theme::{theme, u};
-use crate::ui::{Button, ButtonKind, Dialog, dialog_footer};
+use crate::ui::{Button, ButtonKind, Dialog, StyleExt as _, dialog_footer};
 
 pub(crate) struct ReleaseNotesDialog {
     notes: Vec<(Version, Document)>,
@@ -63,6 +63,11 @@ impl Shell {
         let mut parts: Vec<AnyElement> = Vec::new();
         for (index, (version, document)) in notes.iter().enumerate() {
             let selector = format!("release-notes-{version}");
+            let title = div()
+                .typeface(theme.types.name, &theme)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .ink(theme.colors.ink)
+                .child(text::release_title(&version.to_string()));
             parts.push(
                 div()
                     .debug_selector(move || selector.clone())
@@ -70,6 +75,7 @@ impl Shell {
                     .flex_col()
                     .gap(u(6.0))
                     .when(index > 0, |part| part.mt(u(18.0)))
+                    .child(title)
                     .children(self.document((None, None), document, None, &names, &theme, cx))
                     .into_any_element(),
             );

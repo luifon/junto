@@ -1638,6 +1638,11 @@ pub const fn no_account_status(notice: Option<Notice>) -> &'static str {
 pub const JOIN_A_SERVER: &str = "Join a server";
 pub const CLOSE: &str = "Close";
 pub const WHAT_IS_NEW: &str = "What is new";
+
+/// The heading of the notes of one version in "What is new".
+pub fn release_title(version: &str) -> String {
+    format!("Junto {version}")
+}
 pub const CANCEL: &str = "Cancel";
 pub const SERVER_FOUND: &str = "Server found";
 pub const OPERATOR_NOTICE: &str =

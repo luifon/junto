@@ -273,7 +273,7 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
 /// The release notes of the tests that are not about them: none, so that a data directory
 /// that a test writes shows no notes when the build carries notes of a newer version.
 fn no_release_notes() -> junto_client::release_notes::ReleaseNotes {
-    junto_client::release_notes::ReleaseNotes::new([])
+    junto_client::release_notes::ReleaseNotes::default()
 }
 
 /// Opens the application as the build of `build`, with these release notes (ADR 0727).
@@ -602,6 +602,19 @@ impl Window {
         self.holding(|this| {
             this.cx.update(|window, cx| window.dispatch_event(down, cx));
             this.cx.run_until_parked();
+        });
+    }
+
+    /// Moves the pointer with a button of it held, between [`Window::press_down_at`] and
+    /// [`Window::release_at`].
+    pub fn move_pointer_pressed(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        self.holding(|this| {
+            this.cx
+                .simulate_mouse_move(position, Some(button), Modifiers::none());
         });
     }
 

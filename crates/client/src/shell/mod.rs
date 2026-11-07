@@ -1870,6 +1870,8 @@ impl Shell {
 
     pub(crate) fn toggle_server_book(&mut self, narrow: bool, cx: &mut Context<Self>) {
         self.close_hover_menu(cx);
+        // The icons go: no leave of the pressed one is told.
+        self.hover_menu_pressed = None;
         if narrow {
             self.expanded_while_narrow = !self.expanded_while_narrow;
             cx.notify();
@@ -1889,6 +1891,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hover_menu_pressed = None;
         if narrow {
             self.expanded_while_narrow = true;
         } else {

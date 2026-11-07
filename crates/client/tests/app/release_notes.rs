@@ -14,13 +14,10 @@ fn version(minor: u32) -> Version {
 
 fn notes() -> ReleaseNotes {
     ReleaseNotes::new([
-        (version(1), "# Junto 0.1.0\n\nThe first release."),
-        (
-            version(2),
-            "# Junto 0.2.0\n\n## Changes\n\n- Favourites\n- Release notes",
-        ),
-        (version(3), "# Junto 0.3.0\n\n```\njunto --version\n```"),
-        (version(4), "# Junto 0.4.0\n\n1. Logos\n2. Photos"),
+        (version(1), "The first release."),
+        (version(2), "### Changes\n\n- Favourites\n- Release notes"),
+        (version(3), "```\njunto --version\n```"),
+        (version(4), "1. Logos\n2. Photos"),
     ])
 }
 
