@@ -1799,8 +1799,8 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
 
 /// The stage and the channel list of a call of 601 people build the tiles and the rows
 /// in view only, and a scroll of each brings the last people into view (ADR 0735). The window
-/// holds the profiles of the people, so it reads none: each answer of a read costs a frame
-/// (open item CD8), and 601 reads took longer than the limit of a wait on two processors.
+/// holds the profiles of the people, so it reads none: each answer of a read costs a frame,
+/// and 601 reads took longer than the limit of a wait on two processors.
 #[gpui::test]
 fn a_call_of_many_people_draws_the_tiles_and_the_rows_in_view(cx: &mut TestAppContext) {
     use junto_client_core::protocol::ids::AccountId;
