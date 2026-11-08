@@ -3,7 +3,6 @@
 //! tests counts; the counts are of the whole process.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 /// A phase of the pictures of a share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,8 +22,10 @@ const PHASES: usize = 4;
 
 static NANOS: [AtomicU64; PHASES] = [const { AtomicU64::new(0) }; PHASES];
 
-/// Adds the time since `started` to a phase.
-pub(crate) fn add(phase: Phase, started: Instant) {
+/// Adds the time since `started` to a phase. Its callers, the delivery of the pictures and the
+/// capture of Windows, are built on Linux and Windows and in the unit tests.
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub(crate) fn add(phase: Phase, started: std::time::Instant) {
     let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     NANOS[phase as usize].fetch_add(nanos, Ordering::Relaxed);
 }
