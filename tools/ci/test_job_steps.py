@@ -310,6 +310,18 @@ class JobSteps(unittest.TestCase):
         self.assertIn("Block-TestLiveKit", block)
         self.assertIn("function Block-TestLiveKit", (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text())
 
+    def test_the_setup_and_the_hosted_windows_job_turn_off_the_prompts_of_the_firewall(self):
+        setup = (REPOSITORY / "tools" / "windows" / "ci-setup.ps1").read_text()
+        function = setup.index("function Disable-FirewallPrompts")
+        self.assertIn("Set-NetFirewallProfile -Profile Domain, Private, Public -NotifyOnListen False",
+                      setup[function:setup.index("\n}\n", function)])
+        steps = setup[setup.index("function Invoke-Setup"):]
+        self.assertLess(steps.index("Block-TestLiveKit"), steps.index("Disable-FirewallPrompts"))
+        workflow = (REPOSITORY / ".github" / "workflows" / "ci.yml").read_text()
+        block = workflow[workflow.index("- name: Firewall rule of the LiveKit of the tests"):
+                         workflow.index("run: tools/ci/rust-other-systems.sh")]
+        self.assertLess(block.index("Block-TestLiveKit"), block.index("Disable-FirewallPrompts"))
+
     def test_both_systems_lint_the_device_tests_of_the_media_crate(self):
         for system in SYSTEMS:
             status, commands, output = self.run_job(system)

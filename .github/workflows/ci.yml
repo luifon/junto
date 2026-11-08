@@ -137,6 +137,7 @@ jobs:
           . ./tools/windows/ci-setup.ps1 -Directory (Join-Path $env:RUNNER_TEMP 'junto-setup') -FunctionsOnly
           Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
           Block-TestLiveKit
+          Disable-FirewallPrompts
       - name: Rust on ${{ matrix.system }}
         shell: bash
         # The macOS runner has no FFmpeg; the job skips the window tests that need it (ADR 0905).

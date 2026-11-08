@@ -7,7 +7,8 @@
 # and installed below -Directory, except the parts of the Build Tools that the Visual Studio
 # installer places in fixed folders (the installer itself and the Windows SDK). The script
 # enables the Task Scheduler operational log, creates the firewall rule that blocks the LiveKit
-# program of the tests (Block-TestLiveKit), and changes no PATH. It runs elevated. A tool whose recorded version is the pinned one is
+# program of the tests (Block-TestLiveKit), turns off the notifications of the firewall
+# (Disable-FirewallPrompts), and changes no PATH. It runs elevated. A tool whose recorded version is the pinned one is
 # left as it is, so a second run downloads nothing.
 #
 # Exit codes: 0 when every tool is ready; 1 when a step failed; 3 when the Build Tools need a
@@ -184,10 +185,24 @@ function Block-TestLiveKit {
     }
 }
 
+# A test program that the firewall does not know, such as a new build of the window tests,
+# opens sockets on the addresses of the machine, and Windows asks whether to allow it in a
+# dialog that stays open over the desktop of the job (tools/windows/dialogs.py). Without the
+# notifications the firewall blocks such a program inbound and asks nothing; traffic between the
+# addresses of the machine itself is not affected.
+function Disable-FirewallPrompts {
+    try {
+        Set-NetFirewallProfile -Profile Domain, Private, Public -NotifyOnListen False
+    } catch {
+        throw "could not turn off the notifications of the firewall (run setup elevated): $_"
+    }
+}
+
 function Invoke-Setup {
     try {
         Enable-TaskLog
         Block-TestLiveKit
+        Disable-FirewallPrompts
         Install-Git
         Install-Python
         Install-Rustup

@@ -21,6 +21,7 @@ class TaskLog(unittest.TestCase):
                 "function wevtutil.exe { Write-Output ($args -join '|'); "
                 f"$global:LASTEXITCODE = {status} }}; "
                 "function Block-TestLiveKit { 'blocked LiveKit' }; "
+                "function Disable-FirewallPrompts { 'no firewall prompts' }; "
                 "function Install-Git { 'installed Git' }; "
                 "function Install-Python { 'installed Python' }; "
                 "function Install-Rustup { 'installed rustup' }; "
@@ -33,8 +34,8 @@ class TaskLog(unittest.TestCase):
     def test_setup_enables_the_task_scheduler_operational_log(self):
         result = self.invoke(0)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.splitlines()[:6], [
-            "sl|Microsoft-Windows-TaskScheduler/Operational|/e:true", "blocked LiveKit",
+        self.assertEqual(result.stdout.splitlines()[:7], [
+            "sl|Microsoft-Windows-TaskScheduler/Operational|/e:true", "blocked LiveKit", "no firewall prompts",
             "installed Git", "installed Python", "installed rustup", "installed Build Tools"])
         self.assertEqual(result.stdout.count("/e:true"), 1)
         self.assertIn("ready:", result.stdout)
@@ -77,6 +78,34 @@ class LiveKitRule(unittest.TestCase):
     def test_a_rule_that_cannot_be_created_fails_the_setup(self):
         result = self.invoke(1)
         self.assertIn("failed: could not create the firewall rule junto-test-livekit", result.stdout)
+
+
+
+@unittest.skipUnless(os.name == "nt", "needs Windows PowerShell")
+class FirewallPrompts(unittest.TestCase):
+    """The setup turns off the notifications of the firewall in every profile, so a new test
+    program is blocked inbound without a dialog."""
+
+    def invoke(self, fails):
+        with tempfile.TemporaryDirectory(prefix="junto-setup-") as temporary:
+            command = (
+                f". {quoted(SCRIPT)} -Directory {quoted(temporary)} -FunctionsOnly; "
+                "function Set-NetFirewallProfile { param($Profile, $NotifyOnListen) "
+                + ("throw 'Access is denied'; " if fails else "")
+                + "[Console]::Out.WriteLine(($Profile -join ',') + '|' + $NotifyOnListen) }; "
+                "try { Disable-FirewallPrompts; 'done' } catch { \"failed: $_\" }"
+            )
+            return subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                 "-Command", command], capture_output=True, text=True, timeout=60)
+
+    def test_the_notifications_of_every_profile_are_turned_off(self):
+        result = self.invoke(False)
+        self.assertEqual(result.stdout.splitlines(), ["Domain,Private,Public|False", "done"], result.stderr)
+
+    def test_a_refusal_fails_the_setup(self):
+        result = self.invoke(True)
+        self.assertIn("failed: could not turn off the notifications of the firewall", result.stdout)
 
 
 if __name__ == "__main__":
