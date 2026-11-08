@@ -25,7 +25,8 @@ a lock of tools/serial.sh of its own, and a lane without services sets JUNTO_LIN
 With JUNTO_CI_LANES=machine (the Windows job), the lanes run on the machine itself: a
 lane starts, in the order of the plan, when its memory and that of the lanes that run fit into
 the memory that the machine has available at the start, less RESERVE, which the desktop of the
-machine keeps; a lane that does not fit even alone runs when no other lane runs. Each lane gets
+machine keeps; a lane that does not fit even alone runs when no other lane runs. A machine with
+4 processors or fewer runs its lanes one after the other. Each lane gets
 CARGO_BUILD_JOBS, its part of the processors of the machine in proportion to its share, for a
 step that compiles; the test programs keep their own number of threads.
 
@@ -73,6 +74,10 @@ THREADS = r"""for p in /proc/[0-9]*; do
 done"""
 # The memory that the lanes on the machine itself leave to the desktop and the other programs.
 RESERVE = 4 * budget.GIB
+# On the machine itself, a machine with at most this many processors runs its lanes one after
+# the other: there the lanes at the same time made the steps slower and their waits failed
+# (ADR 0905).
+FEW_PROCESSORS = 4
 
 
 class Lane:
@@ -308,7 +313,11 @@ def run_on_machine(lanes, steps, environment, directory, root, machine):
     print(f"Machine: {processors} processors, {budget.text_of_size(available)} available, "
           f"{budget.text_of_size(room)} for the lanes", flush=True)
     names = [lane.name for lane in lanes]
-    print(f"Lanes: {', '.join(names)}, each when its memory fits", flush=True)
+    alone = processors <= FEW_PROCESSORS
+    if alone:
+        print(f"Lanes: {', '.join(names)}, one after the other on {processors} processors", flush=True)
+    else:
+        print(f"Lanes: {', '.join(names)}, each when its memory fits", flush=True)
     ended = threading.Condition()
     running = {}
 
@@ -325,7 +334,7 @@ def run_on_machine(lanes, steps, environment, directory, root, machine):
     with ended:
         while waiting or running:
             used = sum(lane.memory for lane in lanes if lane.name in running)
-            fits = [lane for lane in waiting if not running or used + lane.memory <= room]
+            fits = [lane for lane in waiting if not running or (not alone and used + lane.memory <= room)]
             for lane in fits[:1]:
                 waiting.remove(lane)
                 jobs = max(1, processors * lane.share // total)

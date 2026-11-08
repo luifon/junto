@@ -318,6 +318,20 @@ class Lanes(unittest.TestCase):
         positions = [output.index(f"=== {name}  lane ") for name in ("Server tests", "Window tests", "Unit tests")]
         self.assertEqual(positions, sorted(positions))
 
+    def test_a_machine_of_four_processors_runs_its_lanes_one_after_the_other(self):
+        show = "sh -c 'echo \"$CARGO_BUILD_JOBS\"; sleep 1'"
+        text = plan("lane server share 1 memory 3g", "step Server tests", show,
+                    "lane window share 3 memory 4g", "step Window tests", show)
+        # The memory would hold both lanes; the processors decide.
+        status, seconds, output, _ = self.run_on_machine(text, (4, 64 * GIB))
+        self.assertEqual(status, 0, output)
+        self.assertGreaterEqual(seconds, 2)
+        self.assertIn("Lanes: server, window, one after the other on 4 processors", output)
+        status, seconds, output, _ = self.run_on_machine(text, (6, 64 * GIB))
+        self.assertEqual(status, 0, output)
+        self.assertLess(seconds, 1.9)
+        self.assertIn("Lanes: server, window, each when its memory fits", output)
+
     def test_on_the_machine_itself_a_lane_waits_until_its_memory_is_free(self):
         mark = "sh -c 'date +%s.%N >> \"$0\"; sleep 1; date +%s.%N >> \"$0\"' {}"
         with tempfile.TemporaryDirectory(prefix="junto-lanes-marks-") as marks:
