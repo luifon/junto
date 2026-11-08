@@ -29,9 +29,10 @@ machine keeps; a lane that does not fit even alone runs when no other lane runs.
 CARGO_BUILD_JOBS, its part of the processors of the machine in proportion to its share, for a
 step that compiles; the test programs keep their own number of threads.
 
-A command that writes nothing for 20 minutes (JUNTO_CI_SILENCE seconds) is ended: in the Linux
-job the threads of the test programs in the build container of its lane are first written to
-its output, and its step fails with the status 124.
+A command that writes nothing for 20 minutes (JUNTO_CI_SILENCE seconds) after Cargo started its
+first program ("     Running ") is ended: in the Linux job the threads of the test programs in
+the build container of its lane are first written to its output, and its step fails with the
+status 124. Before that line a command has no bound, so a compile is never ended.
 
 The output of each step goes to a file. After the last lane has ended, the output of each step is
 printed in the order of the plan, under a line with the step, its lane, its start and end (UTC)
@@ -53,11 +54,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget  # noqa: E402
 
 LANE_MEMORY = 4 * budget.GIB
-# The time that a command of a step may write nothing. A command that is silent for longer is
-# ended after the threads of its test programs are written to its output, so a test that waits
-# forever fails its step within the bound and does not hold the job (ADR 0905).
-# JUNTO_CI_SILENCE sets another number of seconds.
+# The time that a command of a step may write nothing while its test programs run. A command
+# that is silent for longer is ended after the threads of its test programs are written to its
+# output, so a test that waits forever fails its step within the bound and does not hold the
+# job (ADR 0905). JUNTO_CI_SILENCE sets another number of seconds.
 SILENCE = 20 * 60
+# The line with which Cargo starts a program that it built, a test program or the program of
+# `cargo run`: the bound applies from the first one on, so a compile, which can be silent for
+# longer, is never ended.
+RUNNING = b"     Running "
 # The threads of the test programs in the build container of a lane: every process whose
 # program is a test program of Cargo (`deps/` of the target directory), with gdb.
 THREADS = r"""for p in /proc/[0-9]*; do
@@ -216,13 +221,15 @@ def end(process):
 
 def run_command(command, environment, root, output):
     """Runs a command with its output in the file `output`, and returns its exit status. A
-    command that writes nothing for the silence bound gets the threads of its test programs
-    written to its output and is ended, with the status 124."""
+    command that, after Cargo started its first program, writes nothing for the silence bound
+    gets the threads of its test programs written to its output and is ended, with the status
+    124."""
     bound = silence_of(environment)
+    start = os.fstat(output.fileno()).st_size
     process = subprocess.Popen(command, env=environment, cwd=root, stdout=output, stderr=subprocess.STDOUT,
                                stdin=subprocess.DEVNULL, start_new_session=os.name != "nt")
     interval = min(5.0, bound / 4)
-    written, since = -1, time.monotonic()
+    written, since, running = -1, time.monotonic(), False
     while True:
         try:
             return process.wait(timeout=interval)
@@ -230,8 +237,12 @@ def run_command(command, environment, root, output):
             pass
         size = os.fstat(output.fileno()).st_size
         if size != written:
+            if not running:
+                with open(output.name, "rb") as text:
+                    text.seek(max(start, written - len(RUNNING)))
+                    running = RUNNING in text.read(size - text.tell())
             written, since = size, time.monotonic()
-        elif time.monotonic() - since >= bound:
+        elif running and time.monotonic() - since >= bound:
             break
     output.write(f"\n=== {shlex.join(command)} wrote nothing for {bound} s; the threads of its test "
                  f"programs follow, and then it is ended\n".encode())

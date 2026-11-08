@@ -228,7 +228,7 @@ class Lanes(unittest.TestCase):
     def test_a_command_that_writes_nothing_for_the_bound_is_ended_after_its_threads(self):
         with tempfile.TemporaryDirectory(prefix="junto-silence-") as work:
             started = Path(work) / "child"
-            silent = f"sh -c 'echo started; sleep 60 & echo $! > {started}; wait; echo late'"
+            silent = f"sh -c 'echo \"     Running tests/app.rs\"; sleep 60 & echo $! > {started}; wait; echo late'"
             text = plan("lane app", "step Window tests", silent, "sh -c 'echo after'",
                         "lane other", "step Other", "true")
             reader = ["sh", "-c", "echo the threads of the test programs of $JUNTO_LINUX_INSTANCE"]
@@ -246,6 +246,17 @@ class Lanes(unittest.TestCase):
             child = int(started.read_text())
             with self.assertRaises(ProcessLookupError, msg="the child of the ended command still runs"):
                 os.kill(child, 0)
+
+    def test_a_compile_that_writes_nothing_for_the_bound_is_not_ended(self):
+        # Cargo writes nothing while it compiles one large crate; only a program that it started
+        # has the bound.
+        compile = "sh -c 'echo \"   Compiling junto-client\"; sleep 3; echo \"    Finished\"; echo \"     Running x\"'"
+        text = plan("lane release", "step Panic reports", compile, "lane other", "step Other", "true")
+        with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}):
+            status, seconds, output, failures = self.run_plan(text, wide=True)
+        self.assertEqual((status, failures), (0, ""), output)
+        self.assertGreaterEqual(seconds, 3)
+        self.assertNotIn("wrote nothing", output)
 
     def test_a_command_that_keeps_writing_runs_past_the_bound(self):
         text = plan("lane app", "step Window tests", "sh -c 'for i in 1 2 3 4 5 6; do echo $i; sleep 0.5; done'",
