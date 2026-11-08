@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests of running.py with a stand-in for lsappinfo."""
+from pathlib import Path
 import subprocess
 import unittest
 
@@ -60,9 +61,8 @@ class Running(unittest.TestCase):
     def test_the_checks_that_start_a_bundle_refuse_first(self):
         for name in ["check_update.py", "check_start.py", "check_lifecycle.py"]:
             with self.subTest(check=name):
-                text = (running.__file__.rsplit("/", 1)[0] + "/" + name)
-                with open(text, encoding="utf-8") as file:
-                    self.assertIn("refuse_when_running(", file.read())
+                text = Path(running.__file__).with_name(name).read_text(encoding="utf-8")
+                self.assertIn("refuse_when_running(", text)
 
 
 if __name__ == "__main__":
