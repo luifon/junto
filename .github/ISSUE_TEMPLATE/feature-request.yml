@@ -1,0 +1,53 @@
+name: Feature request
+description: A new function, or a change to a function that works as designed.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need to do
+      description: The task that you cannot do, or cannot do easily, with Junto now.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What Junto should do
+      description: The behaviour that you propose. Name an application that does it, if you know one.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Text chat
+        - Voice and video calls
+        - Screen sharing
+        - Recordings and transcripts
+        - Notifications and sounds
+        - Install, update and start
+        - Settings, accounts and servers
+        - Server install and administration
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: systems
+    attributes:
+      label: Operating systems
+      description: The systems on which you need it.
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Server only
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do now instead
+      description: The other way you do the task now, if there is one.

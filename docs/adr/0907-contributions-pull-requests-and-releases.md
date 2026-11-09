@@ -57,6 +57,14 @@ Choice of the tool, checked on 2026-11-03:
 
 Reasons: CLA assistant is the one tool of the list that is maintained and open to any repository. It needs no workflow, no token and no branch in the repository, and it keeps the records outside the repository, so no tracked file holds them (ADR 0901). It shows one document and asks for the fields of the form before the signature, so one link serves the individual and the entity agreement.
 
+### Issues
+
+- An issue is opened with one of two forms in `.github/ISSUE_TEMPLATE/`: a problem report and a feature request. Blank issues are turned off (`config.yml`).
+- The problem report requires the Junto version, the server version, the operating system and its version, the package that installed Junto, the area, what happened, what was expected, the steps and how often it happens. For a problem of the server alone, the package is "No client", and the form of the server installation and the system of the server host are filled in. The devices, the logs and the error report are optional. The form names where the client shows each version, the commit of a build from source, where each system keeps the log and the start failure file, the command that shows the log of a server container, and asks the person to remove from the fields what must not be public.
+- The feature request requires the task, the proposed behaviour, the area and the operating systems.
+
+Reasons: a problem of the client often depends on the version of the client, the version of the server, the system and the package (ADR 0705, ADR 0724, ADR 0754, ADR 0755). A report without them needs a question and an answer before work can start. A form makes these fields required; a Markdown template is only text that the person can delete. An issue is public, and the log can contain server addresses and names, so the form tells the person to remove them.
+
 ### Releases and versions
 
 - The release cycle is two weeks or longer. A weekly cycle only when enough contributors take part.
