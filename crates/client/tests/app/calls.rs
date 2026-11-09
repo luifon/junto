@@ -686,6 +686,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             sound_held: false,
             size: (64, 36),
             frame_rate: 30,
+            shows_the_client: false,
         }),
     )]);
     call.shares = vec![SeenShare {
@@ -934,6 +935,7 @@ fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppCo
             sound_held: false,
             size: (64, 36),
             frame_rate: 30,
+            shows_the_client: false,
         }),
     )]);
     call.watched = Some(ShareId::own(0));
@@ -1066,6 +1068,7 @@ fn watch_own_share(
             sound_held: false,
             size,
             frame_rate: 30,
+            shows_the_client: false,
         }),
     )]);
     call.watched = Some(ShareId::own(0));
@@ -1230,6 +1233,7 @@ fn the_small_pictures_of_the_shares_are_drawn_in_the_form_of_a_camera_picture(
             sound_held: false,
             size: (36, 64),
             frame_rate: 30,
+            shows_the_client: false,
         }),
     )]);
     call.shares = vec![SeenShare {

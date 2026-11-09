@@ -598,8 +598,21 @@ pub const SHARE_TABS: &str = "What kind of thing to share";
 pub const SHARE_TAB_SCREEN: &str = "Screen";
 pub const SHARE_TAB_WINDOW: &str = "Window";
 pub const SHARE_TAB_APPLICATION: &str = "Application";
-pub const NO_WINDOWS: &str = "No window of another application is open.";
-pub const NO_APPLICATION_WINDOWS: &str = "No other application has a window on a screen.";
+pub const NO_WINDOWS: &str = "No window is open on a screen.";
+pub const NO_APPLICATION_WINDOWS: &str = "No application has a window on a screen.";
+/// The line under a window or the application of Junto itself in the dialog of a share: its
+/// picture is shared without its sound (ADR 0502).
+pub fn without_the_sound_of_junto(detail: &str) -> String {
+    format!("{detail} · without its sound")
+}
+/// The sound of a share of a window or of the application of Junto itself (ADR 0502).
+pub const SOUND_OF_JUNTO_NOT_SHARED: &str = "Junto does not share its own sound, because \
+     that sound holds this call. Choose all system sound or no sound.";
+/// In the place of the picture of an own share of a window or of the application of Junto
+/// itself (ADR 0738).
+pub const SHARE_SHOWS_JUNTO: &str = "This share shows Junto. Its picture is not shown here, \
+     so that a window that shows the call does not show its own picture again inside itself. \
+     The people in the call see the picture.";
 /// The line under an application in the dialog of a share: its windows and the screen whose
 /// area is shared.
 pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
@@ -3935,6 +3948,7 @@ mod tests {
             frame_rate: Some(30),
             watched: true,
             viewers: Vec::new(),
+            shows_the_client: false,
         };
         assert_eq!(share_title(&share, false), "Carla's screen");
         assert_eq!(share_title(&share, true), "Your screen");

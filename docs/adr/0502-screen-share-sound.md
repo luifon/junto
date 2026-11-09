@@ -25,7 +25,7 @@ Choice of sound:
 - Nothing is chosen automatically, with one exception: a share of the windows of one application has the sound of that application while the sharer has chosen no other sound. The dialog shows that choice before the share starts, and the sharer changes it there (ADR 0738).
 - The sharer and the viewers see which choice is active for as long as the share runs.
 - The sound of the Junto application itself is always excluded, so a call does not hear itself.
-- Junto does not offer itself in the list of applications.
+- Junto offers its own windows and its own application for their picture only, so that a person can share a window of Junto to get help or to show a problem. It does not offer its own sound, of this start or of another start of the same program: "This application" is not offered with such a picture, the list of applications whose sound can be shared alone does not hold Junto, and a capture that is asked for the sound of Junto refuses it. The dialog states this in the row of the window or the application ("without its sound") and under the choice of the sound. All system sound and no sound stay available, because all system sound leaves out the sound of this process on every system.
 
 Several shares:
 
@@ -54,7 +54,7 @@ macOS:
 - Choices offered: this application, all system sound, none.
 - "This application" lists only applications that have a window, because the system lists no others. A program without a window is captured only by "all system sound". The sound of an application includes the sound of its helper and child processes. A share of one window carries the sound of the application that owns the window; the system has no sound setting per window.
 - Own sound is excluded by the setting of the capture that excludes the current process. The system applies it to the application that it holds responsible for the capturing process and to that application's child processes. Junto therefore plays the sound of a call from its own process or from a child process.
-- When the chosen application belongs to the same responsible application as the capturing process, the exclusion has no effect and the capture contains the program's own sound at full level. This is the reason why Junto is not in its own list.
+- When the chosen application belongs to the same responsible application as the capturing process, the exclusion has no effect and the capture contains the program's own sound at full level. This is the reason why Junto never offers its own sound. A picture of a Junto window or of the Junto application is a separate stream without sound (ADR 0736), so it carries no sound of the call.
 - The capture does not depend on the output volume or on the mute state: the captured level was the same at volume 0 and muted. A sharer can keep the speakers silent.
 - The capture delivers 48 kHz stereo in buffers of 20 ms, about 90 ms after playback. The client reads the format from each buffer, because a request for 44.1 kHz was delivered as 48 kHz.
 - The permission is "Screen & System Audio Recording". It belongs to the application that the system holds responsible for the process, not to the binary. Without it the system returns an error, not silence, and its dialog has no button that grants the permission. The client checks the permission before a share and sends the person to System Settings.

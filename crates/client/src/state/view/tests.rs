@@ -2111,6 +2111,7 @@ pub(super) mod calls {
                 sound_held: true,
                 size: (1280, 800),
                 frame_rate: 15,
+                shows_the_client: false,
             }),
         )]);
         call.watched = Some(ShareId::own(0));
@@ -2206,6 +2207,7 @@ pub(super) mod calls {
                 sound_held: false,
                 size: (1280, 800),
                 frame_rate: 30,
+                shows_the_client: false,
             })
         };
         call.own_shares = BTreeMap::from([
@@ -2648,6 +2650,7 @@ pub(super) mod calls {
             sound_held: false,
             size: (1280, 720),
             frame_rate: 30,
+            shows_the_client: false,
         })
     }
 

@@ -64,19 +64,19 @@ fn switchable(window: &ListedWindow) -> bool {
     window.app_window || !(window.owned || window.tool || window.no_activate)
 }
 
-/// The windows that a person can share: visible application windows of another application
-/// than the client, on the present virtual desktop, not minimized.
+/// The windows that a person can share: visible application windows on the present virtual
+/// desktop, not minimized, the windows of the client itself included (ADR 0736).
 /// The list of windows reads their frames too ([`placed_windows`]); the tests read this.
 #[cfg(test)]
-pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<WindowSource> {
-    placed_windows(listed, own)
+pub(crate) fn shareable_windows(listed: Vec<ListedWindow>) -> Vec<WindowSource> {
+    placed_windows(listed)
         .into_iter()
         .map(|(window, _)| window)
         .collect()
 }
 
 /// [`shareable_windows`], each with its visible frame in pixels, in the order of the list.
-pub(crate) fn placed_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<(WindowSource, Bounds)> {
+pub(crate) fn placed_windows(listed: Vec<ListedWindow>) -> Vec<(WindowSource, Bounds)> {
     listed
         .into_iter()
         .filter(|window| window.visible && !window.cloaked && !window.minimized)
@@ -86,13 +86,6 @@ pub(crate) fn placed_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<(Windo
         .filter(|window| window.size.0 >= SMALLEST_WINDOW && window.size.1 >= SMALLEST_WINDOW)
         .filter_map(|window| {
             let (application, application_name) = window.application?;
-            if own.is(
-                application.process_id,
-                &application.bundle_id,
-                &application_name,
-            ) {
-                return None;
-            }
             let bounds = Bounds {
                 x: f64::from(window.origin.0),
                 y: f64::from(window.origin.1),
@@ -522,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn only_application_windows_of_other_programs_are_listed() {
+    fn only_application_windows_are_listed_and_the_client_is_named() {
         let player = r"C:\Program Files\Player\Player.exe";
         let mut hidden = window(2, 7, player);
         hidden.visible = false;
@@ -572,9 +565,23 @@ mod tests {
                 r"c:\users\someone\appdata\local\programs\junto\JUNTO.EXE",
             ),
         ];
-        let windows = shareable_windows(listed, &own());
+        let windows = shareable_windows(listed);
         let ids: Vec<u32> = windows.iter().map(|window| window.id).collect();
-        assert_eq!(ids, [1, 7]);
+        assert_eq!(ids, [1, 7, 13, 14]);
+        // The windows of the client and of another start of it are offered for their
+        // picture; their applications are named as the client, and none of them is offered
+        // for its sound.
+        let clients: Vec<i32> = crate::share::listing::clients(&windows, &own())
+            .into_iter()
+            .map(|application| application.process_id)
+            .collect();
+        assert_eq!(clients, [100, 200]);
+        let (applications, _) = sound_choices(&windows, &own(), &Creators::Known(Vec::new()));
+        let sounds: Vec<i32> = applications
+            .into_iter()
+            .map(|application| application.id.process_id)
+            .collect();
+        assert_eq!(sounds, [7]);
         assert_eq!(
             windows[0],
             WindowSource {
@@ -594,8 +601,9 @@ mod tests {
     #[test]
     fn a_program_of_another_folder_with_the_name_of_the_client_is_another_application() {
         let other = window(1, 300, r"D:\Tools\junto.exe");
-        let windows = shareable_windows(vec![other], &own());
+        let windows = shareable_windows(vec![other]);
         assert_eq!(windows.len(), 1);
+        assert!(crate::share::listing::clients(&windows, &own()).is_empty());
     }
 
     #[test]
@@ -899,7 +907,7 @@ mod tests {
         // The order of the window manager, from the front, is kept.
         assert_eq!(drawn, [4, 1, 2, 3]);
         // The Window tab offers only the ordinary window of the application.
-        let offered: Vec<u32> = shareable_windows(listed, &own())
+        let offered: Vec<u32> = shareable_windows(listed)
             .into_iter()
             .map(|window| window.id)
             .filter(|id| [1, 2, 3, 4].contains(id))

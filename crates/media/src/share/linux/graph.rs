@@ -332,6 +332,28 @@ mod tests {
         assert!(graph.links(&SoundChoice::System).unwrap().is_empty());
     }
 
+    /// Another start of Junto, as another profile, plays the sound of its own call: it is not
+    /// offered as an application, and all system sound leaves it out (ADR 0502).
+    #[test]
+    fn the_sound_of_another_start_of_junto_is_never_linked() {
+        let mut graph = scene();
+        let player = graph.clients.get_mut(&2).unwrap();
+        player.binary = "junto".into();
+        player.name = "Junto".into();
+        assert!(graph.applications().is_empty());
+        assert!(graph.links(&SoundChoice::System).unwrap().is_empty());
+        let other = ApplicationId {
+            process_id: 0,
+            bundle_id: "native:junto\0Junto".into(),
+        };
+        assert!(
+            graph
+                .links(&SoundChoice::Application(other))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn system_sound_includes_a_stream_without_an_application_name_and_the_list_does_not() {
         let mut graph = scene();

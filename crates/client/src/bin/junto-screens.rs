@@ -1094,15 +1094,20 @@ fn no_call() -> MediaSnapshot {
     }
 }
 
-/// What the capture of a screen lists: one screen, two windows and their applications.
+/// The window of Junto itself in the lists of [`capture`].
+const JUNTO_WINDOW: u32 = 13;
+
+/// What the capture of a screen lists: one screen, a window of Junto itself and two windows
+/// of other applications, and their applications.
 fn capture() -> SyntheticCapture {
     let application = |process_id: i32, bundle_id: &str| ApplicationId {
         process_id,
         bundle_id: bundle_id.to_owned(),
     };
-    let (desktop, editor) = (
+    let (desktop, editor, junto) = (
         application(501, "example.remote-desktop"),
         application(502, "example.editor"),
+        application(500, "chat.junto.client"),
     );
     let capture = SyntheticCapture::new();
     capture.set_sources(ShareSources {
@@ -1110,12 +1115,22 @@ fn capture() -> SyntheticCapture {
         system_sound: true,
         started_the_client: Vec::new(),
         creators_unknown: false,
+        // Junto itself is listed for its picture (ADR 0736).
+        clients: vec![junto.clone()],
         displays: vec![DisplaySource {
             id: 1,
             width: 1920,
             height: 1200,
         }],
         windows: vec![
+            WindowSource {
+                id: JUNTO_WINDOW,
+                title: "Junto".to_owned(),
+                application: junto.clone(),
+                application_name: "Junto".to_owned(),
+                width: 1280,
+                height: 800,
+            },
             WindowSource {
                 id: 11,
                 title: "alpha-review-vm".to_owned(),
@@ -1135,6 +1150,14 @@ fn capture() -> SyntheticCapture {
         ],
         application_capture: true,
         application_pictures: vec![
+            ApplicationPicture {
+                application: junto.clone(),
+                name: "Junto".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
+            },
             ApplicationPicture {
                 application: editor.clone(),
                 name: "Editor".to_owned(),
@@ -1504,6 +1527,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                     sound_held,
                     size: (1280, 800),
                     frame_rate: 30,
+                    shows_the_client: false,
                 }),
             )]);
             call.watched = Some(ShareId::own(0));
@@ -1511,6 +1535,27 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     };
     studio.draw(
         Screen::call("share-own", own(false))
+            .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
+    )?;
+    // A share of a window of Junto itself: its picture is not drawn for the sharer (ADR 0738).
+    let own_junto = with_call(in_call(Phase::Connected), |call| {
+        call.own_shares = BTreeMap::from([(
+            0,
+            ShareState::Running(ShareInfo {
+                id: uuid::Uuid::from_u128(4),
+                kind: ShareKind::Window,
+                sound: ShareAudio::None,
+                sound_held: false,
+                size: (1280, 800),
+                frame_rate: 30,
+                shows_the_client: true,
+            }),
+        )]);
+        call.watched = Some(ShareId::own(0));
+    });
+    studio.draw(
+        Screen::call("share-own-junto-window", own_junto)
             .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
         show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
@@ -1590,6 +1635,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                             sound_held: false,
                             size: (1280, 800),
                             frame_rate: 30,
+                            shows_the_client: false,
                         }),
                     )
                 })
@@ -1668,6 +1714,12 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     studio.draw_after(
         Screen::call("share-dialog-window-tab", in_call(Phase::Connected)),
         picker(|shell, cx| shell.pick_share_tab(ShareTab::Window, cx)),
+        Shell::share_picker_is_listed,
+    )?;
+    // A window of Junto itself: its picture without its sound (ADR 0502).
+    studio.draw_after(
+        Screen::call("share-dialog-junto-window", in_call(Phase::Connected)),
+        picker(|shell, cx| shell.pick_share_picture(PictureSource::Window(JUNTO_WINDOW), cx)),
         Shell::share_picker_is_listed,
     )?;
     studio.draw_after(
@@ -1966,6 +2018,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
                     sound_held: false,
                     size: (1280, 800),
                     frame_rate: 30,
+                    shows_the_client: false,
                 }),
             )]);
             call.watched = Some(ShareId::own(0));

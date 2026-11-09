@@ -44,7 +44,7 @@ use objc2_screen_capture_kit::{
 };
 use tokio::sync::oneshot;
 
-use super::listing::{Bounds, Own, application_pictures, shareable_applications};
+use super::listing::{Bounds, Own, application_pictures, clients, shareable_applications};
 use super::picture::PictureFrame;
 use super::{
     ApplicationId, CaptureError, CaptureRequest, CaptureSink, CaptureStream, DisplaySource,
@@ -102,25 +102,15 @@ pub(crate) struct ListedWindow {
     pub application: Option<(ApplicationId, String)>,
 }
 
-/// The windows that a person can share: ordinary windows on a screen that belong to
-/// another application than the client, each with its frame in points.
-pub(crate) fn shareable_windows(
-    listed: Vec<ListedWindow>,
-    own: &Own,
-) -> Vec<(WindowSource, Bounds)> {
+/// The windows that a person can share: ordinary windows on a screen that belong to an
+/// application, the client itself included, each with its frame in points.
+pub(crate) fn shareable_windows(listed: Vec<ListedWindow>) -> Vec<(WindowSource, Bounds)> {
     listed
         .into_iter()
         .filter(|window| window.layer == 0 && window.on_screen)
         .filter(|window| window.size.0 >= SMALLEST_WINDOW && window.size.1 >= SMALLEST_WINDOW)
         .filter_map(|window| {
             let (application, application_name) = window.application?;
-            if own.is(
-                application.process_id,
-                &application.bundle_id,
-                &application_name,
-            ) {
-                return None;
-            }
             let frame = Bounds {
                 x: window.origin.0,
                 y: window.origin.1,
@@ -158,10 +148,12 @@ enum Selection<'a> {
     /// One window, wherever it is.
     Window(u32),
     /// Every window of one application on one screen, also a window that opens later
-    /// (ADR 0738).
+    /// (ADR 0738). `sound`: the filter selects the sound of the application. The client
+    /// itself has no such filter (ADR 0502).
     Application {
         screen: Screen,
         application: &'a ApplicationId,
+        sound: bool,
     },
 }
 
@@ -1013,8 +1005,10 @@ impl Content {
                 .collect();
             (displays, listed, applications)
         };
-        let windows = shareable_windows(listed, own);
+        let windows = shareable_windows(listed);
+        let listed: Vec<WindowSource> = windows.iter().map(|(window, _)| window.clone()).collect();
         ShareSources {
+            clients: clients(&listed, own),
             portal: Vec::new(),
             system_sound: true,
             started_the_client: Vec::new(),
@@ -1048,6 +1042,7 @@ impl Content {
                     Selection::Application {
                         screen: Screen::Id(listed.display),
                         application: &listed.application,
+                        sound: false,
                     },
                     own,
                 )
@@ -1114,6 +1109,7 @@ impl Content {
                     Selection::Application {
                         screen,
                         application: wanted,
+                        sound,
                     },
                     _,
                 ) => {
@@ -1124,7 +1120,7 @@ impl Content {
                         .iter()
                         .find(|application| {
                             let (id, name) = application_of(application);
-                            id == *wanted && !own.is(id.process_id, &id.bundle_id, &name)
+                            id == *wanted && !(sound && own.is(id.process_id, &id.bundle_id, &name))
                         })
                         .ok_or(CaptureError::SourceGone)?;
                     let filter =
@@ -1215,6 +1211,7 @@ impl Content {
                     Selection::Application {
                         screen: Screen::First,
                         application: wanted,
+                        sound: true,
                     },
                     own,
                 )?
@@ -1355,6 +1352,7 @@ impl ScreenCapture for SystemCapture {
                 return Err(CaptureError::NotAllowed);
             }
             let content = answer(content()).await??;
+            let shows_the_client = content.sources(&own).shows_the_client(request.picture);
             let life = Arc::new(Life::default());
             let (mut workers, stopped) = Workers::new(life.clone());
             workers.report_failures_to(sink.clone());
@@ -1397,7 +1395,9 @@ impl ScreenCapture for SystemCapture {
                 })
             })?;
             let (width, height) = answer(first).await??;
-            Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
+            Ok(CaptureStream::new(width, height, workers)
+                .with_stop_result(stopped)
+                .showing_the_client(shows_the_client))
         })
     }
 }
@@ -1470,7 +1470,7 @@ mod tests {
     }
 
     #[test]
-    fn only_ordinary_windows_of_other_applications_are_listed_in_pixels() {
+    fn only_ordinary_windows_are_listed_in_pixels_and_the_client_is_named() {
         let player = application(7, "example.player");
         let mut small = window(3, Some((player.clone(), "Player")));
         small.size = (800.0, 40.0);
@@ -1487,8 +1487,18 @@ mod tests {
             window(6, None),
             window(7, Some((application(200, "chat.junto.client"), "Junto"))),
         ];
-        let windows = shareable_windows(listed, &own());
-        assert_eq!(windows.len(), 1);
+        let windows = shareable_windows(listed);
+        let ids: Vec<u32> = windows.iter().map(|(window, _)| window.id).collect();
+        assert_eq!(ids, [1, 2, 7]);
+        // The windows of the client and of a second start of it are listed and named.
+        let sources: Vec<WindowSource> = windows.iter().map(|(window, _)| window.clone()).collect();
+        assert_eq!(
+            clients(&sources, &own()),
+            [
+                application(100, "chat.junto.client"),
+                application(200, "chat.junto.client")
+            ]
+        );
         assert_eq!(
             windows[0].1,
             Bounds {

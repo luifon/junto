@@ -163,9 +163,21 @@ impl SharePicker {
         }
         self.tab = ShareTab::of(picture);
         self.picture = Some(picture);
-        if matches!(picture, PictureSource::Application(_)) && self.sound.is_none() {
+        // Junto itself has no sound to share, so its application gets none by default.
+        if matches!(picture, PictureSource::Application(_))
+            && self.sound.is_none()
+            && !self.shows_the_client()
+        {
             self.sound = Some(SoundKind::Application);
         }
+    }
+
+    /// Whether the chosen picture shows a window or the windows of Junto itself, this start
+    /// or another one. Its sound is not offered (ADR 0502).
+    pub(crate) fn shows_the_client(&self) -> bool {
+        self.sources()
+            .zip(self.picture)
+            .is_some_and(|(sources, picture)| sources.shows_the_client(picture))
     }
 
     /// Shows another tab. The chosen picture belongs to the tab that was shown, so it ends,
@@ -205,19 +217,7 @@ impl SharePicker {
         &self,
         sources: &'a ShareSources,
     ) -> Option<(&'a ApplicationId, &'a str)> {
-        match self.picture? {
-            PictureSource::Window(id) => sources
-                .windows
-                .iter()
-                .find(|window| window.id == id)
-                .map(|window| (&window.application, window.application_name.as_str())),
-            PictureSource::Application(process_id) => sources
-                .application_pictures
-                .iter()
-                .find(|listed| listed.application.process_id == process_id)
-                .map(|listed| (&listed.application, listed.name.as_str())),
-            PictureSource::Display(_) | PictureSource::Portal(_) => None,
-        }
+        sources.application_of(self.picture?)
     }
 
     fn sources(&self) -> Option<&ShareSources> {
@@ -232,7 +232,11 @@ impl SharePicker {
         let started_the_client =
             shared.is_some_and(|(application, _)| sources.started_the_client.contains(application));
         let whole_application = matches!(self.picture, Some(PictureSource::Application(_)));
+        let client = self.shows_the_client();
         match (self.sound, shared) {
+            (None | Some(SoundKind::Application), _) if client => {
+                text::SOUND_OF_JUNTO_NOT_SHARED.into()
+            }
             (None, _) => text::SOUND_CHOICE_HELP.into(),
             (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
             (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
@@ -261,11 +265,13 @@ impl SharePicker {
                 SoundKind::System => sources.system_sound,
                 // macOS and Windows list the applications with a window, and offer the
                 // choice also with an empty list, which states why it is empty. Linux
-                // lists the applications that play now.
+                // lists the applications that play now. A picture of Junto itself has no
+                // sound of its application (ADR 0502).
                 SoundKind::Application => {
-                    cfg!(any(target_os = "macos", target_os = "windows"))
-                        || !sources.applications.is_empty()
-                        || !sources.windows.is_empty()
+                    !self.shows_the_client()
+                        && (cfg!(any(target_os = "macos", target_os = "windows"))
+                            || !sources.applications.is_empty()
+                            || !sources.windows.is_empty())
                 }
             })
             .collect()
@@ -299,8 +305,11 @@ impl SharePicker {
             (SoundKind::Application, PictureSource::Window(_) | PictureSource::Application(_)) => {
                 let (application, _) = self.picture_application(sources)?;
                 // Its sound includes the sound of the call, or can include it (ADR 0706); the
-                // dialog states why.
-                if sources.creators_unknown || sources.started_the_client.contains(application) {
+                // dialog states why. The sound of Junto itself is never shared (ADR 0502).
+                if sources.creators_unknown
+                    || sources.started_the_client.contains(application)
+                    || sources.clients.contains(application)
+                {
                     return None;
                 }
                 SoundChoice::Application(application.clone())
@@ -1451,11 +1460,14 @@ impl Shell {
                     } else {
                         shared.title.clone().into()
                     };
-                    let detail = format!(
+                    let mut detail = format!(
                         "{} · {}",
                         shared.application_name,
                         text::pixels((shared.width, shared.height))
                     );
+                    if sources.clients.contains(&shared.application) {
+                        detail = text::without_the_sound_of_junto(&detail);
+                    }
                     let preview = self.render_share_preview(source, &title, &theme);
                     rows.push(
                         row(
@@ -1483,11 +1495,14 @@ impl Shell {
                         .iter()
                         .position(|display| display.id == shared.display)
                         .map_or(1, |index| index + 1);
-                    let detail = text::application_picture_detail(
+                    let mut detail = text::application_picture_detail(
                         shared.windows,
                         screen,
                         (shared.width, shared.height),
                     );
+                    if sources.clients.contains(&shared.application) {
+                        detail = text::without_the_sound_of_junto(&detail);
+                    }
                     let preview = self.render_share_preview(source, &shared.name, &theme);
                     rows.push(
                         row(
@@ -1832,7 +1847,14 @@ impl Shell {
                                 .border_1()
                                 .border_color(Hsla::from(colors.basalt_deep))
                                 .bg(Hsla::from(colors.stage))
-                                .when_some(small, |frame, picture| frame.child(picture.element())),
+                                // A share of Junto itself has no picture here (ADR 0738).
+                                .when(share.shows_the_client, |frame| {
+                                    frame.child(icon(Icon::AppWindow, 18.0, colors.bone_2))
+                                })
+                                .when_some(
+                                    small.filter(|_| !share.shows_the_client),
+                                    |frame, picture| frame.child(picture.element()),
+                                ),
                         )
                         .child(
                             div()
@@ -2097,13 +2119,16 @@ impl Shell {
                     .map(|header| self.call_share_frame(header, share, true, cx))
             });
 
-        let shown = watched.and_then(|share| {
-            self.pictures
-                .main
-                .as_ref()
-                .filter(|(of, _)| *of == share.id)
-                .map(|(_, picture)| picture.clone())
-        });
+        let shown = watched
+            .filter(|share| !share.shows_the_client)
+            .and_then(|share| {
+                self.pictures
+                    .main
+                    .as_ref()
+                    .filter(|(of, _)| *of == share.id)
+                    .map(|(_, picture)| picture.clone())
+            });
+        let shows_the_client = watched.is_some_and(|share| share.shows_the_client);
         let calls = self.state.read(cx).calls().clone();
         let viewport = div()
             .id("share-viewport")
@@ -2153,6 +2178,24 @@ impl Shell {
                                 .size_full()
                                 .child(picture.element()),
                         ),
+                ),
+                None if shows_the_client => viewport.child(
+                    div()
+                        .id("share-shows-junto")
+                        .role(Role::Status)
+                        .aria_label(text::SHARE_SHOWS_JUNTO)
+                        .debug_selector(|| "share-shows-junto".to_owned())
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(u(10.0))
+                        .max_w(u(420.0))
+                        .text_center()
+                        .typeface(theme.types.notice, theme)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .ink(colors.bone_2)
+                        .child(icon(Icon::AppWindow, 28.0, colors.bone_2))
+                        .child(text::SHARE_SHOWS_JUNTO),
                 ),
                 None => viewport.child(
                     div()
@@ -2337,6 +2380,7 @@ mod tests {
             system_sound: true,
             started_the_client: Vec::new(),
             creators_unknown: false,
+            clients: Vec::new(),
             displays: vec![DisplaySource {
                 id: 1,
                 width: 1920,
@@ -2649,6 +2693,91 @@ mod tests {
         );
         // An application that is not listed any more is not shared.
         picker.pick_picture(PictureSource::Application(8));
+        assert_eq!(picker.chosen(), None);
+    }
+
+    /// A window and the application of Junto itself, this start or another one, are offered
+    /// for their picture without their sound: "This application" is not offered, a shared
+    /// application of Junto gets no sound by default, and the dialog states why (ADR 0502).
+    #[test]
+    fn junto_itself_is_shared_without_its_sound() {
+        let junto = ApplicationId {
+            process_id: 100,
+            bundle_id: "chat.junto.client".to_owned(),
+        };
+        let mut picker = picker();
+        if let Listed::Sources(sources) = &mut picker.listed {
+            sources.windows.insert(
+                0,
+                WindowSource {
+                    id: 12,
+                    title: "Junto".to_owned(),
+                    application: junto.clone(),
+                    application_name: "Junto".to_owned(),
+                    width: 1000,
+                    height: 700,
+                },
+            );
+            sources.application_pictures.insert(
+                0,
+                ApplicationPicture {
+                    application: junto.clone(),
+                    name: "Junto".to_owned(),
+                    display: 1,
+                    width: 1920,
+                    height: 1200,
+                    windows: 1,
+                },
+            );
+            sources.clients.push(junto.clone());
+        }
+        let every_kind = [SoundKind::None, SoundKind::System, SoundKind::Application];
+        assert_eq!(picker.sound_kinds(), every_kind);
+
+        picker.pick_picture(PictureSource::Window(12));
+        assert!(picker.shows_the_client());
+        assert_eq!(picker.sound_kinds(), [SoundKind::None, SoundKind::System]);
+        let sources = picker.sources().cloned().unwrap();
+        assert_eq!(
+            picker.sound_help(&sources),
+            SharedString::from(text::SOUND_OF_JUNTO_NOT_SHARED)
+        );
+        assert_eq!(picker.chosen(), None);
+        // A choice of "This application" from before is never shared.
+        picker.sound = Some(SoundKind::Application);
+        assert_eq!(picker.chosen(), None);
+        picker.sound = Some(SoundKind::System);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(12), SoundChoice::System))
+        );
+        picker.sound = Some(SoundKind::None);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(12), SoundChoice::None))
+        );
+
+        // The application of Junto gets no sound by default; another application does.
+        picker.sound = None;
+        picker.pick_picture(PictureSource::Application(100));
+        assert_eq!(picker.sound, None);
+        assert_eq!(picker.chosen(), None);
+        picker.sound = Some(SoundKind::None);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Application(100), SoundChoice::None))
+        );
+        picker.sound = None;
+        picker.pick_picture(PictureSource::Application(7));
+        assert!(!picker.shows_the_client());
+        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound_kinds(), every_kind);
+
+        // The application of Junto is never among the applications whose sound goes with a
+        // screen: the list of the system leaves it out, and a choice of it is not shared.
+        picker.pick_picture(PictureSource::Display(1));
+        picker.sound = Some(SoundKind::Application);
+        picker.application = Some(junto);
         assert_eq!(picker.chosen(), None);
     }
 
