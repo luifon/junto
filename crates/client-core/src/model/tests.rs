@@ -207,6 +207,7 @@ fn started(call_id: CallId, place: CallPlace) -> Event {
         call_id,
         place,
         started_at: time(),
+        afk: None,
     }
 }
 
@@ -984,6 +985,7 @@ fn a_call_takes_the_hide_setting_that_its_start_or_the_own_call_states() {
         call_id,
         place,
         started_at: time(),
+        afk: None,
     };
     let person = participant(AccountId::generate());
 

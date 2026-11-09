@@ -250,6 +250,11 @@ pub fn fact_of(event: &Event, scene: &EventScene<'_>) -> Option<Fact> {
                 .unwrap_or_default(),
             workspace_id: *workspace_id,
         }),
+        // A call in the AFK channel is told to nobody: a person who is moved there for being
+        // idle starts no call (ADR 0523).
+        Event::CallStarted {
+            afk: Some(true), ..
+        } => None,
         Event::CallStarted {
             place:
                 place @ CallPlace::Channel {
