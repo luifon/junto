@@ -143,6 +143,8 @@ pub(crate) struct Core {
     after_remove: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     selected: Mutex<Option<EntryKey>>,
     streams: Mutex<Option<Arc<dyn EventStreams>>>,
+    #[cfg(feature = "test-support")]
+    requests: crate::api::Requests,
     changes: watch::Sender<u64>,
 }
 
@@ -166,8 +168,9 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    pub(crate) fn adopt(&self, entry: ServerEntry) -> ServerId {
+    pub(crate) fn adopt(&self, entry: ServerEntry, reach: Reach) -> ServerId {
         let server = Server::new(self.core.clone(), entry);
+        lock(&server.state).reach = reach;
         let id = server.id;
         lock(&self.servers).push(server);
         self.core.notify();
@@ -195,6 +198,8 @@ impl Client {
             Some(transport) => transport,
             None => Arc::new(ReqwestTransport::new()?),
         };
+        #[cfg(feature = "test-support")]
+        let (transport, requests) = crate::api::counted::Counted::wrap(transport);
         let keys = options
             .key_store
             .unwrap_or_else(|| Arc::new(FileKeyStore::new(data_dir.clone())));
@@ -228,6 +233,8 @@ impl Client {
             after_remove: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            requests,
             changes,
         });
         let servers = entries
@@ -277,6 +284,12 @@ impl Client {
     /// with the event streams. A change of its state is a change of the client.
     pub fn updates(&self) -> &UpdateCheck {
         &self.inner.core.updates
+    }
+
+    /// The requests of this client that are on their way, for the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn requests(&self) -> crate::api::Requests {
+        self.inner.core.requests.clone()
     }
 
     /// The saved servers in the order of the server book.
@@ -1131,24 +1144,45 @@ impl Authority for Managed {
 
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self.server.core.runtime.run(async move {
+        // The request is counted from here, on the thread of its caller (ADR 0902).
+        #[cfg(feature = "test-support")]
+        let open = self.server.core.requests.start();
+        let work = async move {
             let exchange = |api: ApiClient, token: SecretToken, outline: Outline| async move {
                 send_with_token(&api, &token, outline).await
             };
             server.authorized(outline, account, exchange).await
-        });
-        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+        };
+        #[cfg(feature = "test-support")]
+        let work = crate::api::counted::NUMBER.scope(open.number(), work);
+        let work = self.server.core.runtime.run(work);
+        Box::pin(async move {
+            let answer = work.await.unwrap_or(Err(ApiError::Stopped));
+            #[cfg(feature = "test-support")]
+            drop(open);
+            answer
+        })
     }
 
     fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self.server.core.runtime.run(async move {
+        #[cfg(feature = "test-support")]
+        let open = self.server.core.requests.start();
+        let work = async move {
             let exchange = move |api: ApiClient, token: SecretToken, outline: Outline| async move {
                 open_with_token(&api, &token, outline, from).await
             };
             server.authorized(outline, account, exchange).await
-        });
-        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+        };
+        #[cfg(feature = "test-support")]
+        let work = crate::api::counted::NUMBER.scope(open.number(), work);
+        let work = self.server.core.runtime.run(work);
+        Box::pin(async move {
+            let answer = work.await.unwrap_or(Err(ApiError::Stopped));
+            #[cfg(feature = "test-support")]
+            drop(open);
+            answer
+        })
     }
 }
 
@@ -1267,7 +1301,12 @@ impl Server {
     fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
             this: this.clone(),
-            live: Shared::new(),
+            live: {
+                let live = Shared::new();
+                #[cfg(feature = "test-support")]
+                live.count_with(core.requests.clone());
+                live
+            },
             id: entry.server_id,
             key: entry.key(),
             address: entry.address.clone(),
@@ -1437,6 +1476,7 @@ impl Server {
                 }
                 self.forget_account()
             }
+            AccessAction::ForgetAccountHere => self.forget_account(),
             AccessAction::Join {
                 code,
                 name,
@@ -1657,11 +1697,14 @@ impl Server {
             changed.then_some(entry)
         };
         if let Some(entry) = refreshed {
-            let stored = self.core.book.update(self.key, |saved| {
-                saved.name = entry.name;
-                saved.logo_path = entry.logo_path;
-                saved.api_versions = entry.api_versions;
-                saved.capabilities = entry.capabilities;
+            let held = self.core.data_dir.try_lock();
+            let stored = held.map_err(BookError::from).and_then(|_held| {
+                self.core.book.update(self.key, |saved| {
+                    saved.name = entry.name;
+                    saved.logo_path = entry.logo_path;
+                    saved.api_versions = entry.api_versions;
+                    saved.capabilities = entry.capabilities;
+                })
             });
             if let Err(error) = stored {
                 tracing::warn!(server = %self.id, %error, "the server book was not updated");
@@ -1725,7 +1768,11 @@ impl Server {
     /// entry of this object, under the lock of the book.
     fn key_or_new(&self) -> Result<DeviceKey, KeyFault> {
         let book = &self.core.book;
-        let _lock = book.lock().map_err(|error| KeyFault::Book(error.into()))?;
+        let _lock = self
+            .core
+            .data_dir
+            .try_lock()
+            .map_err(|error| KeyFault::Book(error.into()))?;
         let saved = book
             .has(self.key)
             .map_err(|error| KeyFault::Book(error.into()))?;
@@ -2013,6 +2060,10 @@ impl Server {
                 pause();
             }
         }
+        // The actions run on the runtime of the client, whose threads do not wait for
+        // another program that holds the data directory: the action fails with that reason,
+        // and the entry stays unsaved for the next action (ADR 0710).
+        let _held = self.core.data_dir.try_lock()?;
         self.core.book.update(self.key, |entry| {
             entry.membership = membership;
             entry.profile_sync = profile_sync;
@@ -2099,6 +2150,7 @@ impl Server {
     /// Deletes the key and the membership in one step under the lock of the book.
     fn forget_account(&self) -> Result<(), FlowError> {
         let _saving = lock(&self.saving);
+        let _held = self.core.data_dir.try_lock()?;
         let keys = self.core.keys.clone();
         self.core.book.transact(self.key, |entry| {
             entry.membership = Membership::None;
@@ -2331,13 +2383,20 @@ impl Server {
                 return Err(error.into());
             }
         };
-        let stored = api.with_token(token).set_avatar(image).await;
+        // The preset is for an account that this device created without a picture, and every
+        // try keeps that condition: a picture that another device stored first is not
+        // replaced, at no try (ADR 0119).
+        let stored = api.with_token(token).set_avatar_over(image, None).await;
         match &stored {
             Ok(_) => self.answered(),
             Err(error) => self.note(error),
         }
         match stored {
             Ok(_) => Ok(self.record_sync(owner, ProfileSync::Applied)),
+            // Another picture of the account came first: the preset is not wanted any more.
+            Err(error) if error.code() == Some(ErrorCode::Conflict) => {
+                Ok(self.record_sync(owner, ProfileSync::NotNeeded))
+            }
             Err(error) => {
                 // A server that refuses the image itself refuses it at every try.
                 let refused = matches!(error, ApiError::Avatar(_))

@@ -45,8 +45,6 @@ pub(crate) struct ArrangeUi {
     drop: Option<BookDrop>,
     /// The name of the group of the open rename dialog.
     group_name: Entity<InputState>,
-    pub(super) section_name: Entity<InputState>,
-    pub(super) section_invalid: bool,
 }
 
 impl ArrangeUi {
@@ -54,8 +52,6 @@ impl ArrangeUi {
         Self {
             drop: None,
             group_name: Field::state(txt::GROUP_NAME_FIELD, window, cx),
-            section_name: Field::state(text::SECTION_NAME, window, cx),
-            section_invalid: false,
         }
     }
 }
@@ -318,7 +314,7 @@ impl Shell {
         let name: SharedString = group.shown_name.clone().into();
         let menu_open = matches!(self.layer, Layer::GroupMenu(open) if open == id);
         let head = div()
-            .id(("group", index))
+            .id(SharedString::from(format!("group:{}", id.as_uuid())))
             .role(Role::ListItem)
             .aria_label(label.clone())
             .aria_expanded(!collapsed)
@@ -485,7 +481,10 @@ impl Shell {
                 .into_any_element()
         };
         let tile = div()
-            .id(("group-tile", index))
+            .id(SharedString::from(format!(
+                "group-tile:{}",
+                group.id.as_uuid()
+            )))
             .role(Role::ListItem)
             .aria_label(label.clone())
             .aria_expanded(!collapsed)

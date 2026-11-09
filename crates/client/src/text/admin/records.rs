@@ -280,6 +280,8 @@ pub fn save_progress(written: u64, bytes: Option<u64>) -> String {
     }
 }
 
+pub const SAVED_EARLIER: &str = "Saved on this device before the last start";
+
 pub fn saved_as(path: &Path) -> String {
     format!("Saved as {}", path.display())
 }
@@ -875,6 +877,13 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
         }
         AuditEvent::WorkspaceRenamed { name, .. } => {
             format!("the workspace got the name “{name}”.")
+        }
+        AuditEvent::WorkspaceLogoChanged { workspace_id, logo } => {
+            let workspace = the_workspaces(std::slice::from_ref(workspace_id), names);
+            match logo {
+                Some(_) => format!("the logo of {workspace} was set."),
+                None => format!("the logo of {workspace} was removed."),
+            }
         }
         AuditEvent::WorkspaceRoleCreated {
             name, permissions, ..

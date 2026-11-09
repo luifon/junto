@@ -37,7 +37,7 @@ use gpui_base::input::InputState;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::shell::call::CallTab;
-use junto_client::shell::share::SoundKind;
+use junto_client::shell::share::{ShareTab, SoundKind};
 use junto_client::shell::{Open, SettingsSection, Shell};
 use junto_client::state::AppState;
 use junto_client::state::fixtures::from_roles;
@@ -86,8 +86,8 @@ use junto_media::permission::{FixedPermission, MicrophoneAccess};
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::synthetic::SyntheticCapture;
 use junto_media::share::{
-    ApplicationId, ApplicationSource, CaptureError, DisplaySource, NoCapture, PictureSource,
-    ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
+    ApplicationId, ApplicationPicture, ApplicationSource, CaptureError, DisplaySource, NoCapture,
+    PictureSource, ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
 };
 use time::OffsetDateTime;
 
@@ -156,6 +156,33 @@ fn watch_the_drawing(drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant
             }
         }
     });
+}
+
+/// The screen that the watch of [`watch_the_drawing`] names while the guard lives.
+struct Noted {
+    drawing: Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
+}
+
+impl Noted {
+    fn new(
+        drawing: &Arc<std::sync::Mutex<Option<(&'static str, Instant)>>>,
+        name: &'static str,
+    ) -> Self {
+        if let Ok(mut noted) = drawing.lock() {
+            *noted = Some((name, Instant::now()));
+        }
+        Self {
+            drawing: Arc::clone(drawing),
+        }
+    }
+}
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        if let Ok(mut noted) = self.drawing.lock() {
+            *noted = None;
+        }
+    }
 }
 
 /// An identifier that is the same in every run, so that a generated avatar is the same.
@@ -229,6 +256,7 @@ fn workspace(number: u32, name: &str, is_default: bool) -> WorkspaceState {
             id: id(number),
             name: name.to_owned(),
             is_default,
+            logo: None,
         },
         own_role_ids: Vec::new(),
         roles: Vec::new(),
@@ -302,6 +330,7 @@ fn studio() -> WorkspaceState {
     carla.screen_share = Some(ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     });
@@ -486,6 +515,7 @@ fn acme() -> ServerSnapshot {
         model: Some(acme_model(|_| {})),
         server_version: ServerVersion::parse("0.3.1"),
         server_events: None,
+        event_revision: 0,
     }
 }
 
@@ -506,6 +536,7 @@ fn harbor() -> ServerSnapshot {
         ))))),
         server_version: ServerVersion::parse("0.3.0"),
         server_events: None,
+        event_revision: 0,
     }
 }
 
@@ -519,6 +550,7 @@ fn harbor_as(access: AccessState, reach: Reach, error: Option<FlowError>) -> Ser
         model: None,
         server_version: None,
         server_events: None,
+        event_revision: 0,
         ..harbor()
     }
 }
@@ -592,6 +624,8 @@ struct Screen {
     preset: &'static str,
     /// The screen capture of the screen. It exists only in the program.
     capture: Arc<dyn ScreenCapture>,
+    /// A check of the drawn pixels of the screen: the problem that it finds.
+    check: Option<fn(&image::RgbaImage) -> Option<String>>,
 }
 
 impl Screen {
@@ -604,7 +638,14 @@ impl Screen {
             scale: 100,
             preset: "Luca",
             capture: Arc::new(capture()),
+            check: None,
         }
+    }
+
+    /// Checks the drawn pixels of the screen; a problem fails the run as an empty band does.
+    fn check(mut self, check: fn(&image::RgbaImage) -> Option<String>) -> Self {
+        self.check = Some(check);
+        self
     }
 
     fn capture(mut self, capture: Arc<dyn ScreenCapture>) -> Self {
@@ -692,13 +733,6 @@ impl Studio {
         })
     }
 
-    /// Notes the screen that is drawn from now on.
-    fn drawing(&self, name: Option<&'static str>) {
-        if let Ok(mut drawing) = self.drawing.lock() {
-            *drawing = name.map(|name| (name, Instant::now()));
-        }
-    }
-
     /// Draws one screen. `prepare` opens what the screen shows beyond its servers.
     fn draw(
         &mut self,
@@ -747,7 +781,10 @@ impl Studio {
         };
         let name = screen.name;
         let (width, scale) = (screen.size.0, screen.scale);
-        self.drawing(Some(name));
+        let check = screen.check;
+        // The watch names this screen until the guard ends, on every way out of this
+        // function, also after an error.
+        let _drawing = Noted::new(&self.drawing, name);
         let (window, shell, _) = self.open(screen, prepare)?;
         let started = Instant::now();
         loop {
@@ -792,6 +829,8 @@ impl Studio {
         let mut areas = None;
         let mut controls = Vec::new();
         let mut settled = false;
+        // The areas of the frame before the last one, which an error states against the last.
+        let mut before = Vec::new();
         for _ in 0..SETTLE_FRAMES {
             junto_client::ui::record_areas();
             junto_client::ui::record_controls();
@@ -805,13 +844,18 @@ impl Studio {
                 settled = true;
                 break;
             }
+            if let Some(previous) = areas.take() {
+                before = previous;
+            }
             areas = Some(drawn);
         }
         let areas = areas.unwrap_or_default();
         if !settled {
+            let changed: Vec<_> = areas.iter().filter(|area| !before.contains(area)).collect();
+            let gone: Vec<_> = before.iter().filter(|area| !areas.contains(area)).collect();
             return Err(format!(
                 "{name}: the screen did not settle: its areas changed in each of \
-                 {SETTLE_FRAMES} frames"
+                 {SETTLE_FRAMES} frames; in the last frame {changed:?}, before {gone:?}"
             ));
         }
         let unsettled = junto_client::ui::take_unsettled();
@@ -830,6 +874,9 @@ impl Studio {
                 .into_iter()
                 .map(|band| format!("{name}: {band}")),
         );
+        if let Some(problem) = check.and_then(|check| check(&image)) {
+            self.bands.push(format!("{name}: {problem}"));
+        }
         self.bands.extend(
             junto_client::ui::outside(&controls, px(width))
                 .into_iter()
@@ -851,7 +898,6 @@ impl Studio {
             .update_window(window.into(), |_, window, _| window.remove_window())
             .map_err(|error| format!("{error:#}"))?;
         self.cx.run_until_parked();
-        self.drawing(None);
         Ok(())
     }
 
@@ -1087,6 +1133,25 @@ fn capture() -> SyntheticCapture {
                 height: 800,
             },
         ],
+        application_capture: true,
+        application_pictures: vec![
+            ApplicationPicture {
+                application: editor.clone(),
+                name: "Editor".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 2,
+            },
+            ApplicationPicture {
+                application: desktop.clone(),
+                name: "Remote Desktop".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
+            },
+        ],
         applications: vec![
             ApplicationSource {
                 id: editor,
@@ -1281,6 +1346,7 @@ fn acme_with_shares(
                         .map(|(_, audio)| ScreenShare {
                             slot: 0,
                             kind: None,
+                            shows: None,
                             audio: *audio,
                             started_at: at(),
                         });
@@ -1600,6 +1666,22 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         Shell::share_picker_is_listed,
     )?;
     studio.draw_after(
+        Screen::call("share-dialog-window-tab", in_call(Phase::Connected)),
+        picker(|shell, cx| shell.pick_share_tab(ShareTab::Window, cx)),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-application-with-its-sound",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_tab(ShareTab::Application, cx);
+            shell.pick_share_picture(PictureSource::Application(502), cx);
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
         Screen::call(
             "share-dialog-screen-with-one-application",
             in_call(Phase::Connected),
@@ -1842,6 +1924,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
     let share = || ScreenShare {
         slot: 0,
         kind: None,
+        shows: None,
         audio: ShareAudio::Application,
         started_at: at(),
     };
@@ -3179,7 +3262,7 @@ impl gpui::Render for Components {
 }
 
 fn draw_components(studio: &mut Studio) -> Result<(), String> {
-    studio.drawing(Some("components"));
+    let _drawing = Noted::new(&studio.drawing, "components");
     let window = studio
         .cx
         .open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -3216,7 +3299,6 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
         .update_window(window.into(), |_, window, _| window.remove_window())
         .map_err(|error| format!("{error:#}"))?;
     studio.cx.run_until_parked();
-    studio.drawing(None);
     Ok(())
 }
 
@@ -3327,6 +3409,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("frames") => frames::measure(&mut studio),
         Some("audit-frames") => frames::measure_audit(&mut studio),
         Some("people-frames") => frames::measure_people(&mut studio),
+        Some("call-frames") => frames::measure_call_members(&mut studio),
         // Not a picture: the cost of an animation in view (review M5).
         Some("gif-frames") => messages::measure_animation(&mut studio),
         Some("admin") => admin::draw(&mut studio),
@@ -3418,5 +3501,29 @@ fn main() -> std::process::ExitCode {
             eprintln!("junto-screens: {problem}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::Noted;
+
+    fn fails(
+        drawing: &Arc<Mutex<Option<(&'static str, std::time::Instant)>>>,
+    ) -> Result<(), String> {
+        let _noted = Noted::new(drawing, "sample");
+        assert!(drawing.lock().is_ok_and(|noted| noted.is_some()));
+        Err("the screen did not reach its state".to_owned())?;
+        Ok(())
+    }
+
+    /// A screen that ends with an error is no longer named by the watch.
+    #[test]
+    fn a_screen_that_ends_with_an_error_is_no_longer_noted() {
+        let drawing = Arc::new(Mutex::new(None));
+        assert!(fails(&drawing).is_err());
+        assert!(drawing.lock().is_ok_and(|noted| noted.is_none()));
     }
 }

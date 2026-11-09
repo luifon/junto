@@ -258,3 +258,47 @@ fn preview_mention_menus_follow_the_current_document_in_both_composers(cx: &mut 
         }
     }
 }
+
+/// The line of a problem under the composer keeps its one line, takes the keyboard focus, and
+/// shows its whole sentence above the line while it holds the focus. No control moves.
+#[gpui::test]
+fn the_problem_line_shows_its_whole_sentence_while_it_holds_the_focus(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.write(&"word ".repeat(4000));
+    assert!(window.shows("compose-problem"));
+    let line = window.cx.debug_bounds("compose-problem").unwrap();
+    let input = window.cx.debug_bounds("composer-input").unwrap();
+    let send = window.cx.debug_bounds("send-message").unwrap();
+    assert!(!window.shows("focused-tooltip"));
+    let mut presses = 0;
+    while !window.shows("focused-tooltip") {
+        assert!(presses < 40, "Tab does not reach the line of the problem");
+        window.press("tab");
+        presses += 1;
+    }
+    let shown = window.cx.debug_bounds("focused-tooltip").unwrap();
+    assert!(
+        shown.bottom() <= line.top(),
+        "the sentence {shown:?} is not above the line {line:?}"
+    );
+    assert_eq!(window.cx.debug_bounds("compose-problem").unwrap(), line);
+    assert_eq!(window.cx.debug_bounds("composer-input").unwrap(), input);
+    assert_eq!(window.cx.debug_bounds("send-message").unwrap(), send);
+    window.press("tab");
+    assert!(!window.shows("focused-tooltip"));
+
+    // A press of the pointer on the line leaves the focus in the input.
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    let written = window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx));
+    window.click("compose-problem");
+    assert!(!window.shows("focused-tooltip"));
+    window.press("x");
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        format!("{written}x"),
+        "a press on the line of the problem took the focus from the input"
+    );
+}

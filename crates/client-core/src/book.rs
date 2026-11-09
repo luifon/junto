@@ -127,7 +127,8 @@ impl<'de> Deserialize<'de> for EventCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProfileSync {
-    /// Nothing to send: the account was not created here, or the preset has no avatar.
+    /// Nothing to send: the account was not created here, the preset has no avatar, or
+    /// another device stored a picture of the account before the preset arrived.
     #[default]
     NotNeeded,
     /// The preset waits to be sent. `attempts` counts the tries that failed.
@@ -561,10 +562,6 @@ impl ServerBook {
     /// True while the book has the entry that `key` names. The caller holds the lock.
     pub(crate) fn has(&self, key: EntryKey) -> Result<bool, StorageError> {
         Ok(self.entries()?.iter().any(|entry| entry.key() == key))
-    }
-
-    pub(crate) fn lock(&self) -> Result<crate::storage::DirectoryLock, StorageError> {
-        self.data_dir.lock()
     }
 
     fn change<R, E: From<BookError>>(
@@ -1446,6 +1443,168 @@ mod tests {
         );
         assert!(serde_json::from_str::<EventCursor>("\"\"").is_err());
     }
+    #[test]
+    fn a_book_with_named_sections_keeps_the_favourites_and_drops_the_sections() {
+        use junto_protocol::ids::{ChannelId, WorkspaceId};
+        let (_directory, data_dir, book) = book();
+        let entry = book
+            .add(entry("https://studio.example.test", "Studio"))
+            .unwrap();
+        let (account, workspace, other, favourite, placed) = (
+            AccountId::generate(),
+            WorkspaceId::generate(),
+            WorkspaceId::generate(),
+            ChannelId::generate(),
+            ChannelId::generate(),
+        );
+        let section = serde_json::json!({
+            "id": "0191a0f0-0000-7000-8000-000000000005",
+            "name": "Meetings",
+            "collapsed": false,
+            "channels": [placed],
+        });
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        stored["format_version"] = serde_json::json!(9);
+        stored["arrangement"] = serde_json::json!({"servers": [{
+            "server_id": entry.server_id,
+            "channel_layouts": {account.to_string(): {
+                workspace.to_string(): {"favourites": [favourite], "sections": [section]},
+                other.to_string(): {"sections": [section]},
+            }},
+        }]});
+        fs::write(data_dir.book_file(), serde_json::to_vec(&stored).unwrap()).unwrap();
+        let arrangement = book.arrangement().unwrap();
+        let layout = arrangement
+            .channels(entry.server_id, account, workspace)
+            .unwrap();
+        assert_eq!(layout.favourites, [favourite]);
+        assert_eq!(
+            layout.location(placed),
+            crate::arrangement::channels::Location::Default
+        );
+        assert!(
+            arrangement
+                .channels(entry.server_id, account, other)
+                .is_none()
+        );
+        book.arrange(Change::CollapseWorkspaces {
+            server: entry.server_id,
+            collapsed: true,
+        })
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(written["format_version"], BOOK_FORMAT_VERSION);
+        assert_eq!(
+            written["arrangement"]["servers"][0]["channel_layouts"],
+            serde_json::json!({account.to_string(): {
+                workspace.to_string(): {"favourites": [favourite], "favourites_collapsed": false},
+            }})
+        );
+    }
+
+    /// The restore of 0.1.0 after an update reads the book that 0.2.0 wrote (ADR 0710): the
+    /// version is 9, and every field is one that the book types of 0.1.0 (3616c8f4) read, or
+    /// `directs_collapsed`, which they ignore, as none of them refuses an unknown field.
+    #[test]
+    fn a_book_that_this_client_writes_has_only_fields_that_0_1_0_reads_or_ignores() {
+        use crate::arrangement::channels::{Change as PersonalChange, Location};
+        use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId};
+        let (_directory, data_dir, book) = book();
+        let entry = book
+            .add(entry("https://studio.example.test", "Studio"))
+            .unwrap();
+        let account = AccountId::generate();
+        for change in [
+            Change::PersonalChannels {
+                server: entry.server_id,
+                account,
+                workspace: WorkspaceId::generate(),
+                change: PersonalChange::Place {
+                    channel: ChannelId::generate(),
+                    to: Location::Favourites,
+                    before: None,
+                },
+            },
+            Change::CollapseCategory {
+                server: entry.server_id,
+                account,
+                category: CategoryId::generate(),
+                collapsed: true,
+            },
+            Change::CollapseDirects {
+                server: entry.server_id,
+                account,
+                collapsed: true,
+            },
+            Change::CollapseWorkspaces {
+                server: entry.server_id,
+                collapsed: true,
+            },
+            Change::NewGroup {
+                server: entry.server_id,
+                name: "Clients".to_owned(),
+            },
+        ] {
+            book.arrange(change).unwrap();
+        }
+        let written: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(written["format_version"], 9);
+        let keys = |value: &serde_json::Value| -> Vec<String> {
+            value
+                .as_object()
+                .map(|object| object.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let within = |found: Vec<String>, known: &[&str], what: &str| {
+            for key in found {
+                assert!(known.contains(&key.as_str()), "{what} has the field {key}");
+            }
+        };
+        within(
+            keys(&written),
+            &["format_version", "servers", "kept_keys", "arrangement"],
+            "the book",
+        );
+        let arrangement = &written["arrangement"];
+        within(keys(arrangement), &["groups", "servers"], "the arrangement");
+        for group in arrangement["groups"].as_array().unwrap() {
+            within(
+                keys(group),
+                &["id", "name", "colour", "collapsed"],
+                "a group",
+            );
+        }
+        let places = arrangement["servers"].as_array().unwrap();
+        assert_eq!(places.len(), 1);
+        within(
+            keys(&places[0]),
+            &[
+                "server_id",
+                "group",
+                "workspaces_collapsed",
+                "workspace_order",
+                "collapsed_categories",
+                "channel_layouts",
+                // Ignored by 0.1.0.
+                "directs_collapsed",
+            ],
+            "the record of a server",
+        );
+        assert!(places[0]["directs_collapsed"].is_array());
+        for workspaces in places[0]["channel_layouts"].as_object().unwrap().values() {
+            for layout in workspaces.as_object().unwrap().values() {
+                within(
+                    keys(layout),
+                    &["favourites", "favourites_collapsed", "sections"],
+                    "a layout",
+                );
+            }
+        }
+    }
+
     #[test]
     fn personal_channels_survive_restart_and_a_version_8_book_has_none() {
         use crate::arrangement::channels::{Change as PersonalChange, Location};

@@ -61,13 +61,55 @@ pub enum ShareAudio {
     None,
 }
 
-/// What a screen share shows.
+/// What a screen share shows, in the values that a client of 0.1.0 reads: a share of every
+/// window of one application is a `window` here, and [`ShareShows`] tells it apart
+/// (ADR 0737).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ShareKind {
     Screen,
     Window,
+}
+
+/// What a screen share shows (ADR 0737). A value that this version does not know, as a later
+/// version can send, is read as [`ShareShows::Unknown`], and the reader takes [`ShareKind`]
+/// instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ShareShows {
+    Screen,
+    Window,
+    /// Every window of one application.
+    Application,
+    /// A value that this build does not know. It is read and never written.
+    #[serde(other, skip_serializing)]
+    Unknown,
+}
+
+impl ShareShows {
+    /// The kind that a client of 0.1.0 reads for this share. Absent for a value that this
+    /// version does not know.
+    pub const fn kind(self) -> Option<ShareKind> {
+        match self {
+            Self::Screen => Some(ShareKind::Screen),
+            Self::Window | Self::Application => Some(ShareKind::Window),
+            Self::Unknown => None,
+        }
+    }
+
+    /// What a share shows from the two fields of a report or of the state: `shows` when this
+    /// version knows its value, otherwise `kind`.
+    pub fn stated(shows: Option<Self>, kind: Option<ShareKind>) -> Option<Self> {
+        match shows {
+            Some(Self::Unknown) | None => kind.map(|kind| match kind {
+                ShareKind::Screen => Self::Screen,
+                ShareKind::Window => Self::Window,
+            }),
+            known => known,
+        }
+    }
 }
 
 /// The number of shares that one person can run at once (ADR 0502). The slots of a person's
@@ -82,13 +124,24 @@ pub struct ScreenShare {
     /// no slot, which is slot 0.
     #[serde(default)]
     pub slot: u8,
-    /// What the share shows, as the device reported it. Absent from a device that did not
-    /// state it.
+    /// What the share shows, as the device reported it, in the values that a client of
+    /// 0.1.0 reads. Absent from a device that did not state it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<ShareKind>,
+    /// What the share shows, also an application. Absent from a server of 0.1.0 and for a
+    /// share whose device did not state it; [`ScreenShare::shows`] then reads `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<ShareShows>,
     pub audio: ShareAudio,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
+}
+
+impl ScreenShare {
+    /// What the share shows, from `shows` or from `kind`.
+    pub fn shows(&self) -> Option<ShareShows> {
+        ShareShows::stated(self.shows, self.kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -378,8 +431,13 @@ pub struct ReportScreenShare {
     /// from before several shares reports its one share.
     #[serde(default)]
     pub slot: u8,
+    /// What the share shows, in the values that a server of 0.1.0 reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<ShareKind>,
+    /// What the share shows, also an application. A server of 0.1.0 ignores it and keeps
+    /// `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<ShareShows>,
     /// The share that the device started in the slot: a new identifier for each start. A
     /// report with another identifier than the share that the slot holds is a new share,
     /// which starts at the report; a report with the same identifier changes the sound and
@@ -633,6 +691,7 @@ mod tests {
             screen_share: Some(ScreenShare {
                 slot: 0,
                 kind: None,
+                shows: None,
                 audio: ShareAudio::Application,
                 started_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
             }),
@@ -650,6 +709,71 @@ mod tests {
         );
     }
 
+    /// A share of one application keeps `kind` in the values that a client and a server of
+    /// 0.1.0 read, and states the application in `shows`. A value of `shows` that this
+    /// version does not know is read through `kind` (ADR 0737).
+    #[test]
+    fn a_share_of_an_application_is_a_window_for_a_reader_of_0_1_0() {
+        let at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let shows = ShareShows::Application;
+        let share = ScreenShare {
+            slot: 1,
+            kind: shows.kind(),
+            shows: Some(shows),
+            audio: ShareAudio::Application,
+            started_at: at,
+        };
+        let json = serde_json::to_value(&share).unwrap();
+        assert_eq!(json["kind"], "window");
+        assert_eq!(json["shows"], "application");
+        assert_eq!(share.shows(), Some(ShareShows::Application));
+
+        // A reader of 0.1.0 reads `kind` with its own types, which know no `shows`.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldKind {
+            Screen,
+            Window,
+        }
+        #[derive(Deserialize)]
+        struct OldShare {
+            slot: u8,
+            kind: Option<OldKind>,
+        }
+        let old: OldShare = serde_json::from_value(json).unwrap();
+        assert_eq!(old.slot, 1);
+        assert!(matches!(old.kind, Some(OldKind::Window)));
+        assert!(!matches!(old.kind, Some(OldKind::Screen)));
+
+        // A later kind is read through `kind`; a server of 0.1.0 sends no `shows`.
+        let later: ScreenShare = serde_json::from_str(
+            r#"{"slot":2,"kind":"window","shows":"browser_tab","audio":"none",
+                "started_at":"2027-01-15T08:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(later.shows, Some(ShareShows::Unknown));
+        assert_eq!(later.shows(), Some(ShareShows::Window));
+        let older: ScreenShare = serde_json::from_str(
+            r#"{"slot":0,"kind":"screen","audio":"none","started_at":"2027-01-15T08:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(older.shows(), Some(ShareShows::Screen));
+
+        let report = ReportScreenShare {
+            audio: ShareAudio::Application,
+            slot: 1,
+            kind: shows.kind(),
+            shows: Some(shows),
+            share_id: None,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            (&json["kind"], &json["shows"]),
+            (&"window".into(), &"application".into())
+        );
+        assert_eq!(ShareShows::Unknown.kind(), None);
+    }
+
     /// A client of v0.1.0-test.1 or test.2 reads one share per person from `screen_share`
     /// and reports and ends one share without a slot. A server of that time sends no list.
     #[test]
@@ -658,6 +782,7 @@ mod tests {
         let share = |slot, kind, audio| ScreenShare {
             slot,
             kind: Some(kind),
+            shows: None,
             audio,
             started_at: at,
         };

@@ -189,6 +189,39 @@ async fn a_lost_recorder_is_found_by_the_participants_of_the_room_and_new_jobs_s
     assert_eq!(done.recording.failed_segments, 3);
 }
 
+/// A composite is a picture of the people of the call. While nobody of the call is in the
+/// room, a lost composite gets no new job, which would record the empty room (ADR 0604); with
+/// a member in the room it gets one
+/// (`a_lost_recorder_is_found_by_the_participants_of_the_room_and_new_jobs_start`). Before, a
+/// restored backup of a running recording, whose call nobody was in, recorded the empty
+/// room until the server ended the call.
+#[tokio::test]
+async fn a_lost_composite_gets_a_new_job_only_while_a_member_of_the_call_is_in_the_room() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(30));
+    for seat in [&studio.ann_seat, &studio.ben_seat] {
+        server.fake().leave(&seat.room, &seat.identity);
+    }
+    server.tend().await;
+    server.recorder().kill();
+    server.recorder().participants_gone();
+    server.recorder().restart();
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    let composite = of_source(&detail, SegmentSource::Composite);
+    assert_eq!(composite.len(), 1, "{:?}", states(&detail));
+    assert_eq!(
+        (composite[0].state, composite[0].failure),
+        LOST,
+        "{:?}",
+        states(&detail)
+    );
+    assert_eq!(composites(&server.recorder().jobs()).len(), 1);
+}
+
 /// The participant of a new job enters the room some seconds after the request. A job
 /// without a participant is lost only when it is older than 10 seconds.
 #[tokio::test]
@@ -1228,6 +1261,76 @@ async fn the_composite_is_told_the_main_share() {
         panic!("a composite");
     };
     assert_eq!(request.main_share, Some(of_ann));
+}
+
+/// A share whose picture track the device publishes again under the same name, as in the
+/// codec of a new size, stays the main share of the composite: the server names the new
+/// track once the earlier one is withdrawn (ADR 0602, ADR 0737).
+#[tokio::test]
+async fn a_share_whose_picture_track_is_published_again_stays_the_main_share() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, ann) = (&scene.server, &scene.ann);
+    let seat = &studio.ann_seat;
+    studio.record().await;
+    let composite = composites(&server.recorder().jobs())[0].clone();
+    let told = || {
+        let jobs = server.recorder().jobs();
+        let job = jobs.iter().find(|job| job.id == composite.id).unwrap();
+        job.main_shares.last().cloned().flatten()
+    };
+    let publish = || {
+        let before: Vec<String> = server
+            .fake()
+            .participants(&seat.room)
+            .into_iter()
+            .filter(|participant| participant.identity == seat.identity)
+            .flat_map(|participant| participant.tracks)
+            .map(|track| track.id)
+            .collect();
+        assert!(server.fake().publish_named(
+            &seat.room,
+            &seat.identity,
+            TrackKind::Video,
+            TrackSource::ScreenShare,
+            "window/30",
+        ));
+        server
+            .fake()
+            .participants(&seat.room)
+            .into_iter()
+            .filter(|participant| participant.identity == seat.identity)
+            .flat_map(|participant| participant.tracks)
+            .map(|track| track.id)
+            .find(|id| !before.contains(id))
+            .unwrap()
+    };
+    let report =
+        json!({ "audio": "none", "kind": "window", "slot": 0, "share_id": uuid::Uuid::now_v7() });
+    server
+        .put(ann, "/api/v1/call/screen-share", &report)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let first = publish();
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(first.clone()));
+
+    // The device publishes the picture again; both tracks exist for a moment.
+    let again = publish();
+    server.check().await;
+    server.tend().await;
+    assert!(
+        told() == Some(first.clone()) || told() == Some(again.clone()),
+        "{:?}",
+        told()
+    );
+    server
+        .fake()
+        .unpublish_id(&seat.room, &seat.identity, &first);
+    server.check().await;
+    server.tend().await;
+    assert_eq!(told(), Some(again));
 }
 
 /// A share that starts in the slot of a share that ended, while the device had not told

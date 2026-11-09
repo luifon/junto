@@ -264,8 +264,49 @@ fn end_children() {
 /// Runs the body of a live test. A body that has not ended after [`TEST_LIMIT`] is
 /// dropped, and the test fails with its last steps.
 pub async fn limited<F: Future>(body: F) -> F::Output {
+    limited_test(TEST_LIMIT, CLEANUP_LIMIT, body).await
+}
+
+/// Runs the whole body of a test, as [`limited`] does, with these limits. After the body,
+/// whether it ended, failed or reached its limit, the test has `cleanup_limit` to end: the
+/// runtime of the test then drops the tasks that the body left and waits for its blocking
+/// tasks, and a task of the call library can wait in its drop, as the close of a peer
+/// connection waits for the signaling thread. The watch of that end lasts until the thread of
+/// the test ends.
+pub async fn limited_test<F: Future>(
+    limit: Duration,
+    cleanup_limit: Duration,
+    body: F,
+) -> F::Output {
     clear_steps();
-    limited_step(body).await
+    let _end = EndOfTest(cleanup_limit);
+    limited_within(limit, cleanup_limit, body).await
+}
+
+thread_local! {
+    /// The watch of the end of the test of this thread after its body, dropped when the
+    /// thread ends.
+    static END_OF_TEST: std::cell::RefCell<Option<Watch>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arms the watch of the end of the test when the body is over, in every way it can be.
+struct EndOfTest(Duration);
+
+impl Drop for EndOfTest {
+    fn drop(&mut self) {
+        let watch = Watch::start(
+            Deadline::new(self.0, Duration::ZERO),
+            Duration::ZERO,
+            format!(
+                "{}: this did not end within {:?} after its body: the end of its runtime waits \
+                 for a task or a blocking task that the test left",
+                this_test(),
+                self.0
+            ),
+        );
+        let _ = END_OF_TEST.try_with(|slot| slot.replace(Some(watch)));
+    }
 }
 
 /// Runs one step of a test whose body is not one future, as a test of the window is. A

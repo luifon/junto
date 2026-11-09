@@ -99,6 +99,8 @@ struct Pending {
     positions: Vec<u64>,
     bytes: usize,
     request: AbortHandle,
+    /// The ticket of the command that started the read.
+    counted: crate::live::Ticket,
 }
 
 impl Drop for Pending {
@@ -289,6 +291,8 @@ struct Client {
     halted: bool,
     fault: Option<StreamFault>,
     shown: Option<(StreamStatus, Option<Level>)>,
+    /// How many times the stream became live (`LiveView::connections`).
+    connections: u64,
     model_changed: bool,
     /// The release version of the last `hello`. It stays while the connection is lost,
     /// and is forgotten with the state.
@@ -318,6 +322,11 @@ struct Client {
     recordings: recordings::Work,
     /// The collections of the administration that readers have open (ADR 0760).
     admin: admin::Collections,
+    /// The ticket of the command that the client handles: the reads that it starts carry it.
+    ticket: crate::live::Ticket,
+    /// The tickets of the reads whose answers were applied, kept until the readers were
+    /// given the state that holds them.
+    answered: Vec<crate::live::Ticket>,
 }
 
 /// Runs the stream client of one server until `desired` is closed.
@@ -326,7 +335,7 @@ pub(crate) async fn run(
     host: Arc<dyn Host>,
     environment: Arc<Environment>,
     mut desired: watch::Receiver<Desired>,
-    mut commands: mpsc::UnboundedReceiver<Command>,
+    mut commands: mpsc::UnboundedReceiver<crate::live::Sent>,
 ) {
     let (loaded, mut loads) = mpsc::unbounded_channel();
     let (done, mut dones) = mpsc::unbounded_channel();
@@ -366,6 +375,7 @@ pub(crate) async fn run(
         halted: false,
         fault: None,
         shown: None,
+        connections: 0,
         model_changed: false,
         server_version: None,
         server_events: None,
@@ -380,12 +390,17 @@ pub(crate) async fn run(
         done,
         recordings: recordings::Work::default(),
         admin: admin::Collections::default(),
+        ticket: Default::default(),
+        answered: Vec::new(),
     };
     let first = desired.borrow_and_update().clone();
     client.retarget(first);
     loop {
+        // The reads that a command asks for start here, after the command, with its ticket.
         client.advance();
+        client.ticket = Default::default();
         client.publish();
+        client.answered.clear();
         let deadline = client.deadline();
         tokio::select! {
             changed = desired.changed() => {
@@ -397,7 +412,10 @@ pub(crate) async fn run(
             }
             Some(loaded) = loads.recv() => client.loaded(loaded),
             Some(done) = dones.recv() => client.done(done),
-            Some(command) = commands.recv() => client.command(command),
+            Some((command, ticket)) = commands.recv() => {
+                client.ticket = ticket;
+                client.command(command);
+            }
             result = opened(&mut client.opening) => {
                 client.opening = None;
                 client.opened(result);
@@ -1380,7 +1398,7 @@ impl Client {
         )
         .with_token(target.token.clone());
         let loaded = self.loaded.clone();
-        let request = tokio::spawn(async move {
+        let request = tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
             let result = match load {
                 Load::Snapshot => api
                     .snapshot()
@@ -1454,7 +1472,7 @@ impl Client {
                 Load::Part(Part::Admin(part)) => admin::read(&api, part).await.map(Payload::Admin),
             };
             let _ = loaded.send(Loaded { ticket, result });
-        });
+        }));
         let connection = self.connection();
         self.pending.push(Pending {
             ticket,
@@ -1464,6 +1482,7 @@ impl Client {
             positions: Vec::new(),
             bytes: 0,
             request: request.abort_handle(),
+            counted: self.ticket.clone(),
         });
     }
 
@@ -1476,6 +1495,7 @@ impl Client {
             return;
         };
         let mut pending = self.pending.swap_remove(position);
+        self.answered.push(std::mem::take(&mut pending.counted));
         let kept = std::mem::take(&mut pending.events);
         let ended = matches!(&loaded.result, Err(error)
             if error.category() == Some(ErrorCategory::SessionEnded));
@@ -1807,6 +1827,13 @@ impl Client {
                 _ => (StreamStatus::Connecting, None),
             }
         };
+        if status == StreamStatus::Live
+            && self
+                .shown
+                .is_none_or(|(shown, _)| shown != StreamStatus::Live)
+        {
+            self.connections += 1;
+        }
         if self.model_changed || self.version_changed || self.shown != Some((status, level)) {
             let model = match (&self.model, self.model_changed) {
                 (Some(model), true) => Some(Arc::new(model.clone())),
@@ -1819,6 +1846,7 @@ impl Client {
                 model,
                 server_version: self.server_version.clone(),
                 server_events: self.server_events,
+                connections: self.connections,
             });
             self.shown = Some((status, level));
             self.model_changed = false;

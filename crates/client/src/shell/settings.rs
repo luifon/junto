@@ -436,9 +436,6 @@ impl Shell {
         let startup = self.state.read(cx).startup().clone();
         let unavailable = match startup.status {
             Some(junto_client_core::startup::Status::Unavailable(
-                junto_client_core::startup::Unavailable::CustomProfile,
-            )) => Some(text::LOGIN_CUSTOM_PROFILE),
-            Some(junto_client_core::startup::Status::Unavailable(
                 junto_client_core::startup::Unavailable::SystemVersion,
             )) => Some(text::LOGIN_SYSTEM_VERSION),
             Some(junto_client_core::startup::Status::Unavailable(_)) => {
@@ -450,7 +447,7 @@ impl Shell {
             group_label(text::INTERFACE, theme).into_any_element(),
             Toggle::new(
                 "start-at-login",
-                text::START_AT_LOGIN,
+                text::start_at_login(startup.profile.as_deref()),
                 startup
                     .status
                     .is_some_and(junto_client_core::startup::Status::requested),
@@ -857,6 +854,23 @@ impl Shell {
             help(text::DATA_DIRECTORY_HELP, theme).into_any_element(),
         ];
         parts.extend(self.render_version_settings(theme, window, cx));
+        if let Some(notes) = self.state.read(cx).release_notes_of_this_build() {
+            parts.push(
+                div()
+                    .mt(u(8.0))
+                    .child(
+                        Button::new("release-notes-open")
+                            .label(text::WHAT_IS_NEW)
+                            .selector("release-notes-open")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_release_notes(&[notes], true, window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         parts
     }
 
@@ -1196,21 +1210,28 @@ impl Shell {
         }
         for (part, on, title, sentence, selector) in [
             (
-                ProcessingPart::EchoCancellation,
+                None,
+                voice.sound_off_mutes,
+                text::SOUND_OFF_MUTES,
+                text::SOUND_OFF_MUTES_HELP,
+                "sound-off-mutes",
+            ),
+            (
+                Some(ProcessingPart::EchoCancellation),
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                ProcessingPart::NoiseSuppression,
+                Some(ProcessingPart::NoiseSuppression),
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                ProcessingPart::AutomaticGain,
+                Some(ProcessingPart::AutomaticGain),
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
@@ -1246,8 +1267,10 @@ impl Shell {
                         Toggle::new(selector, title, on, (text::ON, text::OFF))
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
+                                this.state.update(cx, |state, cx| match part {
+                                    Some(part) => state.set_processing(part, !on, cx),
+                                    None => state.set_sound_off_mutes(!on, cx),
+                                });
                             })),
                     )
                     .into_any_element(),

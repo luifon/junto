@@ -166,9 +166,8 @@ fn only_the_fields_that_differ_are_sent() {
             json!({ "change": "update_server_role", "id": id(90),
                     "permissions": ["create_invites", "ban_members"] }),
             json!({ "change": "update_workspace_role", "id": id(11), "permissions": [] }),
-            json!({ "change": "update_category", "id": id(20), "position": 4 }),
             json!({ "change": "update_channel", "id": id(30), "category": null,
-                    "permanent_messages": true }),
+                    "position": 0, "permanent_messages": true }),
             json!({ "change": "update_call_settings", "id": id(31), "user_limit": 12 }),
             json!({ "change": "set_channel_override", "channel": id(31), "role": id(11),
                     "allow": ["mute_members"], "deny": ["record_calls"] }),
@@ -405,7 +404,8 @@ fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
 fn a_plan_is_the_same_for_the_same_documents() {
     let current = server();
     let mut desired = current.clone();
-    desired.workspaces[0].channels[1].position = Some(9);
+    desired.workspaces[0].channels[1].category = Some(Some(id(20)));
+    desired.workspaces[0].channels[1].position = Some(-1);
     let first = planned(&desired, &current);
     assert_eq!(first, planned(&desired, &current));
     assert!(matches!(
@@ -1050,5 +1050,53 @@ fn channel_topics_are_kept_changed_cleared_and_sent_on_creation() {
             .iter()
             .any(|change| change["change"] == "create_channel"
                 && change["topic"] == "Initial purpose")
+    );
+}
+
+/// A server whose default workspace has three categories and three channels in the first,
+/// with the positions given.
+fn ordered(categories: [i32; 3], channels: [i32; 3]) -> StructureFile {
+    let category = |n: u32, position: i32| json!({ "id": id(n), "name": format!("c{n}"), "position": position });
+    let channel = |n: u32, position: i32| {
+        json!({ "id": id(n), "name": format!("t{n}"), "kind": "text", "category": id(20),
+                "position": position, "permanent_messages": false, "overrides": [] })
+    };
+    file(json!({
+        "format": 1,
+        "workspaces": [{
+            "id": id(1), "name": "Main", "default": true,
+            "roles": [{ "id": id(10), "name": "everyone", "everyone": true }],
+            "categories": [category(20, categories[0]), category(21, categories[1]),
+                           category(22, categories[2])],
+            "channels": [channel(30, channels[0]), channel(31, channels[1]),
+                         channel(32, channels[2])],
+        }],
+    }))
+}
+
+/// The plan compares the order of the entries of a group, not their numbers (ADR 0304): a
+/// file whose numbers differ from the server only by gaps changes nothing, so that a file
+/// applied again does not write back the gap of an entry that the server numbered away.
+#[test]
+fn numbers_that_keep_the_order_change_nothing() {
+    let current = ordered([0, 1, 2], [0, 1, 2]);
+    let desired = ordered([0, 5, 9], [2, 4, 6]);
+    assert_eq!(changes(&desired, &current), Vec::<Value>::new());
+}
+
+/// A file with another order sends its own numbers, for the entries whose stored position
+/// differs from them; an entry whose number the file keeps is not sent.
+#[test]
+fn another_order_sends_the_numbers_of_the_file_that_differ() {
+    let current = ordered([0, 1, 2], [0, 1, 2]);
+    let desired = ordered([10, 5, 2], [0, 9, 5]);
+    assert_eq!(
+        changes(&desired, &current),
+        [
+            json!({ "change": "update_category", "id": id(20), "position": 10 }),
+            json!({ "change": "update_category", "id": id(21), "position": 5 }),
+            json!({ "change": "update_channel", "id": id(31), "position": 9 }),
+            json!({ "change": "update_channel", "id": id(32), "position": 5 }),
+        ]
     );
 }

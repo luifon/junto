@@ -83,7 +83,7 @@ fn ghost_captions_fit_the_styles_used_by_the_application(cx: &mut TestAppContext
     .map(|label| (label.to_owned(), Sizing::Word))
     .collect();
     cases.push((text::COPY_TEXT.to_owned(), Sizing::Copy));
-    cases.push((text::NEW_SECTION.to_owned(), Sizing::Section));
+    cases.push((text::admin::NEW_CATEGORY.to_owned(), Sizing::Section));
     for presence in [
         junto_client_core::protocol::presence::Presence::Online,
         junto_client_core::protocol::presence::Presence::Idle,

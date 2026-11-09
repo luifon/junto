@@ -4,10 +4,11 @@
 //! administrator receives its pictures; closing the shared window ends the share. The
 //! shared window is the one of the fixture program of the media crate, which the build of
 //! every target of the workspace makes beside this test (`junto-share-fixture.exe`). The
-//! fixture plays no sound.
+//! fixture plays a tone on the default output device, which the administrator hears in the
+//! share.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use gpui::TestAppContext;
 use junto_client::state::view::OwnShare;
@@ -15,15 +16,19 @@ use junto_client_core::protocol::call::CallPlace;
 use junto_media::calls::{CallTarget, Phase};
 use junto_media::share::ScreenAccess;
 
-use super::{ROOM, enter, own_share, room};
+use super::{ROOM, SHARE_HEARD_DBFS, enter, own_share, room};
 use crate::calls::voice_channel;
-use crate::harness::{World, member_with_capture};
+use crate::harness::{World, heard, member_with_capture};
+
+/// The tone that the fixture plays.
+const FIXTURE_TONE_HZ: f32 = 900.0;
 
 /// The window of the fixture program; its process ends when the value is dropped.
 struct Fixture {
     child: Child,
     _adopted: crate::limit::Adopted,
     input: ChildStdin,
+    output: BufReader<ChildStdout>,
     title: String,
 }
 
@@ -49,17 +54,26 @@ impl Fixture {
             .unwrap();
         let adopted = crate::limit::adopt(child.id());
         let input = child.stdin.take().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
+        output.read_line(&mut line).unwrap();
         assert!(line.starts_with("ready "), "the fixture wrote {line:?}");
         Self {
             child,
             _adopted: adopted,
             input,
+            output,
             title,
         }
+    }
+
+    /// The fixture plays a tone until it ends.
+    fn play(&mut self, hz: f32) {
+        writeln!(self.input, "tone {hz}").unwrap();
+        self.input.flush().unwrap();
+        let mut line = String::new();
+        self.output.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "tone on");
     }
 }
 
@@ -81,6 +95,7 @@ fn a_share_of_a_window_of_another_program_runs_through_the_window_and_ends_with_
     cx: &mut TestAppContext,
 ) {
     let mut fixture = Fixture::open();
+    fixture.play(FIXTURE_TONE_HZ);
     let capture = junto_media::share::system();
     assert_eq!(capture.access(), ScreenAccess::Allowed);
     let world = World::new();
@@ -125,6 +140,7 @@ fn a_share_of_a_window_of_another_program_runs_through_the_window_and_ends_with_
             })
         })
     });
+    window.click("share-tab-window");
     window.click_named(format!("share-window:{shared}"));
     // No sound, all system sound, this application.
     window.click("share-sound-2");
@@ -154,6 +170,12 @@ fn a_share_of_a_window_of_another_program_runs_through_the_window_and_ends_with_
                         && at(0.75, 0.8).is_some_and(|pixel| near(pixel, (220, 200, 40)))
                 })
         },
+    );
+
+    // The administrator hears the sound of the application of the window.
+    window.until(
+        "the administrator hears the application of the window",
+        |_| heard(&caller.sound, FIXTURE_TONE_HZ) > SHARE_HEARD_DBFS,
     );
 
     // The person closes the shared window: the share ends, and nothing starts again.

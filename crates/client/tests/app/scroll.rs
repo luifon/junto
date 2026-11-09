@@ -462,7 +462,7 @@ fn older_page_refused(
 
 /// A page of older messages whose read failed and that the client core does not try again
 /// is asked for again when the person moves the list again, at the same number of rows
-/// (open item RP1 of the release round). Before, the list asked once per number of rows and
+/// Before, the list asked once per number of rows and
 /// never again.
 #[gpui::test]
 fn a_page_whose_read_failed_is_read_again_at_the_next_move_of_the_list(cx: &mut TestAppContext) {

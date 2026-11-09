@@ -58,6 +58,13 @@ fn told_of(notices: &[Notice], holds: impl Fn(&Event) -> bool) -> bool {
 }
 
 /// True when the stream replaced the state by a snapshot.
+/// The open timeline of `place` has the page that a new read of the state asked for.
+fn read_again(model: &ServerModel, place: PlaceId) -> bool {
+    model
+        .timeline(place)
+        .is_some_and(|timeline| timeline.loaded && !timeline.stale)
+}
+
 fn reloaded(notices: &[Notice]) -> bool {
     notices
         .iter()
@@ -222,9 +229,17 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
     owner.api().archive_channel(unread.id).await.unwrap();
 
     // The member has the messages of the first channel open and not those of the second.
-    let model = model_when(member, "no archived channel in the list", |model| {
-        model.channel(general.id).is_none() && model.channel(unread.id).is_none()
-    })
+    // The archive of "general" reads the state again: its open timeline is empty until its
+    // page arrives, which can be after the archive of "unread" (ADR 0304).
+    let model = model_when(
+        member,
+        "no archived channel in the list, the open one read again",
+        |model| {
+            model.channel(general.id).is_none()
+                && model.channel(unread.id).is_none()
+                && read_again(model, place)
+        },
+    )
     .await;
     assert_eq!(texts(&model, place), ["before the archive"]);
     let known = model.admin.archived_channel(general.id).unwrap();
@@ -244,9 +259,11 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
     assert_eq!(refusal.category(), Some(ErrorCategory::Conflict));
 
     owner.api().restore_channel(general.id).await.unwrap();
-    let model = model_when(member, "the restored channel in the list", |model| {
-        model.channel(general.id).is_some()
-    })
+    let model = model_when(
+        member,
+        "the restored channel in the list, read again",
+        |model| model.channel(general.id).is_some() && read_again(model, place),
+    )
     .await;
     assert!(model.admin.archived_channel(general.id).is_none());
     assert!(model.channel(unread.id).is_none());
@@ -258,8 +275,9 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
         .unwrap();
     message_when(member, place, "after the restore").await;
 
-    // The archive and the restore reached the member as events, and the state was not
-    // read again.
+    // The archive and the restore reached the member as events. "general" is before an
+    // open channel of the root, whose place changes for a person who does not see every
+    // channel of the root, so the state is read again as well (ADR 0304).
     let mut seen = told_until(&mut told, "the restored channel", |notices| {
         told_of(notices, |event| {
             matches!(event, Event::ChannelRestored { channel }
@@ -273,6 +291,40 @@ async fn an_archived_channel_leaves_the_list_stays_readable_where_it_is_open_and
             if channel.channel.id == general.id)
     };
     assert!(told_of(&seen, was_archived), "{seen:?}");
+    assert!(reloaded(&seen), "{seen:?}");
+
+    // "unread" is the last channel of the root: its restore changes no place of another
+    // channel, so it reaches the member as its event alone, without a new read of the state.
+    let mut told = member.live().notices();
+    owner.api().restore_channel(unread.id).await.unwrap();
+    model_when(member, "the restored last channel in the list", |model| {
+        model.channel(unread.id).is_some()
+    })
+    .await;
+    let mut seen = told_until(&mut told, "the restored last channel", |notices| {
+        told_of(notices, |event| {
+            matches!(event, Event::ChannelRestored { channel }
+                if channel.id == unread.id)
+        })
+    })
+    .await;
+    seen.extend(arrived(&mut told).await);
+    assert!(!reloaded(&seen), "{seen:?}");
+    // Its archive again, as the last channel, is an event alone too.
+    let mut told = member.live().notices();
+    owner.api().archive_channel(unread.id).await.unwrap();
+    model_when(member, "the last channel archived again", |model| {
+        model.channel(unread.id).is_none()
+    })
+    .await;
+    let mut seen = told_until(&mut told, "the archived last channel", |notices| {
+        told_of(notices, |event| {
+            matches!(event, Event::ChannelArchived { channel }
+                if channel.channel.id == unread.id)
+        })
+    })
+    .await;
+    seen.extend(arrived(&mut told).await);
     assert!(!reloaded(&seen), "{seen:?}");
 }
 

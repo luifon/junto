@@ -28,8 +28,8 @@ use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Dialog, DrawnPicture, Menu, MenuItem, Notice, PersonTile, ScrollArea,
-    Segmented, StyleExt, dialog_footer, focus_ring, focus_ring_inside, icon, menu_separator,
-    tooltip,
+    Segmented, StyleExt, Tab, TabRow, dialog_footer, focus_ring, focus_ring_inside, icon,
+    menu_separator, tooltip,
 };
 
 fn share_action_button(button: Button) -> AnyElement {
@@ -66,6 +66,28 @@ pub(crate) enum Preview {
 /// The size in which the dialog draws the picture of a source, in design pixels.
 const PREVIEW_SIZE: (f32, f32) = (96.0, 54.0);
 
+/// The tabs of the dialog of a share (ADR 0738). The dialog shows the sources of one tab at a
+/// time, and the chosen picture is always one of the shown tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShareTab {
+    Screen,
+    Window,
+    Application,
+}
+
+impl ShareTab {
+    /// The tab that lists a source.
+    pub const fn of(source: PictureSource) -> Self {
+        match source {
+            PictureSource::Display(_) | PictureSource::Portal(ShareKind::Screen) => Self::Screen,
+            PictureSource::Window(_) | PictureSource::Portal(ShareKind::Window) => Self::Window,
+            PictureSource::Application(_) | PictureSource::Portal(ShareKind::Application) => {
+                Self::Application
+            }
+        }
+    }
+}
+
 /// What the system lists for a share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Listed {
@@ -79,6 +101,8 @@ pub(crate) enum Listed {
 pub(crate) struct SharePicker {
     pub access: ScreenAccess,
     pub listed: Listed,
+    /// The tab that the dialog shows. It opens on the screens.
+    pub tab: ShareTab,
     pub picture: Option<PictureSource>,
     pub sound: Option<SoundKind>,
     /// The application whose sound is shared with a screen.
@@ -99,6 +123,7 @@ impl SharePicker {
         Self {
             access,
             listed,
+            tab: ShareTab::Screen,
             picture: None,
             sound: None,
             application: None,
@@ -125,16 +150,74 @@ impl SharePicker {
         calls.call.as_ref().map(ActiveCall::seat).as_ref() == Some(&self.seat)
     }
 
-    /// Takes the picture that the person picked. The sound of one application names an
-    /// application through the picture: the application of a window, or the one chosen
-    /// with a screen. With another picture that choice is not the choice of the person any
-    /// more, and the sound is asked again (ADR 0502).
+    /// Takes the picture that the person picked, and shows its tab. The sound of one
+    /// application names an application through the picture: the application of a window
+    /// or of a shared application, or the one chosen with a screen. With another picture
+    /// that choice is not the choice of the person any more, and the sound is asked again
+    /// (ADR 0502). An application that is shared has the sound of that application when the
+    /// person has chosen no sound yet.
     pub(crate) fn pick_picture(&mut self, picture: PictureSource) {
         if self.picture != Some(picture) && self.sound == Some(SoundKind::Application) {
             self.sound = None;
             self.application = None;
         }
+        self.tab = ShareTab::of(picture);
         self.picture = Some(picture);
+        if matches!(picture, PictureSource::Application(_)) && self.sound.is_none() {
+            self.sound = Some(SoundKind::Application);
+        }
+    }
+
+    /// Shows another tab. The chosen picture belongs to the tab that was shown, so it ends,
+    /// with a sound of one application that it named.
+    pub(crate) fn pick_tab(&mut self, tab: ShareTab) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        if self
+            .picture
+            .is_some_and(|picture| ShareTab::of(picture) != tab)
+        {
+            if self.sound == Some(SoundKind::Application) {
+                self.sound = None;
+                self.application = None;
+            }
+            self.picture = None;
+        }
+    }
+
+    /// The tabs that the dialog offers: an application on a system that captures the windows
+    /// of one application together.
+    pub(crate) fn tabs(&self) -> Vec<ShareTab> {
+        let applications = self
+            .sources()
+            .is_some_and(|sources| sources.application_capture);
+        [ShareTab::Screen, ShareTab::Window, ShareTab::Application]
+            .into_iter()
+            .filter(|tab| *tab != ShareTab::Application || applications)
+            .collect()
+    }
+
+    /// The application whose sound "this application" names with the chosen picture: the
+    /// application of a shared window or the shared application, with its name.
+    fn picture_application<'a>(
+        &self,
+        sources: &'a ShareSources,
+    ) -> Option<(&'a ApplicationId, &'a str)> {
+        match self.picture? {
+            PictureSource::Window(id) => sources
+                .windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(|window| (&window.application, window.application_name.as_str())),
+            PictureSource::Application(process_id) => sources
+                .application_pictures
+                .iter()
+                .find(|listed| listed.application.process_id == process_id)
+                .map(|listed| (&listed.application, listed.name.as_str())),
+            PictureSource::Display(_) | PictureSource::Portal(_) => None,
+        }
     }
 
     fn sources(&self) -> Option<&ShareSources> {
@@ -145,26 +228,24 @@ impl SharePicker {
     }
 
     fn sound_help(&self, sources: &ShareSources) -> SharedString {
-        let shared_window = match self.picture {
-            Some(PictureSource::Window(id)) => {
-                sources.windows.iter().find(|window| window.id == id)
-            }
-            _ => None,
-        };
-        let window_application = shared_window.map(|window| window.application_name.clone());
-        let started_the_client = shared_window
-            .is_some_and(|window| sources.started_the_client.contains(&window.application));
-        match (self.sound, &window_application) {
+        let shared = self.picture_application(sources);
+        let started_the_client =
+            shared.is_some_and(|(application, _)| sources.started_the_client.contains(application));
+        let whole_application = matches!(self.picture, Some(PictureSource::Application(_)));
+        match (self.sound, shared) {
             (None, _) => text::SOUND_CHOICE_HELP.into(),
             (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
             (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
             (Some(SoundKind::Application), _) if sources.creators_unknown => {
                 text::SOUND_CREATORS_UNKNOWN.into()
             }
-            (Some(SoundKind::Application), Some(name)) if started_the_client => {
+            (Some(SoundKind::Application), Some((_, name))) if started_the_client => {
                 text::sound_includes_junto(name).into()
             }
-            (Some(SoundKind::Application), Some(name)) => text::sound_of_window(name).into(),
+            (Some(SoundKind::Application), Some((_, name))) if whole_application => {
+                text::sound_of_shared_application(name).into()
+            }
+            (Some(SoundKind::Application), Some((_, name))) => text::sound_of_window(name).into(),
             (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
         }
     }
@@ -200,20 +281,23 @@ impl SharePicker {
             PictureSource::Portal(kind) => sources.portal.contains(&kind),
             PictureSource::Display(id) => sources.displays.iter().any(|held| held.id == id),
             PictureSource::Window(id) => sources.windows.iter().any(|held| held.id == id),
+            PictureSource::Application(process_id) => {
+                sources.application_capture
+                    && sources
+                        .application_pictures
+                        .iter()
+                        .any(|held| held.application.process_id == process_id)
+            }
         };
-        if !listed {
+        if !listed || ShareTab::of(picture) != self.tab {
             return None;
         }
         let sound = match (self.sound?, picture) {
             (SoundKind::None, _) => SoundChoice::None,
             (SoundKind::System, _) if sources.system_sound => SoundChoice::System,
             (SoundKind::System, _) => return None,
-            (SoundKind::Application, PictureSource::Window(id)) => {
-                let application = &sources
-                    .windows
-                    .iter()
-                    .find(|window| window.id == id)?
-                    .application;
+            (SoundKind::Application, PictureSource::Window(_) | PictureSource::Application(_)) => {
+                let (application, _) = self.picture_application(sources)?;
                 // Its sound includes the sound of the call, or can include it (ADR 0706); the
                 // dialog states why.
                 if sources.creators_unknown || sources.started_the_client.contains(application) {
@@ -652,6 +736,15 @@ impl Shell {
                             .iter()
                             .map(|window| PictureSource::Window(window.id)),
                     )
+                    .chain(
+                        sources
+                            .application_pictures
+                            .iter()
+                            .filter(|_| sources.application_capture)
+                            .map(|listed| {
+                                PictureSource::Application(listed.application.process_id)
+                            }),
+                    )
                     .collect(),
                 Err(_) => Vec::new(),
             };
@@ -734,6 +827,7 @@ impl Shell {
         let key = match source {
             PictureSource::Display(id) => format!("display:{id}"),
             PictureSource::Window(id) => format!("window:{id}"),
+            PictureSource::Application(process_id) => format!("application:{process_id}"),
             PictureSource::Portal(_) => "portal".to_owned(),
         };
         let (label, shown) = match &preview {
@@ -805,6 +899,31 @@ impl Shell {
         if let Some(picker) = self.picker() {
             picker.pick_picture(picture);
             cx.notify();
+        }
+    }
+
+    /// The share that the choices in the dialog describe, when they are complete: what
+    /// "Share" starts.
+    pub fn share_picker_choice(&self) -> Option<(PictureSource, SoundChoice)> {
+        match &self.layer {
+            Layer::SharePicker(picker) => picker.chosen(),
+            _ => None,
+        }
+    }
+
+    /// Shows a tab of the dialog of a share, as a click on the tab does.
+    pub fn pick_share_tab(&mut self, tab: ShareTab, cx: &mut Context<Self>) {
+        if let Some(picker) = self.picker() {
+            picker.pick_tab(tab);
+            cx.notify();
+        }
+    }
+
+    /// The tab that the dialog of a share shows, and the tabs that it offers.
+    pub fn share_picker_tabs(&self) -> Option<(ShareTab, Vec<ShareTab>)> {
+        match &self.layer {
+            Layer::SharePicker(picker) => Some((picker.tab, picker.tabs())),
+            _ => None,
         }
     }
 
@@ -979,6 +1098,46 @@ impl Shell {
             state.tell_call(text::SHARE_DIALOG_CLOSED, cx)
         });
         self.close_layer(window, cx);
+    }
+
+    /// The tabs of the dialog of a share. A press opens a tab only in the dialog that drew
+    /// it. Opening a tab acts on the dialog alone, so the press does not wait for the call
+    /// that the calls hold (`call_listener`): the dialog checks its seat itself.
+    fn share_tab_row(&self, open: ShareTab, tabs: &[ShareTab], cx: &mut Context<Self>) -> TabRow {
+        let Layer::SharePicker(picker) = &self.layer else {
+            return TabRow::new("share-tabs", text::SHARE_TABS, Vec::new());
+        };
+        let (seat, read) = (picker.seat.clone(), picker.read);
+        let tabs: Vec<Tab> = tabs
+            .iter()
+            .map(|tab| {
+                let (icon, label, selector) = match tab {
+                    ShareTab::Screen => (Icon::Screen, text::SHARE_TAB_SCREEN, "share-tab-screen"),
+                    ShareTab::Window => {
+                        (Icon::AppWindow, text::SHARE_TAB_WINDOW, "share-tab-window")
+                    }
+                    ShareTab::Application => (
+                        Icon::AppWindow,
+                        text::SHARE_TAB_APPLICATION,
+                        "share-tab-application",
+                    ),
+                };
+                let (tab, seat) = (*tab, seat.clone());
+                Tab::new(selector, icon, label)
+                    .on(open == tab)
+                    .selector(selector)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(picker) = this.picker()
+                            && picker.seat == seat
+                            && picker.read == read
+                        {
+                            picker.pick_tab(tab);
+                            cx.notify();
+                        }
+                    }))
+            })
+            .collect();
+        TabRow::new("share-tabs", text::SHARE_TABS, tabs)
     }
 
     fn share_source_choice(
@@ -1218,113 +1377,143 @@ impl Shell {
                         ),
                 )
         };
-        let section = |title: &'static str| {
+        let tab = picker.tab;
+        let tabs = picker.tabs();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let empty = |sentence: &'static str| {
             div()
                 .flex_none()
-                .pt(u(6.0))
-                .pb(u(2.0))
                 .px(u(10.0))
-                .typeface(theme.types.small_strong, &theme)
-                .ink(colors.bronze)
-                .child(title)
+                .py(u(4.0))
+                .child(note(sentence.into()))
+                .into_any_element()
         };
-        let mut rows: Vec<AnyElement> = vec![section(text::SCREENS).into_any_element()];
-        if sources.portal.contains(&ShareKind::Screen) {
-            let source = PictureSource::Portal(ShareKind::Screen);
-            rows.push(
-                row(
-                    ("share-portal-screen", 0),
-                    "share-portal-screen".into(),
-                    Icon::Screen,
-                    None,
-                    text::SHARE_DESKTOP_SCREEN.into(),
-                    text::SHARE_DESKTOP_HELP.into(),
-                    picture == Some(source),
-                )
-                .map(|row| self.share_source_choice(row, source, window, cx))
-                .into_any_element(),
-            );
+        match tab {
+            ShareTab::Screen => {
+                if sources.portal.contains(&ShareKind::Screen) {
+                    let source = PictureSource::Portal(ShareKind::Screen);
+                    rows.push(
+                        row(
+                            ("share-portal-screen", 0),
+                            "share-portal-screen".into(),
+                            Icon::Screen,
+                            None,
+                            text::SHARE_DESKTOP_SCREEN.into(),
+                            text::SHARE_DESKTOP_HELP.into(),
+                            picture == Some(source),
+                        )
+                        .map(|row| self.share_source_choice(row, source, window, cx))
+                        .into_any_element(),
+                    );
+                }
+                for (index, display) in sources.displays.iter().enumerate() {
+                    let source = PictureSource::Display(display.id);
+                    let name = text::screen_name(index + 1);
+                    rows.push(
+                        row(
+                            ("share-display", index),
+                            format!("share-display:{}", display.id),
+                            Icon::Screen,
+                            Some(self.render_share_preview(source, &name, &theme)),
+                            name.into(),
+                            text::pixels((display.width, display.height)).into(),
+                            picture == Some(source),
+                        )
+                        .map(|row| self.share_source_choice(row, source, window, cx))
+                        .into_any_element(),
+                    );
+                }
+            }
+            ShareTab::Window => {
+                if sources.portal.contains(&ShareKind::Window) {
+                    let source = PictureSource::Portal(ShareKind::Window);
+                    rows.push(
+                        row(
+                            ("share-portal-window", 0),
+                            "share-portal-window".into(),
+                            Icon::AppWindow,
+                            None,
+                            text::SHARE_DESKTOP_WINDOW.into(),
+                            text::SHARE_DESKTOP_HELP.into(),
+                            picture == Some(source),
+                        )
+                        .map(|row| self.share_source_choice(row, source, window, cx))
+                        .into_any_element(),
+                    );
+                }
+                if sources.windows.is_empty() && !sources.portal.contains(&ShareKind::Window) {
+                    rows.push(empty(text::NO_WINDOWS));
+                }
+                for (index, shared) in sources.windows.iter().enumerate() {
+                    let source = PictureSource::Window(shared.id);
+                    let title: SharedString = if shared.title.is_empty() {
+                        shared.application_name.clone().into()
+                    } else {
+                        shared.title.clone().into()
+                    };
+                    let detail = format!(
+                        "{} · {}",
+                        shared.application_name,
+                        text::pixels((shared.width, shared.height))
+                    );
+                    let preview = self.render_share_preview(source, &title, &theme);
+                    rows.push(
+                        row(
+                            ("share-window", index),
+                            format!("share-window:{}", shared.id),
+                            Icon::AppWindow,
+                            Some(preview),
+                            title,
+                            detail.into(),
+                            picture == Some(source),
+                        )
+                        .map(|row| self.share_source_choice(row, source, window, cx))
+                        .into_any_element(),
+                    );
+                }
+            }
+            ShareTab::Application => {
+                if sources.application_pictures.is_empty() {
+                    rows.push(empty(text::NO_APPLICATION_WINDOWS));
+                }
+                for (index, shared) in sources.application_pictures.iter().enumerate() {
+                    let source = PictureSource::Application(shared.application.process_id);
+                    let screen = sources
+                        .displays
+                        .iter()
+                        .position(|display| display.id == shared.display)
+                        .map_or(1, |index| index + 1);
+                    let detail = text::application_picture_detail(
+                        shared.windows,
+                        screen,
+                        (shared.width, shared.height),
+                    );
+                    let preview = self.render_share_preview(source, &shared.name, &theme);
+                    rows.push(
+                        row(
+                            ("share-application-picture", index),
+                            format!(
+                                "share-application-picture:{}",
+                                shared.application.process_id
+                            ),
+                            Icon::AppWindow,
+                            Some(preview),
+                            shared.name.clone().into(),
+                            detail.into(),
+                            picture == Some(source),
+                        )
+                        .map(|row| self.share_source_choice(row, source, window, cx))
+                        .into_any_element(),
+                    );
+                }
+            }
         }
-        for (index, display) in sources.displays.iter().enumerate() {
-            let source = PictureSource::Display(display.id);
-            let name = text::screen_name(index + 1);
-            rows.push(
-                row(
-                    ("share-display", index),
-                    format!("share-display:{}", display.id),
-                    Icon::Screen,
-                    Some(self.render_share_preview(source, &name, &theme)),
-                    name.into(),
-                    text::pixels((display.width, display.height)).into(),
-                    picture == Some(source),
-                )
-                .map(|row| self.share_source_choice(row, source, window, cx))
-                .into_any_element(),
-            );
-        }
-        rows.push(section(text::WINDOWS).into_any_element());
-        if sources.portal.contains(&ShareKind::Window) {
-            let source = PictureSource::Portal(ShareKind::Window);
-            rows.push(
-                row(
-                    ("share-portal-window", 0),
-                    "share-portal-window".into(),
-                    Icon::AppWindow,
-                    None,
-                    text::SHARE_DESKTOP_WINDOW.into(),
-                    text::SHARE_DESKTOP_HELP.into(),
-                    picture == Some(source),
-                )
-                .map(|row| self.share_source_choice(row, source, window, cx))
-                .into_any_element(),
-            );
-        }
-        if sources.windows.is_empty() && !sources.portal.contains(&ShareKind::Window) {
-            rows.push(
-                div()
-                    .flex_none()
-                    .px(u(10.0))
-                    .py(u(4.0))
-                    .child(note(text::NO_WINDOWS.into()))
-                    .into_any_element(),
-            );
-        }
-        for (index, shared) in sources.windows.iter().enumerate() {
-            let source = PictureSource::Window(shared.id);
-            let title: SharedString = if shared.title.is_empty() {
-                shared.application_name.clone().into()
-            } else {
-                shared.title.clone().into()
-            };
-            let detail = format!(
-                "{} · {}",
-                shared.application_name,
-                text::pixels((shared.width, shared.height))
-            );
-            let preview = self.render_share_preview(source, &title, &theme);
-            rows.push(
-                row(
-                    ("share-window", index),
-                    format!("share-window:{}", shared.id),
-                    Icon::AppWindow,
-                    Some(preview),
-                    title,
-                    detail.into(),
-                    picture == Some(source),
-                )
-                .map(|row| self.share_source_choice(row, source, window, cx))
-                .into_any_element(),
-            );
-        }
+        let tab_row = self.share_tab_row(tab, &tabs, cx);
 
         // The sound: the kind, and with a screen the application.
-        let shared_window = match picture {
-            Some(PictureSource::Window(id)) => {
-                sources.windows.iter().find(|window| window.id == id)
-            }
-            _ => None,
-        };
-        let window_application = shared_window.map(|window| window.application_name.clone());
+        let window_application = picker
+            .picture_application(&sources)
+            .map(|(_, name)| name.to_owned());
         let kinds: Vec<SharedString> = sound_kinds
             .iter()
             .map(|kind| match kind {
@@ -1405,10 +1594,20 @@ impl Shell {
                 .bg(Hsla::from(colors.travertine_hi))
                 .children(children)
         };
+        let tab_name = match tab {
+            ShareTab::Screen => text::SHARE_TAB_SCREEN,
+            ShareTab::Window => text::SHARE_TAB_WINDOW,
+            ShareTab::Application => text::SHARE_TAB_APPLICATION,
+        };
         dialog
             .child(label(text::WHAT_TO_SHARE))
+            .child(tab_row)
             .child(
                 div()
+                    .id("share-tab-panel")
+                    .role(Role::TabPanel)
+                    .aria_label(tab_name)
+                    .debug_selector(|| "share-tab-panel".to_owned())
                     .flex()
                     .flex_col()
                     .h(u(220.0))
@@ -1537,7 +1736,7 @@ impl Shell {
         let title_of = |share: &ShareCard| text::share_title(share, share.id.person == Person::Own);
         (stage.shares.len() > 1 || stage.watched().is_none())
             .then(|| {
-                let cards = stage.shares.iter().enumerate().map(|(index, share)| {
+                let cards = stage.shares.iter().map(|share| {
                     let id = share.id;
                     let title: SharedString = title_of(share).into();
                     let small = self
@@ -1576,7 +1775,7 @@ impl Shell {
                             .into_any_element()
                     };
                     div()
-                        .id(("share-card", index))
+                        .id(SharedString::from(format!("share-card:{id:?}")))
                         .role(Role::RadioButton)
                         .aria_label(title.clone())
                         .aria_selected(share.watched)
@@ -2101,7 +2300,7 @@ mod tests {
     use junto_media::calls::{CallTarget, Phase};
     use junto_media::engine::{MicrophoneState, OutputState};
     use junto_media::permission::MicrophoneAccess;
-    use junto_media::share::{ApplicationSource, DisplaySource, WindowSource};
+    use junto_media::share::{ApplicationPicture, ApplicationSource, DisplaySource, WindowSource};
 
     use super::*;
 
@@ -2150,6 +2349,15 @@ mod tests {
                 application_name: "Player".to_owned(),
                 width: 800,
                 height: 600,
+            }],
+            application_capture: true,
+            application_pictures: vec![ApplicationPicture {
+                application: player(),
+                name: "Player".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
             }],
             applications: vec![ApplicationSource {
                 id: player(),
@@ -2229,6 +2437,7 @@ mod tests {
         let mut picker = picker();
         // Nothing is chosen at the start, and nothing is chosen for the person.
         assert_eq!(picker.chosen(), None);
+        picker.tab = ShareTab::of(PictureSource::Display(1));
         picker.picture = Some(PictureSource::Display(1));
         assert_eq!(picker.chosen(), None);
         picker.sound = Some(SoundKind::None);
@@ -2263,6 +2472,7 @@ mod tests {
     #[test]
     fn the_sound_of_one_application_with_a_window_is_the_application_of_that_window() {
         let mut picker = picker();
+        picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
         picker.sound = Some(SoundKind::Application);
         assert_eq!(
@@ -2273,9 +2483,11 @@ mod tests {
             ))
         );
         // A window that the list does not hold is not shared.
+        picker.tab = ShareTab::of(PictureSource::Window(12));
         picker.picture = Some(PictureSource::Window(12));
         assert_eq!(picker.chosen(), None);
         // Without a list nothing is shared.
+        picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
         picker.listed = Listed::Reading;
         assert_eq!(picker.chosen(), None);
@@ -2287,6 +2499,7 @@ mod tests {
         if let Listed::Sources(sources) = &mut picker.listed {
             sources.started_the_client.push(player());
         }
+        picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
         picker.sound = Some(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
@@ -2304,6 +2517,7 @@ mod tests {
         if let Listed::Sources(sources) = &mut picker.listed {
             sources.creators_unknown = true;
         }
+        picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
         picker.sound = Some(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
@@ -2351,6 +2565,93 @@ mod tests {
         picker.pick_picture(PictureSource::Window(11));
         assert_eq!(picker.sound, Some(SoundKind::Application));
     }
+    /// The dialog opens on the screens. A picture belongs to the tab that lists it: another
+    /// tab ends the choice of the picture and of the sound of its application, and "Share"
+    /// shares only a picture of the shown tab (ADR 0738).
+    #[test]
+    fn a_tab_shows_its_sources_and_another_tab_ends_the_choice_of_the_picture() {
+        let mut picker = picker();
+        assert_eq!(picker.tab, ShareTab::Screen);
+        assert_eq!(
+            picker.tabs(),
+            [ShareTab::Screen, ShareTab::Window, ShareTab::Application]
+        );
+        picker.pick_picture(PictureSource::Window(11));
+        assert_eq!(picker.tab, ShareTab::Window);
+        picker.sound = Some(SoundKind::Application);
+        assert!(picker.chosen().is_some());
+        picker.pick_tab(ShareTab::Window);
+        assert!(picker.chosen().is_some());
+        picker.pick_tab(ShareTab::Screen);
+        assert_eq!((picker.picture, picker.sound), (None, None));
+        assert_eq!(picker.chosen(), None);
+        // A sound that names no application holds in every tab.
+        picker.pick_picture(PictureSource::Display(1));
+        picker.sound = Some(SoundKind::System);
+        picker.pick_tab(ShareTab::Application);
+        assert_eq!(
+            (picker.picture, picker.sound),
+            (None, Some(SoundKind::System))
+        );
+
+        // A system without the capture of an application offers no Application tab.
+        if let Listed::Sources(sources) = &mut picker.listed {
+            sources.application_capture = false;
+        }
+        assert_eq!(picker.tabs(), [ShareTab::Screen, ShareTab::Window]);
+        picker.pick_picture(PictureSource::Application(7));
+        picker.sound = Some(SoundKind::None);
+        assert_eq!(picker.chosen(), None);
+    }
+
+    /// An application that is shared has the sound of that application when the person has
+    /// chosen no sound yet; a sound that the person chose stays (ADR 0502).
+    #[test]
+    fn a_shared_application_has_its_own_sound_unless_the_person_chose_another() {
+        let mut picker = picker();
+        picker.pick_tab(ShareTab::Application);
+        picker.pick_picture(PictureSource::Application(7));
+        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(
+            picker.chosen(),
+            Some((
+                PictureSource::Application(7),
+                SoundChoice::Application(player())
+            ))
+        );
+        let sources = picker.sources().cloned().unwrap();
+        assert_eq!(
+            picker.sound_help(&sources),
+            SharedString::from(text::sound_of_shared_application("Player"))
+        );
+
+        let mut picker = self::picker();
+        picker.sound = Some(SoundKind::None);
+        picker.pick_picture(PictureSource::Application(7));
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Application(7), SoundChoice::None))
+        );
+
+        // An application that started Junto, or applications that cannot be read, give no
+        // sound of one application (ADR 0706).
+        let mut picker = self::picker();
+        if let Listed::Sources(sources) = &mut picker.listed {
+            sources.started_the_client.push(player());
+        }
+        picker.pick_picture(PictureSource::Application(7));
+        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.chosen(), None);
+        picker.sound = Some(SoundKind::System);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Application(7), SoundChoice::System))
+        );
+        // An application that is not listed any more is not shared.
+        picker.pick_picture(PictureSource::Application(8));
+        assert_eq!(picker.chosen(), None);
+    }
+
     #[test]
     fn a_portal_window_requires_an_explicit_application_and_unavailable_sound_is_not_offered() {
         let first = ApplicationId {

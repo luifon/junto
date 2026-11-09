@@ -12,7 +12,7 @@ ADR 0204 decides a setup tool that exports the structure of a server to a file, 
 
 Structure document:
 
-- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, its categories with their role overrides, and its channels that are not deleted with their sync state and their own role overrides, and its glossary: its terms in their order of priority (ADR 0603). A channel that is synced with its category states no overrides, because it uses those of the category (ADR 0304). It names no account and no member, so it holds no rule of a person.
+- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, its categories with their role overrides, and its channels that are not deleted with their sync state and their own role overrides, and its glossary: its terms in their order of priority (ADR 0603). A channel that is synced with its category states no overrides, because it uses those of the category (ADR 0304). It names no account and no member, so it holds no rule of a person. The position of a category is its place among the categories of its workspace, counted from 0, and a change of a category takes a position in the same way (ADR 0304).
 - The route needs the administrator permission, because the document holds every channel and every override. The document is read from one snapshot, with a number of statements that does not depend on the size of the structure.
 
 Revision:

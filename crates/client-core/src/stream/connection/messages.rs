@@ -265,6 +265,8 @@ pub(super) struct Searched {
 pub(super) struct Done {
     token: SecretToken,
     outcome: Outcome,
+    /// The ticket of the command that started the request.
+    counted: crate::live::Ticket,
 }
 
 /// A list that is read again after every event of a kind. The limit of the server for
@@ -334,8 +336,8 @@ pub(super) struct Work {
     notices: Spaced,
     /// The continuation that the read of a further page of unread threads was sent with.
     pub(super) continued_threads: Option<String>,
-    /// The times at which the mute of a channel ends (ADR 0409).
-    mute_ends: Vec<(Instant, ChannelId)>,
+    /// The times at which the mute of a place ends (ADR 0409, ADR 0515).
+    mute_ends: Vec<(Instant, PlaceId)>,
 }
 
 impl Work {
@@ -730,9 +732,9 @@ impl Client {
                 if model.place(PlaceId::of(&state.place)).is_some() {
                     model.set_message_state(state);
                 }
-                if let PlaceId::Channel(channel_id) = asked {
-                    self.messages.mute_ends.retain(|(_, of)| *of != channel_id);
-                    if let Some(until) = model.stated_mute_end(channel_id) {
+                if !matches!(asked, PlaceId::Thread { .. }) {
+                    self.messages.mute_ends.retain(|(_, of)| *of != asked);
+                    if let Some(until) = model.stated_mute_end(asked) {
                         // Before the stated end "muted" is the expected answer, and the
                         // summary is read after that end. After it the two clocks
                         // differ, and the summary is read again.
@@ -743,7 +745,7 @@ impl Client {
                         };
                         let due = wait.and_then(|wait| Instant::now().checked_add(wait));
                         if let Some(due) = due {
-                            self.messages.mute_ends.push((due, channel_id));
+                            self.messages.mute_ends.push((due, asked));
                         }
                     }
                 }
@@ -1134,12 +1136,12 @@ impl Client {
         self.messages.mute_ends = model
             .mute_ends(clock)
             .into_iter()
-            .filter_map(|(channel_id, until)| {
+            .filter_map(|(place, until)| {
                 // An end that has passed here while the server still says "muted" is
                 // asked for at once.
                 let wait = Duration::try_from(until - clock).unwrap_or_default();
                 let due = now.checked_add(wait)?.checked_add(MUTE_MARGIN)?;
-                Some((due, channel_id))
+                Some((due, place))
             })
             .collect();
     }
@@ -1462,16 +1464,16 @@ impl Client {
             self.read(Part::Notices);
         }
         let mut ended = Vec::new();
-        self.messages.mute_ends.retain(|(due, channel_id)| {
+        self.messages.mute_ends.retain(|(due, place)| {
             if *due <= now {
-                ended.push(*channel_id);
+                ended.push(*place);
                 false
             } else {
                 true
             }
         });
-        for channel_id in ended {
-            self.read(Part::MessageState(PlaceId::Channel(channel_id)));
+        for place in ended {
+            self.read(Part::MessageState(place));
         }
         self.pump_message_reads();
         self.send_marks(now);
@@ -1528,7 +1530,8 @@ impl Client {
                 (*place, mark.wanted, api.clone(), self.done.clone());
             let token = token.clone();
             let guarded = self.server_events.is_some_and(|revision| revision >= 4);
-            let request = tokio::spawn(async move {
+            let counted = self.ticket.clone();
+            let request = tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                 let result = match place {
                     PlaceId::Thread { root_id, .. } => if guarded {
                         api.mark_thread_read_at_revision(root_id, position, revision)
@@ -1550,15 +1553,20 @@ impl Client {
                     position,
                     result,
                 };
-                let _ = done.send(Done { token, outcome });
-            });
+                let _ = done.send(Done {
+                    token,
+                    outcome,
+                    counted,
+                });
+            }));
             mark.flying = Some(request.abort_handle());
             mark.overtaken = false;
             mark.next_at = Some(now + MARK_INTERVAL);
         }
     }
 
-    pub(super) fn done(&mut self, done: Done) {
+    pub(super) fn done(&mut self, mut done: Done) {
+        self.answered.push(std::mem::take(&mut done.counted));
         // An ended session of a request that an earlier session carried is known already.
         let current = self.token().is_some_and(|token| token == done.token);
         match done.outcome {
@@ -1764,11 +1772,16 @@ impl Client {
                 let after = pending.after;
                 sending.searching = Some((place, Vec::new()));
                 sending.search_overtaken = false;
-                tokio::spawn(async move {
+                let counted = self.ticket.clone();
+                tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                     let result = history_after(&api, place, after).await;
                     let outcome = Outcome::Searched { id, result };
-                    let _ = done.send(Done { token, outcome });
-                })
+                    let _ = done.send(Done {
+                        token,
+                        outcome,
+                        counted,
+                    });
+                }))
             } else {
                 let Some(attachments) = pending.attachment_ids() else {
                     continue;
@@ -1779,14 +1792,19 @@ impl Client {
                     reply_to: pending.reply_to,
                     attachments,
                 };
-                tokio::spawn(async move {
+                let counted = self.ticket.clone();
+                tokio::spawn(crate::live::counted(self.ticket.clone(), async move {
                     let result = api
                         .send_message_with_receipt(place, &message)
                         .await
                         .map(Box::new);
                     let outcome = Outcome::Sent { id, result };
-                    let _ = done.send(Done { token, outcome });
-                })
+                    let _ = done.send(Done {
+                        token,
+                        outcome,
+                        counted,
+                    });
+                }))
             };
             sending.request = Some(request.abort_handle());
         }

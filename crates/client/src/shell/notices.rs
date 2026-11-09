@@ -599,7 +599,7 @@ impl Shell {
                                 .checked_sub(1)
                                 .and_then(|above| items.get(above))
                                 .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
-                            this.render_notice_row(server_id, index, below_a_notice, row, cx)
+                            this.render_notice_row(server_id, below_a_notice, row, cx)
                         }
                         None => div().into_any_element(),
                     }
@@ -653,7 +653,6 @@ impl Shell {
     fn render_notice_row(
         &mut self,
         server_id: ServerId,
-        index: usize,
         below_a_notice: bool,
         row: &NoticeRow,
         cx: &mut Context<Self>,
@@ -714,7 +713,7 @@ impl Shell {
             .w_full()
             .child(
                 div()
-                    .id(("notice", index))
+                    .id(("notice", notice_id.as_u128() as u64))
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))

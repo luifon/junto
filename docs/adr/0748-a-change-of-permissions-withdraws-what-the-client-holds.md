@@ -21,7 +21,7 @@ The state of the client core:
 The window:
 
 - The results of the search of the server leave at once, the answer of a search that started before is not taken, and the search is read again.
-- The shown audit log of the scope, or of the server, holds nothing of before, takes no answer of a read that started before, and is read again from its start.
+- The shown audit log of the scope, or of the server, holds nothing of before, takes no answer of a read that started before, and is read again from its start. Test: `admin_pages::the_shown_audit_log_is_read_again_when_the_permissions_of_its_reader_change`.
 
 The list of the recordings in the window:
 

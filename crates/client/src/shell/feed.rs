@@ -502,6 +502,8 @@ struct Rich {
     spoilers: Vec<(Range<usize>, Vec<usize>)>,
     copy_targets: Vec<(Range<usize>, String)>,
     replacements: Vec<(Range<usize>, String)>,
+    /// The stand-ins of the emoji that the fonts do not draw, with the tooltip of each.
+    stand_ins: Vec<(Range<usize>, String)>,
 }
 
 impl Rich {
@@ -545,6 +547,7 @@ impl Rich {
             spoilers: Vec::new(),
             copy_targets: Vec::new(),
             replacements: Vec::new(),
+            stand_ins: Vec::new(),
         };
         rich.append(content, names, style, revealed, &[]);
         rich
@@ -804,6 +807,14 @@ impl Rich {
             .stand_ins()
             .map(|range| start + range.start..start + range.end)
             .collect();
+        self.stand_ins
+            .extend(shown.replacements().filter_map(|(from, to)| {
+                let emoji = emojis::get(&text[from])?;
+                Some((
+                    start + to.start..start + to.end,
+                    text::emoji_stand_in(emoji.name()),
+                ))
+            }));
         self.text.push_str(&shown.text);
         stand_ins
     }
@@ -961,6 +972,31 @@ enum TextTarget {
     Spoiler(Vec<usize>),
 }
 
+/// The tooltip of the place `index` of a rich text: its target, or else the stand-in of an
+/// emoji that the fonts do not draw. The address of a link is shown also over a stand-in in
+/// its text.
+fn hover_label(
+    targets: &[(Range<usize>, TextTarget)],
+    stand_ins: &[(Range<usize>, String)],
+    index: usize,
+) -> Option<String> {
+    let target = targets
+        .iter()
+        .find(|(range, _)| range.contains(&index))
+        .map(|(_, target)| match target {
+            TextTarget::Link(link) => link.to_string(),
+            TextTarget::Profile(_, label) => label.clone(),
+            TextTarget::Channel(_) => text::CHANNEL_REFERENCE.to_owned(),
+            TextTarget::Spoiler(_) => text::REVEAL_SPOILER.to_owned(),
+        });
+    target.or_else(|| {
+        stand_ins
+            .iter()
+            .find(|(range, _)| range.contains(&index))
+            .map(|(_, label)| label.clone())
+    })
+}
+
 fn focused_highlights(
     length: usize,
     highlights: &[(Range<usize>, HighlightStyle)],
@@ -1009,6 +1045,7 @@ impl RenderOnce for RichElement {
             spoilers,
             copy_targets,
             replacements,
+            stand_ins,
         } = self.rich;
         let wrapper_id: gpui::ElementId = ("profile-text", self.id).into();
         let mut unique = std::collections::HashSet::new();
@@ -1076,7 +1113,7 @@ impl RenderOnce for RichElement {
             )
             .collect();
         targets.sort_by_key(|(range, _)| range.start);
-        if targets.is_empty() {
+        if targets.is_empty() && stand_ins.is_empty() {
             return menus.wrap(crate::selectable::SelectableText::rich(
                 styled,
                 copy_targets,
@@ -1113,18 +1150,7 @@ impl RenderOnce for RichElement {
                 }
             })
             .tooltip(move |index, window, cx| {
-                hover
-                    .iter()
-                    .find(|(range, _)| range.contains(&index))
-                    .map(|(_, target)| {
-                        let label = match target {
-                            TextTarget::Link(link) => link.to_string(),
-                            TextTarget::Profile(_, label) => label.clone(),
-                            TextTarget::Channel(_) => text::CHANNEL_REFERENCE.to_owned(),
-                            TextTarget::Spoiler(_) => text::REVEAL_SPOILER.to_owned(),
-                        };
-                        tooltip(label)(window, cx)
-                    })
+                hover_label(&hover, &stand_ins, index).map(|label| tooltip(label)(window, cx))
             });
         let text = crate::selectable::SelectableText::rich(text, copy_targets, replacements);
         let Some((focus, selected)) = focus_state else {
@@ -1349,16 +1375,6 @@ impl CodeTokens {
         tokens
     }
 
-    /// The number of coloured parts of a drawn code block, without counting a use of them.
-    #[cfg(feature = "test-support")]
-    fn drawn(&self, code: &str, language: &str) -> Option<usize> {
-        let rules = highlight::rules_of(language)?;
-        self.held
-            .get(rules)?
-            .get(code)
-            .map(|(tokens, _)| tokens.len())
-    }
-
     fn drop_oldest(&mut self) {
         let oldest = self
             .held
@@ -1398,17 +1414,9 @@ fn code_block(
         Token::Value => colors.code_value,
         Token::Comment => colors.code_comment,
     };
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = tokens
+    let colours: Vec<(Range<usize>, Hsla)> = tokens
         .iter()
-        .map(|(range, token)| {
-            (
-                range.clone(),
-                HighlightStyle {
-                    color: Some(colour(*token).into()),
-                    ..HighlightStyle::default()
-                },
-            )
-        })
+        .map(|(range, token)| (range.clone(), colour(*token).into()))
         .collect();
     let copy = code.to_owned();
     div()
@@ -1463,7 +1471,7 @@ fn code_block(
                         ),
                 ),
         )
-        .child(StyledText::new(code.to_owned()).with_highlights(highlights))
+        .child(crate::ui::code_text(code.to_owned().into(), colours))
         .into_any_element()
 }
 
@@ -1660,13 +1668,6 @@ impl Shell {
             offset_in_item: px(0.0),
         });
         cx.notify();
-    }
-
-    /// How many coloured parts the window drew for a code block in this language. Absent
-    /// when it drew no such block.
-    #[cfg(feature = "test-support")]
-    pub fn code_colours(&self, code: &str, language: &str) -> Option<usize> {
-        self.code_tokens.drawn(code, language)
     }
 
     /// Shows the end of the history of a pane: the list goes there, and the latest page
@@ -2165,20 +2166,28 @@ impl Shell {
             )
             .when(away, |frame| {
                 frame.child(
-                    div().absolute().right(u(18.0)).bottom(u(8.0)).child(
-                        Button::new("go-to-end")
-                            .icon(Icon::ChevronDown)
-                            .label(if feed.unread > 0 {
-                                SharedString::from(text::unread_tooltip(feed.unread, 0))
-                            } else {
-                                text::GO_TO_END.into()
-                            })
-                            .tooltip(text::GO_TO_END)
-                            .selector(pane.id("go-to-end"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.go_to_end(pane, window, cx);
-                            })),
-                    ),
+                    // The button lies over the rows: it takes the pointer, so that the row under
+                    // it is not hovered and does not take the press as well, and leaves the
+                    // wheel to the list (ADR 0740).
+                    div()
+                        .absolute()
+                        .right(u(18.0))
+                        .bottom(u(8.0))
+                        .block_mouse_except_scroll()
+                        .child(
+                            Button::new("go-to-end")
+                                .icon(Icon::ChevronDown)
+                                .label(if feed.unread > 0 {
+                                    SharedString::from(text::unread_tooltip(feed.unread, 0))
+                                } else {
+                                    text::GO_TO_END.into()
+                                })
+                                .tooltip(text::GO_TO_END)
+                                .selector(pane.id("go-to-end"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.go_to_end(pane, window, cx);
+                                })),
+                        ),
                 )
             })
             .into_any_element()
@@ -2284,7 +2293,7 @@ impl Shell {
                 } else {
                     MessageShape::Wide
                 };
-                self.render_message(index, row, feed, shape, window, cx)
+                self.render_message(row, feed, shape, window, cx)
             }
             FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, window, cx),
         }
@@ -2844,7 +2853,7 @@ impl Shell {
                 let reason = (can_react && !acts)
                     .then(|| text::not_permitted(WorkspacePermission::AddReactions));
                 div()
-                    .id(("reaction", index))
+                    .id(SharedString::from(format!("reaction:{emoji}")))
                     .role(if can_react { Role::Button } else { Role::Note })
                     .aria_label(label.clone())
                     .debug_selector(move || format!("reaction:{message_id}:{index}"))
@@ -3015,6 +3024,7 @@ impl Shell {
                     width,
                     height,
                     frames: 1,
+                    reducible: false,
                 };
                 decode::decode(bytes, stated, decode::plan(stated, None, LIST_FRAME_BYTES))
             })
@@ -3094,6 +3104,22 @@ impl Shell {
         self.message_pictures
             .playback
             .shown_frames(&attachment_id.to_string())
+    }
+
+    /// The frames that the last drawing showed of the animations of a file in the places
+    /// other than the picture viewer. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn shown_frames_behind_the_viewer(&self, attachment_id: AttachmentId) -> Vec<usize> {
+        self.message_pictures
+            .playback
+            .shown_frames_outside(moving::VIEWER_SLOT, &attachment_id.to_string())
+    }
+
+    /// How often the animations of the pictures of messages drew the window. A test uses
+    /// it.
+    #[cfg(feature = "test-support")]
+    pub fn animation_draws(&self) -> usize {
+        self.message_pictures.playback.woken()
     }
 
     /// True while an animation will draw the window again. A test uses it.
@@ -3210,11 +3236,13 @@ impl Shell {
 
     /// The files of a message: a picture inline, every other file as a row with its size
     /// and the state of its download.
+    /// The files of a message. `from_pins`: the message is a row of the pins of the side
+    /// panel, so a viewer opened from it closes when the pins no longer hold the message.
     pub(super) fn attachments(
         &mut self,
-        server_id: ServerId,
-        place_id: PlaceId,
+        (server_id, place_id): (ServerId, PlaceId),
         message: &Message,
+        from_pins: bool,
         window: &mut Window,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -3291,6 +3319,9 @@ impl Shell {
                                     window,
                                     cx,
                                 );
+                                if from_pins {
+                                    this.viewer_opened_from_pins();
+                                }
                             }
                         };
                         let by_key = open.clone();
@@ -4164,7 +4195,6 @@ impl Shell {
     /// One message of a person.
     pub(crate) fn render_message(
         &mut self,
-        index: usize,
         row: &MessageRow,
         feed: &Feed,
         shape: MessageShape,
@@ -4215,7 +4245,14 @@ impl Shell {
                 ),
                 None => Vec::new(),
             };
-            body.extend(self.attachments(feed.server_id, feed.place, message, window, &theme, cx));
+            body.extend(self.attachments(
+                (feed.server_id, feed.place),
+                message,
+                bare,
+                window,
+                &theme,
+                cx,
+            ));
             // The server removed files of the message after the retention of its workspace
             // (ADR 0409). The text of the message stays.
             if message.files_removed_by_retention {
@@ -4336,7 +4373,7 @@ impl Shell {
         )
         .into();
         div()
-            .id(("message", index))
+            .id(("message", message_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(label)
             .debug_selector(move || {
@@ -4564,7 +4601,7 @@ impl Shell {
             cx,
         );
         let frame = div()
-            .id(("waiting", index))
+            .id(("waiting", pending.id))
             .focusable()
             .tab_stop(true)
             .debug_selector(move || format!("waiting:{id}"))
@@ -4799,6 +4836,20 @@ impl Shell {
         self.list(pane).at_end()
     }
 
+    /// The jump that the list of a pane went to last: the message and the number of the jump.
+    /// A test tells by it whether a list took a jump of the state.
+    #[cfg(feature = "test-support")]
+    pub fn feed_jump(&self, pane: Pane) -> Option<(MessageId, u64)> {
+        self.list(pane).target
+    }
+
+    /// The first row of the list of a pane and the distance of the view into it.
+    #[cfg(feature = "test-support")]
+    pub fn feed_scroll_top(&self, pane: Pane) -> (usize, f32) {
+        let top = self.list(pane).list.logical_scroll_top();
+        (top.item_ix, f32::from(top.offset_in_item))
+    }
+
     /// The bounds in which the last frame drew the list of a pane. A test that measures a
     /// build without debug assertions, where gpui keeps no names of elements, turns the
     /// wheel of the pointer over this place (ADR 0914).
@@ -4872,15 +4923,19 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(reaction) = row.message.reactions.first()
-            && let Some(key) = self.reactor_key(
-                server_id,
-                PlaceId::of_message(&row.message),
-                message_id,
-                reaction.emoji.clone(),
-                cx,
-            )
-        {
+        // The item stays while the message has no reaction, disabled: the first reaction that
+        // arrives while the menu is open would otherwise insert it and move every item under
+        // it, also the one under the pointer (ADR 0730).
+        if !row.message.deleted && self.state.read(cx).owner(server_id).is_some() {
+            let key = row.message.reactions.first().and_then(|reaction| {
+                self.reactor_key(
+                    server_id,
+                    PlaceId::of_message(&row.message),
+                    message_id,
+                    reaction.emoji.clone(),
+                    cx,
+                )
+            });
             let emojis = row
                 .message
                 .reactions
@@ -4890,9 +4945,25 @@ impl Shell {
             items.push(
                 MenuItem::new("message-reaction-people", text::WHO_REACTED)
                     .selector("message-reaction-people")
+                    .disabled(key.is_none())
+                    // The second line is there in both states, so the item keeps its height
+                    // when the first reaction arrives.
+                    .detail(if key.is_none() {
+                        text::NO_REACTIONS_YET.to_owned()
+                    } else {
+                        text::reaction_total(
+                            row.message
+                                .reactions
+                                .iter()
+                                .map(|reaction| u64::from(reaction.count))
+                                .sum(),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
+                        if let Some(key) = &key {
+                            this.close_layer(window, cx);
+                            this.open_reaction_people(key.clone(), emojis.clone(), window, cx);
+                        }
                     }))
                     .into_any_element(),
             );
@@ -5057,10 +5128,13 @@ impl Shell {
                 this.close_layer(window, cx);
             }))
             .children(items)
-            .popup(point(
-                u(44.0).to_pixels(window.rem_size()),
-                u(4.0).to_pixels(window.rem_size()),
-            ))
+            .popup_stable(
+                point(
+                    u(44.0).to_pixels(window.rem_size()),
+                    u(4.0).to_pixels(window.rem_size()),
+                ),
+                self.message_menu_placement.clone(),
+            )
     }
 
     /// The question before a message is deleted: the deletion cannot be undone
@@ -5244,6 +5318,7 @@ fn system_line(
                                 spoilers: Vec::new(),
                                 copy_targets: Vec::new(),
                                 replacements,
+                                stand_ins: Vec::new(),
                             }
                             .element(0, None, None, None, None),
                         ),
@@ -5409,7 +5484,12 @@ mod tests {
         assert!(is_picture(&file(8192, 4096)));
         assert!(is_picture(&file(16_384, 1)));
         assert!(is_picture(&file(2560, 1440)));
-        assert!(!is_picture(&file(8192, 4097)));
+        // A still PNG is decoded reduced, so it is a picture beyond the bound of a whole
+        // decoding; a WebP of that size is not.
+        assert!(is_picture(&file(8192, 4097)));
+        let mut whole = file(8192, 4097);
+        whole.media_type = "image/webp".to_owned();
+        assert!(!is_picture(&whole));
         assert!(!is_picture(&file(0, 10)));
         let mut moving = file(498, 280);
         moving.media_type = "image/gif".to_owned();
@@ -5542,6 +5622,42 @@ mod tests {
             .map(|(range, _)| &rich.text[range.clone()])
             .collect();
         assert_eq!(bold, ["Hello ", ":brazil:", " and"]);
+    }
+
+    /// The stand-in of an emoji in the text of a message has the name of the emoji as its
+    /// tooltip; over the stand-in in the text of a link the tooltip is the address.
+    #[test]
+    fn the_stand_in_of_an_emoji_has_a_tooltip_with_its_name() {
+        let theme = Theme::stone();
+        let brazil = "\u{1f1e7}\u{1f1f7}";
+        let drawings = Drawings::given([(brazil, crate::emoji::Drawing::Broken)].into());
+        let content = [
+            Inline::Text {
+                text: format!("Hello {brazil} and"),
+                marks: Vec::new(),
+            },
+            Inline::Link {
+                text: format!(" {brazil}"),
+                url: "https://example.com/a".to_owned(),
+            },
+        ];
+        let rich = Rich::of(&content, &Names::default(), &theme, &drawings);
+        let name = text::emoji_stand_in(emojis::get(brazil).unwrap().name());
+        assert!(name.starts_with("flag: Brazil."), "{name}");
+        let first = rich.text.find(":brazil:").unwrap();
+        let second = rich.text.rfind(":brazil:").unwrap();
+        let targets: Vec<_> = (rich.links.iter())
+            .map(|(range, link)| (range.clone(), TextTarget::Link(link.clone())))
+            .collect();
+        assert_eq!(
+            hover_label(&targets, &rich.stand_ins, first + 3),
+            Some(name)
+        );
+        assert_eq!(hover_label(&targets, &rich.stand_ins, 2), None);
+        assert_eq!(
+            hover_label(&targets, &rich.stand_ins, second + 3),
+            Some("https://example.com/a".to_owned())
+        );
     }
     #[test]
     fn account_mentions_show_status_with_ordered_utf8_highlights() {

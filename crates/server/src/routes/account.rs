@@ -24,7 +24,7 @@ use crate::access::Access;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::events;
-use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer, ClientAddress};
 use crate::image;
 use crate::proof;
 use crate::secrets::{CodePurpose, LINK_CODE_SYMBOLS, hash_code, random_code};
@@ -123,6 +123,66 @@ pub async fn update_own_account(
     .map(Json)
 }
 
+/// The picture that a client saw before it sent a new one (ADR 0119).
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PictureBefore {
+    /// The hash of the picture that the client saw, in lower-case hexadecimal, or `none` when
+    /// there was none. The server then stores the new picture only while the stored one is
+    /// that picture or already the new one, and answers `conflict` otherwise: a request that
+    /// is sent again after its connection was cut does not replace a picture that was stored
+    /// in between. Absent: no condition.
+    pub before: Option<String>,
+}
+
+impl PictureBefore {
+    /// The condition: `None` without one, `Some(None)` for no picture, or the hash.
+    pub(super) fn read(&self) -> Result<Option<Option<[u8; 32]>>, ApiError> {
+        let Some(text) = self.before.as_deref() else {
+            return Ok(None);
+        };
+        if text == "none" {
+            return Ok(Some(None));
+        }
+        let invalid =
+            || ApiError::invalid("`before` is `none` or a SHA-256 hash in lower-case hexadecimal");
+        if text.len() != 64 {
+            return Err(invalid());
+        }
+        let mut hash = [0u8; 32];
+        for (index, byte) in hash.iter_mut().enumerate() {
+            let pair = text.get(index * 2..index * 2 + 2).ok_or_else(invalid)?;
+            if !pair
+                .bytes()
+                .all(|digit| matches!(digit, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                return Err(invalid());
+            }
+            *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
+        }
+        Ok(Some(Some(hash)))
+    }
+}
+
+/// Refuses the new picture `new` when the condition names a picture other than the stored
+/// one and the stored one is not already `new`.
+pub(super) fn require_before(
+    condition: Option<Option<[u8; 32]>>,
+    stored: Option<&[u8]>,
+    new: &[u8; 32],
+) -> Result<(), ApiError> {
+    let Some(seen) = condition else {
+        return Ok(());
+    };
+    if stored == Some(new.as_slice()) || stored == seen.as_ref().map(<[u8; 32]>::as_slice) {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        ErrorCode::Conflict,
+        "the picture changed after the one that the request names as seen; read it again",
+    ))
+}
+
 /// Stores the avatar of the caller's account. The body is the image itself: a still PNG,
 /// JPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by
 /// 1024 pixels. The server reads the format from the bytes, not from `Content-Type`.
@@ -130,6 +190,7 @@ pub async fn update_own_account(
     put,
     path = "/api/v1/account/avatar",
     tag = "account",
+    params(PictureBefore),
     request_body(content(
         (inline(ImageBytes) = "image/png"),
         (inline(ImageBytes) = "image/jpeg"),
@@ -141,8 +202,10 @@ pub async fn update_own_account(
 pub async fn set_avatar(
     State(app): State<AppState>,
     bearer: Bearer,
+    ApiQuery(before): ApiQuery<PictureBefore>,
     body: Bytes,
 ) -> ApiResult<Json<Avatar>> {
+    let condition = before.read()?;
     let limits = &app.config.limits;
     let inspected = || {
         if body.len() > limits.avatar_bytes {
@@ -180,6 +243,7 @@ pub async fn set_avatar(
                 .bind(access.account_id)
                 .fetch_optional(&mut *connection)
                 .await?;
+        require_before(condition, stored.as_deref(), &hash)?;
         if stored.as_deref() != Some(hash.as_slice()) {
             sqlx::query(
                 "insert into account_avatars

@@ -20,7 +20,7 @@ use junto_client_core::model::{
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{Departure, RecoveryNotice};
 use junto_client_core::protocol::call::{
-    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio,
+    BlockReason, CallPlace, EntryRequest, LeaveReason, ShareAudio, ShareShows,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
@@ -74,6 +74,16 @@ pub struct ServerSnapshot {
     pub server_version: Option<ServerVersion>,
     /// The revision of the messages and events that the server stated (ADR 0206).
     pub server_events: Option<u32>,
+    /// The revision of the server for the requests of the window: the one of the `hello` of
+    /// its stream, and while the stream has not greeted the one of its description, which
+    /// the server book keeps from `GET /api/server` (ADR 0206).
+    pub event_revision: u32,
+}
+
+/// The revision of a server for the requests of the window: the stream's, else the one of
+/// its description.
+pub fn event_revision(stream: Option<u32>, described: u32) -> u32 {
+    stream.unwrap_or(described)
 }
 
 impl ServerSnapshot {
@@ -95,6 +105,10 @@ impl ServerSnapshot {
             model: live.model,
             server_version: live.server_version,
             server_events: live.server_events,
+            event_revision: event_revision(
+                live.server_events,
+                entry.capabilities.message_format.event_revision,
+            ),
         }
     }
 }
@@ -180,6 +194,8 @@ pub struct Known {
     pub preset_picture: Option<Arc<RenderImage>>,
     /// The logos of the servers that have one (ADR 0101).
     pub logos: super::logo::ShownLogos,
+    /// The logos of the workspaces that have one (ADR 0122).
+    pub workspace_logos: super::logo::ShownLogos<super::logo::WorkspaceKey>,
     /// The servers that refused the picture of the profile preset for the account that
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
@@ -667,6 +683,9 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
 pub struct WorkspaceRow {
     pub id: WorkspaceId,
     pub name: String,
+    /// The image of the logo of the workspace, when the window holds it (ADR 0122). Without
+    /// it the window draws the generated picture of the workspace.
+    pub logo: Option<Arc<RenderImage>>,
     pub selected: bool,
     /// What the channels of the workspace hold that the person has not read.
     pub unread: Unread,
@@ -739,7 +758,6 @@ pub enum SectionTitle {
     VoiceChannels,
     Category(String),
     Favourites,
-    Personal(String),
 }
 
 /// The microphone of a person in a voice channel.
@@ -1247,6 +1265,8 @@ pub struct ServerLists {
     pub workspace: Option<WorkspaceView>,
     /// The direct conversations of the server.
     pub directs: Vec<DirectRow>,
+    /// The group of the direct conversations is collapsed for the account (ADR 0775).
+    pub directs_collapsed: bool,
     /// The direct conversation that the main area shows in place of a channel.
     pub conversation: Option<DirectRow>,
     /// Why the server did not open a direct conversation, with the account asked for.
@@ -1360,6 +1380,8 @@ pub struct WorkspaceView {
     pub id: WorkspaceId,
     pub name: String,
     pub sections: Vec<ChannelSection>,
+    /// The person may create a category of the workspace (ADR 0775).
+    pub may_create_category: bool,
     /// The selected channel, as the main area shows it.
     pub channel: Option<ChannelRow>,
     pub members: Members,
@@ -2518,12 +2540,7 @@ fn sections(
     {
         use junto_client_core::arrangement::channels::Location;
         let mut personal = Vec::new();
-        let placed: HashSet<_> = layout
-            .favourites
-            .iter()
-            .chain(layout.sections.iter().flat_map(|section| &section.channels))
-            .copied()
-            .collect();
+        let placed: HashSet<_> = layout.favourites.iter().copied().collect();
         let mut by_id = HashMap::new();
         for section in &mut made {
             for row in std::mem::take(&mut section.rows) {
@@ -2534,12 +2551,11 @@ fn sections(
                 }
             }
         }
-        let mut rows = |ids: &[ChannelId]| {
-            ids.iter()
-                .filter_map(|id| by_id.remove(id))
-                .collect::<Vec<_>>()
-        };
-        let favourites = rows(&layout.favourites);
+        let favourites: Vec<_> = layout
+            .favourites
+            .iter()
+            .filter_map(|id| by_id.remove(id))
+            .collect();
         if !favourites.is_empty() {
             personal.push(ChannelSection {
                 category_id: None,
@@ -2550,14 +2566,6 @@ fn sections(
                 rows: favourites,
             });
         }
-        personal.extend(layout.sections.iter().map(|section| ChannelSection {
-            category_id: None,
-            collapsed: section.collapsed,
-            may_create: false,
-            personal: Some(Location::Section(section.id)),
-            title: SectionTitle::Personal(section.name.clone()),
-            rows: rows(&section.channels),
-        }));
         personal.extend(made);
         made = personal;
     }
@@ -2875,6 +2883,9 @@ fn server_lists(
             .filter(|_| selection.notices != Some(server_id)),
         workspace: shown,
         directs,
+        directs_collapsed: known
+            .arrangement
+            .directs_collapsed(server_id, model.account.id),
         conversation,
         conversation_refused: known
             .conversation_refused
@@ -3301,6 +3312,7 @@ fn workspace_view(
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
         sections,
+        may_create_category: workspace.holds(WorkspacePermission::ManageChannel),
         channel,
         members: members(server_id, workspace, model, known),
         allowed,
@@ -3463,21 +3475,31 @@ fn share_stage(
             .iter()
             .map(|seen| {
                 let id = ShareId::of(seen.account_id, seen.slot);
+                let reported = call
+                    .and_then(|call| call.participant(seen.account_id))
+                    .and_then(|participant| {
+                        participant
+                            .shares()
+                            .iter()
+                            .find(|share| share.slot == seen.slot)
+                    });
                 ShareCard {
                     id,
                     account_id: seen.account_id,
                     name: name_of(seen.account_id),
-                    kind: seen.kind,
+                    // The track of a share of an application has the name of a window share,
+                    // and the state of the server states the application (ADR 0737). The
+                    // track is current; the state of the slot can still hold the share before
+                    // it, so it only names a window track an application.
+                    kind: match (seen.kind, reported.and_then(|share| share.shows())) {
+                        (Some(ShareKind::Window), Some(ShareShows::Application)) => {
+                            Some(ShareKind::Application)
+                        }
+                        (Some(kind), _) => Some(kind),
+                        (None, shows) => shows.and_then(shown_kind),
+                    },
                     number: None,
-                    sound: call
-                        .and_then(|call| call.participant(seen.account_id))
-                        .and_then(|participant| {
-                            participant
-                                .shares()
-                                .iter()
-                                .find(|share| share.slot == seen.slot)
-                        })
-                        .map(|share| share.audio),
+                    sound: reported.map(|share| share.audio),
                     sound_held: false,
                     sound_setting: active.share_sounds.get(&id).copied().unwrap_or_else(|| {
                         known.media.voice.share_sound(server_id, seen.account_id)
@@ -3533,6 +3555,17 @@ fn share_stage(
             share.sound_setting.volume
         });
     (!shares.is_empty()).then_some(ShareStage { shares, volume })
+}
+
+/// What a share shows as the window names it, from the state of the server, for a track
+/// whose name states nothing. A value of a later version states nothing.
+fn shown_kind(shows: ShareShows) -> Option<ShareKind> {
+    match shows {
+        ShareShows::Screen => Some(ShareKind::Screen),
+        ShareShows::Window => Some(ShareKind::Window),
+        ShareShows::Application => Some(ShareKind::Application),
+        ShareShows::Unknown => None,
+    }
 }
 
 /// The shares of this device for the menu of the share button, in the order of their slots.
@@ -4294,6 +4327,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                             unread: workspace_unread(workspace, unreads),
                             id: workspace.workspace.id,
                             name: workspace.workspace.name.clone(),
+                            logo: known
+                                .workspace_logos
+                                .image((server.id, workspace.workspace.id)),
                             selected: selected
                                 && shown.is_some_and(|shown| {
                                     shown.workspace.id == workspace.workspace.id

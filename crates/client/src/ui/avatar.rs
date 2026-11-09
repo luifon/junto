@@ -83,10 +83,15 @@ impl RenderOnce for Avatar {
         let seed = self.seed;
         let picture = match self.image {
             // The image fills the square: its middle is shown, with its proportions. A test
-            // finds the drawn image of an account by the seed of its avatar.
+            // finds the drawn image of an account by the seed of its avatar. The window holds
+            // square images (`state::people::decode`); the square is also stated as the
+            // proportions of the element, so that its layout does not depend on the image:
+            // `img` gives its layout node the proportions of the image, and taffy makes a node
+            // without children at least as high as its width divided by them (ADR 0774).
             Some(image) => img(image)
                 .debug_selector(move || format!("avatar-image:{seed}"))
                 .size(u(self.size))
+                .aspect_ratio(1.0)
                 .flex_none()
                 .rounded(u(self.radius))
                 .object_fit(ObjectFit::Cover)

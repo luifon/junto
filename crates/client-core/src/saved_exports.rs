@@ -1,8 +1,10 @@
 //! The exports of a server whose files this device saved, with the account that saved each
-//! (ADR 0411, ADR 0710, ADR 0761). The administration counts the ready exports of the account
-//! that the device has not saved; the file keeps that count correct after a restart.
+//! and the path of the file (ADR 0411, ADR 0710, ADR 0761). The administration counts the
+//! ready exports of the account that the device has not saved, and shows where a saved one
+//! is; the file keeps both after a restart.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use junto_protocol::ids::{AccountId, ExportId, ServerId};
 use serde::{Deserialize, Serialize};
@@ -10,21 +12,51 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, SAVED_EXPORTS_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const SAVED_EXPORTS_FORMAT_VERSION: u32 = 1;
+pub const SAVED_EXPORTS_FORMAT_VERSION: u32 = 2;
 
 /// The most exports that the file holds. A server keeps at most 10 exports of an account
 /// (ADR 0411); the bound holds the exports of many servers and accounts.
 pub const SAVED_EXPORTS_STORED: usize = 1024;
 
+/// The longest path of a saved file that the file keeps, in bytes. A longer path, and one
+/// that is not UTF-8, is kept as unknown: the export still counts as saved.
+pub const SAVED_PATH_BYTES: usize = 1024;
+
 const SAVED_EXPORTS: Versioned = Versioned {
     name: SAVED_EXPORTS_FILE,
     kind: "saved exports",
     version: SAVED_EXPORTS_FORMAT_VERSION,
-    migrations: &[],
-    limit: 256 * 1024,
+    migrations: &[paths_of_saved_files],
+    limit: 2 * 1024 * 1024,
 };
 
-type Marks = BTreeMap<ServerId, BTreeMap<AccountId, BTreeSet<ExportId>>>;
+/// Version 2 keeps the path of each saved file. Version 1 kept a list of exports; their
+/// paths are not known.
+fn paths_of_saved_files(mut file: serde_json::Value) -> Result<serde_json::Value, String> {
+    let servers = file
+        .get_mut("saved")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("no saved exports")?;
+    for accounts in servers.values_mut() {
+        let accounts = accounts.as_object_mut().ok_or("no accounts")?;
+        for exports in accounts.values_mut() {
+            let listed = exports.as_array().ok_or("no list of exports")?;
+            let paths: serde_json::Map<String, serde_json::Value> = listed
+                .iter()
+                .map(|export| {
+                    export
+                        .as_str()
+                        .map(|id| (id.to_owned(), serde_json::Value::Null))
+                        .ok_or("an export is not an identifier")
+                })
+                .collect::<Result<_, _>>()?;
+            *exports = serde_json::Value::Object(paths);
+        }
+    }
+    Ok(file)
+}
+
+type Marks = BTreeMap<ServerId, BTreeMap<AccountId, BTreeMap<ExportId, Option<String>>>>;
 
 /// One saved export: its server, the account that saved it, and the export.
 pub type Mark = (ServerId, AccountId, ExportId);
@@ -59,19 +91,43 @@ impl SavedExports {
         self.saved
             .get(&server_id)
             .and_then(|accounts| accounts.get(&account_id))
-            .is_some_and(|exports| exports.contains(&export_id))
+            .is_some_and(|exports| exports.contains_key(&export_id))
     }
 
-    /// Adds an export. Over [`SAVED_EXPORTS_STORED`] exports, the lowest identifiers are
-    /// dropped: the identifier that a server gives an export starts with the time of its
-    /// request.
-    pub fn insert(&mut self, server_id: ServerId, account_id: AccountId, export_id: ExportId) {
+    /// The path of the file that this device saved of an export, when it is known.
+    pub fn path(
+        &self,
+        server_id: ServerId,
+        account_id: AccountId,
+        export_id: ExportId,
+    ) -> Option<&Path> {
+        self.saved
+            .get(&server_id)?
+            .get(&account_id)?
+            .get(&export_id)?
+            .as_deref()
+            .map(Path::new)
+    }
+
+    /// Adds an export with the path of its file. Over [`SAVED_EXPORTS_STORED`] exports, the
+    /// lowest identifiers are dropped: the identifier that a server gives an export starts
+    /// with the time of its request.
+    pub fn insert(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        export_id: ExportId,
+        path: Option<PathBuf>,
+    ) {
+        let path = path
+            .and_then(|path| path.into_os_string().into_string().ok())
+            .filter(|path| path.len() <= SAVED_PATH_BYTES);
         self.saved
             .entry(server_id)
             .or_default()
             .entry(account_id)
             .or_default()
-            .insert(export_id);
+            .insert(export_id, path);
         self.bound();
     }
 
@@ -93,7 +149,7 @@ impl SavedExports {
         self.saved.iter().flat_map(|(server_id, accounts)| {
             accounts.iter().flat_map(move |(account_id, exports)| {
                 exports
-                    .iter()
+                    .keys()
                     .map(move |export_id| (*server_id, *account_id, *export_id))
             })
         })
@@ -103,7 +159,7 @@ impl SavedExports {
         self.saved
             .values()
             .flat_map(BTreeMap::values)
-            .map(BTreeSet::len)
+            .map(BTreeMap::len)
             .sum()
     }
 
@@ -120,7 +176,7 @@ impl SavedExports {
         for (server_id, accounts) in &self.saved {
             let listing = listing(*server_id);
             for (account_id, exports) in accounts {
-                for export_id in exports {
+                for export_id in exports.keys() {
                     let gone = match &listing {
                         Listing::Removed => true,
                         Listing::Unknown => false,
@@ -147,13 +203,16 @@ impl SavedExports {
         if count <= SAVED_EXPORTS_STORED {
             return;
         }
-        let mut marks: Vec<(ExportId, ServerId, AccountId)> = self
-            .iter()
-            .map(|(server_id, account_id, export_id)| (export_id, server_id, account_id))
-            .collect();
+        let mut marks: Vec<(ExportId, ServerId, AccountId, Option<String>)> = Vec::new();
+        for (server_id, accounts) in std::mem::take(&mut self.saved) {
+            for (account_id, exports) in accounts {
+                for (export_id, path) in exports {
+                    marks.push((export_id, server_id, account_id, path));
+                }
+            }
+        }
         marks.sort_unstable();
-        self.saved.clear();
-        for (export_id, server_id, account_id) in
+        for (export_id, server_id, account_id, path) in
             marks.into_iter().skip(count - SAVED_EXPORTS_STORED)
         {
             self.saved
@@ -161,7 +220,7 @@ impl SavedExports {
                 .or_default()
                 .entry(account_id)
                 .or_default()
-                .insert(export_id);
+                .insert(export_id, path);
         }
     }
 }
@@ -221,6 +280,7 @@ impl SavedExportsStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
 
     use super::*;
@@ -253,9 +313,9 @@ mod tests {
         );
         let written = store
             .update(|saved| {
-                saved.insert(harbor, ada, first);
-                saved.insert(harbor, luca, second);
-                saved.insert(acme, ada, other);
+                saved.insert(harbor, ada, first, None);
+                saved.insert(harbor, luca, second, None);
+                saved.insert(acme, ada, other, None);
             })
             .unwrap();
         assert_eq!(written.len(), 3);
@@ -265,12 +325,42 @@ mod tests {
         assert!(!read.contains(harbor, luca, first) && !read.contains(harbor, ada, second));
         assert!(read.contains(acme, ada, other) && !read.contains(acme, ada, first));
         let text = fs::read_to_string(data_dir.root().join(SAVED_EXPORTS_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 1"), "{text}");
+        assert!(text.contains("\"format_version\": 2"), "{text}");
         let file: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
-            file["saved"][harbor.to_string()][ada.to_string()][0],
-            first.to_string()
+            file["saved"][harbor.to_string()][ada.to_string()][first.to_string()],
+            serde_json::Value::Null
         );
+    }
+
+    /// The path of a saved file stays after a restart, so that the row of the export
+    /// states where its file is (ADR 0761).
+    #[test]
+    fn the_path_of_a_saved_file_is_kept_and_a_file_of_version_1_has_none() {
+        let (_directory, data_dir, store) = store();
+        let (harbor, ada) = (ServerId::generate(), AccountId::generate());
+        let (first, second, long) = (export(1), export(2), export(3));
+        let path = PathBuf::from("/home/someone/Downloads/Notes export.zip");
+        let too_long = PathBuf::from("/".repeat(SAVED_PATH_BYTES + 1));
+        store
+            .update(|saved| {
+                saved.insert(harbor, ada, first, Some(path.clone()));
+                saved.insert(harbor, ada, long, Some(too_long.clone()));
+            })
+            .unwrap();
+        let read = SavedExportsStore::new(data_dir.clone()).load().unwrap();
+        assert_eq!(read.path(harbor, ada, first), Some(path.as_path()));
+        assert!(read.contains(harbor, ada, long));
+        assert_eq!(read.path(harbor, ada, long), None);
+
+        let version_1 = format!(
+            r#"{{"format_version":1,"saved":{{"{harbor}":{{"{ada}":["{first}","{second}"]}}}}}}"#
+        );
+        fs::write(data_dir.root().join(SAVED_EXPORTS_FILE), version_1).unwrap();
+        let read = store.load().unwrap();
+        assert!(read.contains(harbor, ada, first) && read.contains(harbor, ada, second));
+        assert_eq!(read.path(harbor, ada, first), None);
+        assert_eq!(read.len(), 2);
     }
 
     #[test]
@@ -286,10 +376,10 @@ mod tests {
         );
         store
             .update(|saved| {
-                saved.insert(harbor, ada, kept);
-                saved.insert(harbor, ada, removed);
-                saved.insert(harbor, luca, of_luca);
-                saved.insert(acme, ada, only);
+                saved.insert(harbor, ada, kept, None);
+                saved.insert(harbor, ada, removed, None);
+                saved.insert(harbor, luca, of_luca, None);
+                saved.insert(acme, ada, only, None);
             })
             .unwrap();
         let written = store
@@ -319,12 +409,12 @@ mod tests {
         );
         let (ada, luca) = (AccountId::generate(), AccountId::generate());
         let mut saved = SavedExports::default();
-        saved.insert(harbor, ada, export(1));
-        saved.insert(harbor, ada, export(2));
-        saved.insert(harbor, luca, export(3));
-        saved.insert(harbor, luca, export(4));
-        saved.insert(acme, ada, export(5));
-        saved.insert(gone, ada, export(6));
+        saved.insert(harbor, ada, export(1), None);
+        saved.insert(harbor, ada, export(2), None);
+        saved.insert(harbor, luca, export(3), None);
+        saved.insert(harbor, luca, export(4), None);
+        saved.insert(acme, ada, export(5), None);
+        saved.insert(gone, ada, export(6), None);
         let stale = saved.stale(|server_id| {
             if server_id == harbor {
                 Listing::Loaded {
@@ -367,7 +457,12 @@ mod tests {
         let written = store
             .update(|saved| {
                 for number in 1..=total {
-                    saved.insert(ServerId::generate(), AccountId::generate(), export(number));
+                    saved.insert(
+                        ServerId::generate(),
+                        AccountId::generate(),
+                        export(number),
+                        None,
+                    );
                 }
             })
             .unwrap();
@@ -391,7 +486,10 @@ mod tests {
             format_version: SAVED_EXPORTS_FORMAT_VERSION,
             saved: BTreeMap::from([(
                 server_id,
-                BTreeMap::from([(account_id, (1..=total).map(export).collect())]),
+                BTreeMap::from([(
+                    account_id,
+                    (1..=total).map(|number| (export(number), None)).collect(),
+                )]),
             )]),
         };
         fs::write(
@@ -414,14 +512,14 @@ mod tests {
             AccountId::generate(),
             ExportId::generate(),
         );
-        let newer = r#"{"format_version":2,"later":true}"#;
+        let newer = r#"{"format_version":3,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 2, .. })
+            Err(StorageError::NewerFormat { found: 3, .. })
         ));
         assert!(matches!(
-            store.update(|saved| saved.insert(server_id, account_id, export_id)),
+            store.update(|saved| saved.insert(server_id, account_id, export_id, None)),
             Err(StorageError::NewerFormat { .. })
         ));
         assert_eq!(fs::read_to_string(&file).unwrap(), newer);
@@ -432,7 +530,7 @@ mod tests {
         fs::write(&file, unreadable).unwrap();
         assert!(matches!(store.load(), Err(StorageError::Corrupted { .. })));
         let written = store
-            .update(|saved| saved.insert(server_id, account_id, export_id))
+            .update(|saved| saved.insert(server_id, account_id, export_id, None))
             .unwrap();
         assert!(written.contains(server_id, account_id, export_id));
         assert_eq!(store.load().unwrap(), written);
@@ -451,6 +549,7 @@ mod tests {
                     ServerId::generate(),
                     AccountId::generate(),
                     ExportId::generate(),
+                    None,
                 );
             }),
             Err(StorageError::TooLarge { .. })

@@ -120,19 +120,28 @@ impl Shell {
                 .px(u(12.0))
                 .debug_selector(|| "invitation-cards".to_owned())
                 .child(
+                    // The cards lie over the content: the areas under them are not measured
+                    // (ADR 0730). The cover is on a frame around the list, as an element
+                    // placed inside a scrolled list changes which cards it draws.
                     div()
-                        .id("invitation-list")
-                        .debug_selector(|| "invitation-list".to_owned())
-                        .flex()
-                        .flex_col()
-                        .gap(u(8.0))
-                        .p(u(SHADOW_ROOM))
-                        .w(u(CARD_WIDTH + 2.0 * SHADOW_ROOM))
+                        .relative()
                         .max_w_full()
-                        .max_h(u(height))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.invitations_scroll)
-                        .children(cards),
+                        .child(crate::ui::cover())
+                        .child(
+                            div()
+                                .id("invitation-list")
+                                .debug_selector(|| "invitation-list".to_owned())
+                                .flex()
+                                .flex_col()
+                                .gap(u(8.0))
+                                .p(u(SHADOW_ROOM))
+                                .w(u(CARD_WIDTH + 2.0 * SHADOW_ROOM))
+                                .max_w_full()
+                                .max_h(u(height))
+                                .overflow_y_scroll()
+                                .track_scroll(&self.invitations_scroll)
+                                .children(cards),
+                        ),
                 )
                 .into_any_element(),
         )

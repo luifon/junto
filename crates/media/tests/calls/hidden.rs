@@ -81,8 +81,7 @@ async fn a_person_who_enters_a_hidden_voice_channel_speaks_and_reads_the_call_af
         })
         .await;
         ben.calls.leave().await;
-        ben.host.clear_played();
-        let cleared = tokio::time::Instant::now();
+        ben.host.record_played();
         ben.enter(room.target).await;
         ben.until("the server tells the sound block again", |view| {
             view.call
@@ -90,13 +89,11 @@ async fn a_person_who_enters_a_hidden_voice_channel_speaks_and_reads_the_call_af
                 .is_some_and(|call| call.sound_block.is_some())
         })
         .await;
-        // Two seconds of the call: the tone of Ann is in none of the sound that was played
-        // since the join, from its first sample.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Ben receives the sound of Ann, and the tone of Ann is in none of the sound that
+        // was played since the join, from its first sample.
+        ben.until_receiving(&ann).await;
         let (played, rate) = ben.host.played_since_clear();
-        assert!(played.len() > rate as usize, "{}", played.len());
-        // The sink keeps the last 12 seconds: everything since the join is examined.
-        assert!(cleared.elapsed() < Duration::from_secs(10));
+        assert!(!played.is_empty());
         for part in played.chunks(rate as usize / 4) {
             let heard = tone_level(part, rate, ann.hz);
             assert!(heard < ABSENT_DBFS, "{heard}");
@@ -265,8 +262,7 @@ async fn a_place_that_moves_to_another_device_in_a_hidden_call_keeps_its_rules()
 
         // Ben enters the call on the laptop. The call of the phone ends, and its microphone
         // and output close.
-        laptop.host.clear_played();
-        let cleared = tokio::time::Instant::now();
+        laptop.host.record_played();
         laptop.enter(room.target).await;
         let identity = laptop.calls.view().call.unwrap().identity;
         let ended = phone
@@ -293,9 +289,9 @@ async fn a_place_that_moves_to_another_device_in_a_hidden_call_keeps_its_rules()
                 },
             )
             .await;
+        laptop.until_receiving(&ann).await;
         let (played, rate) = laptop.host.played_since_clear();
-        // The sink keeps the last 12 seconds: everything since the join is examined.
-        assert!(cleared.elapsed() < Duration::from_secs(10));
+        assert!(!played.is_empty());
         for part in played.chunks(rate as usize / 4) {
             let heard = tone_level(part, rate, ann.hz);
             assert!(heard < ABSENT_DBFS, "{heard}");

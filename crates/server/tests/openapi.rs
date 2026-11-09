@@ -340,7 +340,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
     use junto_protocol::auth::ChallengeOperation;
     use junto_protocol::call::{
         BlockReason, CallPlace, EntryOutcome, InvitationOutcome, LeaveReason, MeetingEnd,
-        MoveOutcome, ShareAudio, ShareKind,
+        MoveOutcome, ShareAudio, ShareKind, ShareShows,
     };
     use junto_protocol::discovery::{NotificationKind, NotificationLevel};
     use junto_protocol::error::ErrorCode;
@@ -447,6 +447,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         ServerPermission,
         ShareAudio,
         ShareKind,
+        ShareShows,
         SpeakerSeparation,
         SpeakersReason,
         StructureChange by "change",

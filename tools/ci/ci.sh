@@ -12,8 +12,8 @@
 #                                   skipped; --all runs every job.
 #   ci.sh local <commit> [job...]   runs the macOS jobs here, through tools/serial.sh, with
 #                                   the same selection.
-#   ci.sh select <commit>           prints that selection: each job, run, python or skip,
-#                                   and the reason.
+#   ci.sh select <commit>           prints that selection: each job, run, python, skip or
+#                                   (Windows) base+<part>+..., and the reason.
 #   ci.sh status <commit or run>    prints each job of a run: passed, failed, running or
 #                                   waiting, with its time, and copies the log of a failed
 #                                   job to target/ci-logs/<run>/. For a commit: each job in
@@ -25,7 +25,8 @@
 #                                   its commit from the runner that has it.
 #   ci.sh setup-windows             installs the pinned tools of the Windows job on the
 #                                   Windows machine (tools/windows/ci-setup.ps1 of this
-#                                   working tree). Exit 3: Windows must restart first.
+#                                   working tree), elevated, and the firewall rule of the
+#                                   LiveKit of the tests. Exit 3: Windows must restart first.
 #
 # The SSH alias of the Linux host and its CI directory come from JUNTO_CI_HOST and
 # JUNTO_CI_DIR, in the environment or in .env.local of the repository. The Windows machine:
@@ -40,6 +41,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # "ci.sh run" names it, and does not decide whether a commit passed.
 linux_jobs="rust-linux licences transcription-worker layout-page"
 linux_optional_jobs="rust-linux-devices"
+windows_optional_jobs="rust-windows-measure"
 macos_jobs="rust-macos deployment"
 windows_jobs="rust-windows"
 runners="linux macos windows"
@@ -47,7 +49,7 @@ jobs_of() {
     case "$1" in linux) echo "$linux_jobs" ;; macos) echo "$macos_jobs" ;; windows) echo "$windows_jobs" ;; esac
 }
 optional_jobs_of() {
-    case "$1" in linux) echo "$linux_optional_jobs" ;; esac
+    case "$1" in linux) echo "$linux_optional_jobs" ;; windows) echo "$windows_optional_jobs" ;; esac
 }
 
 # .env.local of this working tree, or else of the main working tree of the repository.
@@ -78,14 +80,14 @@ local_dir=${JUNTO_CI_LOCAL_DIR:-$HOME/.cache/junto-ci}
 checked() {
     case "$1" in '' | *[!A-Za-z0-9-]*) echo "not a run or job name: $1" >&2; exit 2 ;; esac
 }
-# A job of a run: <name>, <name>:python or <name>:skip (tools/ci/run-jobs.sh).
+# A job of a run: <name>, <name>:python, <name>:base+<part>+... or <name>:skip (tools/ci/run-jobs.sh).
 checked_job() {
-    case "$1" in *:python | *:skip) checked "${1%:*}" ;; *) checked "$1" ;; esac
+    case "$1" in *:python | *:base | *:base+* | *:skip) checked "${1%%:*}" ;; *) checked "$1" ;; esac
 }
 
 # selection <commit>: each default job of every runner as tools/ci/changes.py selects it for the
 # change from the merge base of the commit with main (for a commit of main, from its first
-# parent): <job>, <job>:python or <job>:skip. The reasons go to the standard error. Without main
+# parent): <job>, <job>:python, <job>:base+<part>+... or <job>:skip. The reasons go to the standard error. Without main
 # or a parent, every job.
 selection() {
     base=$(git -C "$root" merge-base main "$1" 2>/dev/null) || base=""
@@ -511,7 +513,7 @@ run_remote() {
     started=""
     for runner in linux windows; do
         wanted=$(jobs_of "$runner") picked=""
-        if [ "$runner" = linux ]; then wanted="$wanted $linux_optional_jobs"; fi
+        wanted="$wanted $(optional_jobs_of "$runner")"
         for job in "$@"; do
             case " $wanted " in *" ${job%:*} "*) picked="$picked $job" ;; esac
         done

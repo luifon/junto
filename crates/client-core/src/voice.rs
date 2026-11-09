@@ -370,6 +370,9 @@ pub struct VoiceSettings {
     /// Voice activation sends the microphone only while its level reaches this many dBFS,
     /// from [`THRESHOLD_RANGE`]. Absent: all of the open microphone is sent.
     pub voice_threshold: Option<i16>,
+    /// Turning the sound off also mutes the microphone, and turning it on again returns
+    /// the microphone to its state before.
+    pub sound_off_mutes: bool,
 }
 
 /// The levels that the sensitivity of voice activation can have, in dBFS: the range of the
@@ -398,6 +401,7 @@ impl Default for VoiceSettings {
             hide_own_camera: false,
             sounds: Sounds::default(),
             voice_threshold: None,
+            sound_off_mutes: true,
         }
     }
 }
@@ -515,6 +519,13 @@ struct VoiceFile {
     sounds: Sounds,
     #[serde(default)]
     voice_threshold: Option<i16>,
+    /// Absent from the files of 0.1.0, which ignores it (ADR 0710).
+    #[serde(default = "turned_on")]
+    sound_off_mutes: bool,
+}
+
+fn turned_on() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -550,6 +561,7 @@ impl VoiceStore {
             hide_own_camera: file.hide_own_camera,
             sounds: file.sounds,
             voice_threshold: file.voice_threshold,
+            sound_off_mutes: file.sound_off_mutes,
         }
         .bounded())
     }
@@ -592,6 +604,7 @@ impl VoiceStore {
                 hide_own_camera: settings.hide_own_camera,
                 sounds: settings.sounds.clone(),
                 voice_threshold: settings.voice_threshold,
+                sound_off_mutes: settings.sound_off_mutes,
             },
         )?;
         Ok(settings)
@@ -603,6 +616,51 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn the_sound_off_mutes_by_default_and_0_1_0_reads_the_file_with_the_setting() {
+        let (_directory, data, store) = store();
+        assert!(store.load().unwrap().sound_off_mutes);
+        store.update(|voice| voice.sound_off_mutes = false).unwrap();
+        assert!(!store.load().unwrap().sound_off_mutes);
+        let file = data.root().join(VOICE_FILE);
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        // The format version and the fields that the reader of 0.1.0 knows; it ignores the
+        // others (its `VoiceFile` refuses no unknown field).
+        assert_eq!(value["format_version"], 8);
+        let known_to_0_1_0 = [
+            "camera_device",
+            "format_version",
+            "input_device",
+            "output_device",
+            "echo_cancellation",
+            "noise_suppression",
+            "automatic_gain",
+            "input_mode",
+            "talk_key",
+            "volumes",
+            "share_sounds",
+            "share_resolution",
+            "share_frame_rate",
+            "share_volume",
+            "hide_people_without_video",
+            "hide_own_camera",
+            "sounds",
+            "voice_threshold",
+        ];
+        let new: Vec<&String> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| !known_to_0_1_0.contains(&key.as_str()))
+            .collect();
+        assert_eq!(new, ["sound_off_mutes"]);
+        // A file of 0.1.0 has no such field: the setting is on.
+        let mut older = value.clone();
+        older.as_object_mut().unwrap().remove("sound_off_mutes");
+        fs::write(&file, serde_json::to_vec(&older).unwrap()).unwrap();
+        assert!(store.load().unwrap().sound_off_mutes);
+    }
 
     #[test]
     fn hiding_the_own_camera_is_saved_and_older_files_default_to_showing_it() {

@@ -43,6 +43,7 @@ fn stalled_capture(cx: &mut TestAppContext, camera: bool) {
             let held = window.capture.stall_next_stop();
             window.click("call-share");
             window.until("sources listed", |window| window.shows("share-sources"));
+            window.click("share-tab-window");
             window.click("share-window:11");
             window.click("share-sound-0");
             window.click("start-share");

@@ -436,7 +436,14 @@ async fn decide(
         let composite_runs = segments
             .iter()
             .any(|segment| is_composite(segment) && segment.state == SegmentState::Recording);
-        if !composite_runs && may_ask(&segments, is_composite, attempts) {
+        // The composite is a picture of the people of the call: without one of them in the
+        // room it would record an empty room (ADR 0604).
+        let anyone = observed.participants.iter().any(|participant| {
+            members.contains_key(&participant.identity)
+                && participant.kind == ParticipantKind::Standard
+                && participant.connected
+        });
+        if !composite_runs && anyone && may_ask(&segments, is_composite, attempts) {
             let composite = SegmentSource::Composite;
             wanted.push(new_segment(now, &recording, composite, None, None));
         }

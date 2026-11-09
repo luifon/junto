@@ -331,7 +331,7 @@ test platform. Unix process-group termination has no Windows equivalent in this 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo deny check
+cargo update --dry-run --quiet && cargo deny check
 ```
 
 ## API description

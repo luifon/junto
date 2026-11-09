@@ -91,6 +91,73 @@ impl Frame {
         })
     }
 
+    /// The picture of a shared application (ADR 0738): a black picture of `size` pixels with
+    /// each layer drawn at its place, in the order of the list, so that a later layer covers
+    /// an earlier one. A layer with transparency is drawn over what lies under it by its
+    /// alpha, with premultiplied colours; a fully transparent pixel leaves what lies under
+    /// it. The parts of a layer outside the picture are left out.
+    #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+    pub fn compose(size: (u32, u32), layers: &[(&Self, (i32, i32))]) -> Result<Self, CaptureError> {
+        let (width, height) = size;
+        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 7680 * 4320 {
+            return Err(CaptureError::Failed(
+                "the picture of the application has an invalid size".into(),
+            ));
+        }
+        let mut packed = [0, 0, 0, 255].repeat(width as usize * height as usize);
+        for (layer, (left, top)) in layers {
+            // The rows and columns of the layer that lie inside the picture.
+            let columns = (
+                i64::from(*left).max(0),
+                (i64::from(*left) + i64::from(layer.width)).min(i64::from(width)),
+            );
+            let rows = (
+                i64::from(*top).max(0),
+                (i64::from(*top) + i64::from(layer.height)).min(i64::from(height)),
+            );
+            if columns.0 >= columns.1 {
+                continue;
+            }
+            let count = (columns.1 - columns.0) as usize * 4;
+            for y in rows.0..rows.1 {
+                let from = ((y - i64::from(*top)) as usize * layer.width as usize
+                    + (columns.0 - i64::from(*left)) as usize)
+                    * 4;
+                let to = (y as usize * width as usize + columns.0 as usize) * 4;
+                draw_row(
+                    &mut packed[to..to + count],
+                    &layer.packed[from..from + count],
+                    layer.format,
+                );
+            }
+        }
+        Ok(Self {
+            width,
+            height,
+            format: Format::Bgrx,
+            packed,
+        })
+    }
+
+    /// The picture in the form of a preview of the dialog of a share, in the byte order
+    /// blue, green, red with an alpha byte of 255. `source` is the size of what it shows.
+    #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+    pub fn into_picture(mut self, source: (u32, u32)) -> crate::share::picture::PictureFrame {
+        let swapped = matches!(self.format, Format::Rgba | Format::Rgbx);
+        for pixel in self.packed.as_chunks_mut::<4>().0 {
+            if swapped {
+                pixel.swap(0, 2);
+            }
+            pixel[3] = 255;
+        }
+        crate::share::picture::PictureFrame {
+            width: self.width,
+            height: self.height,
+            bgra: self.packed,
+            source,
+        }
+    }
+
     /// Do not transmit hidden RGB in a fully transparent window pixel.
     fn hide_transparent(&mut self) {
         if matches!(self.format, Format::Bgrx | Format::Rgbx) {
@@ -130,6 +197,62 @@ impl Frame {
             buffer.scale(size.0 as i32, size.1 as i32)
         } else {
             buffer
+        }
+    }
+}
+
+/// Draws one row of a layer of `format` over one row of the picture of an application, in
+/// the order blue, green, red with an alpha byte of 255. A run of opaque pixels is copied
+/// whole; only a pixel with partial transparency is blended. The colours of a layer are
+/// premultiplied by its alpha, as Windows Graphics Capture gives them: the picture under a
+/// pixel keeps the part that the pixel leaves, and a fully transparent pixel leaves it all.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+fn draw_row(target: &mut [u8], source: &[u8], format: Format) {
+    let target = target.as_chunks_mut::<4>().0;
+    let source = source.as_chunks::<4>().0;
+    let swapped = matches!(format, Format::Rgba | Format::Rgbx);
+    let transparent = matches!(format, Format::Bgra | Format::Rgba);
+    let mut x = 0;
+    while x < source.len() {
+        let start = x;
+        while x < source.len() && (!transparent || source[x][3] == 255) {
+            x += 1;
+        }
+        let (opaque, from) = (&mut target[start..x], &source[start..x]);
+        if swapped {
+            for (pixel, over) in opaque.iter_mut().zip(from) {
+                *pixel = [over[2], over[1], over[0], 255];
+            }
+        } else {
+            opaque.copy_from_slice(from);
+            if !transparent {
+                for pixel in opaque {
+                    pixel[3] = 255;
+                }
+            }
+        }
+        while x < source.len() && source[x][3] != 255 {
+            let over = source[x];
+            let alpha = over[3];
+            if alpha != 0 {
+                let (blue, red) = if swapped {
+                    (over[2], over[0])
+                } else {
+                    (over[0], over[2])
+                };
+                let under = &mut target[x];
+                let blend = |over: u8, under: u8| {
+                    let kept = u16::from(under) * u16::from(255 - alpha) / 255;
+                    (u16::from(over) + kept).min(255) as u8
+                };
+                *under = [
+                    blend(blue, under[0]),
+                    blend(over[1], under[1]),
+                    blend(red, under[2]),
+                    255,
+                ];
+            }
+            x += 1;
         }
     }
 }
@@ -207,6 +330,142 @@ mod tests {
         let picture = crate::share::picture::convert(&buffer, (16, 16)).unwrap();
         let (red, green, blue) = picture.pixel(8, 8).unwrap();
         assert!(red < 4 && green < 4 && blue < 4, "{red} {green} {blue}");
+    }
+
+    #[test]
+    fn the_picture_of_an_application_draws_its_windows_at_their_places_from_the_back() {
+        let solid = |width: u32, height: u32, pixel: [u8; 4], format| {
+            let pixels = pixel.repeat((width * height) as usize);
+            Frame::copy(&pixels, (width, height), (width * 4) as i32, None, format).unwrap()
+        };
+        let back = solid(3, 2, [10, 20, 30, 255], Format::Bgra);
+        // A window in the other byte order, with one transparent corner, over the first.
+        let mut front = solid(2, 2, [90, 80, 70, 255], Format::Rgba);
+        front.packed[..4].copy_from_slice(&[1, 2, 3, 0]);
+        // A window that lies across the left edge and below the picture.
+        let edge = solid(2, 3, [5, 5, 5, 255], Format::Bgrx);
+        let picture = Frame::compose(
+            (4, 3),
+            &[(&back, (0, 0)), (&front, (2, 1)), (&edge, (-1, 2))],
+        )
+        .unwrap();
+        assert_eq!(
+            (picture.width, picture.height, picture.format),
+            (4, 3, Format::Bgrx)
+        );
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            let index = (y * 4 + x) * 4;
+            picture.packed[index..index + 4].try_into().unwrap()
+        };
+        assert_eq!(at(0, 0), [10, 20, 30, 255]);
+        // The ground is black where no window is.
+        assert_eq!(at(3, 0), [0, 0, 0, 255]);
+        // The transparent corner shows the window behind it.
+        assert_eq!(at(2, 1), [10, 20, 30, 255]);
+        // The front window is drawn in the order blue, green, red.
+        assert_eq!(at(3, 1), [70, 80, 90, 255]);
+        assert_eq!(at(3, 2), [70, 80, 90, 255]);
+        assert_eq!(at(0, 2), [5, 5, 5, 255]);
+        assert_eq!(at(1, 2), [0, 0, 0, 255]);
+        let preview = Frame::compose((1, 1), &[(&front, (-1, 0))])
+            .unwrap()
+            .into_picture((10, 10));
+        assert_eq!(
+            (preview.bgra.as_slice(), preview.source),
+            (&[70, 80, 90, 255][..], (10, 10))
+        );
+        assert!(Frame::compose((0, 3), &[]).is_err());
+        // A layer wholly outside the picture changes nothing.
+        let empty = Frame::compose((2, 2), &[(&back, (5, 5)), (&back, (-9, 0))]).unwrap();
+        assert_eq!(empty.packed, [0, 0, 0, 255].repeat(4));
+        // A shadow with an alpha of 51 (premultiplied black) over the back window keeps
+        // four fifths of it, and over the black ground stays black.
+        let shadow = solid(2, 1, [0, 0, 0, 51], Format::Bgra);
+        let shaded = Frame::compose((4, 1), &[(&back, (0, 0)), (&shadow, (2, 0))]).unwrap();
+        assert_eq!(&shaded.packed[8..12], &[8, 16, 24, 255]);
+        assert_eq!(&shaded.packed[12..16], &[0, 0, 0, 255]);
+        // A glow of a premultiplied light colour adds to what lies under it.
+        let glow = solid(1, 1, [40, 40, 40, 102], Format::Bgra);
+        let glowing = Frame::compose((1, 1), &[(&back, (0, 0)), (&glow, (0, 0))]).unwrap();
+        assert_eq!(&glowing.packed[..], &[46, 52, 58, 255]);
+    }
+
+    /// The rule of one pixel of the picture of an application, as the composition states it.
+    fn drawn_pixel(under: [u8; 4], over: [u8; 4], format: Format) -> [u8; 4] {
+        let over = match format {
+            Format::Bgra => over,
+            Format::Bgrx => [over[0], over[1], over[2], 255],
+            Format::Rgba => [over[2], over[1], over[0], over[3]],
+            Format::Rgbx => [over[2], over[1], over[0], 255],
+        };
+        if over[3] == 0 {
+            return under;
+        }
+        let alpha = u16::from(over[3]);
+        let blend = |over: u8, under: u8| {
+            (u16::from(over) + u16::from(under) * (255 - alpha) / 255).min(255) as u8
+        };
+        [
+            blend(over[0], under[0]),
+            blend(over[1], under[1]),
+            blend(over[2], under[2]),
+            255,
+        ]
+    }
+
+    #[test]
+    fn a_row_is_drawn_as_each_pixel_by_its_own_rule() {
+        // Each alpha value from 0 to 255 has one pixel of its own, followed by up to four
+        // pixels that are opaque, transparent or of that alpha, in a fixed order of numbers
+        // that are not related to each other, so that the row has runs of each kind.
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let mut source = Vec::new();
+        for alpha in 0..=255_u8 {
+            let value = next().to_le_bytes();
+            // Premultiplied colours are at most the alpha; the rule also holds above it.
+            source.extend_from_slice(&[value[0], value[1], value[2], alpha]);
+            for _ in 0..next() % 5 {
+                let value = next().to_le_bytes();
+                let alpha = match next() % 3 {
+                    0 => 255,
+                    1 => 0,
+                    _ => alpha,
+                };
+                source.extend_from_slice(&[value[0], value[1], value[2], alpha]);
+            }
+        }
+        let alphas: std::collections::HashSet<u8> = source
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect();
+        assert_eq!(alphas.len(), 256);
+        // The picture under a layer is opaque: the black ground or layers drawn before.
+        let under: Vec<u8> = (0..source.len() / 4)
+            .flat_map(|_| {
+                let value = next().to_le_bytes();
+                [value[0], value[1], value[2], 255]
+            })
+            .collect();
+        for format in [Format::Bgra, Format::Bgrx, Format::Rgba, Format::Rgbx] {
+            let mut drawn = under.clone();
+            draw_row(&mut drawn, &source, format);
+            let expected: Vec<u8> = under
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(source.as_chunks::<4>().0)
+                .flat_map(|(under, over)| drawn_pixel(*under, *over, format))
+                .collect();
+            assert_eq!(drawn, expected, "{format:?}");
+        }
     }
 
     #[test]

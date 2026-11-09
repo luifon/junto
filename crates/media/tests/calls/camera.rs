@@ -351,6 +351,74 @@ async fn camera_frames_follow_the_visible_tile_size_and_stop_when_hidden() {
     .await;
 }
 
+/// A received camera that no tile shows is not sent by the media server, and its native
+/// track stays enabled, so the pictures that still arrive before the server stops sending
+/// keep their content. A disabled native track turned each of them into a black picture, and
+/// the last one was drawn when the tile showed the camera again.
+#[tokio::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn a_hidden_camera_keeps_its_native_track_enabled_and_returns_with_its_pictures() {
+    limited(async {
+        let _media = media_server_shared().await;
+        let one = Person::new(440.0);
+        let two = Person::new(880.0);
+        let (room, owner) = Room::new("Hidden camera", &one, "One").await;
+        room.member(&owner, &two, "Two").await;
+        one.enter(room.target).await;
+        two.enter(room.target).await;
+        one.calls.start_camera(None);
+        let id = Camera::Of(account(&owner));
+        picture(&two, id, (200, 30, 30), (30, 30, 200)).await;
+        let check = |enabled: bool| {
+            let calls = two.calls.clone();
+            async move {
+                let started = tokio::time::Instant::now();
+                loop {
+                    let check = calls.camera_check().await.unwrap();
+                    if check.remote.iter().any(|camera| camera.enabled == enabled) {
+                        return check.remote;
+                    }
+                    assert!(
+                        started.elapsed() < PATIENCE,
+                        "the camera is not {}: {check:?}",
+                        if enabled { "enabled" } else { "disabled" }
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+        };
+        two.calls.set_camera_views(Default::default());
+        let hidden = check(false).await;
+        assert!(
+            hidden.iter().all(|camera| camera.track_enabled),
+            "a hidden camera disabled its native track: {hidden:?}"
+        );
+        two.calls
+            .set_camera_views([(id, (640, 360))].into_iter().collect());
+        let shown = check(true).await;
+        assert!(shown.iter().all(|camera| camera.track_enabled), "{shown:?}");
+        let mut pictures = two.calls.camera_pictures();
+        let first = tokio::time::timeout(
+            PATIENCE,
+            pictures.wait_for(|pictures| pictures.contains_key(&id)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .unwrap();
+        let left = first.pixel(first.width / 4, first.height / 2);
+        assert!(
+            left.is_some_and(|(red, _, blue)| red > 150 && blue < 80),
+            "the first picture after the camera was shown again is {left:?}"
+        );
+        one.calls.leave().await;
+        two.calls.leave().await;
+    })
+    .await;
+}
+
 /// A camera whose media connection is lost is captured for a bounded time, and the
 /// camera of a device is published only at a seat that the server lists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

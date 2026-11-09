@@ -29,6 +29,10 @@ pub const COVER: &str = ":cover";
 /// is measured as well.
 pub const KEPT: &str = ":kept";
 
+/// The name of an area whose parts are centred in its height, as the tiles of a call on its
+/// stage: the space above the first part and the space after the last part are equal.
+pub const CENTRED: &str = ":centred";
+
 /// Names the element that holds it as a layer that covers what is drawn before it: the
 /// areas under it are not measured.
 pub fn cover() -> impl IntoElement {

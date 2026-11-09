@@ -101,6 +101,13 @@ fn the_end_of_a_list_in_the_active_window_is_read_without_an_action(cx: &mut Tes
             && window.texts() == ["first news", "second news"]
     });
     assert!(window.in_shell(|shell, _, _| shell.feed_is_at_end(junto_client::shell::Pane::Main)));
+    // The client core sends a read mark at most one second after the window makes it, so
+    // the count of the server is read again after two seconds of the window, and both
+    // readings must hold: one reading right after the drawing would also pass with a mark
+    // that is still on its way.
+    assert_eq!(window.unread_of(random), (2, 0));
+    assert_eq!(stored(&world), 2);
+    window.pass(std::time::Duration::from_secs(2));
     assert_eq!(window.unread_of(random), (2, 0));
     assert_eq!(stored(&world), 2);
     // A further message is drawn at the end of the list of the inactive window, and it

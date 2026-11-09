@@ -812,8 +812,7 @@ async fn the_view_states_the_version_of_the_last_hello_until_the_state_is_forgot
 }
 
 /// A server of a newer revision of the events is stated in the view, and an event of a type
-/// that this build does not read moves the cursor and changes nothing (open item CD4, ADR
-/// 0206).
+/// that this build does not read moves the cursor and changes nothing (ADR 0206).
 #[tokio::test(start_paused = true)]
 async fn the_view_states_the_revision_of_the_events_of_the_server() {
     use junto_protocol::events::EVENT_REVISION;

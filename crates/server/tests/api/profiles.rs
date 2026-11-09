@@ -551,3 +551,67 @@ async fn profile_metadata_reads_follow_the_members() {
     );
     assert!(visited_rows(&plan[0]["Plan"]) < 100, "{plan}");
 }
+
+/// The requests of an avatar that a device sends again after its connection was cut, while
+/// another device of the account stores another avatar (ADR 0119).
+#[tokio::test]
+async fn an_avatar_sent_again_after_a_cut_does_not_replace_one_stored_in_between() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let guest = server.join(&owner, "Guest").await;
+    let (blue, red) = (samples::png(8, 8), samples::png(9, 9));
+    let seen_none = format!("{AVATAR}?before=none");
+    let stored = async || {
+        let account: OwnAccount = server
+            .get(&guest, "/api/v1/account")
+            .await
+            .ok(StatusCode::OK);
+        account.avatar.map(|avatar| avatar.hash)
+    };
+
+    let first: Avatar = server
+        .put_bytes(&guest, &seen_none, None, blue.clone())
+        .await
+        .ok(StatusCode::OK);
+    let updated = || async {
+        sqlx::query_scalar::<_, time::OffsetDateTime>(
+            "select updated_at from account_avatars where account_id = $1",
+        )
+        .bind(guest.account_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let at = updated().await;
+    let again: Avatar = server
+        .put_bytes(&guest, &seen_none, None, blue.clone())
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(again, first);
+    assert_eq!(updated().await, at);
+
+    // Another device of the account stores another avatar in between.
+    server
+        .put_bytes(&guest, AVATAR, None, red.clone())
+        .await
+        .ok::<Avatar>(StatusCode::OK);
+    server
+        .put_bytes(&guest, &seen_none, None, blue.clone())
+        .await
+        .error(ErrorCode::Conflict);
+    assert_eq!(stored().await, Some(hash(&red)));
+    server
+        .put_bytes(
+            &guest,
+            &format!("{AVATAR}?before={}", hash(&red)),
+            None,
+            blue.clone(),
+        )
+        .await
+        .ok::<Avatar>(StatusCode::OK);
+    assert_eq!(stored().await, Some(hash(&blue)));
+    server
+        .put_bytes(&guest, &format!("{AVATAR}?before=nothing"), None, blue)
+        .await
+        .error(ErrorCode::InvalidRequest);
+}

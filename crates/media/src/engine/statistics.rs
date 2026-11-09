@@ -108,6 +108,20 @@ pub struct CameraCheck {
     pub answers: u64,
     /// The camera tracks of this device that the room holds.
     pub tracks: usize,
+    /// The received cameras of other people, in the order of their accounts.
+    pub remote: Vec<RemoteCameraCheck>,
+}
+
+/// A received camera, for a test.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCameraCheck {
+    pub account: junto_client_core::protocol::ids::AccountId,
+    /// The engine asks the media server to send the camera.
+    pub enabled: bool,
+    /// The native track of the camera is enabled: a disabled one turns each picture that
+    /// arrives into a black one.
+    pub track_enabled: bool,
 }
 
 /// The publication of the camera of the device, as the engine holds it.
@@ -144,6 +158,10 @@ impl Engine {
         async move { check.await.ok() }
     }
 
+    pub(crate) fn camera_check_to(&self, reply: CameraReply) {
+        let _ = self.commands.send(Command::CameraCheck(reply));
+    }
+
     /// Holds the task of the engine, for a test of what goes on while it does not run: the
     /// commands, the events of the room and the own work of the engine wait until the
     /// [`HeldEngine`] is dropped. The commands that were sent before run first. The first
@@ -153,6 +171,27 @@ impl Engine {
         let (released, release) = oneshot::channel();
         let _ = self.commands.send(Command::Hold(held, release));
         (
+            waits,
+            HeldEngine {
+                _released: released,
+            },
+        )
+    }
+
+    /// As [`Engine::hold`], at the end of the turn of the task in which the engine counts the
+    /// next replacement of the input device. The first value ends when the engine took the
+    /// request, the second when the task waits.
+    pub fn hold_at_replacement(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Receiver<()>, HeldEngine) {
+        let (armed, taken) = oneshot::channel();
+        let (held, waits) = oneshot::channel();
+        let (released, release) = oneshot::channel();
+        let _ = self
+            .commands
+            .send(Command::HoldAtReplacement(armed, (held, release)));
+        (
+            taken,
             waits,
             HeldEngine {
                 _released: released,
@@ -200,6 +239,7 @@ impl Actor {
             publication,
             answers: self.camera_answers,
             tracks,
+            remote: self.remote_camera_checks(),
         });
     }
 

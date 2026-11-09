@@ -12,14 +12,18 @@
 //!   answer was lost. When the repetition then gets `challenge_invalid`, the first copy
 //!   may have committed, and the caller gets [`ApiError::OutcomeUnknown`].
 //!
-//! A request without a signature is never repeated after a lost answer.
+//! A request without a signature is never repeated after a lost answer, except a picture that
+//! the server stores with `PUT`: the same picture again changes nothing. The server answers a
+//! request that passes its bound of held bodies at once and does not read the rest of the
+//! body (ADR 0013); on Windows the client then sees a cut connection in place of `busy` or
+//! `rate_limited`. Such a picture is sent again after a cut connection as after `busy`.
 
 use std::time::Duration;
 
 use junto_protocol::error::ErrorCode;
 
 use super::error::{ApiError, ErrorCategory, read_rejection};
-use super::transport::{HttpRequest, HttpResponse, Transport};
+use super::transport::{HttpRequest, HttpResponse, Transport, TransportErrorKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -55,6 +59,9 @@ pub(crate) enum Repeat {
     /// One part of a file. It is sent again after `busy` and `timeout` only, and it has
     /// the time limit of a slow connection.
     Part,
+    /// A request that the server takes again as no change: also sent again after a cut
+    /// connection, after the wait and within the attempts of `busy`.
+    SameResult,
 }
 
 /// Sends `request` and returns the first response that is not an error. The request is
@@ -77,6 +84,13 @@ pub(crate) async fn send(
         let response = match exchange.await {
             Ok(response) => response,
             Err(error) => {
+                if repeat == Repeat::SameResult
+                    && error.kind == TransportErrorKind::Interrupted
+                    && sent < policy.attempts
+                {
+                    tokio::time::sleep(policy.default_wait).await;
+                    continue;
+                }
                 let may_have_arrived = error.request_may_have_arrived();
                 if repeat == Repeat::Signed && may_have_arrived {
                     if lost_answers < policy.lost_answer_repeats {
@@ -175,6 +189,7 @@ mod tests {
 
     fn request() -> HttpRequest {
         HttpRequest {
+            test_number: None,
             method: Method::Post,
             url: "https://chat.example.test/api/v1/join".parse().unwrap(),
             bearer: None,
@@ -281,7 +296,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn unavailable_is_returned_without_repeating_even_signed_requests_or_parts() {
-        for repeat in [Repeat::WhenUnchanged, Repeat::Signed, Repeat::Part] {
+        for repeat in [
+            Repeat::WhenUnchanged,
+            Repeat::Signed,
+            Repeat::Part,
+            Repeat::SameResult,
+        ] {
             let script = Script::new([refusal("unavailable", 503, None)]);
             let error = send(&script, &request(), repeat, &RetryPolicy::default())
                 .await
@@ -290,6 +310,48 @@ mod tests {
             assert_eq!(error.category(), Some(ErrorCategory::ServerFault));
             assert!(error.is_unavailable());
             assert_eq!(script.bodies().len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_picture_is_sent_again_after_a_cut_connection_as_after_busy() {
+        let policy = RetryPolicy::default();
+        let cut = || lost(TransportErrorKind::Interrupted);
+        let script = Script::new([cut(), refusal("busy", 503, Some(1)), cut(), ok()]);
+        let started = tokio::time::Instant::now();
+        send(&script, &request(), Repeat::SameResult, &policy)
+            .await
+            .unwrap();
+        assert_eq!(started.elapsed(), 3 * policy.default_wait);
+        let bodies = script.bodies();
+        assert_eq!(bodies.len(), 4);
+        assert!(bodies.iter().all(|body| *body == bodies[0]));
+
+        // Within the attempts of busy, and then the cut connection is the error.
+        let script = Script::new((0..policy.attempts).map(|_| cut()));
+        let error = send(&script, &request(), Repeat::SameResult, &policy)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ApiError::Unreachable(cut) if cut.kind == TransportErrorKind::Interrupted),
+            "{error}"
+        );
+        assert_eq!(script.bodies().len(), policy.attempts as usize);
+
+        // No connection and no answer in time are not a refusal; another request is not
+        // sent again after a cut connection.
+        for (repeat, kind) in [
+            (Repeat::SameResult, TransportErrorKind::Connect),
+            (Repeat::SameResult, TransportErrorKind::Timeout),
+            (Repeat::WhenUnchanged, TransportErrorKind::Interrupted),
+            (Repeat::Part, TransportErrorKind::Interrupted),
+        ] {
+            let script = Script::new([lost(kind)]);
+            let error = send(&script, &request(), repeat, &policy)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ApiError::Unreachable(_)), "{error}");
+            assert_eq!(script.bodies().len(), 1, "{repeat:?} {kind:?}");
         }
     }
 

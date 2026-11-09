@@ -17,6 +17,8 @@ pub const MOST_GROUPS: usize = 128;
 pub const MOST_COLLAPSED_CATEGORIES: usize = 4096;
 /// How many workspaces of one server the order names at most.
 pub const MOST_ORDERED_WORKSPACES: usize = 512;
+/// How many accounts of one server have their direct messages collapsed at most.
+pub const MOST_COLLAPSED_DIRECTS: usize = 512;
 
 /// Names one group of the server book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -92,6 +94,9 @@ pub struct ServerPlace {
     pub collapsed_categories: BTreeMap<AccountId, BTreeSet<CategoryId>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub channel_layouts: BTreeMap<AccountId, BTreeMap<WorkspaceId, channels::Layout>>,
+    /// The accounts whose group of direct messages is collapsed in the channel list.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub directs_collapsed: BTreeSet<AccountId>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -107,6 +112,7 @@ impl ServerPlace {
             workspace_order: Vec::new(),
             collapsed_categories: BTreeMap::new(),
             channel_layouts: BTreeMap::new(),
+            directs_collapsed: BTreeSet::new(),
         }
     }
 
@@ -116,6 +122,7 @@ impl ServerPlace {
             && self.workspace_order.is_empty()
             && self.collapsed_categories.is_empty()
             && self.channel_layouts.is_empty()
+            && self.directs_collapsed.is_empty()
     }
 }
 
@@ -219,6 +226,11 @@ pub enum Change {
         category: CategoryId,
         collapsed: bool,
     },
+    CollapseDirects {
+        server: ServerId,
+        account: AccountId,
+        collapsed: bool,
+    },
     CollapseWorkspaces {
         server: ServerId,
         collapsed: bool,
@@ -310,6 +322,8 @@ pub enum ArrangeError {
     TooManyGroups,
     #[error("too many collapsed categories")]
     TooManyCollapsedCategories,
+    #[error("too many accounts with collapsed direct messages")]
+    TooManyCollapsedDirects,
     #[error(transparent)]
     Personal(#[from] channels::Error),
 }
@@ -361,6 +375,11 @@ impl Arrangement {
         self.place(server)
             .and_then(|place| place.collapsed_categories.get(&account))
             .is_some_and(|categories| categories.contains(&category))
+    }
+
+    pub fn directs_collapsed(&self, server: ServerId, account: AccountId) -> bool {
+        self.place(server)
+            .is_some_and(|place| place.directs_collapsed.contains(&account))
     }
 
     pub fn channels(
@@ -427,6 +446,9 @@ impl Arrangement {
             {
                 return Err("too many collapsed categories".to_owned());
             }
+            if place.directs_collapsed.len() > MOST_COLLAPSED_DIRECTS {
+                return Err("too many accounts with collapsed direct messages".to_owned());
+            }
             if place
                 .channel_layouts
                 .values()
@@ -459,9 +481,19 @@ impl Arrangement {
             .servers
             .iter()
             .filter(|place| known.contains(&place.server_id))
-            .map(|place| ServerPlace {
-                group: place.group.filter(|group| groups.contains(group)),
-                ..place.clone()
+            .map(|place| {
+                // A layout that holds nothing goes, as one that held only the named personal
+                // sections of 0.1.0 does after a read (ADR 0775).
+                let mut channel_layouts = place.channel_layouts.clone();
+                for workspaces in channel_layouts.values_mut() {
+                    workspaces.retain(|_, layout| !layout.is_empty());
+                }
+                channel_layouts.retain(|_, workspaces| !workspaces.is_empty());
+                ServerPlace {
+                    group: place.group.filter(|group| groups.contains(group)),
+                    channel_layouts,
+                    ..place.clone()
+                }
             })
             .filter(|place| !place.is_default())
             .collect();
@@ -865,6 +897,23 @@ impl Work {
                     if set.is_empty() {
                         categories.remove(&account);
                     }
+                }
+            }
+            Change::CollapseDirects {
+                server,
+                account,
+                collapsed,
+            } => {
+                self.find_server(server)
+                    .ok_or(ArrangeError::NoServer(server))?;
+                let accounts = &mut self.place_mut(server).directs_collapsed;
+                if !collapsed {
+                    accounts.remove(&account);
+                } else if !accounts.contains(&account) {
+                    if accounts.len() >= MOST_COLLAPSED_DIRECTS {
+                        return Err(ArrangeError::TooManyCollapsedDirects);
+                    }
+                    accounts.insert(account);
                 }
             }
             Change::CollapseWorkspaces { server, collapsed } => {

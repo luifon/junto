@@ -50,8 +50,13 @@ pub const WINDOW_RESTORE: &str = "Restore";
 pub const WINDOW_CLOSE: &str = "Close";
 pub const START_AT_LOGIN: &str = "Start Junto at login";
 pub const START_AT_LOGIN_HELP: &str = "Open Junto when you log in to your computer.";
-pub const LOGIN_CUSTOM_PROFILE: &str =
-    "Open Junto with its normal profile to change whether it starts at login.";
+/// The switch of start at login of a profile: the normal profile, or another one by its name.
+pub fn start_at_login(profile: Option<&str>) -> String {
+    match profile {
+        None => START_AT_LOGIN.to_owned(),
+        Some(name) => format!("Start Junto at login with the profile {name}"),
+    }
+}
 pub const LOGIN_SYSTEM_VERSION: &str = "Start at login needs macOS 13 or later.";
 pub const LOGIN_NOT_INSTALLED: &str = "Install Junto to choose whether it starts at login.";
 pub const LOGIN_CHECKING: &str = "Checking the login setting…";
@@ -547,7 +552,11 @@ pub const SHARE_SCREEN: &str = "Share your screen";
 pub const SHARE_STARTING: &str = "Starting your share…";
 pub const SHARE_RUNS: &str = "Stop sharing or share another";
 pub const YOUR_SHARES: &str = "Your shares";
-pub const SHARE_ANOTHER: &str = "Share another screen or window";
+pub const SHARE_ANOTHER: &str = if cfg!(target_os = "linux") {
+    "Share another screen or window"
+} else {
+    "Share another screen, window or application"
+};
 pub const STOP_ALL_SHARES: &str = "Stop every share";
 pub const SHARE_STARTS: &str = "Starts…";
 
@@ -574,15 +583,32 @@ pub fn share_viewer_names(names: &[String]) -> String {
 }
 pub const SHARE_NOT_ON_THIS_SYSTEM: &str = SHARE_UNSUPPORTED;
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
-pub const SHARE_READING: &str = "Reading the screens and windows…";
+pub const SHARE_READING: &str = if cfg!(target_os = "linux") {
+    "Reading the screens and windows…"
+} else {
+    "Reading the screens, windows and applications…"
+};
 /// The desktop portal owns the final source chooser on Linux.
 pub const SHARE_DESKTOP_SCREEN: &str = "Choose a screen with the desktop";
 pub const SHARE_DESKTOP_WINDOW: &str = "Choose a window with the desktop";
 pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you press Share.";
 
-pub const SCREENS: &str = "Screens";
-pub const WINDOWS: &str = "Windows";
+/// The tabs of the dialog of a share (ADR 0738).
+pub const SHARE_TABS: &str = "What kind of thing to share";
+pub const SHARE_TAB_SCREEN: &str = "Screen";
+pub const SHARE_TAB_WINDOW: &str = "Window";
+pub const SHARE_TAB_APPLICATION: &str = "Application";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
+pub const NO_APPLICATION_WINDOWS: &str = "No other application has a window on a screen.";
+/// The line under an application in the dialog of a share: its windows and the screen whose
+/// area is shared.
+pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
+    let windows = match windows {
+        1 => "1 window".to_owned(),
+        count => format!("{count} windows"),
+    };
+    format!("{windows} on screen {screen} · {}", pixels(size))
+}
 /// The accessible names of the picture of a screen or a window in the dialog of a share.
 pub const SHARE_PREVIEW_LOADING: &str = "Loading the preview";
 pub const SHARE_PREVIEW_NONE: &str = "No preview";
@@ -641,6 +667,14 @@ pub fn sound_of_window(application: &str) -> String {
     format!(
         "The people in the call hear the sound of {application}, the application of this \
          window. Its sound may include the sound of this call."
+    )
+}
+
+/// The sound of a shared application when the person chooses the sound of that application.
+pub fn sound_of_shared_application(application: &str) -> String {
+    format!(
+        "The people in the call hear the sound of {application}. Its sound may include the \
+         sound of this call."
     )
 }
 
@@ -709,6 +743,7 @@ pub const WATCHING: &str = "Watching";
 pub const WATCH: &str = "Watch";
 pub const ENTIRE_SCREEN: &str = "Entire screen";
 pub const ONE_WINDOW: &str = "Window";
+pub const ONE_APPLICATION: &str = "Application";
 pub const PICTURE_ARRIVES: &str = "Waiting for the picture…";
 pub const SOUND_FOLLOWS: &str = "You hear only the share you are watching.";
 pub const SHARE_SOUND_HELD: &str = "Its sound is not sent while your microphone is blocked";
@@ -748,6 +783,7 @@ fn share_what(kind: Option<ShareKind>, number: Option<usize>) -> String {
     let what = match kind {
         Some(ShareKind::Screen) => "screen",
         Some(ShareKind::Window) => "window",
+        Some(ShareKind::Application) => "application",
         None => "share",
     };
     match number {
@@ -770,6 +806,7 @@ pub fn share_kind(kind: Option<ShareKind>) -> &'static str {
     match kind {
         Some(ShareKind::Screen) => ENTIRE_SCREEN,
         Some(ShareKind::Window) => ONE_WINDOW,
+        Some(ShareKind::Application) => ONE_APPLICATION,
         None => "",
     }
 }
@@ -1107,11 +1144,15 @@ pub const PUSH_TO_TALK: &str = "Push to talk";
 pub const TALK_KEY: &str = "Key";
 pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
      sends it only while you hold the key.";
+pub const SOUND_OFF_MUTES: &str = "Turning the sound off also mutes the microphone";
+pub const SOUND_OFF_MUTES_HELP: &str =
+    "Turning the sound on returns the microphone to how it was. Unmuting turns the sound on.";
 pub const ECHO_CANCELLATION: &str = "Echo cancellation";
 pub const ECHO_CANCELLATION_HELP: &str =
     "Removes the sound of the call that your microphone picks up from your loudspeakers.";
 pub const NOISE_SUPPRESSION: &str = "Noise suppression";
-pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
+pub const NOISE_SUPPRESSION_HELP: &str =
+    "Removes steady background noise, such as a fan, and lowers typing and clicks a little.";
 pub const AUTOMATIC_GAIN: &str = "Automatic gain";
 pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
 /// The section of the settings with the switches of the sounds (ADR 0707).
@@ -1596,6 +1637,12 @@ pub const fn no_account_status(notice: Option<Notice>) -> &'static str {
 // Joining a server.
 pub const JOIN_A_SERVER: &str = "Join a server";
 pub const CLOSE: &str = "Close";
+pub const WHAT_IS_NEW: &str = "What is new";
+
+/// The heading of the notes of one version in "What is new".
+pub fn release_title(version: &str) -> String {
+    format!("Junto {version}")
+}
 pub const CANCEL: &str = "Cancel";
 pub const SERVER_FOUND: &str = "Server found";
 pub const OPERATOR_NOTICE: &str =
@@ -1614,6 +1661,13 @@ pub const ADD_TO_SERVER_BOOK: &str = "Add to the server book";
 pub const KEY_OF_OTHER_ADDRESS_TITLE: &str =
     "This device holds a key of this server for another address";
 pub const DISCARD_KEY: &str = "Discard the stored key";
+pub const DISCARD_KEY_HERE: &str = "Discard on this device only";
+pub const CANCEL_REQUEST_HERE: &str = "Cancel on this device only";
+/// Said beside the actions that give up a request without telling the server, after the
+/// server could not be told (ADR 0712).
+pub const SERVER_NOT_TOLD: &str = "The server was not told. If you continue on this device \
+     only, the server keeps the request until it expires, and an approval of it makes an \
+     account that no device of yours can open.";
 pub const SAVING: &str = "Saving…";
 pub const CODE_MISSING: &str = "Type the code that the administrator gave you.";
 pub const NAME_MISSING: &str = "Choose a name in the settings first.";
@@ -1838,6 +1892,9 @@ pub fn flow_error(error: &FlowError) -> String {
         FlowError::Storage(reason) => {
             format!("A file of the data directory could not be used: {reason}.")
         }
+        FlowError::DataHeld => "Another program is changing the data of Junto on this device, \
+             so the change was not saved. Try again when it has finished, or close it."
+            .to_owned(),
         FlowError::Stopped => "Junto is shutting down.".to_owned(),
     }
 }
@@ -1982,6 +2039,11 @@ pub const FIND_EMOJI: &str = "Find an emoji";
 pub const NO_EMOJI_FOUND: &str = "No emoji has this name.";
 pub const EMOJI_FOUND: &str = "Found";
 pub const NO_EMOJI_FONT: &str = "This system has no font that draws emoji.";
+
+/// The tooltip of the stand-in of an emoji that the fonts do not draw (ADR 0758).
+pub fn emoji_stand_in(name: &str) -> String {
+    format!("{name}. The fonts of this system do not draw this emoji.")
+}
 pub const MENTION_SOMEONE: &str = "Mention a person or a role";
 pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
 pub const REMOVE_FILE: &str = "Remove this file";
@@ -2654,6 +2716,7 @@ pub const fn picture_refusal(refusal: crate::picture::Refusal) -> &'static str {
 pub const PICTURE_CROP_ACCOUNT: &str = "Picture of your account";
 pub const PICTURE_CROP_PRESET: &str = "Picture of new accounts";
 pub const PICTURE_CROP_LOGO: &str = "Logo of the server";
+pub const PICTURE_CROP_WORKSPACE_LOGO: &str = "Logo of the workspace";
 pub const PICTURE_CROP_HELP: &str =
     "Drag the picture to place it in the square, and zoom with the slider or the wheel.";
 pub const PICTURE_ZOOM: &str = "Zoom";
@@ -3341,6 +3404,31 @@ pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailabl
 pub const INVITATION_EXISTING_ACCOUNT: &str =
     "Use this invitation with your existing account. It may add you to workspaces on this server.";
 pub const JOIN_INVITED_WORKSPACES: &str = "Join invited workspaces";
+/// The item of the menus of a server that opens the redemption of an invite (ADR 0115).
+pub const JOIN_WITH_INVITE: &str = "Join workspaces with an invite";
+
+/// The refusal of an invite whose workspaces all hold the account already.
+pub const REDEEM_ALREADY_MEMBER: &str =
+    "Your account is already a member of every workspace of this invite. The invite was not used.";
+
+/// What a redemption of an invite added (the server refuses an invite that adds none): the names of the workspaces that the window knows,
+/// and how many more whose names have not arrived yet.
+pub fn redeemed_workspaces(names: &[String], unknown: usize) -> String {
+    let mut parts: Vec<String> = names.iter().map(|name| format!("“{name}”")).collect();
+    match unknown {
+        0 => {}
+        1 if parts.is_empty() => parts.push("1 workspace".to_owned()),
+        1 => parts.push("1 more workspace".to_owned()),
+        count if parts.is_empty() => parts.push(format!("{count} workspaces")),
+        count => parts.push(format!("{count} more workspaces")),
+    }
+    let list = match parts.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    format!("Your account is now a member of {list}.")
+}
 pub const COPY_TARGET_LINK: &str = "Copy link";
 
 pub const EDIT_TEXT_MENU: &str = "Edit text";
@@ -3381,6 +3469,15 @@ pub const VIEW_ORIGINAL: &str = "View original";
 pub const MARK_UNREAD: &str = "Mark unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
+pub const NO_REACTIONS_YET: &str = "No reactions yet";
+
+/// The second line of "Who reacted": how many reactions the message has.
+pub fn reaction_total(count: u64) -> String {
+    match count {
+        1 => "1 reaction".to_owned(),
+        count => format!("{count} reactions"),
+    }
+}
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";
 pub const REACTION_PEOPLE_UNAVAILABLE: &str =
     "These reactions are unavailable, or you do not have access to this message.";
@@ -3450,6 +3547,8 @@ pub const STOP_SHARING: &str = "Stop sharing";
 
 pub const COLLAPSE_CATEGORY: &str = "Collapse category";
 pub const EXPAND_CATEGORY: &str = "Expand category";
+pub const COLLAPSE_DIRECTS: &str = "Collapse direct messages";
+pub const EXPAND_DIRECTS: &str = "Expand direct messages";
 pub const CHANNEL_TOPIC: &str = "Topic";
 pub const EDIT_TOPIC: &str = "Edit topic";
 pub const COPY_TOPIC: &str = "Copy topic";
@@ -3463,19 +3562,11 @@ pub const CATEGORY_SETTINGS: &str = "Category settings";
 pub const FAVOURITES: &str = "Favourites";
 pub const ADD_FAVOURITE: &str = "Add to favourites";
 pub const REMOVE_FAVOURITE: &str = "Remove from favourites";
-pub const NEW_SECTION: &str = "New section";
-pub const SECTION_NAME: &str = "Section name";
-pub const SECTION_NAME_INVALID: &str = "Use 1 to 64 characters without control characters.";
-pub const RENAME_SECTION: &str = "Rename section";
-pub const REMOVE_SECTION: &str = "Remove section";
-pub const COLLAPSE_SECTION: &str = "Collapse section";
-pub const EXPAND_SECTION: &str = "Expand section";
-pub const MOVE_TO_SECTION: &str = "Move to";
+pub const COLLAPSE_FAVOURITES: &str = "Collapse favourites";
+pub const EXPAND_FAVOURITES: &str = "Expand favourites";
 pub const RETURN_TO_CHANNEL_LIST: &str = "Return to channel list";
 pub const MOVE_CHANNEL_UP: &str = "Move channel up";
 pub const MOVE_CHANNEL_DOWN: &str = "Move channel down";
-pub const MOVE_SECTION_UP: &str = "Move section up";
-pub const MOVE_SECTION_DOWN: &str = "Move section down";
 
 #[cfg(test)]
 mod tests {
@@ -3563,6 +3654,7 @@ mod tests {
                 total: 3,
             },
             FlowError::Storage("the file is locked".to_owned()),
+            FlowError::DataHeld,
             FlowError::Stopped,
         ];
         all.extend(ErrorCode::ALL.iter().map(|code| FlowError::Refused {
@@ -3617,10 +3709,11 @@ mod tests {
                 FlowError::InvalidBundle(_) => "invalid bundle",
                 FlowError::Incomplete { .. } => "incomplete",
                 FlowError::Storage(_) => "storage",
+                FlowError::DataHeld => "data held",
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 25);
     }
 
     #[test]

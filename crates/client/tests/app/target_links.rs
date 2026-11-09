@@ -305,6 +305,41 @@ fn a_linked_picture_opens_the_viewer_and_a_file_dialog_closes_when_access_is_rem
     });
 }
 
+/// The viewer opened from the file dialog of a link closes when the message of the file is
+/// deleted.
+#[gpui::test]
+fn the_viewer_of_a_linked_picture_closes_when_its_message_is_deleted(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let origin = ServerAddress::parse(&server.address()).unwrap();
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Rin");
+    let target = admin.text_channel(&world, &mut window, "planning");
+    let message = crate::pictures::send_files(
+        &world,
+        &admin,
+        PlaceId::Channel(target),
+        "A diagram",
+        vec![("diagram.png", crate::pictures::png(32, 24))],
+    );
+    assert!(window.state.update(&mut window.cx, |state, cx| {
+        state.open_file_link(&origin, message.attachments[0].id, cx)
+    }));
+    window.until("the linked picture has its file dialog", |window| {
+        window.shows("linked-file-dialog")
+    });
+    window.click("file-preview");
+    window.until("the picture viewer is open", |window| {
+        window.shows("picture-viewer")
+    });
+    world
+        .run(admin.handle.api().delete_message(message.id))
+        .unwrap();
+    window.until("the viewer closes with the deleted message", |window| {
+        !window.shows("picture-viewer")
+    });
+}
+
 #[gpui::test]
 fn file_boundaries_a_replaced_target_closes_the_previous_files_context_menu(
     cx: &mut TestAppContext,

@@ -132,6 +132,7 @@ fn fixture() -> Fixture {
                 id: workspace_id,
                 name: "Calls".into(),
                 is_default: true,
+                logo: None,
             },
             own_role_ids: vec![],
             roles: vec![],
@@ -239,6 +240,8 @@ fn fixture() -> Fixture {
         moving: None,
         probes: Vec::new(),
         speaking: false,
+        sent_open: None,
+        sent_controls: Vec::new(),
         timing,
     };
     Fixture {
@@ -410,7 +413,7 @@ async fn only_the_fresh_meeting_state_can_close_the_local_microphone_on_unblock(
             .finished(Done::Rejoined(Box::new(Ok(f.answer.clone())), taken));
         f.session.read_blocks(&f.model);
         assert!(
-            !f.session.inner.shared().muted,
+            !f.session.inner.shared().microphone.muted,
             "the old meeting changed the local setting"
         );
         if !still_presenting {
@@ -423,7 +426,7 @@ async fn only_the_fresh_meeting_state_can_close_the_local_microphone_on_unblock(
         // With the meeting the end is a grant. Without it, the block of this test has no
         // position among the events, so its end cannot be read: the setting is closed
         // too, and the person is told (ADR 0785).
-        assert!(f.session.inner.shared().muted);
+        assert!(f.session.inner.shared().microphone.muted);
         assert!(!f.session.controls.microphone_blocked);
         assert!(f.session.controls.muted);
         assert_eq!(
@@ -487,7 +490,7 @@ async fn a_meeting_grant_notice_still_requires_unmute_after_a_newer_model_ended_
     granted.hand_raised = true;
     f.model.cursor.position = 45;
     f.session.read_blocks(&f.model);
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
     for (id, event) in [
         (
             41,
@@ -532,7 +535,7 @@ async fn a_meeting_grant_notice_still_requires_unmute_after_a_newer_model_ended_
         });
     }
     assert!(
-        f.session.inner.shared().muted,
+        f.session.inner.shared().microphone.muted,
         "the grant was lost behind the newer model"
     );
     assert!(f.session.controls.muted);
@@ -630,7 +633,7 @@ async fn a_grant_stays_closed_before_its_notice() {
     events.push(meeting_ended(&mut f, 44));
     tell_and_read(&mut f, events);
     assert!(
-        f.session.inner.shared().muted,
+        f.session.inner.shared().microphone.muted,
         "the grant did not close the microphone setting"
     );
     assert!(f.session.microphone_block.is_none());
@@ -641,7 +644,7 @@ async fn a_grant_stays_closed_before_its_notice() {
         "a control let the microphone send before the person opened it: {told:?}"
     );
     // The person opens the microphone.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     assert!(lets_the_microphone_send(&f.session.controls));
     f.session.engine.close().await;
@@ -664,7 +667,7 @@ async fn the_end_of_meeting_mode_opens_the_microphone_when_its_event_is_read() {
         lets_the_microphone_send(&f.session.controls),
         "the end of meeting mode did not open the microphone of a person who was not muted"
     );
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -687,7 +690,7 @@ async fn a_block_of_a_moderator_ends_when_its_event_is_read() {
         )],
     );
     assert!(lets_the_microphone_send(&f.session.controls));
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -719,7 +722,7 @@ async fn a_block_whose_end_was_not_told_closes_the_setting() {
                 state_without_the_block(&mut f, 44);
             }
             assert!(
-                f.session.inner.shared().muted,
+                f.session.inner.shared().microphone.muted,
                 "a grant can be among the lost events, and the setting stayed open"
             );
             assert!(f.session.controls.muted && !f.session.controls.microphone_blocked);
@@ -755,9 +758,9 @@ async fn an_end_that_was_taken_as_a_grant_is_not_told_again_by_the_next_event() 
         } else {
             state_without_the_block(&mut f, 50);
         }
-        assert!(f.session.inner.shared().muted && f.session.microphone_block.is_none());
+        assert!(f.session.inner.shared().microphone.muted && f.session.microphone_block.is_none());
         // The person opens the microphone, and the report of that returns as an event.
-        f.session.inner.shared().muted = false;
+        f.session.inner.shared().step(MicrophoneEvent::Unmute);
         f.session.command(SessionCommand::Muted(false));
         let (call_id, place) = (f.call().id, f.session.target.place);
         let participant = f.call().participants[0].clone();
@@ -773,7 +776,7 @@ async fn an_end_that_was_taken_as_a_grant_is_not_told_again_by_the_next_event() 
             )],
         );
         assert!(
-            !f.session.inner.shared().muted,
+            !f.session.inner.shared().microphone.muted,
             "the event of the person's own report closed the microphone as a grant"
         );
         assert!(lets_the_microphone_send(&f.session.controls));
@@ -814,7 +817,7 @@ async fn a_kept_block_ends_at_its_event_while_the_state_is_behind_an_answer() {
     f.session.rejoining = true;
     renewed(&mut f);
     f.session.missed();
-    assert!(f.session.microphone_block.is_none() && f.session.inner.shared().muted);
+    assert!(f.session.microphone_block.is_none() && f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -865,7 +868,7 @@ async fn events_after_a_loss_are_read_as_before() {
     tell_and_read(&mut f, vec![ended]);
     assert!(lets_the_microphone_send(&f.session.controls));
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "an end that the events told was taken as a grant"
     );
     f.session.engine.close().await;
@@ -895,7 +898,7 @@ async fn a_block_that_ended_before_the_notices_were_read_closes_the_setting() {
         f.session.microphone_block.is_none(),
         "the block waits for an event that was told before the session read notices"
     );
-    assert!(f.session.inner.shared().muted);
+    assert!(f.session.inner.shared().microphone.muted);
     assert!(f.session.controls.muted && !f.session.controls.microphone_blocked);
     f.session.engine.close().await;
 
@@ -903,7 +906,7 @@ async fn a_block_that_ended_before_the_notices_were_read_closes_the_setting() {
     let mut f = blocked(presenter, BlockReason::Meeting);
     f.session.subscribed(Some(&f.model));
     state_without_the_block(&mut f, 44);
-    assert!(f.session.microphone_block.is_some() && !f.session.inner.shared().muted);
+    assert!(f.session.microphone_block.is_some() && !f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -913,7 +916,7 @@ async fn the_person_who_opens_the_microphone_ends_the_wait_for_the_end_of_a_bloc
     state_without_the_block(&mut f, 46);
     assert!(f.session.microphone_block.is_some());
     // The person closes and opens the microphone: an action of the person.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     assert!(
         f.session.microphone_block.is_none(),
@@ -1222,8 +1225,10 @@ async fn an_action_for_another_seat_opens_nothing() {
         },
         ..held.clone()
     };
-    f.session.inner.shared().muted = true;
-    f.session.apply_controls();
+    let (calls, mut taken) = active_calls(&mut f);
+    f.session.rejoining = true;
+    calls.mute();
+    take(&mut f, &mut taken);
     let asked = f.session.engine.asked();
     for stale in [earlier_seat, other_call] {
         f.session
@@ -1235,10 +1240,11 @@ async fn an_action_for_another_seat_opens_nothing() {
         f.session
             .command(SessionCommand::RetryMicrophone(stale.clone()));
         assert_eq!(unused(&f), Some(Unused::Microphone));
-        f.session.command(SessionCommand::Unmute(stale, 0));
+        calls.unmute_in(Some(&stale));
+        take(&mut f, &mut taken);
         assert_eq!(unused(&f), Some(Unused::Microphone));
         assert!(
-            f.session.inner.shared().muted,
+            f.session.inner.shared().microphone.muted,
             "the microphone setting was opened for another seat"
         );
     }
@@ -1254,23 +1260,11 @@ async fn an_action_for_another_seat_opens_nothing() {
         .command(SessionCommand::StartCamera(held.clone(), None));
     f.session
         .command(SessionCommand::RetryMicrophone(held.clone()));
-    // An open that was asked for before the last close of the person opens nothing.
-    let calls = Calls {
-        inner: f.session.inner.clone(),
-    };
-    let asked_at = f.session.inner.shared().closes;
-    calls.mute();
-    f.session
-        .command(SessionCommand::Unmute(held.clone(), asked_at));
-    assert!(
-        f.session.inner.shared().muted && calls.view().muted,
-        "an open that was on its way undid the close"
-    );
     assert_eq!(f.session.engine.asked().len(), asked.len() + 3);
-    let asked_at = f.session.inner.shared().closes;
-    f.session.command(SessionCommand::Unmute(held, asked_at));
+    calls.unmute_in(Some(&held));
+    take(&mut f, &mut taken);
     assert_eq!(unused(&f), None);
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
     let after = f.session.engine.asked();
     assert_eq!(
         after[asked.len()..after.len() - 1],
@@ -1296,17 +1290,18 @@ async fn an_unmute_without_a_call_is_for_no_call() {
     calls.mute();
     // A call began after the control was drawn.
     let (commands, _taken) = mpsc::unbounded_channel();
-    f.session.inner.shared().active = Some(ActiveHandle {
+    f.session.inner.shared().start(ActiveHandle {
         key: 1,
         target: f.session.target,
         commands,
         gate: Arc::default(),
+        identity: "seat".into(),
     });
     calls.unmute_in(None);
-    assert!(calls.view().muted && f.session.inner.shared().muted);
+    assert!(calls.view().muted && f.session.inner.shared().microphone.muted);
     assert_eq!(unused(&f), Some(Unused::Microphone));
     // The call for which the control was drawn has ended.
-    f.session.inner.shared().active = None;
+    f.session.inner.shared().end();
     let seat = Seat {
         target: f.session.target,
         identity: "seat".into(),
@@ -1520,7 +1515,7 @@ async fn a_microphone_on_another_device_closes_the_setting_and_is_told() {
     let mut state = f.session.engine.state().borrow().clone();
     state.input_replaced = true;
     f.session.engine_changed(&state);
-    assert!(f.session.inner.shared().muted && f.session.controls.muted);
+    assert!(f.session.inner.shared().microphone.muted && f.session.controls.muted);
     let view = f.session.inner.view.borrow().clone();
     assert!(view.muted);
     assert_eq!(view.closed, Some(MicrophoneClosed::DeviceChanged));
@@ -1582,11 +1577,12 @@ async fn closing_the_microphone_stops_the_gate_of_the_call_at_once() {
         inner: f.session.inner.clone(),
     };
     let (commands, _taken) = mpsc::unbounded_channel();
-    f.session.inner.shared().active = Some(ActiveHandle {
+    f.session.inner.shared().start(ActiveHandle {
         key: 1,
         target: f.session.target,
         commands,
         gate: gate.clone(),
+        identity: "seat".into(),
     });
     let before = gate.stops();
     calls.mute();
@@ -1596,7 +1592,7 @@ async fn closing_the_microphone_stops_the_gate_of_the_call_at_once() {
     );
     // A rule of the server that closes the microphone does not wait either.
     let before = gate.stops();
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session
         .set_blocks((Some(a_block(AccountId::generate())), None));
     assert!(gate.stops() > before);
@@ -1612,7 +1608,7 @@ async fn closing_the_microphone_stops_the_gate_of_the_call_at_once() {
         gate.stops() > before,
         "the release of the key waits for the session and the engine"
     );
-    f.session.inner.shared().active = None;
+    f.session.inner.shared().end();
     f.session.engine.close().await;
 }
 
@@ -1625,11 +1621,12 @@ async fn a_press_of_the_talk_key_does_not_open_after_its_release() {
         inner: f.session.inner.clone(),
     };
     let (commands, mut told) = mpsc::unbounded_channel();
-    f.session.inner.shared().active = Some(ActiveHandle {
+    f.session.inner.shared().start(ActiveHandle {
         key: 1,
         target: f.session.target,
         commands,
         gate: gate.clone(),
+        identity: "seat".into(),
     });
     // The person presses the key and releases it before the session has taken the press.
     let before = gate.stops();
@@ -1654,7 +1651,7 @@ async fn a_press_of_the_talk_key_does_not_open_after_its_release() {
     gate.set_open(true);
     gate.take_stops(before);
     assert!(!gate.is_open());
-    f.session.inner.shared().active = None;
+    f.session.inner.shared().end();
     f.session.engine.close().await;
 }
 
@@ -1773,11 +1770,12 @@ fn looping(mut f: Fixture) -> Looping {
     let live = f.session.server.live();
     live.show_for_test(StreamStatus::Live, Some(f.model.clone()));
     let (commands, taken) = mpsc::unbounded_channel();
-    f.session.inner.shared().active = Some(ActiveHandle {
+    f.session.inner.shared().start(ActiveHandle {
         key: f.session.key,
         target: f.session.target,
         commands: commands.clone(),
         gate: f.session.engine.gate(),
+        identity: "seat".into(),
     });
     f.session.review = true;
     let calls = Calls {
@@ -1842,12 +1840,16 @@ async fn the_end_of_a_call_waits_for_the_work_of_a_move_within_its_limit() {
                 view.call.is_none()
             })
             .await;
-        let waited = tokio::time::timeout(Duration::from_millis(200), &mut ended).await;
-        assert!(
-            waited.is_err(),
-            "the end did not wait for the work of the move"
-        );
+        // The work that closes its connection holds the end until the test lets it close,
+        // far within its limit. The work that does not end holds the end until its limit:
+        // the time is checked after the end, because a window of the test inside a limit of
+        // 500 ms is passed by a host under load.
         if closes {
+            let waited = tokio::time::timeout(Duration::from_millis(200), &mut ended).await;
+            assert!(
+                waited.is_err(),
+                "the end did not wait for the work of the move"
+            );
             close.send(()).unwrap();
         }
         let identity = tokio::time::timeout(Duration::from_secs(20), ended)
@@ -2114,7 +2116,7 @@ async fn a_new_history_does_not_compare_its_grants_with_old_positions() {
     });
     let events = a_grant(&mut f, presenter, 6);
     tell(&mut f, events);
-    assert!(f.session.inner.shared().muted);
+    assert!(f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -2137,16 +2139,16 @@ async fn a_delayed_grant_does_not_undo_an_explicit_unmute_after_its_model() {
     });
     f.model.cursor.position = 46;
     f.session.read_blocks(&f.model);
-    assert!(f.session.inner.shared().muted);
+    assert!(f.session.inner.shared().microphone.muted);
     // The person opens the microphone, as `Calls::set_muted` does.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     assert!(!f.session.controls.muted);
     // The events of the same grant arrive after it.
     let events = a_grant(&mut f, presenter, 41);
     tell(&mut f, events);
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "the delayed grant closed the microphone that the person had opened"
     );
     f.session.engine.close().await;
@@ -2201,7 +2203,7 @@ async fn a_hidden_call_meeting_block_supplies_the_grant_history() {
         ],
     );
     assert!(
-        f.session.inner.shared().muted,
+        f.session.inner.shared().microphone.muted,
         "a hidden call need not send meeting_started before its admission snapshot"
     );
     assert!(!f.session.admitted);
@@ -2305,17 +2307,17 @@ async fn an_answer_without_a_position_is_used_as_before_the_positions() {
     assert!(f.session.admitted);
     // How the block ended cannot be read either: the setting is closed, and the person
     // is told (ADR 0785).
-    assert!(f.session.inner.shared().muted);
+    assert!(f.session.inner.shared().microphone.muted);
     assert_eq!(
         f.session.inner.view.borrow().closed,
         Some(MicrophoneClosed::EndOfBlockNotRead)
     );
     // The person opens the microphone, and the next state changes nothing.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     f.model.cursor.position += 1;
     f.session.read_blocks(&f.model);
-    assert!(!f.session.inner.shared().muted && !f.session.controls.muted);
+    assert!(!f.session.inner.shared().microphone.muted && !f.session.controls.muted);
     f.session.engine.close().await;
 }
 
@@ -2411,7 +2413,7 @@ async fn a_newer_answer_without_a_block_removes_the_block_of_an_older_state() {
     );
     // The block of this test has no position among the events, so its end cannot be
     // read: the person's setting is closed, and the person is told (ADR 0785).
-    assert!(f.session.inner.shared().muted && f.session.controls.muted);
+    assert!(f.session.inner.shared().microphone.muted && f.session.controls.muted);
     assert_eq!(
         f.session.inner.view.borrow().closed,
         Some(MicrophoneClosed::EndOfBlockNotRead)
@@ -2446,7 +2448,7 @@ async fn an_event_at_or_before_a_newer_answer_changes_nothing() {
     assert!(f.session.controls.microphone_blocked && f.session.controls.sound_blocked);
     assert_eq!(f.session.accepted.position, 45);
     assert!(f.session.admitted, "the answer ended the admission");
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -2506,8 +2508,8 @@ async fn a_state_that_tells_a_grant_again_does_not_undo_an_explicit_unmute() {
     // The events tell the grant, and the person opens the microphone.
     let events = a_grant(&mut f, presenter, 41);
     tell(&mut f, events);
-    assert!(f.session.inner.shared().muted);
-    f.session.inner.shared().muted = false;
+    assert!(f.session.inner.shared().microphone.muted);
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     // The state that holds the same grant arrives after that.
     f.call().participants[0].microphone_block = None;
@@ -2515,7 +2517,7 @@ async fn a_state_that_tells_a_grant_again_does_not_undo_an_explicit_unmute() {
     f.session.read_blocks(&f.model);
     assert!(f.session.microphone_block.is_none());
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "the state closed the microphone that the person had opened after the grant"
     );
     f.session.engine.close().await;
@@ -2570,16 +2572,16 @@ async fn a_grant_that_a_renewal_answer_tells_closes_the_microphone_setting_once(
     renewed(&mut f);
     assert!(f.session.microphone_block.is_none());
     assert!(
-        f.session.inner.shared().muted,
+        f.session.inner.shared().microphone.muted,
         "the grant of the answer did not close the microphone setting"
     );
     // The person opens the microphone, and the events of the same grant arrive after it.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     let events = a_grant(&mut f, presenter, 41);
     tell(&mut f, events);
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "the events of the grant closed the microphone that the person had opened"
     );
     f.session.engine.close().await;
@@ -2790,7 +2792,7 @@ async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_afte
     let stated_at = f.model.cursor.position;
     f.model.own_grant = Some((seat.clone(), stated_at));
     f.session.read_blocks(&f.model);
-    assert!(!f.session.inner.shared().muted);
+    assert!(!f.session.inner.shared().microphone.muted);
 
     // Notices were missed: the event of the grant can be among them. The statement closes
     // the setting once.
@@ -2798,17 +2800,17 @@ async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_afte
     f.model.cursor.position += 1;
     f.session.read_blocks(&f.model);
     assert!(
-        f.session.inner.shared().muted,
+        f.session.inner.shared().microphone.muted,
         "the stated grant did not close the setting"
     );
     // The person opens the microphone. A later read that still states the grant, before
     // the report of the open reached the server, closes nothing.
-    f.session.inner.shared().muted = false;
+    f.session.inner.shared().step(MicrophoneEvent::Unmute);
     f.session.command(SessionCommand::Muted(false));
     f.model.cursor.position += 1;
     f.session.read_blocks(&f.model);
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "the same statement closed the setting twice"
     );
     f.session.engine.close().await;
@@ -2828,7 +2830,7 @@ async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_afte
     f.model.cursor.position += 1;
     f.session.read_blocks(&f.model);
     assert!(
-        !f.session.inner.shared().muted,
+        !f.session.inner.shared().microphone.muted,
         "a statement from before the open closed the setting"
     );
 
@@ -2840,7 +2842,7 @@ async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_afte
     f.model.cursor.position += 1;
     f.model.own_grant = Some((seat, f.model.cursor.position));
     f.session.read_blocks(&f.model);
-    assert!(f.session.inner.shared().muted);
+    assert!(f.session.inner.shared().microphone.muted);
     f.session.engine.close().await;
 }
 
@@ -3017,5 +3019,510 @@ async fn a_dropped_afk_disable_notice_refreshes_the_same_seat_without_accepting_
         !f.session.withheld.microphone && !f.session.withheld.camera && !f.session.withheld.share
     );
     assert_eq!(f.session.place.identity(), "seat");
+    f.session.engine.close().await;
+}
+
+/// The seat of the session of the fixture.
+fn seat(f: &Fixture) -> Seat {
+    Seat {
+        target: f.session.target,
+        identity: "seat".into(),
+    }
+}
+
+/// The calls of the fixture with an active call on the gate of its engine, whose commands
+/// the test takes.
+fn active_calls(f: &mut Fixture) -> (Calls, mpsc::UnboundedReceiver<SessionCommand>) {
+    // The device is in the room, so nothing but the setting holds the microphone.
+    f.session.rejoining = false;
+    let (commands, taken) = mpsc::unbounded_channel();
+    f.session.inner.shared().start(ActiveHandle {
+        key: 1,
+        target: f.session.target,
+        commands,
+        gate: f.session.engine.gate(),
+        identity: "seat".into(),
+    });
+    // The session gives the engine the controls of the open microphone.
+    f.session.apply_controls();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    (calls, taken)
+}
+
+/// The session takes the commands that the calls sent it.
+fn take(f: &mut Fixture, taken: &mut mpsc::UnboundedReceiver<SessionCommand>) {
+    while let Ok(command) = taken.try_recv() {
+        f.session.command(command);
+    }
+}
+
+/// Whether the gate of the engine sends frames after the engine took the last controls
+/// that the session gave it: they open the microphone, and their count of closes of the
+/// gate is the current one (`CaptureLink::is_open`).
+fn gate_sends(f: &Fixture) -> bool {
+    f.session
+        .sent_controls
+        .last()
+        .is_some_and(|&(muted, read)| !muted && read == f.session.engine.gate().stops())
+}
+
+fn microphone(f: &Fixture) -> Microphone {
+    f.session.inner.shared().microphone
+}
+
+/// The session reads the state of the engine, with its replacements of the input device.
+fn read_engine(f: &mut Fixture) {
+    let state = f.session.engine.state().borrow().clone();
+    f.session.engine_changed(&state);
+}
+
+#[tokio::test]
+async fn the_sound_on_opens_the_microphone_that_the_sound_off_closed() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.sound_off_muting();
+    assert!(microphone(&f).muted && f.session.inner.shared().deafened);
+    assert!(microphone(&f).sound_off.is_some());
+    calls.sound_on_reopening();
+    take(&mut f, &mut taken);
+    assert!(!microphone(&f).muted && !f.session.inner.shared().deafened);
+    assert!(gate_sends(&f));
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_grant_or_an_unread_end_while_the_sound_is_off_keeps_the_microphone_closed() {
+    for unread_end in [false, true] {
+        let mut f = fixture();
+        let (calls, mut taken) = active_calls(&mut f);
+        calls.sound_off_muting();
+        if unread_end {
+            f.session.close_for_unread_end(46, false);
+        } else {
+            assert!(f.session.close_for_grant(46, false));
+        }
+        calls.sound_on_reopening();
+        take(&mut f, &mut taken);
+        assert!(
+            microphone(&f).muted && !gate_sends(&f),
+            "unread end: {unread_end}"
+        );
+        f.session.engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_close_right_after_the_close_of_a_hold_is_not_given_to_its_release() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    *f.session.inner.after_close.lock().unwrap() = Some(Box::new(|inner: &Inner| {
+        inner.shared().step(MicrophoneEvent::RuleClose);
+    }));
+    calls.press_hold();
+    calls.release_hold();
+    take(&mut f, &mut taken);
+    assert!(
+        microphone(&f).muted && !gate_sends(&f),
+        "the release opened after the grant"
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_grant_before_the_close_of_a_hold_leaves_the_hold_no_open() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    assert!(f.session.close_for_grant(46, false));
+    calls.press_hold();
+    assert_eq!(
+        microphone(&f).hold,
+        None,
+        "the hold took a permission after the grant"
+    );
+    calls.release_hold();
+    take(&mut f, &mut taken);
+    assert!(microphone(&f).muted && !gate_sends(&f));
+    f.session.engine.close().await;
+}
+
+/// The engine opens another device after the release of the key opened the microphone and
+/// before the engine took its controls, and a later update of the controls carries the count
+/// of that open, not a new one.
+#[tokio::test]
+async fn a_replacement_after_an_open_keeps_the_gate_closed_through_later_controls() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.press_hold();
+    calls.release_hold();
+    take(&mut f, &mut taken);
+    assert!(!microphone(&f).muted && gate_sends(&f));
+    f.session.engine.gate().replace_input();
+    assert!(
+        !gate_sends(&f),
+        "the open from before the replacement opened the gate"
+    );
+    calls.set_deafened(true);
+    take(&mut f, &mut taken);
+    assert!(
+        !gate_sends(&f),
+        "an update of the controls read a new count"
+    );
+    read_engine(&mut f);
+    assert!(microphone(&f).muted && !gate_sends(&f));
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged)
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_replacement_refuses_the_open_that_a_held_key_took_from_the_sound_on() {
+    for key_first in [true, false] {
+        let mut f = fixture();
+        let (calls, mut taken) = active_calls(&mut f);
+        if key_first {
+            calls.press_hold();
+            calls.sound_off_muting();
+        } else {
+            calls.sound_off_muting();
+            calls.press_hold();
+        }
+        calls.sound_on_reopening();
+        assert!(microphone(&f).hold.is_some(), "key first: {key_first}");
+        f.session.engine.gate().replace_input();
+        read_engine(&mut f);
+        assert_eq!(
+            f.session.inner.view.borrow().closed,
+            Some(MicrophoneClosed::DeviceChanged),
+            "the person was not told (key first: {key_first})"
+        );
+        calls.release_hold();
+        take(&mut f, &mut taken);
+        assert!(
+            microphone(&f).muted && !gate_sends(&f),
+            "key first: {key_first}"
+        );
+        f.session.engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_replacement_before_the_session_takes_an_automatic_open_refuses_it() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.sound_off_muting();
+    calls.sound_on_reopening();
+    f.session.engine.gate().replace_input();
+    take(&mut f, &mut taken);
+    assert!(!gate_sends(&f));
+    read_engine(&mut f);
+    assert!(microphone(&f).muted && !gate_sends(&f));
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged)
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn an_open_of_the_person_after_a_replacement_that_the_calls_had_not_read_opens() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.mute();
+    take(&mut f, &mut taken);
+    f.session.engine.gate().replace_input();
+    calls.unmute_in(Some(&seat(&f)));
+    take(&mut f, &mut taken);
+    assert!(
+        !microphone(&f).muted && gate_sends(&f),
+        "the open of the person was refused"
+    );
+    read_engine(&mut f);
+    assert!(!microphone(&f).muted && gate_sends(&f));
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_held_key_counts_as_open_for_the_sound_off_and_a_block_keeps_the_permission() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.press_hold();
+    calls.sound_off_muting();
+    assert!(microphone(&f).sound_off.is_some());
+    calls.release_hold();
+    // A block begins and ends while the sound is off: the sound on opens.
+    f.session.withheld.microphone = true;
+    f.session.apply_controls();
+    f.session.withheld.microphone = false;
+    f.session.apply_controls();
+    calls.sound_on_reopening();
+    take(&mut f, &mut taken);
+    assert!(!microphone(&f).muted && gate_sends(&f));
+    f.session.engine.close().await;
+}
+
+/// The actions of the person, of a rule of the call and of the engine, through the calls and
+/// the session, in a random order with a fixed seed over many runs, and the orders of the
+/// reviews: after a grant or a replacement of the device, nothing but an open of the person
+/// opens the gate, in any order, and an open of the person always does.
+#[tokio::test]
+async fn no_order_of_closes_and_automatic_opens_opens_the_gate_after_a_rule() {
+    #[derive(Clone, Copy, Debug)]
+    enum Action {
+        Press,
+        Release,
+        SoundOff,
+        SoundOn,
+        Grant,
+        Replace,
+        Take,
+        Read,
+        Unmute,
+        Controls,
+    }
+    use Action::*;
+    const STEPS: [Action; 10] = [
+        Press, Release, SoundOff, SoundOn, Grant, Replace, Take, Read, Unmute, Controls,
+    ];
+    let mut seed: u64 = 0x5EED_0B1E;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut orders: Vec<Vec<Action>> = vec![
+        vec![Grant, Press, Release, Take],
+        vec![Press, Release, Take, Replace, Controls, Take, Read, Take],
+        vec![SoundOff, Take, Press, SoundOn, Replace, Read, Release, Take],
+        vec![Replace, Unmute, Take, Read, Take],
+        vec![Press, Replace, Release, Take, Controls, Take],
+    ];
+    for _ in 0..500 {
+        let length = 4 + (next() % 12) as usize;
+        orders.push((0..length).map(|_| STEPS[(next() % 10) as usize]).collect());
+    }
+    for order in orders {
+        let mut f = fixture();
+        let (calls, mut taken) = active_calls(&mut f);
+        let (mut key, mut position, mut ruled, mut opened) = (false, 46, false, false);
+        for step in &order {
+            match step {
+                Press if !key => {
+                    key = true;
+                    calls.press_hold();
+                }
+                Release if key => {
+                    key = false;
+                    calls.release_hold();
+                }
+                SoundOff if !calls.view().deafened => calls.sound_off_muting(),
+                SoundOn if calls.view().deafened => calls.sound_on_reopening(),
+                Grant => {
+                    f.session.close_for_grant(position, false);
+                    position += 1;
+                    (ruled, opened) = (true, false);
+                }
+                Replace => {
+                    f.session.engine.gate().replace_input();
+                    (ruled, opened) = (true, false);
+                }
+                Take => {
+                    take(&mut f, &mut taken);
+                    assert!(
+                        !opened || gate_sends(&f),
+                        "an open of the person did not open the gate: {order:?}"
+                    );
+                }
+                Read => read_engine(&mut f),
+                Unmute => {
+                    calls.unmute_in(Some(&seat(&f)));
+                    (ruled, opened) = (false, true);
+                }
+                Controls => calls.inner.tell(SessionCommand::Controls),
+                _ => {}
+            }
+            if matches!(step, Press | SoundOff) {
+                opened = false;
+            }
+            assert!(
+                !(ruled && gate_sends(&f)),
+                "the gate opened by itself after a rule: {order:?}"
+            );
+        }
+        f.session.engine.close().await;
+    }
+}
+
+/// The engine replaces the input device around the moment at which the release of push to
+/// mute opens the microphone. The thread of the calls and the thread of the engine meet at
+/// barriers, in both orders; the engine then takes the controls that the calls give it, as
+/// its task does, and the device delivers sound through the gate. Every frame of the
+/// replaced device is silence until the person opens the microphone (ADR 0794).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_during_an_open_sends_no_frame_of_the_replaced_device() {
+    use crate::audio::capture::{CaptureChain, FrameQueue};
+    use crate::audio::processing::Processor;
+    use crate::audio::{FRAME_SAMPLES, Format, Processing, SAMPLE_RATE};
+    use std::sync::Barrier;
+    let f = fixture();
+    let target = f.session.target;
+    f.session.engine.close().await;
+    for replaced_first in [true, false] {
+        let link = Arc::new(CaptureLink::default());
+        let (frames, taken) = mpsc::channel(16);
+        let processor = Arc::new(Processor::new(Processing::OFF));
+        let mut chain = CaptureChain::new(link.clone(), processor, frames);
+        let mut queue = FrameQueue::new(link.clone(), taken);
+        let (commands, _commands) = mpsc::unbounded_channel();
+        let shared = Mutex::new(Shared::default());
+        shared.lock().unwrap().start(ActiveHandle {
+            key: 1,
+            target,
+            commands,
+            gate: link.clone(),
+            identity: "seat".into(),
+        });
+        let lock = || shared.lock().unwrap();
+        // The engine takes the controls of the calls: the setting opens or closes its gate,
+        // and the count of the controls is the one that it holds.
+        let engine_takes = || {
+            let microphone = lock().microphone;
+            link.set_open(!microphone.muted);
+            link.take_stops(microphone.open.unwrap_or_else(|| link.stops()));
+        };
+        let sound = |chain: &mut CaptureChain| {
+            chain.deliver(
+                &[0.5; FRAME_SAMPLES],
+                Format {
+                    sample_rate: SAMPLE_RATE,
+                    channels: 1,
+                },
+            );
+        };
+        engine_takes();
+        lock().step(MicrophoneEvent::Press);
+        engine_takes();
+        let (replaced, released) = (Barrier::new(2), Barrier::new(2));
+        std::thread::scope(|scope| {
+            let engine = scope.spawn(|| {
+                if !replaced_first {
+                    released.wait();
+                }
+                link.replace_input();
+                replaced.wait();
+                if replaced_first {
+                    released.wait();
+                }
+            });
+            if replaced_first {
+                replaced.wait();
+            }
+            lock().step(MicrophoneEvent::Release);
+            released.wait();
+            if !replaced_first {
+                replaced.wait();
+            }
+            engine.join().unwrap();
+        });
+        engine_takes();
+        sound(&mut chain);
+        let frame = queue.next().await.unwrap();
+        assert!(
+            frame.iter().all(|sample| *sample == 0),
+            "the replaced device was sent (replaced first: {replaced_first})"
+        );
+        let read = lock().step(MicrophoneEvent::Replaced(link.replacements()));
+        assert!(
+            read.after.muted && read.device_changed,
+            "replaced first: {replaced_first}"
+        );
+        engine_takes();
+        sound(&mut chain);
+        assert!(
+            queue
+                .next()
+                .await
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0)
+        );
+        lock().step(MicrophoneEvent::Unmute);
+        engine_takes();
+        sound(&mut chain);
+        assert!(
+            queue
+                .next()
+                .await
+                .unwrap()
+                .iter()
+                .any(|sample| *sample != 0),
+            "the open of the person sent nothing"
+        );
+    }
+}
+
+/// The server gives a new seat at a renewal: an unmute drawn for the new seat opens, and one
+/// drawn for the old seat does not.
+#[tokio::test]
+async fn an_unmute_names_the_seat_that_a_renewal_gave() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    calls.mute();
+    take(&mut f, &mut taken);
+    // The fixture asks for a new token, as after a lost connection.
+    f.session.rejoining = true;
+    renewed_at_another_seat(&mut f, 43);
+    assert_eq!(f.session.place.identity(), "seat-2");
+    calls.unmute_in(Some(&seat(&f)));
+    assert_eq!(unused(&f), Some(Unused::Microphone));
+    assert!(microphone(&f).muted, "an unmute for the old seat opened");
+    let new_seat = Seat {
+        target: f.session.target,
+        identity: "seat-2".into(),
+    };
+    calls.unmute_in(Some(&new_seat));
+    assert_eq!(unused(&f), None);
+    assert!(
+        !microphone(&f).muted,
+        "an unmute for the new seat was refused"
+    );
+    f.session.engine.close().await;
+}
+
+/// The engine counts a replacement when it opens the other device, also while the setting
+/// is open; the session closes the setting for it, and an unmute of the person before the
+/// engine has taken that close opens, with the notice of the replacement kept.
+#[tokio::test]
+async fn an_unmute_after_a_replacement_opens_once_and_keeps_its_notice() {
+    let mut f = fixture();
+    let (calls, mut taken) = active_calls(&mut f);
+    // A held key of push to mute owns a permission when the device is replaced.
+    calls.press_hold();
+    take(&mut f, &mut taken);
+    f.session.engine.gate().replace_input();
+    calls.unmute_in(Some(&seat(&f)));
+    take(&mut f, &mut taken);
+    assert!(!microphone(&f).muted && gate_sends(&f));
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::DeviceChanged),
+        "the unmute dropped the notice of the replacement"
+    );
+    // The setting is open when the engine replaces the device; the session reads it and
+    // closes, and the person unmutes before more happens.
+    f.session.engine.gate().replace_input();
+    read_engine(&mut f);
+    assert!(microphone(&f).muted);
+    calls.unmute_in(Some(&seat(&f)));
+    take(&mut f, &mut taken);
+    read_engine(&mut f);
+    assert!(
+        !microphone(&f).muted && gate_sends(&f),
+        "the replacement was counted again after the unmute"
+    );
     f.session.engine.close().await;
 }

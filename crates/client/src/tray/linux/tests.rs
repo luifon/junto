@@ -135,6 +135,7 @@ fn in_call(muted: bool, seat: &Seat) -> TrayState {
             muted,
             held: false,
             deafened: false,
+            sound_off_mutes: false,
             seat: seat.clone(),
         }),
         generation: u32::from(muted),

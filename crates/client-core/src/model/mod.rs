@@ -404,6 +404,9 @@ pub struct ServerModel {
     pub outbox: Vec<Arc<PendingMessage>>,
     /// The newest messages that the server returned as answers to sends of this client.
     pub(crate) sent_ids: Vec<MessageId>,
+    /// The newest messages that the server holds no more for the account, as their reads
+    /// found them: a message deleted without a reply leaves no marker in a list (ADR 0408).
+    pub(crate) gone_ids: Vec<MessageId>,
     /// The threads that hold something unread for the account, the newest first, as far
     /// as their pages were read (ADR 0409).
     pub threads: Vec<ThreadState>,
@@ -548,6 +551,7 @@ impl ServerModel {
             timelines: Vec::new(),
             outbox: Vec::new(),
             sent_ids: Vec::new(),
+            gone_ids: Vec::new(),
             threads,
             threads_more: snapshot.threads_more,
             threads_next: snapshot.threads_next,

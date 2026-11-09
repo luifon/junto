@@ -481,6 +481,26 @@ impl AppState {
         );
     }
 
+    pub fn collapse_directs(
+        &mut self,
+        owner: junto_client_core::Owner,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.arrange_with(
+            move |client| {
+                (client.server(owner.entry.server_id)?.owner() == Some(owner)).then_some(
+                    Change::CollapseDirects {
+                        server: owner.entry.server_id,
+                        account: owner.account_id,
+                        collapsed,
+                    },
+                )
+            },
+            cx,
+        );
+    }
+
     pub fn arrange_channels(
         &mut self,
         owner: junto_client_core::Owner,
@@ -499,8 +519,7 @@ impl AppState {
                 let channel = match &change {
                     layout::channels::Change::Place { channel, .. }
                     | layout::channels::Change::MoveChannel { channel, .. } => Some(*channel),
-                    layout::channels::Change::Create { channel, .. } => *channel,
-                    _ => None,
+                    layout::channels::Change::Collapse { .. } => None,
                 };
                 if channel.is_some_and(|id| shown.channel(id).is_none()) {
                     return None;

@@ -44,6 +44,8 @@ pub const FIRST_ALREADY: &str = "It is the first one.";
 pub const MOVE_NEEDS: &str =
     "The move changes a channel in which you do not hold “manage channel”.";
 pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in this channel.";
+pub const MOVE_ROOT_NEEDS: &str =
+    "A channel without a category needs “manage channel” in the workspace.";
 pub const MOVE_TOO_MANY: &str =
     "The move changes the places of more than 200 channels, and one change takes 200 at most.";
 pub const MOVE_HERE_ALREADY: &str = "The channel is at this place already.";
@@ -223,13 +225,23 @@ pub const DEFAULT_WORKSPACE_HELP: &str = "The default workspace is the one that 
 pub const SHOWN_WORKSPACE: &str = "Shown in the window";
 pub const NOT_A_MEMBER: &str = "You are not a member";
 pub const CREATE_WORKSPACE_NEEDS: &str = "You do not have the “create workspace” permission.";
-pub const MANAGE_WORKSPACE_NEEDS: &str = "Only an administrator can rename or delete a workspace.";
+pub const MANAGE_WORKSPACE_NEEDS: &str =
+    "Only an administrator can rename or delete a workspace, or set its logo.";
+pub const WORKSPACE_LOGO: &str = "Logo";
+pub const REMOVE_LOGO: &str = "Remove logo";
 pub const ENTER_CODE: &str = "Enter an invite code";
 pub const ENTER_CODE_HELP: &str =
     "An invite code for this server adds your account to the workspaces that the code names.";
 pub const INVITE_CODE: &str = "Invite code";
 pub const ENTER: &str = "Enter";
 pub const CODE_EMPTY: &str = "Type the invite code.";
+
+pub fn remove_workspace_logo_question(name: &str) -> String {
+    format!(
+        "Remove the logo of the workspace “{name}”? The workspace list shows its generated \
+         picture again."
+    )
+}
 
 pub fn delete_workspace_question(name: &str) -> String {
     format!(
@@ -275,6 +287,7 @@ pub fn unplanned(reason: Unplanned) -> &'static str {
     match reason {
         Unplanned::Nothing => MOVE_HERE_ALREADY,
         Unplanned::NotManaged => MOVE_NEEDS,
+        Unplanned::RootNotManaged => MOVE_ROOT_NEEDS,
         Unplanned::TooMany => MOVE_TOO_MANY,
         Unplanned::RefusalShown => MOVE_REFUSAL_SHOWN,
     }
@@ -411,6 +424,7 @@ fn conflict(what: AskKind) -> &'static str {
         | AskKind::ChangeTerm(_)
         | AskKind::RemoveTerm(_)
         | AskKind::MoveTerm(_) => glossary::CHANGED_MEANWHILE,
+        AskKind::SetLogo => server::LOGO_CHANGED,
         _ => {
             "The server refused, because its state has changed. Close this page and open it again."
         }
@@ -482,7 +496,13 @@ const fn is_moderation(what: AskKind) -> bool {
 }
 
 const fn is_logo_ask(what: AskKind) -> bool {
-    matches!(what, AskKind::SetLogo | AskKind::RemoveLogo)
+    matches!(
+        what,
+        AskKind::SetLogo
+            | AskKind::RemoveLogo
+            | AskKind::SetWorkspaceLogo(_)
+            | AskKind::RemoveWorkspaceLogo(_)
+    )
 }
 
 /// Why the server did not do a request of the administration.

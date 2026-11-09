@@ -184,7 +184,9 @@ async fn a_transaction_that_commits_later_gets_the_later_position() {
     let path = format!("/api/v1/workspaces/{}/categories", workspace.id);
 
     server.gate().arm(0);
-    let held_body = json!({ "name": "started first", "position": 1 });
+    // No position: a category put before another one would change the order and record a
+    // refresh of the workspace before its own event (ADR 0304).
+    let held_body = json!({ "name": "started first" });
     let held = server.post(&owner, &path, &held_body);
     tokio::pin!(held);
     drive_until(&mut held, server.gate().arrived()).await;
@@ -196,7 +198,7 @@ async fn a_transaction_that_commits_later_gets_the_later_position() {
     assert!(unassigned.is_empty(), "an uncommitted event is visible");
 
     server
-        .category(&owner, workspace.id, "committed first", 2)
+        .category(&owner, workspace.id, "committed first", 0)
         .await;
     let (early_id, early) = stream.event().await;
     assert_eq!(category_name(&early).as_deref(), Some("committed first"));
@@ -855,7 +857,9 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].workspace = workspace;
             }
         }
-        // The client loads permission and message-state lists from a snapshot (ADR 0208).
+        // The client loads permission and message-state lists from a snapshot (ADR 0208),
+        // and the categories and the channels, whose positions are places among what the
+        // person sees (ADR 0304).
         Event::PermissionsChanged {
             workspace_id: Some(workspace_id),
         } => {
@@ -868,6 +872,8 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index].permissions = current.permissions.clone();
                 snapshot.workspaces[index].channel_permissions =
                     current.channel_permissions.clone();
+                snapshot.workspaces[index].categories = current.categories.clone();
+                snapshot.workspaces[index].channels = current.channels.clone();
                 let belongs = |message: &junto_protocol::message::MessageState| matches!(message.place, junto_protocol::message::MessagePlace::Channel { workspace_id: id, .. } if id == workspace_id);
                 snapshot.messages.retain(|message| !belongs(message));
                 snapshot

@@ -56,8 +56,20 @@ final class Pattern: NSView {
     }
 }
 
+/// A view of one colour: the second window of the fixture.
+final class Plain: NSView {
+    static let color = NSColor(srgbRed: 0.8, green: 0.1, blue: 0.8, alpha: 1)
+    override var isOpaque: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        Plain.color.setFill()
+        bounds.fill()
+    }
+}
+
 final class Fixture: NSObject, NSApplicationDelegate {
     var window: NSWindow!
+    var second: NSWindow?
+    var screen: NSScreen!
     var pattern: Pattern!
     var player: Process?
     var playerInput: FileHandle?
@@ -75,6 +87,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
             DispatchQueue.global().async { self.serve("error no display shows the fixture colours") }
             return
         }
+        self.screen = screen
         let visible = screen.visibleFrame
         let width = min(800, visible.width - 80)
         let height = min(600, visible.height - 80)
@@ -95,6 +108,36 @@ final class Fixture: NSObject, NSApplicationDelegate {
         guard let mode = CGDisplayCopyDisplayMode(display) else { exit(2) }
         let geometry = "ready \(window.windowNumber) \(display) \(x) \(y) \(Int(frame.width * scale)) \(Int(frame.height * scale)) \(mode.pixelWidth) \(mode.pixelHeight)"
         DispatchQueue.global().async { self.serve(geometry) }
+    }
+    /// The place of a window in pixels of its screen: left, top, width, height.
+    func place(_ window: NSWindow) -> String {
+        let scale = screen.backingScaleFactor
+        let frame = window.frame
+        let x = Int((frame.minX - screen.frame.minX) * scale)
+        let y = Int((screen.frame.maxY - frame.maxY) * scale)
+        return "\(x) \(y) \(Int(frame.width * scale)) \(Int(frame.height * scale))"
+    }
+    /// Opens the second window of the fixture, of one colour, near the bottom right corner
+    /// of the visible part of the screen.
+    func openSecond() -> String {
+        let visible = screen.visibleFrame
+        let frame = NSRect(x: visible.maxX - 280, y: visible.minY + 40, width: 240, height: 180)
+        let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.title = title + " second"
+        window.level = .normal
+        window.isReleasedWhenClosed = false
+        window.contentView = Plain(frame: NSRect(x: 0, y: 0, width: frame.width, height: frame.height))
+        window.orderFrontRegardless()
+        window.displayIfNeeded()
+        second = window
+        return "second \(place(window))"
+    }
+    /// Moves the second window by points, left and up, and gives its new place.
+    func moveSecond(_ dx: CGFloat, _ dy: CGFloat) -> String {
+        guard let window = second else { return "error no second window" }
+        window.setFrameOrigin(NSPoint(x: window.frame.minX - dx, y: window.frame.minY + dy))
+        window.displayIfNeeded()
+        return "moved \(place(window))"
     }
     func tone(_ hz: UInt32) -> String {
         if player == nil {
@@ -139,8 +182,27 @@ final class Fixture: NSObject, NSApplicationDelegate {
                     self.pattern.displayIfNeeded()
                 }
                 reply(client, "pattern \(marker)")
+            } else if parts.count == 3, parts[0] == "size", let width = Double(parts[1]), let height = Double(parts[2]),
+                      width >= 64, height >= 64 {
+                // The size in pixels; the window keeps its top left corner.
+                var size = ""
+                DispatchQueue.main.sync {
+                    let scale = self.window.backingScaleFactor
+                    let frame = self.window.frame
+                    let points = NSSize(width: (width / scale).rounded(), height: (height / scale).rounded())
+                    self.window.setFrame(NSRect(x: frame.minX, y: frame.maxY - points.height, width: points.width, height: points.height), display: true)
+                    self.pattern.frame = NSRect(x: 0, y: 0, width: points.width, height: points.height)
+                    self.pattern.needsDisplay = true
+                    self.pattern.displayIfNeeded()
+                    size = "size \(Int(points.width * scale)) \(Int(points.height * scale))"
+                }
+                reply(client, size)
             } else if parts.count == 2, parts[0] == "tone", let hz = UInt32(parts[1]), hz <= 4000 {
                 reply(client, tone(hz))
+            } else if command == "second" {
+                reply(client, DispatchQueue.main.sync { self.openSecond() })
+            } else if parts.count == 3, parts[0] == "move", let dx = Double(parts[1]), let dy = Double(parts[2]) {
+                reply(client, DispatchQueue.main.sync { self.moveSecond(CGFloat(dx), CGFloat(dy)) })
             } else if command == "close" { reply(client, "closed"); break }
             else { reply(client, "error command") }
         }

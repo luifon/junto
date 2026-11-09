@@ -130,17 +130,35 @@ impl ListHost for Shell {
 pub(crate) struct Row {
     key: String,
     interactive: bool,
-    item: bool,
+    /// The name of an item of the list for assistive technology; absent for a part of the
+    /// page, which is no item.
+    label: Option<SharedString>,
     account: Option<AccountId>,
 }
 
 impl Row {
-    /// A row that is an item of the list for assistive technology.
-    pub(crate) fn new(key: impl Into<String>, interactive: bool) -> Self {
+    /// A row that is an item of the list for assistive technology, with the name that it
+    /// states: a screen reader reads the name with the place of the item in the list.
+    pub(crate) fn item(
+        key: impl Into<String>,
+        interactive: bool,
+        label: impl Into<SharedString>,
+    ) -> Self {
         Self {
             key: key.into(),
             interactive,
-            item: true,
+            label: Some(label.into()),
+            account: None,
+        }
+    }
+
+    /// A part of the page in the list, such as its header or its footer, which is no item
+    /// of the list for assistive technology.
+    pub(crate) fn part(key: impl Into<String>, interactive: bool) -> Self {
+        Self {
+            key: key.into(),
+            interactive,
+            label: None,
             account: None,
         }
     }
@@ -148,13 +166,6 @@ impl Row {
     /// The row draws this account with its picture.
     pub(crate) fn account(mut self, account_id: AccountId) -> Self {
         self.account = Some(account_id);
-        self
-    }
-
-    /// A part of the page in the list, such as its header or its footer, which is no item
-    /// of the list for assistive technology.
-    pub(crate) fn part(mut self) -> Self {
-        self.item = false;
         self
     }
 }
@@ -165,6 +176,8 @@ struct Entry {
     interactive: bool,
     /// The place of the row among the items of the list, from 1.
     position: Option<usize>,
+    /// The name of the item for assistive technology.
+    label: Option<SharedString>,
     /// The element of the row. Not a tab stop: Tab reaches the controls in the row.
     focus: FocusHandle,
     /// An empty element at the end of the row, from which Shift+Tab reaches the last
@@ -274,7 +287,7 @@ impl PageList {
             && self.rows.iter().zip(&rows).all(|(entry, row)| {
                 entry.key == row.key
                     && entry.interactive == row.interactive
-                    && entry.position.is_some() == row.item
+                    && entry.label == row.label
                     && entry.account == row.account
             });
         if !unchanged {
@@ -324,11 +337,12 @@ impl PageList {
                         cx.focus_handle().tab_stop(false),
                     )
                 });
-                position += usize::from(row.item);
+                position += usize::from(row.label.is_some());
                 Entry {
                     key: row.key.into(),
                     interactive: row.interactive,
-                    position: row.item.then_some(position),
+                    position: row.label.is_some().then_some(position),
+                    label: row.label,
                     focus,
                     end,
                     account: row.account,
@@ -828,6 +842,7 @@ pub(crate) fn element<V: ListHost>(
             .key_context("AdminList")
             .when_some(entry.position, |row, position| {
                 row.role(Role::ListItem)
+                    .when_some(entry.label.clone(), |row, label| row.aria_label(label))
                     .aria_position_in_set(position)
                     .aria_size_of_set(items)
             })
@@ -1193,11 +1208,11 @@ mod tests {
                 .lines
                 .iter()
                 .map(|line| {
-                    let row = Row::new(line.key.clone(), line.control);
                     if line.part {
-                        row.part()
+                        Row::part(line.key.clone(), line.control)
                     } else {
-                        row.account(account(&line.key))
+                        Row::item(line.key.clone(), line.control, line.key.clone())
+                            .account(account(&line.key))
                     }
                 })
                 .collect();

@@ -138,6 +138,7 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
             muted: false,
             held: false,
             deafened: false,
+            sound_off_mutes: true,
             seat: seat.clone(),
         }),
         generation: 0,
@@ -159,7 +160,8 @@ fn the_tray_shows_the_call_and_its_menu_mutes_and_turns_the_sound_off(cx: &mut T
         window.view().controls.microphone == junto_client::state::view::MicrophoneButton::Muted
     );
 
-    // The entry "Turn sound off" turns the sound of the call off.
+    // The entry "Turn sound off" turns the sound of the call off; it mutes the microphone
+    // too (the default setting), so the sound off names both.
     press(&mut window, text::TURN_SOUND_OFF);
     assert!(window.view().controls.sound_off);
     assert_eq!(shown(&mut window).tooltip(), text::IN_A_CALL_SOUND_OFF);

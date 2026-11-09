@@ -66,9 +66,22 @@ if [ "$(uname -s)" = Linux ]; then
         build_gid=$(id -g)
     fi
 fi
-cleanup() {
+remove_all() {
     for name in $created; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
     docker network rm "$network" >/dev/null 2>&1 || true
+}
+client="" watcher=""
+cleanup() {
+    # A second signal, such as a second Ctrl-C or the TERM of the watcher, must not end the
+    # cleanup in its middle.
+    trap '' INT TERM HUP
+    [ -z "$watcher" ] || kill "$watcher" 2>/dev/null || true
+    remove_all
+    # The client of the build container ends when its container is removed. A trapped signal
+    # can end a wait early, so the wait is repeated while the client exists.
+    if [ -n "$client" ]; then
+        while kill -0 "$client" 2>/dev/null; do wait "$client" 2>/dev/null || true; done
+    fi
 }
 # Existing names indicate another run or interrupted cleanup; never replace them.
 for name in "$build" "$postgres" "$livekit" "$proxy"; do
@@ -123,7 +136,7 @@ docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
 docker network create "$network" >/dev/null
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT TERM HUP
 if [ "$services" = all ]; then
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
@@ -181,6 +194,14 @@ run_build() {
         "$@"
     fi
 }
+# The client runs in the background, so that a signal to this script runs its cleanup at once:
+# the shell runs a trap only after a command in the foreground has ended. The caller usually
+# starts the lock program (tools/serial.sh), whose child this script is; when the caller ends
+# that program, or when this script is killed, the watcher ends the run: it sends TERM to this
+# script while the script runs, and removes the containers itself when it does not.
+# The lock is held through the inherited descriptor until the last of these processes ends.
+parent=$PPID
+self=$$
 run_build docker run --name "$build" --user 0 --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "$build_set" --shm-size 512m \
     --mount "type=bind,src=$root,dst=/src" \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
@@ -195,7 +216,20 @@ run_build docker run --name "$build" --user 0 --network "$network" --memory "$me
     -e JUNTO_TEST_LIVEKIT_CONTAINER="$livekit" \
     -e JUNTO_TEST_WEBHOOK_ADDRESS=0.0.0.0:17890 \
     -e JUNTO_TEST_VIRTUAL_AUDIO=1 -e TZ=UTC -e "JUNTO_LINUX_SERVICES=$services" \
-    "$image" /opt/junto-linux/run-as-user.sh "$build_uid" "$build_gid" "$@" || status=$?
+    "$image" /opt/junto-linux/run-as-user.sh "$build_uid" "$build_gid" "$@" &
+client=$!
+(
+    trap - EXIT TERM
+    # A HUP or INT to the whole group, as at the end of an SSH session, leaves the watcher.
+    trap '' HUP INT
+    while kill -0 "$self" 2>/dev/null && [ "$(ps -o ppid= -p "$self" | tr -d ' ')" = "$parent" ]; do
+        sleep 1
+    done
+    if kill -0 "$self" 2>/dev/null; then kill -TERM "$self"; else remove_all; fi
+) &
+watcher=$!
+wait "$client" || status=$?
+client=""
 if [ "$status" -ne 0 ]; then
     docker logs "$postgres" 2>&1 | grep -E \
         'PANIC|FATAL|No space left|server process.*terminated|database system.*interrupted|recovery in progress' \

@@ -103,6 +103,7 @@ fn tool(server: &Running, arguments: &[&str]) -> (bool, String, String) {
     let output = Command::new(tool_binary())
         .args(arguments)
         .env_clear()
+        .envs(junto_server::starter::system_environment())
         .env("JUNTO_SERVER", &server.address)
         .env("JUNTO_ACCESS_TOKEN", &server.token)
         .output()

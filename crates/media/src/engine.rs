@@ -58,7 +58,7 @@ pub use share::{
 };
 use share::{MAX_SLOTS, OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 #[cfg(feature = "test-support")]
-pub use statistics::{CameraCheck, CameraPublication, HeldEngine};
+pub use statistics::{CameraCheck, CameraPublication, HeldEngine, RemoteCameraCheck};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;
@@ -299,8 +299,17 @@ enum Command {
     /// one ends.
     #[cfg(feature = "test-support")]
     Hold(oneshot::Sender<()>, oneshot::Receiver<()>),
+    /// As `Hold`, at the end of the turn of the task in which the engine counts the next
+    /// replacement of the input device. The first value tells that the engine took this.
+    #[cfg(feature = "test-support")]
+    HoldAtReplacement(oneshot::Sender<()>, EngineHold),
     Close(oneshot::Sender<()>),
 }
+
+/// What holds the task of the engine: it tells the first value, and waits until the second
+/// one ends.
+#[cfg(feature = "test-support")]
+type EngineHold = (oneshot::Sender<()>, oneshot::Receiver<()>);
 
 type Events = mpsc::UnboundedReceiver<RoomEvent>;
 
@@ -322,6 +331,14 @@ enum Internal {
     /// The capture of a share has answered. The share holds the answer.
     ShareStarted(u64),
     ShareEnded(u64, CaptureError),
+    /// The pictures of the capture of a share have a new size.
+    ShareSized(u64),
+    /// A refused set of the bitrate of the picture track of a share is tried once more.
+    ShareBitrateAgain(u64),
+    /// The media server answered the publication again of the picture track of a share in
+    /// the codec of its new size: the generation of the share and the number of the
+    /// publication.
+    ShareReplacementPublished(u64, u64, Result<LocalTrackPublication, String>),
     ShareStopFailed(CaptureNotice),
     SharePicturePublished(u64, Result<LocalTrackPublication, String>),
     ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
@@ -396,6 +413,9 @@ pub struct Engine {
     /// Holds the track permissions of the room back while it holds `true` (a test sets it).
     #[cfg(feature = "test-support")]
     permissions_held: Arc<watch::Sender<bool>>,
+    /// The rule of the encoders of the picture tracks of the shares (a test sets it).
+    #[cfg(feature = "test-support")]
+    encoder_rule: Arc<watch::Sender<sent::EncoderRule>>,
 }
 
 impl Engine {
@@ -485,6 +505,7 @@ impl Engine {
         let camera_pictures = watch::Sender::new(HashMap::new());
         let camera_seen = camera_pictures.subscribe();
         let permissions_held = Arc::new(watch::Sender::new(false));
+        let encoder_rule = Arc::new(watch::Sender::new(sent::EncoderRule::default()));
         let actor = Actor {
             id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
             camera: None,
@@ -506,8 +527,11 @@ impl Engine {
             link: link.clone(),
             stops: stops.clone(),
             input_held: false,
+            #[cfg(feature = "test-support")]
+            replacement_hold: (None, None),
             input_used: None,
             camera_wait: (0, false),
+            #[cfg(feature = "test-support")]
             camera_answers: 0,
             frames,
             source,
@@ -531,11 +555,13 @@ impl Engine {
             share_limit: join.shares.clamp(1, MAX_SHARES),
             share_ended: None,
             share_generation: 0,
+            replacements: 0,
             permissions: None,
             permissions_told: None,
             permissions_sent: 0,
             permissions_applied: 0,
             permissions_held: permissions_held.clone(),
+            encoder_rule: encoder_rule.clone(),
             arriving: HashSet::new(),
             remote_pictures: HashMap::new(),
             remote_sounds: HashMap::new(),
@@ -566,7 +592,19 @@ impl Engine {
             small_pictures,
             #[cfg(feature = "test-support")]
             permissions_held,
+            #[cfg(feature = "test-support")]
+            encoder_rule,
         }
+    }
+
+    /// Makes the shares of this engine choose a second VP8 encoder for pictures wider than
+    /// `width`, or the encoder of the system again with `None`, for a test of the publication
+    /// again in the codec of a new size on every system (ADR 0737).
+    #[cfg(feature = "test-support")]
+    pub fn set_second_encoder_above(&self, width: Option<u32>) {
+        self.encoder_rule.send_replace(sent::EncoderRule {
+            second_above: width,
+        });
     }
 
     /// Holds back the track permissions of the room, or applies them again, for a test.
@@ -677,6 +715,16 @@ impl Engine {
         self.asked_for(Asked::Controls(controls));
         let closes = controls.muted || controls.microphone_blocked;
         let stops = self.link.count_for(closes, read);
+        let _ = self.commands.send(Command::Controls(controls, stops));
+    }
+
+    /// As [`Engine::set_controls_at`], for the controls of a call whose closes of the
+    /// microphone the calls made on the gate already, also those of a block: the controls
+    /// carry `stops`, the count with which the calls opened the microphone, and the gate
+    /// opens only while no close came after it (ADR 0794).
+    pub fn set_controls_counted(&self, controls: Controls, stops: u64) {
+        #[cfg(test)]
+        self.asked_for(Asked::Controls(controls));
         let _ = self.commands.send(Command::Controls(controls, stops));
     }
 
@@ -809,12 +857,18 @@ struct Actor {
     /// The microphone runs on another device than the call used before, and nothing is
     /// sent from it until the person's own setting was closed once.
     input_held: bool,
+    /// The hold that waits for the next replacement of the input device, and the one that
+    /// holds the task at the end of the turn that counted it, for a test.
+    #[cfg(feature = "test-support")]
+    replacement_hold: (Option<EngineHold>, Option<EngineHold>),
     /// The input device that the call opened last.
     input_used: Option<DeviceId>,
     /// The wait of a camera for a media connection: its number, and whether its time
     /// runs. A connection ends the wait.
     camera_wait: (u64, bool),
-    /// The answers of the media server to publications of the camera that were taken.
+    /// The answers of the media server to publications of the camera that were taken. Only
+    /// the camera check of the tests reads it.
+    #[cfg(feature = "test-support")]
     camera_answers: u64,
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,
@@ -853,12 +907,17 @@ struct Actor {
     permissions_sent: u64,
     permissions_applied: u64,
     permissions_held: Arc<watch::Sender<bool>>,
+    /// The rule of the encoders of the picture tracks of the shares.
+    encoder_rule: Arc<watch::Sender<sent::EncoderRule>>,
     /// The share tracks whose publication has not answered and that no share uses any more.
     arriving: HashSet<share::Arriving>,
     /// Why the last own share that ended by itself ended, until the person acts.
     share_ended: Option<CaptureNotice>,
     /// Counts the shares that were started. The result of an earlier one is not used.
     share_generation: u64,
+    /// The number of the last publication again of the picture track of a share in another
+    /// codec (ADR 0737).
+    replacements: u64,
     remote_pictures: HashMap<TrackSid, RemotePicture>,
     remote_sounds: HashMap<TrackSid, RemoteSound>,
     share_order: u64,
@@ -977,6 +1036,11 @@ impl Actor {
                     }
                 },
             }
+            #[cfg(feature = "test-support")]
+            if let Some((held, released)) = self.replacement_hold.1.take() {
+                let _ = held.send(());
+                let _ = released.await;
+            }
         };
         self.leave(&mut events).await;
         tracing::info!("the media engine finished leaving its room");
@@ -1050,7 +1114,8 @@ impl Actor {
             Command::Controls(controls, stops) => {
                 let before = std::mem::replace(&mut self.controls, controls);
                 if controls.muted && self.input_held {
-                    // The person's own setting is closed: it holds the microphone now.
+                    // The person's own setting is closed: it holds the microphone now. The
+                    // replacement was counted when it opened (ADR 0739).
                     self.input_held = false;
                     self.change(|state| state.input_replaced = false);
                 }
@@ -1134,6 +1199,11 @@ impl Actor {
             Command::Hold(held, released) => {
                 let _ = held.send(());
                 let _ = released.await;
+            }
+            #[cfg(feature = "test-support")]
+            Command::HoldAtReplacement(armed, hold) => {
+                self.replacement_hold.0 = Some(hold);
+                let _ = armed.send(());
             }
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
@@ -1230,6 +1300,11 @@ impl Actor {
             Internal::ShareStarted(generation) => self.share_started(generation),
             Internal::SharePermissionsDue(generation) => self.share_permissions_due(generation),
             Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
+            Internal::ShareSized(generation) => self.share_sized(generation),
+            Internal::ShareBitrateAgain(generation) => self.share_bitrate_again(generation),
+            Internal::ShareReplacementPublished(generation, number, result) => {
+                self.share_replacement_published(generation, number, result);
+            }
             Internal::ShareStopFailed(error) => {
                 self.share_ended = Some(error);
                 self.tell_shares();
@@ -1652,6 +1727,15 @@ impl Actor {
                     replaces(used.as_ref(), &device.id, self.config.input_device.as_ref());
                 self.input_held |= replaced && !self.controls.muted;
                 let held = self.input_held;
+                if replaced {
+                    // Counted once, here: a close that the calls make for it, and an open of
+                    // the person after that close, come after this count.
+                    self.link.replace_input();
+                    #[cfg(feature = "test-support")]
+                    {
+                        self.replacement_hold.1 = self.replacement_hold.0.take();
+                    }
+                }
                 self.capture = Some(stream);
                 self.change(|state| {
                     state.microphone = MicrophoneState::Running;
@@ -2031,9 +2115,10 @@ mod tests {
                 let (stop, reads) = (stop.clone(), reads.clone());
                 std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
-                        let _ = offerer.current_remote_description();
-                        let _ = answerer.current_remote_description();
-                        let _ = offerer.current_local_description();
+                        for connection in [&offerer, &answerer] {
+                            let _ = connection.current_local_description();
+                            let _ = connection.current_remote_description();
+                        }
                         reads.fetch_add(1, Ordering::Relaxed);
                     }
                 })
@@ -2093,7 +2178,10 @@ mod tests {
             "the readers ran {} times",
             reads.load(Ordering::Relaxed)
         );
-        assert!(offerer.current_remote_description().is_some());
+        for connection in [&offerer, &answerer] {
+            assert!(connection.current_local_description().is_some());
+            assert!(connection.current_remote_description().is_some());
+        }
     }
 
     #[test]

@@ -460,6 +460,10 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         (_, Some(ErrorCategory::Conflict)) if matches!(what, AskKind::RemoveDevice(_)) => {
             LAST_DEVICE
         }
+        (_, Some(ErrorCategory::Conflict)) if matches!(what, AskKind::SetPicture) => {
+            "Another device of your account changed its picture while this one was sent, and the \
+             server kept that picture. Look at it and send this one again if you still want it."
+        }
         (_, Some(ErrorCategory::NotFound)) if device => "Your account holds this device no longer.",
         (Some(ErrorCode::OwnerProtected), _) => OWNER_STAYS,
         (_, Some(ErrorCategory::NotFound)) if matches!(what, AskKind::LeaveWorkspace(_)) => {

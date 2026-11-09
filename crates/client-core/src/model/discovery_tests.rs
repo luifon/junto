@@ -697,7 +697,10 @@ fn the_end_of_a_mute_is_known_for_the_channels_that_the_state_holds() {
     let model = scene.model();
     assert_eq!(
         model.mute_ends(now),
-        [(scene.general, now + time::Duration::hours(1))]
+        [(
+            PlaceId::Channel(scene.general),
+            now + time::Duration::hours(1)
+        )]
     );
     assert!(!model.is_quiet(|_| Some(0)));
 }

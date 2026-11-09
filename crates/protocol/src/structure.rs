@@ -11,6 +11,10 @@ pub struct Workspace {
     pub name: String,
     /// True for the workspace that an invite or an approval grants when it names none.
     pub is_default: bool,
+    /// The logo of the workspace, when an administrator set one: its hash, format, bytes and
+    /// size. The image is read from `/api/v1/workspaces/{workspace_id}/logo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<crate::account::Avatar>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +51,9 @@ pub struct Category {
     pub id: CategoryId,
     pub workspace_id: WorkspaceId,
     pub name: String,
+    /// The position of the category as the reader reads it: the stored position when the
+    /// reader sees every category of the workspace, otherwise its place among the categories
+    /// that the reader sees, counted from 0 (ADR 0304).
     pub position: i32,
 }
 
@@ -54,6 +61,8 @@ pub struct Category {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateCategory {
     pub name: String,
+    /// A position in the caller's view, as the caller reads positions: the categories that
+    /// the caller sees are ordered by position and then identifier with this value (ADR 0304).
     /// Absent: after the last category.
     #[serde(default)]
     pub position: Option<i32>,
@@ -65,8 +74,14 @@ pub struct CreateCategory {
 pub struct UpdateCategory {
     #[serde(default)]
     pub name: Option<String>,
+    /// A position in the caller's view, as the caller reads positions: the categories that
+    /// the caller sees are ordered by position and then identifier with this value (ADR 0304).
     #[serde(default)]
     pub position: Option<i32>,
+    /// The place among the categories that the caller sees after the change, counted from 0;
+    /// a place past the last puts it after the last. It replaces `position` (ADR 0206).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -93,6 +108,10 @@ pub struct Channel {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     #[cfg_attr(feature = "openapi", schema(max_length = 500))]
     pub voice_status: String,
+    /// The position of the channel as the reader reads it: the stored position when the
+    /// reader sees every channel of its category, or of the root, archived ones included;
+    /// otherwise its place among the channels of the group that the reader sees in the
+    /// lists, counted from 0 (ADR 0304). An archived channel has 0.
     pub position: i32,
     /// The channel setting that makes each message sent under it permanent.
     pub permanent_messages: bool,
@@ -138,12 +157,14 @@ pub struct CreateChannel {
     pub kind: ChannelKind,
     #[serde(default)]
     pub category_id: Option<CategoryId>,
-    /// Absent: after the last channel.
+    /// A position in the caller's view of the category, or of the root, as the caller reads
+    /// positions: the channels that the caller sees are ordered by position and then
+    /// identifier with this value (ADR 0304). Absent: after the last channel.
     #[serde(default)]
     pub position: Option<i32>,
 }
 
-/// The category and the position of a channel.
+/// The category and the position of a channel, as the caller reads positions (ADR 0304).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -151,7 +172,15 @@ pub struct ChannelPlace {
     /// Absent: the channel has no category.
     #[serde(default)]
     pub category_id: Option<CategoryId>,
+    /// Where the client read the channel; in `to`, a position in the caller's view of the
+    /// group: the channels that the caller sees are ordered by position and then identifier
+    /// with the new values of the request.
     pub position: i32,
+    /// Only in `to`: the place among the channels of the group that the caller sees after
+    /// the change, counted from 0; a place past the last puts it after the last. It replaces
+    /// `position` (ADR 0206).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<i32>,
 }
 
 /// One channel of a change of the order: where the client read it, and where it goes. With
@@ -195,6 +224,10 @@ pub struct UpdateChannel {
     )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<CategoryId>))]
     pub category_id: Option<Option<CategoryId>>,
+    /// A position in the caller's view of the category, or of the root, as the caller reads
+    /// positions: the channels that the caller sees are ordered by position and then
+    /// identifier with this value (ADR 0304). A channel that changes its category without a
+    /// position goes after the last channel of the new one.
     #[serde(default)]
     pub position: Option<i32>,
     #[serde(default)]

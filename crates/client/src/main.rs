@@ -463,7 +463,8 @@ fn main() -> ExitCode {
         .open(client.data_dir().root())
         .inspect_err(|error| tracing::warn!(%error, "the log file was not opened"))
         .ok();
-    let start = arguments.start;
+    let mut start = arguments.start;
+    start.release_notes = junto_client::release_notes::ReleaseNotes::built();
     let check_startup = arguments.check_startup;
     let check_update = arguments.check_update;
     let update_source = arguments.update_source;
@@ -499,7 +500,7 @@ fn main() -> ExitCode {
             cx.quit();
             return;
         }
-        let state = app::state(client, start, cx);
+        let state = app::state(client, start.clone(), cx);
         cx.spawn(async move |cx| {
             while let Some(activation) = activations.recv().await {
                 cx.update(|cx| {

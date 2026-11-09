@@ -125,6 +125,7 @@ fn a_deleted_workspace_leaves_nothing_of_itself() {
         id: WorkspaceId::generate(),
         name: "Second".to_owned(),
         is_default: false,
+        logo: None,
     };
     model.apply(&Event::WorkspaceCreated {
         workspace: other.clone(),

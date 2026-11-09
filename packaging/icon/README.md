@@ -17,7 +17,7 @@ cargo run -p junto-icon -- ico /absolute/new/junto.ico
 
 ## Tray pictures
 
-`tray/` holds the signs of the tray pictures (ADR 0759): `junto.svg`, three rings in the places of the discs of the icon, outside a call; `microphone.svg`, `microphone-off.svg`, `microphone-held.svg` and `headphones-off.svg` in a call. Each is 24 by 24 with its strokes in `currentColor`. The crate `junto-icon` draws them black on transparent for the template pictures of the macOS menu bar, and white on a disc of the colour of the call state for Windows and Linux (`junto_icon::tray`). The four signs of a call are the Lucide drawings that the window uses, with a wider stroke; their licence is `tray/LICENSE-lucide`.
+`tray/` holds the signs of the tray pictures (ADR 0759): `junto.svg`, three rings in the places of the discs of the icon, outside a call; `microphone.svg`, `microphone-off.svg`, `microphone-held.svg`, `headphones-off.svg` and `microphone-and-headphones-off.svg` (the microphone closed and the sound off) in a call. Each is 24 by 24 with its strokes in `currentColor`. The crate `junto-icon` draws them black on transparent for the template pictures of the macOS menu bar, and white on a disc of the colour of the call state for Windows and Linux (`junto_icon::tray`). The signs of a call are the Lucide drawings that the window uses, with a wider stroke, and the crossed headphones with a crossed microphone cut from a disc in a corner, drawn from the Lucide drawings `headphone-off` and `mic-off`; their licence is `tray/LICENSE-lucide`.
 
 ## Licence
 

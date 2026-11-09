@@ -5,7 +5,8 @@
 #
 #   run-jobs.sh <directory> <run> <runner> <repository> <job>...
 #
-# A job is <name>, <name>:python (only the Python unit tests of a Rust job) or <name>:skip (not
+# A job is <name>, <name>:python (only the Python unit tests of a Rust job),
+# <name>:base+<part>+... (the Windows job with only the parts that it names) or <name>:skip (not
 # run; recorded as skipped), as tools/ci/ci.sh selects them with tools/ci/changes.py.
 #
 # <directory> is the CI directory of this machine, <run> the name of the run, <runner>
@@ -50,6 +51,14 @@ here=$directory/runs/$run
 checkout=$directory/checkout
 objects=$here/commit.git
 
+# gone <pid>: waits until the process has ended. A signal for which a trap is set ends a wait
+# early (POSIX), also a signal that arrived while a trap ran, before that trap ignored it: a
+# Ctrl-C reaches the locked part twice, from the terminal and from the lock program, and the
+# wait of its cleanup then returned while the job still ran.
+gone() {
+    while kill -0 "$1" 2>/dev/null; do wait "$1" 2>/dev/null || true; done
+}
+
 if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     # Until the locked part runs, a failure or a signal ends the run here: the repository of the
     # run is removed and "finished" names the status. This part never changes the checkout,
@@ -64,7 +73,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         # ends every process of the run before it releases the lock (tools/windows/lock.py).
         if [ -n "$locked" ]; then
             kill -TERM "$locked" 2>/dev/null || true
-            wait "$locked" 2>/dev/null || true
+            gone "$locked"
         fi
         rm -rf "$objects" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
@@ -174,7 +183,7 @@ end_job() {
     else
         kill -TERM "$pid" 2>/dev/null || true
     fi
-    wait "$pid" 2>/dev/null || true
+    gone "$pid"
     pid=""
 }
 caches_check() {
@@ -312,7 +321,10 @@ linux_container() {
 # the programs of Git for Windows and of Windows, and no other program of the machine. The
 # PostgreSQL download, the Cargo registry and the target directory stay in the CI directory
 # from one run to the next; the temporary directory is emptied before and after the job.
+# Runs a script of the Windows runner with the tools of the setup: rust-other-systems.sh for
+# the job rust-windows, rust-windows-measure.sh for the optional measurements.
 rust_windows() {
+    script=$1
     tools=$(cygpath -u "$directory")
     windows=$(cygpath -u -W)
     git=$(dirname -- "$(command -v git)")
@@ -325,7 +337,7 @@ rust_windows() {
     status=0
     # --no-self-update: rustup stays at the version of the setup (ADR 0905).
     rustup toolchain install "$version" --no-self-update --profile minimal --component rustfmt --component clippy \
-        && tools/ci/rust-other-systems.sh || status=$?
+        && "$script" || status=$?
     rm -rf "$directory/tmp"
     return "$status"
 }
@@ -376,7 +388,9 @@ job() {
         macos:deployment)
             tools/ci/deployment.sh ;;
         windows:rust-windows)
-            rust_windows ;;
+            rust_windows tools/ci/rust-other-systems.sh ;;
+        windows:rust-windows-measure)
+            rust_windows tools/ci/rust-windows-measure.sh ;;
         *)
             echo "no job $1 on the $runner runner" >&2
             return 2 ;;

@@ -24,7 +24,6 @@ Without the base budget in the environment, or on a host of fewer processors, th
 with the environment unchanged. Each decision is printed as one line beginning with "Budget:".
 """
 from dataclasses import dataclass, field
-import fcntl
 import os
 import re
 import sys
@@ -128,6 +127,9 @@ def worker_locks(environment):
 
 def take_free(locks):
     """Takes each lock that no other process holds; returns (descriptor, first processor)."""
+    # Here, not at the top: tools/ci/lanes.py reads this module on Windows, which has no fcntl.
+    import fcntl
+
     taken = []
     for path, first in locks:
         try:

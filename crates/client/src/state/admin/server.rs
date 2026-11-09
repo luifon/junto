@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use gpui::Context;
 use junto_client_core::profile;
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 use junto_client_core::protocol::message::AttachmentLimits;
 
 use super::{Answered, AskKind};
@@ -97,5 +97,77 @@ impl AppState {
             |_, (), _| {},
             cx,
         );
+    }
+
+    /// Opens the cut of a file for the logo of a workspace (ADR 0119, ADR 0122).
+    pub fn set_workspace_logo(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_picture(
+            crate::state::picture_crop::PicturePurpose::WorkspaceLogo(server_id, workspace_id),
+            file,
+            cx,
+        );
+    }
+
+    /// A chosen file that is not a picture, told at the row of the workspace.
+    pub(in crate::state) fn workspace_logo_refused(
+        &mut self,
+        workspace_id: WorkspaceId,
+        reason: &'static str,
+    ) {
+        let stamp = self.admin.begin(AskKind::SetWorkspaceLogo(workspace_id));
+        self.admin.settle(stamp, Some(reason.to_owned()));
+    }
+
+    /// Sends a cut picture as the logo of a workspace. Its size and its first bytes are
+    /// checked before the request. The image itself arrives with the event that states the
+    /// new logo.
+    pub(in crate::state) fn send_workspace_logo(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        bytes: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        match profile::check_avatar(&bytes) {
+            Ok(_) => self.admin_ask(
+                server_id,
+                AskKind::SetWorkspaceLogo(workspace_id),
+                move |api| async move { api.set_workspace_logo(workspace_id, bytes).await },
+                |_, _, _| {},
+                cx,
+            ),
+            Err(invalid) => self.workspace_logo_refused(workspace_id, txt::invalid_logo(invalid)),
+        }
+        cx.notify();
+    }
+
+    pub fn remove_workspace_logo(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin_ask(
+            server_id,
+            AskKind::RemoveWorkspaceLogo(workspace_id),
+            move |api| async move { api.remove_workspace_logo(workspace_id).await },
+            |_, (), _| {},
+            cx,
+        );
+    }
+
+    /// The image of the logo of a workspace, when the window holds it (ADR 0122).
+    pub fn workspace_logo_image(
+        &self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+    ) -> Option<std::sync::Arc<gpui::RenderImage>> {
+        self.known.workspace_logos.image((server_id, workspace_id))
     }
 }

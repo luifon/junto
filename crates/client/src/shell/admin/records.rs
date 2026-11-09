@@ -755,12 +755,12 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        let list = std::iter::once(Row::new("tokens-header", true).part())
+        let list = std::iter::once(Row::part("tokens-header", true))
             .chain(
                 rows.iter()
-                    .map(|row| Row::new(format!("token-{}", row.id), true)),
+                    .map(|row| Row::item(format!("token-{}", row.id), true, row.name.clone())),
             )
-            .chain(std::iter::once(Row::new("tokens-footer", false).part()))
+            .chain(std::iter::once(Row::part("tokens-footer", false)))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
@@ -984,6 +984,13 @@ impl Shell {
                 )
                 .into_any_element(),
             ),
+            Some(ExportSave::SavedEarlier) => under.push(
+                named(
+                    format!("export-saved-{export_id}"),
+                    sentence(txt::SAVED_EARLIER, theme).py(u(4.0)),
+                )
+                .into_any_element(),
+            ),
             Some(ExportSave::Failed(reason)) => under.push(
                 div()
                     .flex_none()
@@ -1023,12 +1030,12 @@ impl Shell {
     ) -> AnyElement {
         self.settle_export_question(view);
         let rows = page.exports.loaded().cloned().unwrap_or_default();
-        let list = std::iter::once(Row::new("exports-header", true).part())
-            .chain(
-                rows.iter()
-                    .map(|row| Row::new(format!("export-{}", row.id), true)),
-            )
-            .collect();
+        let list =
+            std::iter::once(Row::part("exports-header", true))
+                .chain(rows.iter().map(|row| {
+                    Row::item(format!("export-{}", row.id), true, txt::export_of(&row.of))
+                }))
+                .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();
         let page = page.clone();
@@ -1607,13 +1614,17 @@ impl Shell {
                 });
             });
         }
-        let list =
-            std::iter::once(Row::new("audit-header", true).part())
-                .chain(page.rows.iter().map(|row| {
-                    Row::new(format!("audit-{}", row.id), row.deleted_workspace.is_some())
-                }))
-                .chain(std::iter::once(Row::new("audit-footer", true).part()))
-                .collect();
+        let cycle = self.state.read(cx).hour_cycle();
+        let list = std::iter::once(Row::part("audit-header", true))
+            .chain(page.rows.iter().map(|row| {
+                Row::item(
+                    format!("audit-{}", row.id),
+                    row.deleted_workspace.is_some(),
+                    txt::audit_head(row, cycle),
+                )
+            }))
+            .chain(std::iter::once(Row::part("audit-footer", true)))
+            .collect();
         self.admin.list.take(Some(view), list, window, cx);
         // "Continue" and "Read again" start the view at the first entry of their read: the
         // request ends with the read.

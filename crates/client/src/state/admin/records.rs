@@ -781,16 +781,16 @@ impl AppState {
             return;
         }
         let account_id = exports.running.remove(&key).map(|held| held.account_id);
-        let completed = result.is_ok();
+        let saved_path = result.as_ref().ok().cloned();
         let state = match result {
             Ok(path) => ExportSave::Saved(path),
             Err(failure) => ExportSave::Failed(failure.sentence()),
         };
         exports.files.insert(key, state);
-        if completed && let Some(account_id) = account_id {
+        if let (Some(path), Some(account_id)) = (saved_path, account_id) {
             let (server_id, export_id) = key;
             self.change_saved_exports(
-                move |saved| saved.insert(server_id, account_id, export_id),
+                move |saved| saved.insert(server_id, account_id, export_id, Some(path.clone())),
                 cx,
             );
         }
@@ -1211,12 +1211,10 @@ impl ExportFiles {
     ) -> Self {
         let files: HashMap<(ServerId, ExportId), ExportSave> = files.into_iter().collect();
         let mut saved = SavedExports::default();
-        for (server_id, export_id) in files
-            .iter()
-            .filter(|(_, save)| matches!(save, ExportSave::Saved(_)))
-            .map(|(key, _)| *key)
-        {
-            saved.insert(server_id, account_id, export_id);
+        for ((server_id, export_id), save) in &files {
+            if let ExportSave::Saved(path) = save {
+                saved.insert(*server_id, account_id, *export_id, Some(path.clone()));
+            }
         }
         Self {
             files,

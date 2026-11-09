@@ -2,33 +2,45 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{Startup, Status};
+use super::{Profile, Startup, Status};
 use crate::app_identity::APP_ID;
 
 pub(super) struct Autostart {
     path: PathBuf,
     program: PathBuf,
+    profile: Profile,
     inherited: Vec<PathBuf>,
     desktops: Vec<String>,
 }
 
-pub(super) fn running() -> io::Result<Autostart> {
+fn this_program() -> io::Result<PathBuf> {
     let executable = std::env::current_exe()?;
-    let program = crate::releases::linux::running_appimage(&executable).unwrap_or(executable);
+    Ok(crate::releases::linux::running_appimage(&executable).unwrap_or(executable))
+}
+
+fn autostart_directory() -> io::Result<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .ok_or_else(|| io::Error::other("the configuration directory is not known"))?;
+    Ok(config.join("autostart"))
+}
+
+/// The entry of a profile at login: `chat.junto.Junto.desktop` for the normal profile and
+/// `chat.junto.Junto.profile.<key>.desktop` for another one (ADR 0754).
+pub(super) fn running(profile: Profile) -> io::Result<Autostart> {
+    let file = format!("{}.desktop", profile.entry_name("."));
     Ok(Autostart {
-        path: config.join("autostart").join(format!("{APP_ID}.desktop")),
-        program,
+        path: autostart_directory()?.join(&file),
+        program: this_program()?,
         inherited: std::env::split_paths(
             &std::env::var_os("XDG_CONFIG_DIRS").unwrap_or_else(|| "/etc/xdg".into()),
         )
         .filter(|path| path.is_absolute())
-        .map(|path| path.join("autostart").join(format!("{APP_ID}.desktop")))
+        .map(|path| path.join("autostart").join(&file))
         .collect(),
+        profile,
         desktops: std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
             .split(':')
@@ -97,13 +109,69 @@ fn quoted_argument(text: &str) -> String {
     value(&quoted)
 }
 
-fn command(program: &Path) -> io::Result<String> {
+/// The script of the entry of a profile other than the normal one: the program and the data
+/// directory are its arguments.
+const PROFILE_SCRIPT: &str = r#"exec "$0" --no-activate --data-dir "$1""#;
+
+fn command(program: &Path, profile: &Profile) -> io::Result<String> {
     // GIO checks the Exec binary before expanding %%: pass the path as an argument.
+    Ok(match profile {
+        Profile::Normal => format!(
+            "/bin/sh -c {} {}",
+            quoted_argument(r#"exec "$0" --no-activate"#),
+            quoted_argument(program_text(program)?)
+        ),
+        Profile::Other { directory, .. } => format!(
+            "{} {}",
+            profile_prefix(program)?,
+            quoted_argument(program_text(directory)?)
+        ),
+    })
+}
+
+/// The start of the command of every profile entry of a program, before its data directory.
+fn profile_prefix(program: &Path) -> io::Result<String> {
     Ok(format!(
         "/bin/sh -c {} {}",
-        quoted_argument(r#"exec "$0" --no-activate"#),
+        quoted_argument(PROFILE_SCRIPT),
         quoted_argument(program_text(program)?)
     ))
+}
+
+/// Removes the entries at login of this program: of the normal profile, as the settings do,
+/// and every entry of another profile whose command starts this program. The entries of
+/// another installation are left.
+pub(super) fn remove_every_entry_of_this_program() -> io::Result<()> {
+    let program = this_program()?;
+    running(Profile::Normal)?.remove()?;
+    remove_profile_entries(&autostart_directory()?, &program)
+}
+
+fn remove_profile_entries(directory: &Path, program: &Path) -> io::Result<()> {
+    let prefix = format!("{} ", profile_prefix(program)?);
+    let files = match fs::read_dir(directory) {
+        Ok(files) => files,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for file in files {
+        let path = file?.path();
+        let named = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(&format!("{APP_ID}.profile.")) && name.ends_with(".desktop")
+            });
+        if !named {
+            continue;
+        }
+        if let Some(entry) = Autostart::read_at(&path)?
+            && field(&entry, "Exec").is_some_and(|exec| exec.starts_with(&prefix))
+        {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 fn field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -168,6 +236,10 @@ impl Autostart {
         let Some(exec) = field(entry, "Exec") else {
             return Ok(false);
         };
+        // The entry of another profile is this program with this directory, as written.
+        if matches!(self.profile, Profile::Other { .. }) {
+            return Ok(exec == command(&self.program, &self.profile)?);
+        }
         let path = program_text(&self.program)?;
         let quoted = quoted_argument(path);
         let direct = exec == quoted
@@ -191,7 +263,7 @@ impl Autostart {
                             .is_ok_and(|program| candidate == program)
                     })
             });
-        Ok(exec == command(&self.program)? || direct || plain || alias)
+        Ok(exec == command(&self.program, &self.profile)? || direct || plain || alias)
     }
 }
 
@@ -222,9 +294,17 @@ impl Startup for Autostart {
 
     fn set(&self, enabled: bool) -> io::Result<Status> {
         let previous = self.read()?.unwrap_or_default();
-        let command = command(&self.program)?;
+        let command = command(&self.program, &self.profile)?;
         if !enabled && !self.owns(&previous)? {
             return Ok(Status::Off);
+        }
+        // The entry of another profile is the file of this program alone, and no system entry
+        // has its name: it is removed, not disabled.
+        if !enabled && matches!(self.profile, Profile::Other { .. }) {
+            if Self::read_at(&self.path)?.is_some() {
+                fs::remove_file(&self.path)?;
+            }
+            return self.status();
         }
         let own = [
             "Type",
@@ -257,7 +337,8 @@ impl Startup for Autostart {
             target.push('\n');
         }
         let content = format!(
-            "[Desktop Entry]\nType=Application\nName=Junto\nExec={command}\nTryExec={}\nTerminal=false\nHidden={}\nX-GNOME-Autostart-enabled={}\n{kept}{other}",
+            "[Desktop Entry]\nType=Application\nName={}\nExec={command}\nTryExec={}\nTerminal=false\nHidden={}\nX-GNOME-Autostart-enabled={}\n{kept}{other}",
+            value(&self.profile.shown_name()),
             value(program_text(&self.program)?),
             !enabled,
             enabled

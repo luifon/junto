@@ -8,13 +8,13 @@ use junto_authz::{Request, ServerPermission};
 use junto_protocol::{account::Avatar, audit::AuditEvent, error::ErrorCode, events::Event};
 use sha2::{Digest, Sha256};
 
-use super::account::{ImageBytes, limit_change};
+use super::account::{ImageBytes, PictureBefore, limit_change, require_before};
 use crate::{
     access::Access,
     audit::{self, About},
     error::{ApiError, ApiResult},
     events,
-    extract::{Bearer, ClientAddress},
+    extract::{ApiQuery, Bearer, ClientAddress},
     image, read,
     state::AppState,
     transact,
@@ -73,14 +73,16 @@ pub async fn get_logo(
 }
 
 /// Sets the public logo. The caller is a server administrator with a session.
-#[utoipa::path(put, path = "/api/v1/server/logo", tag = "server", security(("session" = [])),
+#[utoipa::path(put, path = "/api/v1/server/logo", tag = "server", security(("session" = [])), params(PictureBefore),
     request_body(content((inline(ImageBytes) = "image/png"), (inline(ImageBytes) = "image/jpeg"), (inline(ImageBytes) = "image/webp"))),
     responses((status = 200, body = Avatar), ApiError))]
 pub async fn set_logo(
     State(app): State<AppState>,
     bearer: Bearer,
+    ApiQuery(before): ApiQuery<PictureBefore>,
     body: Bytes,
 ) -> ApiResult<Json<Avatar>> {
+    let condition = before.read()?;
     let now = app.now();
     let mut counted = false;
     transact!(app, |connection| {
@@ -103,6 +105,11 @@ pub async fn set_logo(
             })?;
         limit_change(&app, &access, &mut counted)?;
         let hash: [u8; 32] = Sha256::digest(&body).into();
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("select hash from server_logo where singleton")
+                .fetch_optional(&mut *connection)
+                .await?;
+        require_before(condition, stored.as_deref(), &hash)?;
         let logo = Avatar {
             hash: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
             media_type: image.kind,

@@ -497,8 +497,7 @@ check "the backup that expired is stored until the next backup begins" \
 # removes them before it begins: no row names them, and they are older than 24 hours.
 unnamed=$(sed -n -E 's/^(unnamed|skip) ((attachments|recordings)\/[0-9a-f-]{36})( changed_recently)?$/\2/p' "$work/restored.log")
 printf '%s\n' "$unnamed" | compose exec -T server sh -c 'cd /var/lib/junto && while IFS= read -r directory; do touch -d "2 days ago" "$directory" || exit 1; done'
-# 40 000 further directories without a row, two days old, so that the removal of the server
-# runs for some seconds.
+# 40 000 further directories without a row, two days old.
 generated=$(compose exec -T server sh -c 'cd /var/lib/junto/attachments || exit 1
 names=$(od -An -v -tx1 -N 640000 /dev/urandom | tr -d " \n" | fold -w 32 | sed -E "s/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/")
 printf "%s\n" "$names" | xargs mkdir
@@ -517,18 +516,43 @@ removals() {
 # A backup that gets SIGINT in its process group, as from Ctrl-C, while the server removes
 # those directories, which is before the backup begins. The docker client of the removal gets
 # the signal too. `docker compose exec` does not pass the signal on, so the command in the
-# server container runs on to its end. The program in front of docker states whether the
-# removal ran when it sent the signal.
-in_front " unnamed-files" "        '$real' \"\$@\" &
+# server container runs on to its end. The program in front of docker runs the removal in a
+# shell that stops itself before it becomes the removal, so that the removal is held until the
+# checks below have run, whatever the speed of the disk. The program sends the signal once
+# that shell is stopped, and states whether it was.
+cat > "$work/held" <<HELD
+#!/bin/sh
+# held [<signal>]: sends the signal to the held removal in the server container, and prints the
+# number of its processes that are stopped.
+exec '$real' compose --env-file '$work/env' -f local.yaml exec -T server sh -c '
+    for process in /proc/[0-9]*; do
+        case "\$(tr "\\\\000" " " < "\$process/cmdline" 2>/dev/null)" in
+            *"unnamed-file"[s]" --remov"[e]*) ;;
+            *) continue ;;
+        esac
+        [ -z "\$1" ] || kill -"\$1" "\${process#/proc/}"
+        case "\$(cut -d ")" -f 2 "\$process/stat" 2>/dev/null)" in " T "*) echo stopped ;; esac
+    done | grep -c stopped; true' sh "\${1:-}" < /dev/null
+HELD
+chmod +x "$work/held"
+in_front " unnamed-files" "        for argument do
+            shift
+            if [ \"\$argument\" = junto-server ]; then
+                set -- \"\$@\" sh -c 'kill -STOP \$\$; exec junto-server \"\$@\"' sh
+            else
+                set -- \"\$@\" \"\$argument\"
+            fi
+        done
+        '$real' \"\$@\" &
         call=\$!
         trap : INT
-        found=0
+        held=0
         tries=0
-        while [ \"\$found\" = 0 ] && kill -0 \"\$call\" 2>/dev/null && [ \"\$tries\" -lt 100 ]; do
-            found=\$('$real' compose --env-file '$work/env' -f local.yaml exec -T server sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr \"\\\\000\" \" \" | grep -c \"[u]nnamed-files --remove\"' < /dev/null 2>/dev/null)
+        while [ \"\$held\" = 0 ] && kill -0 \"\$call\" 2>/dev/null && [ \"\$tries\" -lt 100 ]; do
+            held=\$('$work/held' 2>/dev/null)
             tries=\$((tries + 1))
         done
-        if [ \"\$found\" != 0 ]; then echo active > '$work/removal'; else echo ended > '$work/removal'; fi
+        if [ \"\$held\" = 1 ]; then echo active > '$work/removal'; else echo \"stopped: \$held\" > '$work/removal'; fi
         kill -INT -- -\"\$(cat '$work/script')\"
         wait \"\$call\"
         exit \$?"
@@ -540,6 +564,7 @@ check "it states that no backup was written" "$(grep -c 'backup: no backup was w
 check "it leaves no directory" "$([ -e "$work/stopped" ] && echo exists)" ""
 check "it began no backup: the backup that expired is still the one stored backup" \
     "$(compose exec -T postgres psql -U junto -d junto -At -c 'select count(*) from backups' < /dev/null)" "1"
+"$work/held" CONT > /dev/null
 ends=$(($(date +%s) + 300))
 while [ "$(removals)" != 0 ] && [ "$(date +%s)" -lt "$ends" ]; do
     sleep 1

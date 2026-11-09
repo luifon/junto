@@ -418,10 +418,14 @@ impl RenderOnce for Button {
         // when the button takes the focus again; only an enabled button tracks it.
         let focus = super::reveal::handle(&self.id, window, cx);
         #[cfg(feature = "test-support")]
-        let placed = super::placed::placed(match self.selector {
-            Some(selector) => selector.into(),
-            None => format!("{}", self.id).into(),
-        });
+        let placed = super::placed::placed(
+            match self.selector {
+                Some(selector) => selector.into(),
+                None => format!("{}", self.id).into(),
+            },
+            label.clone(),
+            self.selected,
+        );
         let mut frame = div()
             .id(self.id)
             .role(Role::Button)

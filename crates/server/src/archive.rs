@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::access::{ChannelRecord, stored_channel};
 use crate::error::{ApiError, ApiResult};
 use crate::events;
-use crate::routes::channels::{Removed, remove_channel};
+use crate::routes::channels::{Departures, Removed, remove_channel};
 use crate::state::AppState;
 use crate::transact;
 
@@ -81,9 +81,14 @@ pub async fn view(
             .bind(record.channel.id)
             .fetch_one(connection)
             .await?;
+    let deletes_at = deletes_at(&record, notice_at, days, now);
     Ok(ArchivedChannel {
-        deletes_at: deletes_at(&record, notice_at, days, now),
-        channel: record.channel,
+        deletes_at,
+        // An archived channel is in no list, so it has no place there (ADR 0304).
+        channel: junto_protocol::structure::Channel {
+            position: 0,
+            ..record.channel
+        },
         archived_at,
     })
 }
@@ -194,7 +199,10 @@ pub async fn delete_due(app: &AppState) -> ApiResult<()> {
                     name: &record.channel.name,
                     permanent_message_count: record.permanent_message_count,
                 };
-                remove_channel(connection, &app.calls, now, &removed, None).await?;
+                let mut departures = Departures::default();
+                let removing = (now, &mut departures);
+                remove_channel(connection, &app.calls, removing, &removed, None).await?;
+                departures.number(connection, now).await?;
                 Ok(true)
             })
         };

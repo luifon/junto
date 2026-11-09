@@ -85,6 +85,7 @@ pub enum ActionKind {
     LogOut,
     LogOutByPerson,
     ForgetAccount,
+    ForgetAccountHere,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,8 +120,14 @@ pub enum AccessAction {
     /// key of this device stay.
     LogOutByPerson,
     /// Deletes the key of this device for the server. The device can then join as a new
-    /// account. A banned account stays banned on the server.
+    /// account. A banned account stays banned on the server. A waiting request, and the
+    /// return of an inactive account, is first withdrawn on the server (ADR 0712).
     ForgetAccount,
+    /// Forgets the account as `ForgetAccount` does, without telling the server: for a
+    /// server that cannot be reached, or a release without the withdrawal route (ADR 0712).
+    /// A request that waits stays on the server, and an approval of it makes an account
+    /// that this device does not reach.
+    ForgetAccountHere,
 }
 
 impl AccessAction {
@@ -135,6 +142,7 @@ impl AccessAction {
             Self::LogOut => ActionKind::LogOut,
             Self::LogOutByPerson => ActionKind::LogOutByPerson,
             Self::ForgetAccount => ActionKind::ForgetAccount,
+            Self::ForgetAccountHere => ActionKind::ForgetAccountHere,
         }
     }
 
@@ -181,9 +189,13 @@ pub fn actions(state: &AccessState) -> &'static [ActionKind] {
             K::RequestLink,
             K::ClaimOwner,
         ],
-        AccessState::WaitingForApproval { .. } => {
-            &[K::Check, K::Join, K::ClaimOwner, K::ForgetAccount]
-        }
+        AccessState::WaitingForApproval { .. } => &[
+            K::Check,
+            K::Join,
+            K::ClaimOwner,
+            K::ForgetAccount,
+            K::ForgetAccountHere,
+        ],
         AccessState::WaitingForLink { .. } => &[
             K::Check,
             K::RequestLink,
@@ -196,7 +208,13 @@ pub fn actions(state: &AccessState) -> &'static [ActionKind] {
         AccessState::LoggedOutByPerson { .. } => &[K::LogIn],
         AccessState::LoggedIn { .. } => &[K::Check, K::LogOut, K::LogOutByPerson],
         AccessState::Banned { .. } => &[K::Check, K::ForgetAccount],
-        AccessState::Inactive { .. } => &[K::Check, K::Join, K::RequestAccess, K::ForgetAccount],
+        AccessState::Inactive { .. } => &[
+            K::Check,
+            K::Join,
+            K::RequestAccess,
+            K::ForgetAccount,
+            K::ForgetAccountHere,
+        ],
         AccessState::Deleted { .. } => &[K::Check, K::ForgetAccount],
     }
 }
@@ -714,7 +732,13 @@ mod tests {
         };
         assert_eq!(
             actions(&inactive),
-            [K::Check, K::Join, K::RequestAccess, K::ForgetAccount]
+            [
+                K::Check,
+                K::Join,
+                K::RequestAccess,
+                K::ForgetAccount,
+                K::ForgetAccountHere
+            ]
         );
         let deleted = AccessState::Deleted { account_id: None };
         assert_eq!(actions(&deleted), [K::Check, K::ForgetAccount]);

@@ -10,7 +10,7 @@ use junto_protocol::secret::{InviteCode, LinkCode, OwnerCode};
 
 use super::*;
 use crate::address::ServerAddress;
-use crate::api::testing::{FakeServer, Fault};
+use crate::api::testing::{FakeServer, Fault, OTHER_AVATAR};
 use crate::api::{ChallengeMismatch, TransportErrorKind, TransportFuture};
 use crate::api::{HttpRequest, TransportError};
 use crate::flow::add_server::{AddServerAction, AddServerActionKind, AddServerState};
@@ -789,6 +789,78 @@ async fn a_kept_key_of_another_address_withdraws_its_request_before_it_is_discar
     assert!(matches!(flow.view().state, AddServerState::Preview(_)));
 }
 
+/// A server that cannot be reached, or a release without the withdrawal route, refuses the
+/// withdrawal every time. The person can still forget the account on this device; the
+/// server is not told, and its request stays (ADR 0712).
+#[tokio::test(start_paused = true)]
+async fn an_account_is_forgotten_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    let key = handle.device_public_key().unwrap();
+
+    server.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+    assert!(
+        handle
+            .access()
+            .actions
+            .contains(&ActionKind::ForgetAccountHere)
+    );
+    server.set_down(true);
+    assert!(handle.dispatch(AccessAction::ForgetAccount).await.is_err());
+    handle
+        .dispatch(AccessAction::ForgetAccountHere)
+        .await
+        .unwrap();
+    server.set_down(false);
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount { notice: None }
+    );
+    assert!(!device.client.data_dir().key_file(handle.id()).exists());
+    assert_eq!(server.waiting_requests().len(), 1);
+    assert_eq!(server.waiting_requests()[0].1, key);
+    assert_eq!(server.count("/join-requests/withdrawal"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_of_another_address_is_discarded_here_when_the_server_cannot_be_told() {
+    let network = Arc::new(Network::default());
+    let real = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(ask("Grace")).await.unwrap();
+    real.set_down(true);
+    device
+        .client
+        .remove_server_when_free(handle.id())
+        .await
+        .unwrap();
+    real.set_down(false);
+
+    network.plug("moved", real.clone());
+    let flow = device.client.add_server();
+    let fetch = AddServerAction::Fetch {
+        address: "moved.example.test".to_owned(),
+    };
+    assert!(flow.dispatch(fetch).await.is_err());
+    real.refuse_next("/join-requests/withdrawal", 404, "not_found");
+    assert!(flow.dispatch(AddServerAction::DiscardKey).await.is_err());
+    assert!(device.client.data_dir().key_file(real.server_id()).exists());
+
+    flow.dispatch(AddServerAction::DiscardKeyHere)
+        .await
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(real.server_id()).exists());
+    assert!(matches!(flow.view().state, AddServerState::Preview(_)));
+    assert_eq!(real.waiting_requests().len(), 1);
+    assert_eq!(real.count("/join-requests/withdrawal"), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_that_already_waits_is_shown_with_the_name_that_the_server_holds() {
     let network = Arc::new(Network::default());
@@ -1456,6 +1528,10 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     let on_newer = add(&client, "newer").await;
     let on_older = add(&client, "older").await;
     let on_future = add(&client, "future").await;
+    // A server without a common version is incompatible from its save, with the reason
+    // that the preview found (ADR 0713).
+    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
+    assert_eq!(on_future.reach(), Reach::Incompatible(incompatible));
 
     on_newer.dispatch(claim()).await.unwrap();
     on_older.dispatch(claim()).await.unwrap();
@@ -1474,7 +1550,6 @@ async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     on_newer.api().own_account().await.unwrap();
     assert_eq!(newer.seen().last().unwrap(), "Get /api/v2/account");
 
-    let incompatible = Incompatibility::ClientTooOld { server_oldest: 3 };
     assert_eq!(
         on_future.dispatch(claim()).await,
         Err(FlowError::Incompatible(incompatible))
@@ -2084,7 +2159,11 @@ async fn a_key_without_a_book_entry_is_not_used_at_another_address() {
     ));
     assert_eq!(
         view.actions,
-        [AddServerActionKind::DiscardKey, AddServerActionKind::Reset]
+        [
+            AddServerActionKind::DiscardKey,
+            AddServerActionKind::DiscardKeyHere,
+            AddServerActionKind::Reset
+        ]
     );
     assert_eq!(
         flow.dispatch(AddServerAction::Save {
@@ -2619,7 +2698,13 @@ async fn the_avatar_of_the_preset_is_sent_to_an_account_that_this_device_created
     assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
     // The name of the claim stays. The name of the preset is not sent after it.
     assert_eq!(server.name_of(account_id), "Ada");
-    assert_eq!(server.count("/account"), 0);
+    // The upload of the avatar reads the account first (ADR 0119); no name is changed.
+    assert!(
+        !server
+            .seen()
+            .iter()
+            .any(|line| line.starts_with("Patch ") && line.ends_with("/account"))
+    );
     assert_eq!(server.count("/account/avatar"), 1);
     owner.dispatch(AccessAction::Check).await.unwrap();
     assert_eq!(owner.apply_profile().await.unwrap(), ProfileSync::Applied);
@@ -2659,6 +2744,58 @@ async fn the_avatar_of_the_preset_is_sent_to_an_account_that_this_device_created
     assert_eq!(server.avatar_of(logged_in(&without_avatar)), None);
 }
 
+/// The preset keeps the condition "no picture" at every try (ADR 0119): a picture that another
+/// device of the account stores first is never replaced, neither by the repetition of a cut
+/// try nor at a later login.
+#[tokio::test(start_paused = true)]
+async fn a_preset_avatar_never_replaces_a_picture_that_another_device_stored_first() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 2);
+    let first = device(&network);
+    first.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = first.add("acme").await;
+    // The first try is stored and its connection cut; another device stores its picture
+    // before the repetition, which gets the conflict.
+    server.fail(
+        "/account/avatar",
+        [Fault::CutAfterWork, Fault::OtherAvatarFirst],
+    );
+    handle.dispatch(join("CODE")).await.unwrap();
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
+    assert_eq!(server.count("/account/avatar"), 2);
+    // The next login sends nothing.
+    let handle = first.reopened(&network).servers().remove(0);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    handle.connect().await.unwrap();
+    assert_eq!(
+        handle.apply_profile().await.unwrap(),
+        ProfileSync::NotNeeded
+    );
+    assert_eq!(server.count("/account/avatar"), 2);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
+
+    // A try that failed leaves the preset waiting; a picture stored before the next login is
+    // kept, and the preset is not wanted any more.
+    let other = device(&network);
+    other.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = other.add("acme").await;
+    server.fail("/account/avatar", [Fault::NoConnection]);
+    handle.dispatch(join("CODE")).await.unwrap();
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    server.store_avatar(account_id, OTHER_AVATAR.to_vec());
+    let handle = other.reopened(&network).servers().remove(0);
+    handle.connect().await.unwrap();
+    assert_eq!(
+        handle.apply_profile().await.unwrap(),
+        ProfileSync::NotNeeded
+    );
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(OTHER_AVATAR));
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_failed_try_to_send_the_avatar_is_counted_and_repeated_at_the_next_login() {
     let network = Arc::new(Network::default());
@@ -2668,7 +2805,10 @@ async fn a_failed_try_to_send_the_avatar_is_counted_and_repeated_at_the_next_log
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
 
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
     handle.dispatch(join("CODE")).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -2736,7 +2876,10 @@ async fn a_preset_whose_avatar_was_removed_or_replaced_by_other_bytes_sends_noth
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 2);
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
 
     let removed = device(&network);
     removed.client.profile().set_avatar(AVATAR).unwrap();
@@ -2788,7 +2931,7 @@ async fn the_state_of_the_preset_belongs_to_the_account_that_this_device_created
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(join("CODE")).await.unwrap();
     let created = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -2918,7 +3061,7 @@ async fn a_try_that_started_before_a_removal_does_not_send_the_avatar_after_a_re
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(claim()).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -3002,7 +3145,7 @@ async fn two_tries_to_send_the_avatar_at_the_same_time_send_it_once() {
     let device = device(&network);
     device.client.profile().set_avatar(AVATAR).unwrap();
     let handle = device.add("acme").await;
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(join("CODE")).await.unwrap();
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
     assert_eq!(server.count("/account/avatar"), 1);
@@ -3024,7 +3167,10 @@ async fn a_stored_avatar_that_cannot_be_sent_ends_the_waiting_and_another_fault_
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 2);
-    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+    server.fail(
+        "/account/avatar",
+        [Fault::NoConnection, Fault::NoConnection],
+    );
 
     let large = device(&network);
     large.client.profile().set_avatar(AVATAR).unwrap();
@@ -3079,7 +3225,7 @@ async fn the_avatar_is_sent_at_the_login_that_follows_an_approved_join_request()
     assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
     assert_eq!(server.count("/account/avatar"), 0);
     server.decide_request(handle.device_public_key().unwrap(), true);
-    server.fail("/account/avatar", [Fault::LoseRequest]);
+    server.fail("/account/avatar", [Fault::NoConnection]);
     handle.dispatch(AccessAction::Check).await.unwrap();
     let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
@@ -4765,4 +4911,177 @@ async fn token_search_capabilities_use_server_discovery_and_reject_another_serve
         fixed.capabilities().await,
         Err(ApiError::InvalidResponse { status: 200, .. })
     ));
+}
+
+/// Another program holds the lock of the data directory while the person logs in after a
+/// logout of the person, whose end is written to the book first. The login fails at once
+/// and says so, and no thread of the runtime of the client waits for the other program
+/// (ADR 0710). The client runs on a runtime of its own, as in the application.
+#[test]
+fn a_login_while_another_program_holds_the_data_directory_says_so_at_once() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+
+    let login = handle.dispatch(AccessAction::LogIn);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(login));
+    });
+    let answered = receiver.recv_timeout(Duration::from_secs(30));
+    other_program.unlock().unwrap();
+    assert_eq!(
+        answered.expect("the login waited for the other program"),
+        Err(FlowError::DataHeld)
+    );
+    let view = handle.access();
+    assert!(matches!(view.state, AccessState::LoggedOutByPerson { .. }));
+    assert_eq!(view.error, Some(FlowError::DataHeld));
+    assert!(handle.entry().logged_out);
+
+    driver
+        .block_on(handle.dispatch(AccessAction::LogIn))
+        .unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    let book = device.reopened(&network);
+    assert!(!book.servers()[0].entry().logged_out);
+}
+
+/// Runs an action of a server on a thread of its own and waits at most 30 seconds for its
+/// answer: an action that waited for another program would not answer.
+fn answered_while_held(
+    action: impl Future<Output = Result<(), FlowError>> + Send + 'static,
+) -> Result<(), FlowError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = sender.send(runtime.block_on(action));
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the action waited for the other program")
+}
+
+/// The lock of the data directory as another program holds it: a handle of its own.
+fn held_by_another_program(device: &Device) -> std::fs::File {
+    let other_program = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device.directory.path().join("junto").join("lock"))
+        .unwrap();
+    other_program.lock().unwrap();
+    other_program
+}
+
+/// Forgetting an account on this device and creating the key of a join take the lock of the
+/// data directory on the runtime of the client too: while another program holds it they
+/// answer at once that another program changes the data (ADR 0710).
+#[test]
+fn forget_here_and_a_join_do_not_wait_for_another_program() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("JOIN-CODE", 1);
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (waiting, fresh) = driver.block_on(async {
+        let waiting = device.add("acme").await;
+        waiting.dispatch(ask("Grace")).await.unwrap();
+        let other = network.host("harbor");
+        other.add_invite("JOIN-CODE", 1);
+        let fresh = device.add("harbor").await;
+        (waiting, fresh)
+    });
+    let other_program = held_by_another_program(&device);
+
+    let forgotten = answered_while_held(waiting.dispatch(AccessAction::ForgetAccountHere));
+    let joined = answered_while_held(fresh.dispatch(AccessAction::Join {
+        code: InviteCode::new("JOIN-CODE"),
+        name: "Grace".to_owned(),
+        device_name: "Laptop".to_owned(),
+    }));
+    other_program.unlock().unwrap();
+    assert_eq!(forgotten, Err(FlowError::DataHeld));
+    assert_eq!(joined, Err(FlowError::DataHeld));
+    assert!(device.client.data_dir().key_file(waiting.id()).exists());
+    assert!(!device.client.data_dir().key_file(fresh.id()).exists());
+
+    driver
+        .block_on(waiting.dispatch(AccessAction::ForgetAccountHere))
+        .unwrap();
+    assert!(!device.client.data_dir().key_file(waiting.id()).exists());
+}
+
+/// Another thread of the same client holds the lock of the data directory for a moment, as a
+/// background write of the window does: the write of an action waits for it and succeeds,
+/// and is not told as a change of another program (ADR 0710).
+#[test]
+fn a_write_waits_for_another_thread_of_the_same_process() {
+    let network = Arc::new(Network::default());
+    let _server = network.host("acme");
+    let device = device(&network);
+    let driver = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = driver.block_on(async {
+        let handle = device.add("acme").await;
+        handle.dispatch(claim()).await.unwrap();
+        handle.dispatch(AccessAction::LogOutByPerson).await.unwrap();
+        handle
+    });
+    // Right before the write, another thread takes the lock and keeps it for a moment.
+    let data_dir = device.client.data_dir().clone();
+    let holder: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let started = holder.clone();
+    *device.client.inner.core.before_write.lock().unwrap() = Some(Arc::new(move || {
+        let mut started = started.lock().unwrap();
+        if started.is_some() {
+            return;
+        }
+        let (taken, has_taken) = std::sync::mpsc::channel();
+        let data_dir = data_dir.clone();
+        *started = Some(std::thread::spawn(move || {
+            let _lock = data_dir.lock().unwrap();
+            taken.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }));
+        has_taken.recv().unwrap();
+    }));
+    let login = handle.dispatch(AccessAction::LogIn);
+    assert_eq!(answered_while_held(login), Ok(()));
+    holder.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedIn { .. }
+    ));
+    assert!(!handle.entry().logged_out);
 }

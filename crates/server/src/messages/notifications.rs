@@ -74,8 +74,8 @@ pub async fn missed_call(
 /// recipient: the notification policy of each recipient (its level, its mute and its two
 /// mention switches, as `notification_policy` gives them), whether the message mentions the
 /// recipient (as `notification_mentioned` decides), and the read boundary of each are joined
-/// once for all of them, in place of functions that run for each recipient (open item CD6,
-/// ADR 0409).
+/// once for all of them, in place of functions that run for each recipient (ADR
+/// 0409).
 const INSERT_NOTICES: &str = "with m as materialized (
         select id, place_id, thread_root, readers from messages
         where id = $1 and author_id is not null and not deleted),

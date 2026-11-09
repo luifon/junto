@@ -97,6 +97,25 @@ pub fn data_dir_of_this_user() -> Result<PathBuf, LocationError> {
     default_data_dir(System::current(), |name| std::env::var_os(name))
 }
 
+/// The data directory of the normal profile of a user: the default of the system, without
+/// the directory that `JUNTO_DATA_DIR` chooses (ADR 0730). A profile chosen with that
+/// variable or with `--data-dir` is another profile.
+pub fn normal_data_dir(
+    system: System,
+    variable: impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, LocationError> {
+    default_data_dir(system, |name| {
+        (name != DATA_DIR_VARIABLE)
+            .then(|| variable(name))
+            .flatten()
+    })
+}
+
+/// The data directory of the normal profile of the current user on this system.
+pub fn normal_data_dir_of_this_user() -> Result<PathBuf, LocationError> {
+    normal_data_dir(System::current(), |name| std::env::var_os(name))
+}
+
 /// One opened data directory: the handles of the directory and of its key directory, and
 /// the paths of the files in it.
 #[derive(Debug, Clone)]
@@ -158,6 +177,10 @@ impl DataDir {
 
     pub(crate) fn lock(&self) -> Result<DirectoryLock, StorageError> {
         self.handles.root.lock()
+    }
+
+    pub(crate) fn try_lock(&self) -> Result<DirectoryLock, StorageError> {
+        self.handles.root.try_lock()
     }
 }
 

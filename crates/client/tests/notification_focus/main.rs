@@ -165,7 +165,7 @@ mod linux {
                     activate: false,
                     ..WindowStart::default()
                 };
-                let state = app::state_with_media(client, start, synthetic_media(), cx);
+                let state = app::state_with_media(client, start.clone(), synthetic_media(), cx);
                 app::open_main_window(state, start, cx).unwrap();
                 let other = WindowOptions {
                     titlebar: Some(TitlebarOptions {

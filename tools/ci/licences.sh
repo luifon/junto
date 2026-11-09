@@ -12,5 +12,12 @@ if [ "$("$deny" --version 2>/dev/null || true)" != "cargo-deny $JUNTO_CI_CARGO_D
     printf '\n=== Install cargo-deny %s\n' "$JUNTO_CI_CARGO_DENY_VERSION"
     cargo install --locked --force --root "$tools" "cargo-deny@$JUNTO_CI_CARGO_DENY_VERSION"
 fi
+# cargo deny reads whether a package is yanked from the index cache of the Cargo home, and the
+# cargo fetch that it runs first does not renew the entries of packages that are already there.
+# With a Cargo home kept from earlier runs, a version yanked after its entry was cached passed
+# (ADR 0905). A resolution without the lock file asks the registry for every package again; the
+# dry run writes no lock file.
+printf '\n=== The index entries of every package from the registry\n'
+cargo update --dry-run --quiet
 printf '\n=== Licences, sources and advisories\n'
 "$deny" check

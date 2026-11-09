@@ -81,13 +81,31 @@ class ClientLicenceTests(unittest.TestCase):
         for licence in sorted((licences.ROOT / "crates/client/assets/fonts").glob("*-OFL.txt")):
             labels = found[licences.normal(licence.read_bytes())]
             self.assertTrue(labels[0].endswith(f": {licence.name}"), labels)
-        [icons] = found[licences.normal((licences.LUCIDE / "LICENSE").read_bytes())]
+        [icons, signs] = found[licences.normal((licences.LUCIDE / "LICENSE").read_bytes())]
         self.assertTrue(icons.startswith("Lucide icons ") and icons.endswith(", and mic-held: LICENSE"), icons)
         for drawing in licences.LUCIDE.glob("*.svg"):
             self.assertIn(f" {drawing.stem},", icons)
+        self.assertTrue(signs.startswith("Tray signs ") and signs.endswith(": LICENSE-lucide"), signs)
+        named = signs.removeprefix("Tray signs ").removesuffix(": LICENSE-lucide").split(", ")
+        for sign in licences.TRAY.glob("*.svg"):
+            if sign.stem in licences.TRAY_OWN:
+                self.assertNotIn(sign.stem, named)
+            else:
+                self.assertIn(sign.stem, named)
+                self.assertIn(f"{sign.stem} from {licences.TRAY_SOURCES[sign.stem]}", document)
+        self.assertIn("except the icons and the tray signs that the section Icons names", document)
         apache = licences.normal((licences.ROOT / "LICENSE").read_bytes())
         self.assertEqual([text for text, _ in blocks(document)].count(apache), 1, "the Apache text is printed once")
         self.assertIn("livekit 0.9.4, standard text of Apache-2.0", found[apache])
+
+    def test_a_tray_sign_that_the_section_does_not_name_stops_the_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tray = pathlib.Path(temporary)
+            for sign in [*licences.TRAY_SOURCES, *licences.TRAY_OWN, "microphone-new"]:
+                (tray / f"{sign}.svg").write_text("<svg/>", encoding="utf-8")
+            (tray / "LICENSE-lucide").write_bytes((licences.TRAY / "LICENSE-lucide").read_bytes())
+            with mock.patch.object(licences, "TRAY", tray), self.assertRaisesRegex(ValueError, "microphone-new"):
+                licences.icon_section()
 
     def test_the_webrtc_licence_of_this_build_is_found(self):
         triple = host_triple()

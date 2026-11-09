@@ -40,6 +40,8 @@ pub async fn list_workspaces(
             sqlx::query_as("select id, name from workspaces where deleted_at is null order by id")
                 .fetch_all(&mut *connection)
                 .await?;
+        let ids: Vec<WorkspaceId> = rows.iter().map(|(id, _)| *id).collect();
+        let mut logos = super::workspace_logos::logos(connection, &ids).await?;
         let mut workspaces = Vec::new();
         for (id, name) in rows {
             let scope = access.workspace(connection, id).await?;
@@ -48,6 +50,7 @@ pub async fn list_workspaces(
                     id,
                     name,
                     is_default: id == default_workspace,
+                    logo: logos.remove(&id),
                 });
             }
         }
@@ -87,11 +90,12 @@ pub(crate) async fn create(
     name: &str,
 ) -> ApiResult<(Workspace, WorkspaceRole)> {
     access.require(Request::Server(ServerPermission::CreateWorkspace))?;
-    let (workspace_id, everyone) = bootstrap::create_workspace(connection, name, now).await?;
+    let (workspace_id, everyone) = bootstrap::create_workspace(connection, name, now, 0).await?;
     let workspace = Workspace {
         id: workspace_id,
         name: name.to_owned(),
         is_default: false,
+        logo: None,
     };
     let created = Event::WorkspaceCreated {
         workspace: workspace.clone(),
@@ -170,7 +174,6 @@ pub(crate) async fn rename(
     if renamed.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
-    let default_workspace = store::default_workspace(connection).await?;
     audit::record(
         connection,
         now,
@@ -182,10 +185,28 @@ pub(crate) async fn rename(
         },
     )
     .await?;
+    publish_update(connection, now, workspace_id).await
+}
+
+/// Tells the members of a workspace its name and logo after a change of either, and
+/// gives the workspace.
+pub(crate) async fn publish_update(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<Workspace> {
+    let default_workspace = store::default_workspace(connection).await?;
+    let name: Option<(String,)> =
+        sqlx::query_as("select name from workspaces where id = $1 and deleted_at is null")
+            .bind(workspace_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let (name,) = name.ok_or_else(ApiError::not_found)?;
     let workspace = Workspace {
         id: workspace_id,
-        name: name.to_owned(),
+        name,
         is_default: workspace_id == default_workspace,
+        logo: super::workspace_logos::logo(connection, workspace_id).await?,
     };
     let updated = Event::WorkspaceUpdated {
         workspace: workspace.clone(),

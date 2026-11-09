@@ -277,3 +277,117 @@ fn an_administrator_changes_the_limits_of_files_and_the_window_of_a_member_follo
             == Some(changed.clone())
     });
 }
+
+/// True when the administration shows the page of the workspaces.
+fn shows_workspaces_page(window: &mut Window) -> bool {
+    matches!(
+        window.admin().map(|view| view.scope),
+        Some(Scope::Server {
+            page: ServerPage::Workspaces(_),
+            ..
+        })
+    )
+}
+
+/// An administrator sets the logo of a workspace on the page of the workspaces (ADR 0122):
+/// the workspace list of the owner and of a member draws it in the square of the
+/// workspace, and draws the generated picture again after its removal.
+#[gpui::test]
+fn an_administrator_sets_and_removes_the_logo_of_a_workspace_and_the_workspace_lists_follow(
+    cx: &mut TestAppContext,
+) {
+    use crate::harness::selector;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_owner_directory, mut owner) = named(cx, "Ada");
+    owner.find_server(&server.address());
+    owner.join_with_code(&server.owner_code().unwrap());
+    owner.until_ready();
+    let code = invite(&world, &owner.handle(), Vec::new());
+    let (_member_directory, mut member) = named(cx, "Luca");
+    member.find_server(&server.address());
+    member.join_with_code(code.expose());
+    member.until_ready();
+    let workspace = owner.view().workspace().unwrap().id;
+    let row_logo = selector(format!(
+        "workspace-row-logo-{}",
+        workspace.as_uuid().as_u128()
+    ));
+    assert!(!owner.shows(row_logo) && !member.shows(row_logo));
+
+    owner.open_administration();
+    open_page(&mut owner, "admin-nav-workspaces", shows_workspaces_page);
+    let remove = selector(format!("workspace-logo-remove-{workspace}"));
+    let page_logo = selector(format!("workspace-logo-{workspace}"));
+    assert!(owner.shows(selector(format!("workspace-logo-choose-{workspace}"))));
+    assert!(!owner.shows(remove) && !owner.shows(page_logo));
+
+    // The administrator chooses a file and saves its cut: the server stores the square.
+    let files = tempfile::tempdir().unwrap();
+    let chosen = files.path().join("logo.png");
+    std::fs::write(&chosen, crate::harness::picture_png(1600, 900)).unwrap();
+    owner.in_shell(|shell, _, cx| shell.use_workspace_logo(workspace, chosen, cx));
+    let crop = owner.until_picture_crop();
+    assert_eq!(
+        crop.purpose,
+        junto_client::state::picture_crop::PicturePurpose::WorkspaceLogo(
+            owner.handle().id(),
+            workspace
+        )
+    );
+    owner.click("picture-crop-save");
+    owner.until(
+        "the page and the workspace list of the owner show the logo",
+        |window| window.shows(page_logo) && window.shows(remove) && window.shows(row_logo),
+    );
+    let stored = world
+        .run(owner.handle().api().workspace_logo(workspace))
+        .unwrap()
+        .unwrap();
+    let read = image::load_from_memory(&stored.bytes).unwrap();
+    // The square of the shorter side of the file; only a larger square is scaled down to
+    // 1024 pixels (ADR 0119).
+    assert_eq!((read.width(), read.height()), (900, 900));
+
+    // The window of the member follows the event: the member does nothing.
+    member.until(
+        "the workspace list of the member shows the logo",
+        |window| window.shows(row_logo),
+    );
+    assert!(
+        member.view().servers[0]
+            .workspaces
+            .iter()
+            .any(|row| row.id == workspace && row.logo.is_some())
+    );
+
+    // The removal asks first, and nothing is sent before the answer.
+    click_in_page(&mut owner, remove);
+    click_in_page(&mut owner, "workspace-logo-remove-cancel");
+    assert!(owner.shows(remove));
+    assert!(
+        world
+            .run(owner.handle().api().workspace_logo(workspace))
+            .unwrap()
+            .is_some()
+    );
+    click_in_page(&mut owner, remove);
+    click_in_page(&mut owner, "workspace-logo-remove-confirm");
+    owner.until("the page shows no logo", |window| {
+        !window.shows(page_logo) && !window.shows(remove)
+    });
+    member.until(
+        "the workspace list of the member shows the generated picture",
+        |window| !window.shows(row_logo),
+    );
+    owner.until(
+        "the workspace list of the owner shows the generated picture",
+        |window| !window.shows(row_logo),
+    );
+    assert!(
+        world
+            .run(owner.handle().api().workspace_logo(workspace))
+            .unwrap()
+            .is_none()
+    );
+}

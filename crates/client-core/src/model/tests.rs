@@ -100,6 +100,7 @@ pub(crate) fn scene() -> Scene {
                 id: workspace_id,
                 name: "Studio".to_owned(),
                 is_default: true,
+                logo: None,
             },
             own_role_ids: vec![helpers.id],
             roles: vec![everyone.clone(), helpers.clone(), unheld],
@@ -380,6 +381,7 @@ fn structure_events_replace_whole_objects_and_keep_the_order_of_positions() {
         id: WorkspaceId::generate(),
         name: "Lab".to_owned(),
         is_default: false,
+        logo: None,
     };
     model.apply(&Event::WorkspaceCreated {
         workspace: created.clone(),
@@ -406,6 +408,7 @@ fn a_copy_shares_the_workspaces_that_an_event_did_not_change() {
         id: WorkspaceId::generate(),
         name: "Lab".to_owned(),
         is_default: false,
+        logo: None,
     };
     model.apply(&Event::WorkspaceCreated {
         workspace: other.clone(),
@@ -465,6 +468,7 @@ fn an_event_about_a_parent_that_the_state_does_not_hold_changes_nothing() {
                 id: elsewhere,
                 name: "Hidden".to_owned(),
                 is_default: false,
+                logo: None,
             },
         },
         Event::ChannelCreated {

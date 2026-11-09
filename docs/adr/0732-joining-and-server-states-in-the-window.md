@@ -28,7 +28,7 @@ Joining:
 - The result of an action is shown in the dialog that started it. When that dialog was closed before the action ended, the result is in the state of the server and changes no dialog that was opened later.
 - When an administrator decides a request while the person cancels it, nothing is removed: the state of the server shows the decision.
 - An action that the person asks for waits for an action that the client runs by itself on the same server, such as the check of a waiting request, and is not refused as `busy` (ADR 0712).
-- A server without a common API version can be added to the book from the dialog and not joined (ADR 0713). A key of the server for another address is told with the action that discards it (ADR 0711).
+- A server without a common API version can be added to the book from the dialog and not joined (ADR 0713). Its panel in the main area states the reason and offers "Check again" and "Remove". Test: `flows::the_panel_of_a_server_of_another_api_version_checks_again_and_removes`. A key of the server for another address is told with the action that discards it (ADR 0711).
 
 States of a server:
 

@@ -67,6 +67,7 @@ impl Participant {
             .arg("publish")
             .args(["--url", &join.media_url, "--token", join.token.expose()])
             .args(["--leave-after", "300"])
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

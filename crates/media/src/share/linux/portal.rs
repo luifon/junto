@@ -21,6 +21,16 @@ const WAIT: Duration = Duration::from_secs(15);
 
 type Results = HashMap<String, OwnedValue>;
 
+/// The source type of the ScreenCast portal for a kind: 1 a monitor, 2 a window. The portal
+/// has no type for the windows of one application (ADR 0751).
+fn source_type(kind: ShareKind) -> Option<u32> {
+    match kind {
+        ShareKind::Screen => Some(1),
+        ShareKind::Window => Some(2),
+        ShareKind::Application => None,
+    }
+}
+
 pub(super) fn error(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::Failed(error.to_string())
 }
@@ -179,9 +189,9 @@ impl Portal {
         parent: &str,
     ) -> Result<(Video, zbus::proxy::SignalStream<'static>), CaptureError> {
         let capabilities = self.capabilities().await?;
-        if !capabilities.kinds.contains(&kind) {
+        let Some(types) = source_type(kind).filter(|_| capabilities.kinds.contains(&kind)) else {
             return Err(CaptureError::Unsupported);
-        }
+        };
         let handle = token();
         let session_token = token();
         let expected = self.path("session", &session_token)?;
@@ -220,13 +230,7 @@ impl Portal {
         let handle = token();
         let mut options = HashMap::from([
             ("handle_token", Value::from(handle.as_str())),
-            (
-                "types",
-                Value::from(match kind {
-                    ShareKind::Screen => 1_u32,
-                    ShareKind::Window => 2_u32,
-                }),
-            ),
+            ("types", Value::from(types)),
             ("multiple", Value::from(false)),
         ]);
         if capabilities.version >= 2 {
@@ -276,14 +280,10 @@ impl Portal {
         if serial.is_none() && (node == 0 || node == u32::MAX) {
             return Err(error("the portal returned an invalid video node"));
         }
-        if let Some(actual) = properties.get("source_type") {
-            let expected = match kind {
-                ShareKind::Screen => 1,
-                ShareKind::Window => 2,
-            };
-            if u32::try_from(actual).map_err(error)? != expected {
-                return Err(error("the portal returned a different source kind"));
-            }
+        if let Some(actual) = properties.get("source_type")
+            && u32::try_from(actual).map_err(error)? != types
+        {
+            return Err(error("the portal returned a different source kind"));
         }
         let fd: zbus::zvariant::OwnedFd = self
             .proxy()

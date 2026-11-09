@@ -21,7 +21,7 @@ ADR 0201 states that each server reports the API versions it supports and that t
   - otherwise: no version in common;
   - the server reports no version.
 - Such a server stays in the server book and is shown as incompatible with that reason. The client sends it no request except the server information, and it holds no session for it. Every other server is unaffected.
-- A server with no common version can still be saved (ADR 0712), so that it works after an update of the client or of the server.
+- A server with no common version can still be saved (ADR 0712), so that it works after an update of the client or of the server. It is incompatible from its save, with the reason that the preview found: before, a saved server that had no account showed the paths to join until an action contacted it. Test: `manager::tests::each_server_gets_the_newest_api_version_that_both_sides_speak` in `crates/client-core`.
 - The versions that a build supports are a value that is given to the client when it is opened. The tests open a client that names version 2 as current and version 1 as previous, and run it against a server that reports both, against one that reports only version 1, and against one that reports only later versions.
 - A second API version adds, next to the route prefix, a module that translates between the wire types of the older version and the types that the flows use. This record does not define that module, because no second version exists.
 

@@ -172,6 +172,9 @@ pub enum ExportSave {
         written: u64,
     },
     Saved(PathBuf),
+    /// The file was saved before the last start of the application, and the data
+    /// directory does not hold its path (a file of format version 1, ADR 0710).
+    SavedEarlier,
     /// Why nothing was saved, as the page states it.
     Failed(String),
 }
@@ -272,6 +275,7 @@ impl AuditGroup {
             | AuditEvent::ServerPersonPermissionsSet { .. } => Self::Roles,
             AuditEvent::WorkspaceCreated { .. }
             | AuditEvent::WorkspaceRenamed { .. }
+            | AuditEvent::WorkspaceLogoChanged { .. }
             | AuditEvent::WorkspaceDeleted { .. }
             | AuditEvent::CategoryCreated { .. }
             | AuditEvent::CategoryUpdated { .. }
@@ -330,7 +334,7 @@ impl AuditGroup {
 /// Every action of the audit log that the filter by action offers, by its name in the
 /// protocol, with its group (ADR 0305). The server matches the name exactly. A test
 /// compares the list with the actions of the protocol.
-pub const ACTIONS: [(&str, AuditGroup); 81] = [
+pub const ACTIONS: [(&str, AuditGroup); 82] = [
     ("workspace_afk_set", AuditGroup::Calls),
     ("account_joined", AuditGroup::Members),
     ("account_removed", AuditGroup::Members),
@@ -371,6 +375,7 @@ pub const ACTIONS: [(&str, AuditGroup); 81] = [
     ("server_person_permissions_set", AuditGroup::Roles),
     ("workspace_created", AuditGroup::Structure),
     ("workspace_renamed", AuditGroup::Structure),
+    ("workspace_logo_changed", AuditGroup::Structure),
     ("workspace_deleted", AuditGroup::Structure),
     ("category_created", AuditGroup::Structure),
     ("category_updated", AuditGroup::Structure),
@@ -826,7 +831,22 @@ fn export_line(
             ExportStatus::Failed(export.failure.unwrap_or(ExportFailure::Failed))
         }
     };
-    let save = admin.exports.files.get(&(server_id, export.id)).cloned();
+    // A file saved before the last start is known from the data directory (ADR 0761).
+    let save = admin
+        .exports
+        .files
+        .get(&(server_id, export.id))
+        .cloned()
+        .or_else(|| {
+            let saved = &admin.exports.saved;
+            let account_id = model.account.id;
+            saved.contains(server_id, account_id, export.id).then(|| {
+                match saved.path(server_id, account_id, export.id) {
+                    Some(path) => ExportSave::Saved(path.to_owned()),
+                    None => ExportSave::SavedEarlier,
+                }
+            })
+        });
     let saving = matches!(save, Some(ExportSave::Saving { .. }));
     ExportLine {
         id: export.id,
@@ -1265,6 +1285,7 @@ mod tests {
             id,
             name: name.to_owned(),
             is_default,
+            logo: None,
         };
         Scene {
             server_id: ServerId::generate(),
@@ -1535,6 +1556,7 @@ mod tests {
             AuditEvent::ServerPersonPermissionsSet { .. } => 79,
             AuditEvent::VoiceChannelStatusUpdated { .. } => 80,
             AuditEvent::WorkspaceAfkSet { .. } => 81,
+            AuditEvent::WorkspaceLogoChanged { .. } => 82,
         }
     }
 
@@ -1749,6 +1771,13 @@ mod tests {
                     name: "Laboratory".to_owned(),
                 },
                 vec!["“Laboratory”"],
+            ),
+            (
+                AuditEvent::WorkspaceLogoChanged {
+                    workspace_id: scene.lab,
+                    logo: None,
+                },
+                vec!["logo", "“Lab”", "removed"],
             ),
             (
                 AuditEvent::WorkspaceRoleCreated {
@@ -2609,6 +2638,46 @@ mod tests {
         );
     }
 
+    /// After a restart the application holds no save of this run, and the data directory
+    /// tells which exports this device saved and where (ADR 0761).
+    #[test]
+    fn an_export_saved_before_a_restart_shows_where_its_file_is() {
+        let scene = scene();
+        let place = scene.in_general();
+        let (saved, earlier, of_other, untouched) =
+            (ready(place), ready(place), ready(place), ready(place));
+        let model = scene.model(with_exports(vec![
+            saved.clone(),
+            earlier.clone(),
+            of_other.clone(),
+            untouched.clone(),
+        ]));
+        let path = PathBuf::from("/downloads/junto-export-general-2027-01-15.zip");
+        let mut marks = junto_client_core::saved_exports::SavedExports::default();
+        marks.insert(scene.server_id, scene.own, saved.id, Some(path.clone()));
+        marks.insert(scene.server_id, scene.own, earlier.id, None);
+        marks.insert(
+            scene.server_id,
+            AccountId::generate(),
+            of_other.id,
+            Some(path.clone()),
+        );
+        let admin = AdminState {
+            exports: ExportFiles {
+                saved: marks,
+                ..ExportFiles::default()
+            },
+            ..AdminState::default()
+        };
+        let page = exports(scene.server_id, &model, &known(), &admin);
+        let rows = page.exports.loaded().unwrap();
+        assert_eq!(rows[0].save, Some(ExportSave::Saved(path)));
+        assert_eq!(rows[1].save, Some(ExportSave::SavedEarlier));
+        assert_eq!(rows[2].save, None);
+        assert_eq!(rows[3].save, None);
+        assert!(rows.iter().all(|row| row.can_save));
+    }
+
     #[test]
     fn the_file_of_an_export_is_named_after_its_channel_and_the_day_of_its_request() {
         let day = time().date();
@@ -2901,7 +2970,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..82).collect::<Vec<usize>>());
+        assert_eq!(places, (0..83).collect::<Vec<usize>>());
 
         // The filter by action offers each action of the protocol once, by the name that
         // the server matches, in the group of the action.

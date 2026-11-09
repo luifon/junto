@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -223,6 +224,128 @@ class Lanes(unittest.TestCase):
         self.assertEqual(status, 127)
         self.assertIn("/nonexistent/program: ", output)
         self.assertEqual(failures, "Window tests (exit 127): /nonexistent/program\n")
+
+    def test_a_command_that_writes_nothing_for_the_bound_is_ended_after_its_threads(self):
+        with tempfile.TemporaryDirectory(prefix="junto-silence-") as work:
+            started = Path(work) / "child"
+            silent = f"sh -c 'echo \"     Running tests/app.rs\"; sleep 60 & echo $! > {started}; wait; echo late'"
+            text = plan("lane app", "step Window tests", silent, "sh -c 'echo after'",
+                        "lane other", "step Other", "true")
+            reader = ["sh", "-c", "echo the threads of the test programs of $JUNTO_LINUX_INSTANCE"]
+            with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}), \
+                    unittest.mock.patch.object(lanes, "threads_command", lambda environment: reader):
+                status, seconds, output, failures = self.run_plan(text, wide=True)
+            self.assertEqual(status, 124, output)
+            self.assertLess(seconds, 20)
+            self.assertIn("wrote nothing for 1 s", output)
+            self.assertIn("the threads of the test programs of app", output)
+            self.assertIn("=== ended after 1 s without output", output)
+            self.assertNotIn("\nlate\n", output)
+            self.assertIn("after", output)
+            self.assertEqual(failures, f"Window tests (exit 124): {silent}\n")
+            child = int(started.read_text())
+            with self.assertRaises(ProcessLookupError, msg="the child of the ended command still runs"):
+                os.kill(child, 0)
+
+    def test_a_compile_that_writes_nothing_for_the_bound_is_not_ended(self):
+        # Cargo writes nothing while it compiles one large crate; only a program that it started
+        # has the bound.
+        compile = "sh -c 'echo \"   Compiling junto-client\"; sleep 3; echo \"    Finished\"; echo \"     Running x\"'"
+        text = plan("lane release", "step Panic reports", compile, "lane other", "step Other", "true")
+        with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}):
+            status, seconds, output, failures = self.run_plan(text, wide=True)
+        self.assertEqual((status, failures), (0, ""), output)
+        self.assertGreaterEqual(seconds, 3)
+        self.assertNotIn("wrote nothing", output)
+
+    def test_a_command_that_keeps_writing_runs_past_the_bound(self):
+        text = plan("lane app", "step Window tests", "sh -c 'for i in 1 2 3 4 5 6; do echo $i; sleep 0.5; done'",
+                    "lane other", "step Other", "true")
+        with unittest.mock.patch.dict(os.environ, {"JUNTO_CI_SILENCE": "1"}):
+            status, seconds, output, failures = self.run_plan(text, wide=True)
+        self.assertEqual((status, failures), (0, ""), output)
+        self.assertGreaterEqual(seconds, 3)
+        self.assertNotIn("wrote nothing", output)
+
+    def test_the_threads_are_read_in_the_build_container_of_the_lane(self):
+        command = lanes.threads_command({"JUNTO_LINUX_PREFIX": "junto-linux-x", "JUNTO_LINUX_INSTANCE": "app"})
+        self.assertEqual(command[:6], ["docker", "exec", "--privileged", "--user", "0", "junto-linux-x-app-build"])
+        self.assertIn("gdb -p", command[-1])
+        self.assertEqual(lanes.threads_command({})[5], "junto-linux-build")
+        self.assertIsNone(lanes.threads_command({"JUNTO_CI_LANES": "machine"}))
+        self.assertEqual(lanes.silence_of({}), 20 * 60)
+        self.assertEqual(lanes.silence_of({"JUNTO_CI_SILENCE": "90"}), 90)
+        self.assertEqual(lanes.silence_of({"JUNTO_CI_SILENCE": "x"}), 20 * 60)
+
+    def run_on_machine(self, text, machine):
+        """Runs a plan without the budget of the Linux job, as the Windows job does."""
+        with tempfile.TemporaryDirectory(prefix="junto-lanes-") as directory:
+            failures = Path(directory) / "failures"
+            failures.touch()
+            environment = {name: value for name, value in os.environ.items() if not name.startswith("JUNTO_LINUX_")}
+            environment["JUNTO_CI_LANES"] = "machine"
+            started = time.monotonic()
+            read, write = os.pipe()
+            saved = os.dup(1)
+            os.dup2(write, 1)
+            os.close(write)
+            try:
+                status = lanes.run(text, str(failures), environment, directory, machine=machine)
+            finally:
+                os.dup2(saved, 1)
+                os.close(saved)
+            output = b""
+            while chunk := os.read(read, 65536):
+                output += chunk
+            os.close(read)
+            return status, time.monotonic() - started, output.decode(), failures.read_text()
+
+    def test_on_the_machine_itself_lanes_whose_memory_fits_run_at_the_same_time(self):
+        show = "sh -c 'echo \"$CARGO_BUILD_JOBS ${JUNTO_LINUX_INSTANCE-none}\"; sleep 2'"
+        text = plan("lane server share 1 memory 3g", "step Server tests", show,
+                    "lane window share 3 memory 4g", "step Window tests", show, "step Unit tests", "sh -c 'exit 4'")
+        # 8 processors and 12 GiB available leave 8 GiB for the lanes.
+        status, seconds, output, failures = self.run_on_machine(text, (8, 12 * GIB))
+        self.assertEqual(status, 4, output)
+        self.assertLess(seconds, 3.9)
+        self.assertIn("Machine: 8 processors, 12288m available, 8192m for the lanes", output)
+        self.assertIn("Lanes: server, window, each when its memory fits", output)
+        self.assertIn("lane server starts: 3072m, 2 Cargo jobs", output)
+        self.assertIn("lane window starts: 4096m, 6 Cargo jobs", output)
+        self.assertIn("\n2 none\n", output)
+        self.assertIn("\n6 none\n", output)
+        self.assertEqual(failures, "Unit tests (exit 4): sh -c 'exit 4'\n")
+        positions = [output.index(f"=== {name}  lane ") for name in ("Server tests", "Window tests", "Unit tests")]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_a_machine_of_four_processors_runs_its_lanes_one_after_the_other(self):
+        show = "sh -c 'echo \"$CARGO_BUILD_JOBS\"; sleep 1'"
+        text = plan("lane server share 1 memory 3g", "step Server tests", show,
+                    "lane window share 3 memory 4g", "step Window tests", show)
+        # The memory would hold both lanes; the processors decide.
+        status, seconds, output, _ = self.run_on_machine(text, (4, 64 * GIB))
+        self.assertEqual(status, 0, output)
+        self.assertGreaterEqual(seconds, 2)
+        self.assertIn("Lanes: server, window, one after the other on 4 processors", output)
+        status, seconds, output, _ = self.run_on_machine(text, (6, 64 * GIB))
+        self.assertEqual(status, 0, output)
+        self.assertLess(seconds, 1.9)
+        self.assertIn("Lanes: server, window, each when its memory fits", output)
+
+    def test_on_the_machine_itself_a_lane_waits_until_its_memory_is_free(self):
+        mark = "sh -c 'date +%s.%N >> \"$0\"; sleep 1; date +%s.%N >> \"$0\"' {}"
+        with tempfile.TemporaryDirectory(prefix="junto-lanes-marks-") as marks:
+            files = [Path(marks) / name for name in ("first", "second", "large")]
+            text = plan("lane first memory 3g", "step First", mark.format(files[0]),
+                        "lane second memory 3g", "step Second", mark.format(files[1]),
+                        "lane large memory 9g", "step Large", mark.format(files[2]))
+            # 9 GiB available leave 5 GiB: one lane of 3 GiB at a time, and the lane of 9 GiB alone.
+            status, _, output, _ = self.run_on_machine(text, (4, 9 * GIB))
+            self.assertEqual(status, 0, output)
+            times = [[float(line) for line in path.read_text().split()] for path in files]
+        spans = sorted(times)
+        for earlier, later in zip(spans, spans[1:]):
+            self.assertLessEqual(earlier[1], later[0], output)
 
     def test_a_plan_with_an_error_is_refused(self):
         for text in ["step Window tests\ntrue\n", "lane App\nstep x\ntrue\n", "lane app\ntrue\n",

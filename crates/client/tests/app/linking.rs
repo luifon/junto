@@ -295,26 +295,28 @@ fn a_device_list_that_was_not_read_and_an_approval_without_an_answer_are_read_ag
     assert!(first.shows("link-fingerprint") && first.shows("link-check"));
     assert!(!first.shows("link-approved"));
     assert_eq!(world.run(handle.api().devices()).unwrap().len(), 2);
-    let away = first
-        .cx
-        .debug_bounds("account-nav-devices")
-        .unwrap()
-        .center();
-    first.move_pointer(away);
-    proxy.release_events();
-    first.until(
-        "the released device event is drawn before checking the link",
-        |first| first.devices().len() == 2,
-    );
 
-    // "Check again" reads the list: the key is there, and the device is linked.
+    // "Check again" reads the list: the key is there, and the device is linked. The device
+    // event that waited arrives while the button is pressed, the list above the button grows
+    // by the new device, and the button moves down before the release (ADR 0757, point 6).
     let scroll = first.in_shell(|shell, _, _| shell.account_scroll_handle());
     let checked = std::time::Instant::now();
-    first.settle();
-    let listed = first.devices().len();
     let button = first.cx.debug_bounds("link-check").unwrap();
+    first.move_pointer(button.center());
+    let listed = first.devices().len();
     let pressed = (listed, button, scroll.bounds());
-    first.press_at(button.center(), gpui::MouseButton::Left);
+    first.press_down_at(button.center(), gpui::MouseButton::Left);
+    proxy.release_events();
+    first.until(
+        "the released device event is drawn during the press",
+        |first| first.devices().len() == 2,
+    );
+    assert_ne!(
+        first.cx.debug_bounds("link-check").map(|moved| moved.top()),
+        Some(button.top()),
+        "the button moved during the press"
+    );
+    first.release_at(button.center(), gpui::MouseButton::Left);
     first.settle();
     // A failure states the link, each request that the proxy got from the approval on with
     // its answer and time, and the connections that ended before a whole request or with an

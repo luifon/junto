@@ -84,7 +84,7 @@ pub(super) fn picture(
         return picture.into_any_element();
     }
     div()
-        .id((place, index))
+        .id((place, row.id.as_uuid().as_u128() as u64))
         .role(Role::Image)
         .aria_label(text::logo_of(&row.name))
         .debug_selector(move || format!("{place}-{index}"))
@@ -100,6 +100,14 @@ impl Shell {
             return;
         }
         let address = self.address.read(cx).value().to_string();
+        // A pasted link of Junto opens as the link does: an invite of a server of the
+        // server book is redeemed into its account (ADR 0115).
+        if let Some(link) = junto_client_core::links::parse(address.trim()) {
+            self.address
+                .update(cx, |field, cx| field.set_value("", window, cx));
+            self.open_app_link(link, window, cx);
+            return;
+        }
         let flow = self.state.read(cx).client().add_server();
         let asking = flow.dispatch(AddServerAction::Fetch {
             address: address.clone(),
@@ -139,6 +147,30 @@ impl Shell {
                             cx,
                         );
                         this.focus_field(&this.code.clone(), window, cx);
+                    }
+                    // The address of a server of the server book: its own dialog opens, which
+                    // redeems an invite into its account or joins it (ADR 0115).
+                    // A link of the server under another of its addresses brings its code.
+                    (Err(junto_client_core::flow::FlowError::AlreadySaved { server_id }), _) => {
+                        this.address
+                            .update(cx, |address, cx| address.set_value("", window, cx));
+                        this.state
+                            .update(cx, |state, cx| state.select_server(server_id, cx));
+                        // Only the code of a link to the typed address: a link of another
+                        // server whose read failed earlier gives no code.
+                        let code = match this.pending_link.take() {
+                            Some(junto_client_core::links::AppLink::Invite { server, code })
+                                if junto_client_core::address::ServerAddress::parse(&address)
+                                    .is_ok_and(|typed| typed == server) =>
+                            {
+                                Some(code)
+                            }
+                            _ => None,
+                        };
+                        this.open_join_for(server_id, window, cx);
+                        if let Some(code) = code {
+                            this.type_code(code.expose(), window, cx);
+                        }
                     }
                     (Err(error), _) => {
                         this.address_error = Some(text::flow_error(&error));
@@ -442,7 +474,7 @@ impl Shell {
                 .into_any_element(),
         };
         let head = div()
-            .id(("server", index))
+            .id(("server", row.id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(super::book::head_label(row))
             .aria_selected(row.selected)
@@ -547,6 +579,7 @@ impl Shell {
                 workspace.name.clone(),
                 workspace.id.as_uuid().as_u128(),
             )
+            .logo(workspace.logo.clone())
             .selected(workspace.selected)
             .unread(super::channels::unread_sign(workspace.unread))
             .open(open_menu == Some(workspace_id))
@@ -757,7 +790,7 @@ impl Shell {
             row.name.clone()
         };
         let icon = div()
-            .id(("server", index))
+            .id(("server", server_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(label)
             .aria_selected(row.selected)
@@ -779,20 +812,15 @@ impl Shell {
                     .child(selection_mark(cx))
             })
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
-                if *hovered {
-                    this.open_hover_menu(server_id, false, window, cx);
-                } else {
-                    this.leave_hover_menu(cx);
-                }
+                this.hover_server_icon(server_id, *hovered, window, cx);
             }))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // The keyboard opens the menu and moves into it. The pointer selects the
-                // server; its menu is open already.
+                // server and closes the menu that its hover opened.
                 if matches!(event, ClickEvent::Keyboard(_)) {
                     this.open_hover_menu(server_id, true, window, cx);
                 } else {
-                    this.state
-                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                    this.press_server_icon(server_id, cx);
                 }
             }))
             .focus_visible(move |style| style.shadow(focused_ring))
@@ -944,6 +972,7 @@ impl Shell {
                 workspace.name.clone(),
                 workspace.id.as_uuid().as_u128(),
             )
+            .logo(workspace.logo.clone())
             .selected(workspace.selected)
             .unread(super::channels::unread_sign(workspace.unread))
             .in_menu()
@@ -980,7 +1009,10 @@ impl Shell {
             text::book::COLLAPSE_WORKSPACES
         };
         let toggle = div()
-            .id(("menu-workspaces-toggle", index))
+            .id((
+                "menu-workspaces-toggle",
+                server_id.as_uuid().as_u128() as u64,
+            ))
             .role(Role::MenuItem)
             .aria_label(toggle_label)
             .aria_expanded(!collapsed)
@@ -1007,20 +1039,16 @@ impl Shell {
             .child(toggle_label);
         let empty = row.workspaces.is_empty();
         div()
-            .id(("hover-menu", index))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.stay_in_hover_menu();
-                } else {
-                    this.leave_hover_menu(cx);
-                }
-            }))
+            .id(("hover-menu", server_id.as_uuid().as_u128() as u64))
             .child(
                 Menu::new(
                     "server-hover-menu",
                     row.name.clone(),
                     self.hover_menu_focus(),
                 )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.hover_in_hover_menu(*hovered, cx);
+                }))
                 .dark()
                 .selector("server-hover-menu")
                 .on_close(Self::handler(cx, |this, window, cx| {
@@ -1031,6 +1059,31 @@ impl Shell {
                     menu.child(menu_label(text::WORKSPACES, true, cx))
                         .children(workspaces)
                         .child(toggle)
+                        // An invite of the same server adds further workspaces to the
+                        // account (ADR 0115).
+                        .child(
+                            div()
+                                .id(("hover-join-with-invite", index))
+                                .role(Role::MenuItem)
+                                .aria_label(text::JOIN_WITH_INVITE)
+                                .debug_selector(|| "hover-join-with-invite".to_owned())
+                                .px(u(12.0))
+                                .py(u(8.0))
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.bone_2)
+                                .cursor_pointer()
+                                .focusable()
+                                .tab_stop(true)
+                                .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.dismiss_hover_menu(window, cx);
+                                    this.state.update(cx, |state, cx| {
+                                        state.select_server(server_id, cx);
+                                    });
+                                    this.open_join_for(server_id, window, cx);
+                                }))
+                                .child(text::JOIN_WITH_INVITE),
+                        )
                 })
                 .when(empty, |menu| {
                     menu.child(

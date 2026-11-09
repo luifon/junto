@@ -1035,10 +1035,10 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
         group_order(window, Some(projects)) == [b, x, c] && crate::admin_pages::idle(window)
     });
     let places = server_places(&world, &owner, default);
-    assert_eq!(places[&x], (Some(projects), 11));
+    assert_eq!(places[&x], (Some(projects), 1));
     assert_eq!(
         (places[&b], places[&c]),
-        ((Some(projects), 10), (Some(projects), 20))
+        ((Some(projects), 0), (Some(projects), 2))
     );
     assert!(!window.shows("channel-refused") && !window.shows("channel-place-1"));
 }
@@ -1061,14 +1061,14 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
             && channels_page(window)
                 .is_some_and(|page| page.channel(x).is_some_and(|line| line.moves_down.is_ok()))
     });
-    let before = server_places(&world, &owner, default);
 
-    // Another administrator moves "last" far down; the window does not know it yet. "Down"
-    // puts "x" between "next" and "last" as the page read them, and checks both: the
-    // server refuses the move, because "last" is no longer where the page read it.
+    // Another administrator moves "last" to the top, before the position 0 of "general";
+    // the window does not know it yet. "Down" puts "x" between "next" and "last" as the page
+    // read them, and checks both: the server refuses the move, because "last" is no longer
+    // where the page read it.
     proxy.hold_events();
     let moved = UpdateChannel {
-        position: Some(before[&last].1 + 50),
+        position: Some(-1),
         ..UpdateChannel::default()
     };
     world
@@ -1109,23 +1109,18 @@ fn a_move_from_an_old_order_is_refused_and_stays_drawn_until_the_person_acts(
         page.channel(next).unwrap().moves_up,
         Err(junto_client::state::admin::view::Unplanned::RefusalShown)
     );
-    let mut server_now = before.clone();
-    server_now.insert(last, (before[&last].0, before[&last].1 + 50));
-    assert_eq!(server_places(&world, &owner, default), server_now);
+    let server_now = server_places(&world, &owner, default);
+    assert_eq!(server_now[&last], (None, -1));
     assert_eq!(bounds(&mut window), pressed);
     // Close shows the order of the state that was read again, with the events still held.
-    // The order before the read is the same, so the wait is for the place that only the
-    // read state holds.
     crate::admin_pages::click_in_page(&mut window, "channel-move-refused-dismiss");
     window.until(
         "the page shows the order of the state that was read",
         |window| {
+            let order = group_order(window, None);
             !window.shows("channel-move-refused")
-                && group_order(window, None).ends_with(&[x, next, last])
-                && channels_page(window).is_some_and(|page| {
-                    page.channel(last)
-                        .is_some_and(|line| line.place.position == before[&last].1 + 50)
-                })
+                && order.first() == Some(&last)
+                && order.ends_with(&[x, next])
         },
     );
     proxy.release_events();
@@ -1338,7 +1333,7 @@ fn server_categories(
         .run(owner.api().channels(workspace_id))
         .unwrap()
         .categories;
-    categories.sort_by_key(|category| category.position);
+    categories.sort_by_key(|category| (category.position, category.id));
     categories
         .into_iter()
         .map(|category| category.name)
@@ -1354,6 +1349,234 @@ fn page_categories(window: &mut Window) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Up and Down move a category by one place among four: the window sends the place that
+/// the category takes among the categories that the person sees, which is the meaning of a
+/// position for the server (ADR 0304, ADR 0761).
+#[gpui::test]
+fn up_and_down_move_a_category_by_one_place_among_four(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    let category = |name: &str| {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap()
+            .id
+    };
+    let first = category("First");
+    let _second = category("Second");
+    let third = category("Third");
+    let _fourth = category("Fourth");
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the four categories", |window| {
+        page_categories(window) == ["First", "Second", "Third", "Fourth"]
+    });
+
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{third}")));
+    let moved_up = ["First", "Third", "Second", "Fourth"];
+    window.until("the third category is second", |window| {
+        page_categories(window) == moved_up && crate::admin_pages::idle(window)
+    });
+    assert_eq!(server_categories(&world, &owner, default), moved_up);
+
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-down-{first}")));
+    let moved_down = ["Third", "First", "Second", "Fourth"];
+    window.until("the first category is second", |window| {
+        page_categories(window) == moved_down && crate::admin_pages::idle(window)
+    });
+    assert_eq!(server_categories(&world, &owner, default), moved_down);
+}
+
+/// A server of an event revision before 20 takes no `place`: the window moves categories and
+/// channels there with the positions that release 0.1.0 computed, and sends no `place`
+/// (ADR 0206, ADR 0761).
+#[gpui::test]
+fn a_server_of_an_older_event_revision_gets_the_positions_of_release_0_1_0(
+    cx: &mut TestAppContext,
+) {
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    proxy.state_event_revision(19);
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    let server_id = window.view().servers[0].id;
+    window.until("the server states the revision 19", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .client()
+                .server(server_id)
+                .and_then(|server| server.live().view().server_events)
+                == Some(19)
+        })
+    });
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    for name in ["First", "Second", "Third"] {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap();
+    }
+    let third = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .categories
+        .into_iter()
+        .find(|category| category.name == "Third")
+        .unwrap()
+        .id;
+    let x = world
+        .run(owner.api().create_channel(
+            default,
+            &CreateChannel {
+                topic: String::new(),
+                name: "x".to_owned(),
+                kind: ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the categories and x", |window| {
+        page_categories(window) == ["First", "Second", "Third"]
+            && group_order(window, None).contains(&x)
+            && crate::admin_pages::idle(window)
+    });
+
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{third}")));
+    let moved_up = ["First", "Third", "Second"];
+    window.until("the third category is second", |window| {
+        page_categories(window) == moved_up && crate::admin_pages::idle(window)
+    });
+    assert_eq!(server_categories(&world, &owner, default), moved_up);
+
+    let before = group_order(&mut window, None);
+    let at = before.iter().position(|id| *id == x).unwrap();
+    crate::admin_pages::click_in_page(&mut window, selector(format!("channel-up-{x}")));
+    let mut wanted = before.clone();
+    wanted.swap(at - 1, at);
+    window.until("x is one place higher", |window| {
+        group_order(window, None) == wanted && crate::admin_pages::idle(window)
+    });
+    let mut on_server: Vec<(i32, ChannelId)> = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .channels
+        .into_iter()
+        .filter(|channel| channel.category_id.is_none())
+        .map(|channel| (channel.position, channel.id))
+        .collect();
+    on_server.sort();
+    let on_server: Vec<ChannelId> = on_server.into_iter().map(|(_, id)| id).collect();
+    assert_eq!(on_server, wanted);
+
+    let sent: Vec<String> = proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.method == "PATCH")
+        .map(|seen| String::from_utf8_lossy(&seen.body).into_owned())
+        .collect();
+    assert!(!sent.is_empty());
+    assert!(sent.iter().all(|body| !body.contains("place")), "{sent:?}");
+}
+
+/// While the stream of a server of revision 20 reconnects, the window keeps the revision that
+/// the last `hello` stated: Up of a category sends its place, as one request, and not the
+/// positions of release 0.1.0 (ADR 0206).
+#[gpui::test]
+fn a_server_of_revision_20_gets_the_place_while_its_stream_reconnects(cx: &mut TestAppContext) {
+    use junto_client_core::live::StreamStatus;
+    use junto_client_core::protocol::structure::CreateCategory;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) =
+        crate::admin_pages::owner_window_at(cx, &server, &proxy.address());
+    let server_id = window.view().servers[0].id;
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    for name in ["First", "Second", "Third"] {
+        world
+            .run(owner.api().create_category(
+                default,
+                &CreateCategory {
+                    name: name.to_owned(),
+                    position: None,
+                },
+            ))
+            .unwrap();
+    }
+    let third = world
+        .run(owner.api().channels(default))
+        .unwrap()
+        .categories
+        .into_iter()
+        .find(|category| category.name == "Third")
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the categories", |window| {
+        page_categories(window) == ["First", "Second", "Third"] && crate::admin_pages::idle(window)
+    });
+    let stream = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            let view = state
+                .client()
+                .server(server_id)
+                .map(|server| server.live().view());
+            view.map(|view| (view.status, view.server_events))
+        })
+    };
+    window.until("the stream states its revision", |window| {
+        stream(window)
+            .is_some_and(|(status, revision)| status == StreamStatus::Live && revision.is_some())
+    });
+    // The next connection of the stream connects, and its `hello` waits at the proxy.
+    proxy.hold_events();
+    proxy.cut_streams();
+    window.until(
+        "the stream reconnects with the revision of the last hello",
+        |window| {
+            stream(window).is_some_and(|(status, revision)| {
+                status != StreamStatus::Live
+                    && revision == Some(junto_client_core::protocol::events::EVENT_REVISION)
+            })
+        },
+    );
+    let before = proxy.all().len();
+    crate::admin_pages::click_in_page(&mut window, selector(format!("category-up-{third}")));
+    let moved_up = ["First", "Third", "Second"];
+    window.until("the server has the third category second", |_| {
+        server_categories(&world, &owner, default) == moved_up
+    });
+    let sent: Vec<String> = proxy.all()[before..]
+        .iter()
+        .filter(|seen| seen.method == "PATCH")
+        .map(|seen| String::from_utf8_lossy(&seen.body).into_owned())
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("\"place\""), "{sent:?}");
+    proxy.release_events();
 }
 
 #[gpui::test]

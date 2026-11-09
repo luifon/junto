@@ -154,9 +154,59 @@ pub async fn permissions_changed(
             role_id,
         },
     };
-    let event = Event::PermissionsChanged { workspace_id };
-    record(&mut *connection, now, &audience, &event).await?;
+    // The notice is recorded once per change; the rooms are marked at every call, because a
+    // notice that the change recorded before, such as the one of a new order of categories,
+    // can have marked none (ADR 0509).
+    if first_in_change(connection, &audience, workspace_id).await? {
+        let event = Event::PermissionsChanged { workspace_id };
+        record(&mut *connection, now, &audience, &event).await?;
+    }
     crate::calls::store::mark_after_permission_change(connection, workspace_id).await
+}
+
+/// Records the notice that tells every person of a workspace to read its structure again,
+/// after a change of the order of its categories or of the channels of a group: the position
+/// that a person reads is the place among what the person sees (ADR 0304). It changes no
+/// permission, so no call is marked.
+pub async fn structure_reordered(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    let audience = Audience::Workspace { workspace_id };
+    if !first_in_change(connection, &audience, Some(workspace_id)).await? {
+        return Ok(());
+    }
+    let event = Event::PermissionsChanged {
+        workspace_id: Some(workspace_id),
+    };
+    record(connection, now, &audience, &event).await
+}
+
+/// Whether the transaction has not yet recorded this notice for this audience. One change
+/// that moves 200 channels between categories records one notice, not 200 (ADR 0304). The
+/// notices of the transaction are kept in a setting of the transaction, which ends with it,
+/// also when it is rolled back and run again (ADR 0009).
+async fn first_in_change(
+    connection: &mut PgConnection,
+    audience: &Audience,
+    workspace_id: Option<WorkspaceId>,
+) -> ApiResult<bool> {
+    let audience = serde_json::to_string(audience)
+        .map_err(|error| ApiError::internal(&format_args!("an audience is not JSON: {error}")))?;
+    let key = format!(
+        "<{}|{}>",
+        audience.replace(['<', '>'], ""),
+        workspace_id.map(|id| id.to_string()).unwrap_or_default()
+    );
+    Ok(sqlx::query_scalar(
+        "select case when strpos(held, $1) > 0 then false
+                else set_config('junto.permission_notices', held || $1, true) is not null end
+         from (select coalesce(current_setting('junto.permission_notices', true), '') as held) h",
+    )
+    .bind(key)
+    .fetch_one(connection)
+    .await?)
 }
 
 /// Records the notice for the accounts that see a channel that appears with overrides, by
@@ -191,6 +241,27 @@ pub async fn permissions_changed_by_overrides_of(
         workspace_id: Some(workspace_id),
     };
     record(connection, now, &audience, &event).await
+}
+
+/// True when a rule can keep a person of the workspace from seeing the channel: the channel
+/// is in a category, has rules of its own, the workspace has person rules, or its everyone
+/// role lacks "view channel". False only when every person sees it.
+pub async fn may_be_hidden(
+    connection: &mut PgConnection,
+    channel_id: ChannelId,
+) -> ApiResult<bool> {
+    let has_overrides: bool =
+        sqlx::query_scalar("select exists (select 1 from channels c where c.id=$1 and (
+            c.category_id is not null
+            or exists(select 1 from effective_channel_overrides o where o.channel_id=c.id)
+            or exists(select 1 from effective_channel_person_overrides o where o.channel_id=c.id)
+            or exists(select 1 from workspace_person_overrides o where o.workspace_id=c.workspace_id)
+            or exists(select 1 from workspace_roles r where r.workspace_id=c.workspace_id and r.is_everyone and r.permissions & $2 = 0)))")
+            .bind(channel_id)
+            .bind(crate::db::workspace_bits(junto_authz::WorkspacePermission::ViewChannel.into()))
+            .fetch_one(&mut *connection)
+            .await?;
+    Ok(has_overrides)
 }
 
 /// Records the notice for the accounts that see a new workspace. An account that sees it

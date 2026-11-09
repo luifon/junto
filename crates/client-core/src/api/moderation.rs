@@ -132,6 +132,7 @@ pub async fn logo_at(
     policy: &RetryPolicy,
 ) -> Result<Option<AvatarImage>, ApiError> {
     let request = HttpRequest {
+        test_number: None,
         method: Method::Get,
         url,
         bearer: None,
@@ -231,11 +232,14 @@ impl ServerApi {
 
     /// Sets the logo of the server. The body of the request is the image itself, under
     /// the bounds of an avatar. The caller is an administrator with a session (ADR 0101).
+    /// A logo that another administrator stores after the logo was read here is not
+    /// replaced: the answer is `conflict`.
     pub async fn set_server_logo(&self, image: Vec<u8>) -> Result<Avatar, ApiError> {
         let kind = profile::check_avatar(&image)?;
+        let seen = self.server_logo().await?.map(|logo| logo.hash);
         let body = RequestBody::image(kind, SecretBytes::from_vec(image));
         let path = "/server/logo".to_owned();
-        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+        read_json(&self.call_picture(path, seen, body).await?)
     }
 
     pub async fn remove_server_logo(&self) -> Result<(), ApiError> {
@@ -247,6 +251,40 @@ impl ServerApi {
         logo_or_none(
             self.call(Method::Get, "/server/logo".to_owned(), Vec::new(), None)
                 .await,
+        )
+    }
+
+    /// Sets the logo of a workspace, under the bounds of an avatar. The caller is an
+    /// administrator with a session (ADR 0122).
+    pub async fn set_workspace_logo(
+        &self,
+        workspace_id: WorkspaceId,
+        image: Vec<u8>,
+    ) -> Result<Avatar, ApiError> {
+        let kind = profile::check_avatar(&image)?;
+        let body = RequestBody::image(kind, SecretBytes::from_vec(image));
+        let path = format!("/workspaces/{workspace_id}/logo");
+        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+    }
+
+    pub async fn remove_workspace_logo(&self, workspace_id: WorkspaceId) -> Result<(), ApiError> {
+        self.act(Method::Delete, format!("/workspaces/{workspace_id}/logo"))
+            .await
+    }
+
+    /// The logo of a workspace that the account sees. Absent: the workspace has none.
+    pub async fn workspace_logo(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<AvatarImage>, ApiError> {
+        logo_or_none(
+            self.call(
+                Method::Get,
+                format!("/workspaces/{workspace_id}/logo"),
+                Vec::new(),
+                None,
+            )
+            .await,
         )
     }
 }
@@ -309,7 +347,7 @@ mod tests {
         }
     }
 
-    fn client(transport: Arc<Recorded>) -> ApiClient {
+    fn client(transport: Arc<dyn Transport>) -> ApiClient {
         ApiClient::new(
             transport,
             ServerAddress::parse("chat.example.test").unwrap(),
@@ -331,6 +369,32 @@ mod tests {
 
     fn server<A: Serialize>(answer: &A) -> (Arc<Recorded>, ServerApi) {
         bytes(200, serde_json::to_vec(answer).unwrap())
+    }
+
+    /// Answers a read with `read` and every other request with `write`.
+    struct ReadThenWrite {
+        read: (u16, Vec<u8>),
+        write: Vec<u8>,
+        seen: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl Transport for ReadThenWrite {
+        fn send(&self, request: HttpRequest) -> TransportFuture {
+            let (status, body) = if request.method == Method::Get {
+                self.read.clone()
+            } else {
+                (200, self.write.clone())
+            };
+            self.seen.lock().unwrap().push(request);
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status,
+                    retry_after: None,
+                    body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
+                })
+            })
+        }
     }
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nimage";
@@ -597,13 +661,36 @@ mod tests {
             width: 64,
             height: 64,
         };
-        let (seen, api) = server(&logo);
-        assert_eq!(api.set_server_logo(PNG.to_vec()).await.unwrap(), logo);
-        {
-            let seen = seen.seen.lock().unwrap();
-            assert_eq!(seen[0].method, Method::Put);
-            assert_eq!(seen[0].url.path(), "/api/v1/server/logo");
-            let body = seen[0].body.as_ref().unwrap();
+        // The logo is read first, and its hash is the condition of the new one (ADR 0119):
+        // none, then the hash of the logo that the server holds.
+        let absent = (
+            404,
+            br#"{"error":{"code":"not_found","message":""}}"#.to_vec(),
+        );
+        for (read, before) in [
+            (absent, "none".to_owned()),
+            ((200, PNG.to_vec()), logo.hash.clone()),
+        ] {
+            let transport = Arc::new(ReadThenWrite {
+                read,
+                write: serde_json::to_vec(&logo).unwrap(),
+                seen: Mutex::default(),
+            });
+            let api = client(transport.clone()).with_token(SecretToken::new("jst_test".to_owned()));
+            assert_eq!(api.set_server_logo(PNG.to_vec()).await.unwrap(), logo);
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(
+                (seen[0].method, seen[0].url.path()),
+                (Method::Get, "/api/v1/server/logo")
+            );
+            assert_eq!(seen[1].method, Method::Put);
+            assert_eq!(seen[1].url.path(), "/api/v1/server/logo");
+            assert_eq!(
+                seen[1].url.query(),
+                Some(format!("before={before}").as_str())
+            );
+            let body = seen[1].body.as_ref().unwrap();
             assert_eq!(body.media_type, "image/png");
             assert_eq!(body.as_slice(), PNG);
         }

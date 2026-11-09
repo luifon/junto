@@ -1,6 +1,5 @@
 //! One desktop process per data directory and activation requests from later starts.
 
-use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, PoisonError, mpsc as stopping};
@@ -11,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::paths::DataDir;
-use crate::storage::StorageError;
+use crate::storage::{FileLock, StorageError};
 
 const ENDPOINT: &str = "desktop-instance.json";
 const MAX_REQUEST: usize = 16 * 1024;
@@ -55,7 +54,7 @@ struct Accepted {
 }
 
 pub struct Instance {
-    _lock: File,
+    _lock: FileLock,
     #[cfg(test)]
     address: SocketAddr,
     stopping: stopping::Sender<()>,
@@ -95,7 +94,7 @@ impl Instance {
         }
     }
 
-    fn primary(directory: &DataDir, lock: File) -> Result<Start, Error> {
+    fn primary(directory: &DataDir, lock: FileLock) -> Result<Start, Error> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;

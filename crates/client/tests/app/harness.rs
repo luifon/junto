@@ -267,7 +267,26 @@ pub fn open(cx: &mut TestAppContext, data_dir: &Path) -> Window {
 pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -> Window {
     log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
-    open_client(cx, client, scale, None)
+    open_client(cx, client, scale, None, no_release_notes())
+}
+
+/// The release notes of the tests that are not about them: none, so that a data directory
+/// that a test writes shows no notes when the build carries notes of a newer version.
+fn no_release_notes() -> junto_client::release_notes::ReleaseNotes {
+    junto_client::release_notes::ReleaseNotes::default()
+}
+
+/// Opens the application as the build of `build`, with these release notes (ADR 0727).
+pub fn open_as_version(
+    cx: &mut TestAppContext,
+    data_dir: &Path,
+    build: junto_client_core::updates::Version,
+    notes: junto_client::release_notes::ReleaseNotes,
+) -> Window {
+    log_into_test_output();
+    let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
+    options.build = build;
+    open_client(cx, Client::open(options).unwrap(), None, None, notes)
 }
 
 /// Opens the application with this screen capture in the place of the synthetic one.
@@ -283,7 +302,7 @@ pub fn open_with_capture(
 ) -> Window {
     log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
-    open_client(cx, client, None, Some(capture))
+    open_client(cx, client, None, Some(capture), no_release_notes())
 }
 
 /// Opens the application with a source of releases, and with the version that the build
@@ -298,7 +317,13 @@ pub fn open_with_updates(
     let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
     options.update_source = Some(source);
     options.build = build;
-    open_client(cx, Client::open(options).unwrap(), None, None)
+    open_client(
+        cx,
+        Client::open(options).unwrap(),
+        None,
+        None,
+        no_release_notes(),
+    )
 }
 
 /// Sends the log of the client into the output of the test, which the test runner keeps for
@@ -326,6 +351,7 @@ fn open_client(
     client: Client,
     scale: Option<u32>,
     system_capture: Option<std::sync::Arc<dyn ScreenCapture>>,
+    release_notes: junto_client::release_notes::ReleaseNotes,
 ) -> Window {
     log_into_test_output();
     junto_client_core::storage::refuse_locks_while(window_thread_works);
@@ -337,6 +363,7 @@ fn open_client(
         scale_percent: scale,
         activate: false,
         timing: timing(),
+        release_notes,
     };
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     let capture = SyntheticCapture::new();
@@ -501,6 +528,23 @@ impl Window {
         });
     }
 
+    /// Activates accessibility for the window, as the platform does when a screen reader
+    /// connects (ADR 0702). Returns `false` when the window gave no accessibility callbacks.
+    pub fn activate_accessibility(&mut self) -> bool {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation()
+    }
+
+    /// Draws every window again and returns the call pictures that they painted (ADR 0774).
+    pub fn painted_pictures(&mut self) -> Vec<junto_client::ui::PaintedPicture> {
+        let record = junto_client::ui::record_painted_pictures();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let painted = junto_client::ui::take_painted_pictures();
+        drop(record);
+        painted
+    }
+
     /// Runs the application until it has no work, with one frame of the display.
     #[track_caller]
     pub fn settle(&mut self) {
@@ -548,23 +592,127 @@ impl Window {
         self.press_at_count(position, button, 1);
     }
 
+    /// Presses a button of the pointer at a point of the window and keeps it pressed.
+    pub fn press_down_at(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        let (down, _) = pointer_press(position, button, 1);
+        self.holding(|this| {
+            this.cx.update(|window, cx| window.dispatch_event(down, cx));
+            this.cx.run_until_parked();
+        });
+    }
+
+    /// Moves the pointer with a button of it held, between [`Window::press_down_at`] and
+    /// [`Window::release_at`].
+    pub fn move_pointer_pressed(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        self.holding(|this| {
+            this.cx
+                .simulate_mouse_move(position, Some(button), Modifiers::none());
+        });
+    }
+
+    /// Releases a button of the pointer that [`Window::press_down_at`] pressed.
+    pub fn release_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
+        let (_, up) = pointer_press(position, button, 1);
+        self.holding(|this| {
+            this.cx.update(|window, cx| window.dispatch_event(up, cx));
+            this.cx.run_until_parked();
+        });
+    }
+
     /// The press number `count` of a series at one point, as the system counts the presses
     /// of a double click.
+    ///
+    /// The press waits until the requests to a server that it started have an answer, except
+    /// the requests and answers that a proxy of the test holds (ADR 0902).
     pub fn press_at_count(
         &mut self,
         position: gpui::Point<gpui::Pixels>,
         button: gpui::MouseButton,
         count: usize,
     ) {
+        self.press_on(None, position, button, count);
+    }
+
+    /// A press at a point of the element with the name `target`. gpui delivers a press whose
+    /// element moved before the release (ADR 0757); an element that is not drawn any more
+    /// after the pointer went down has no press to end, and gpui drops the press without a
+    /// sign. The press then fails the test and names the element.
+    #[track_caller]
+    fn press_on(
+        &mut self,
+        target: Option<&'static str>,
+        position: gpui::Point<gpui::Pixels>,
+        button: gpui::MouseButton,
+        count: usize,
+    ) {
+        let requests = self
+            .state
+            .read_with(&self.cx, |state, _| state.client().requests());
+        let started = requests.next();
+        let refused = gpui::refused_presses();
         let (down, up) = pointer_press(position, button, count);
-        for input in [down, up] {
+        for (index, input) in [down, up].into_iter().enumerate() {
             self.holding(|this| {
                 this.cx.update(|window, cx| {
                     window.dispatch_event(input, cx);
                 });
                 this.cx.run_until_parked();
             });
+            if index == 0
+                && button == gpui::MouseButton::Left
+                && let Some(target) = target
+                && self.cx.debug_bounds(target).is_none()
+            {
+                panic!(
+                    "the press on {target} at {position:?} was dropped: {target} was not drawn \
+                     any more after the pointer went down, so gpui had no element to end the \
+                     press on"
+                );
+            }
         }
+        if button == gpui::MouseButton::Left
+            && let Some(target) = target
+            && gpui::refused_presses() > refused
+        {
+            panic!(
+                "the press on {target} at {position:?} was refused: between the pointer going \
+                 down and up, {target} moved and something else came to where it was, or the \
+                 release was on a part of it that is not shown (ADR 0757, point 6)"
+            );
+        }
+        self.until("the requests that the press started have an answer", |_| {
+            let held = crate::support::held_by_proxies();
+            requests
+                .open_since(started)
+                .iter()
+                .all(|number| held.contains(number))
+        });
+        // The answer that ended the wait is applied before the press returns.
+        self.settle();
+    }
+
+    /// Waits until every request of the client that is on its way has an answer, or is held
+    /// by a `FaultProxy` of the test.
+    #[track_caller]
+    pub fn until_answered(&mut self) {
+        let requests = self
+            .state
+            .read_with(&self.cx, |state, _| state.client().requests());
+        self.until("every request has an answer", |_| {
+            let held = crate::support::held_by_proxies();
+            requests
+                .open_since(0)
+                .iter()
+                .all(|number| held.contains(number))
+        });
     }
 
     /// Ends the application, as closing its window does: the window is removed, and the
@@ -692,6 +840,36 @@ impl Window {
     }
 
     /// True when an element with this name is drawn now.
+    /// The nodes of the accessibility tree with this label, as JSON (`Window::debug_a11y_tree_json`
+    /// of gpui), after a frame of a window whose accessibility a screen reader activated.
+    pub fn a11y_nodes(&mut self, label: &str) -> Vec<serde_json::Value> {
+        let tree = self.a11y_tree();
+        tree["nodes"]
+            .as_object()
+            .into_iter()
+            .flat_map(|nodes| nodes.values())
+            .filter(|node| node["aria"]["label"] == label)
+            .cloned()
+            .collect()
+    }
+
+    /// The accessibility node that has the focus of the window.
+    pub fn a11y_focused(&mut self) -> serde_json::Value {
+        let tree = self.a11y_tree();
+        let focus = tree["gpui_focus"].as_str().unwrap_or_default().to_owned();
+        tree["nodes"][focus].clone()
+    }
+
+    fn a11y_tree(&mut self) -> serde_json::Value {
+        let handle = self.cx.update(|window, _| window.window_handle());
+        self.cx.cx.test_window(handle).simulate_a11y_activation();
+        self.cx.update(|window, _| window.refresh());
+        self.settle();
+        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
+        json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .unwrap_or_default()
+    }
+
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.settle();
         self.cx.debug_bounds(selector).is_some()
@@ -767,16 +945,18 @@ impl Window {
             eprintln!("CI_MISSING_CONTROL wanted={selector:?} viewport={viewport:?} related={bounds:?} messages={messages:?} painted={painted:?}");
             panic!("{selector} is not drawn")
         });
-        self.press_at(bounds.center(), gpui::MouseButton::Left);
+        self.press_on(Some(selector), bounds.center(), gpui::MouseButton::Left, 1);
         self.settle();
     }
 
     pub fn click_row_padding(&mut self, selector: &'static str) {
         self.settle();
         let bounds = self.cx.debug_bounds(selector).unwrap();
-        self.press_at(
+        self.press_on(
+            Some(selector),
             gpui::point(bounds.left() + gpui::px(4.0), bounds.center().y),
             gpui::MouseButton::Left,
+            1,
         );
         self.settle();
     }
@@ -797,7 +977,7 @@ impl Window {
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
         };
-        self.press_at(bounds.center(), gpui::MouseButton::Left);
+        self.press_on(Some(selector), bounds.center(), gpui::MouseButton::Left, 1);
         self.settle();
         true
     }
@@ -823,7 +1003,7 @@ impl Window {
             .cx
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
-        self.press_at(bounds.center(), gpui::MouseButton::Right);
+        self.press_on(Some(name), bounds.center(), gpui::MouseButton::Right, 1);
         self.settle();
     }
 
@@ -894,6 +1074,24 @@ impl Window {
     #[track_caller]
     pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
         self.wheel_until(list, target, 300.0);
+    }
+
+    /// Turns the wheel once over the element with the name `list` by `by` pixels: negative
+    /// toward the end of the list.
+    #[track_caller]
+    pub fn wheel_by(&mut self, list: &'static str, by: f32) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+        self.settle();
+        let area = self
+            .cx
+            .debug_bounds(list)
+            .unwrap_or_else(|| panic!("{list} is not drawn"));
+        self.dispatch(ScrollWheelEvent {
+            position: area.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(by))),
+            ..Default::default()
+        });
+        self.settle();
     }
 
     #[track_caller]
@@ -1518,6 +1716,46 @@ pub fn native_frame(cx: &mut VisualTestContext, nested: bool) {
     } else {
         request();
     }
+}
+
+/// Gives an event of the pointer to a window of a view of the test that uses gpui alone,
+/// through the input callback of the test window, and runs its work until it rests.
+pub fn view_input(cx: &mut VisualTestContext, event: impl gpui::InputEvent) {
+    cx.simulate_event(event);
+}
+
+/// Draws a window of a view of the test that uses gpui alone again, as after a change of its
+/// state, and runs its work until it rests.
+pub fn view_redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+/// Types text into the window, through its platform input handler when no binding takes a
+/// key, as the keyboard does.
+pub fn type_text(cx: &mut VisualTestContext, text: &str) {
+    cx.simulate_input(text);
+}
+
+/// Presses the left button at `from` and moves the pointer to `to` with the button held,
+/// through the input callback of the test window: a drag of the element at `from` starts.
+pub fn drag(
+    cx: &mut VisualTestContext,
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+) {
+    use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent};
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: from,
+        click_count: 1,
+        ..Default::default()
+    });
+    cx.simulate_event(MouseMoveEvent {
+        position: to,
+        pressed_button: Some(MouseButton::Left),
+        ..Default::default()
+    });
 }
 
 /// Presses and releases the left button on the pad, through the input callback of the test

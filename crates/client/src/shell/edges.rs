@@ -30,6 +30,8 @@ pub(crate) struct Drag {
     from: Pixels,
     start: f32,
     width: f32,
+    /// The width of the design of the panel, which [`Shell::panel_width`] takes.
+    design: f32,
 }
 
 /// The width of the place where a press takes an edge, in pixels of the design.
@@ -61,12 +63,20 @@ fn bounds(panel: Panel) -> (f32, f32) {
     (f32::from(least), f32::from(most))
 }
 
+/// A width that one panel is given in place of the width that the person keeps for it: the
+/// width of a drag on its way, or a width that a drag or a key is about to keep.
+type Wanted = Option<(Panel, f32)>;
+
 impl Shell {
-    /// The width that the person wants for a panel in pixels of the design: the width of a
-    /// drag on its way, the width that the person gave it, or the width of the design.
-    fn wanted_width(&self, panel: Panel, design: f32, cx: &App) -> f32 {
-        match self.edge_drag {
-            Some(drag) if drag.panel == panel => drag.width,
+    fn dragged(&self) -> Wanted {
+        self.edge_drag.map(|drag| (drag.panel, drag.width))
+    }
+
+    /// The width that the person wants for a panel in pixels of the design: the width of
+    /// `wanted` for its panel, the width that the person gave it, or the width of the design.
+    fn wanted_width(&self, wanted: Wanted, panel: Panel, design: f32, cx: &App) -> f32 {
+        match wanted {
+            Some((dragged, width)) if dragged == panel => width,
             _ => self.state.read(cx).panel_width(panel, design),
         }
     }
@@ -75,14 +85,15 @@ impl Shell {
     /// pixels of the design. Together they leave the main area [`MAIN_LEAST`]: where the
     /// wanted widths do not, the channel column and then the server book give up width down
     /// to their least bounds (review M2).
-    fn column_widths(&self, cx: &App) -> (f32, f32) {
+    fn column_widths(&self, wanted: Wanted, cx: &App) -> (f32, f32) {
         let metrics = theme(cx).metrics;
         let mut book = if self.book_collapsed {
             metrics.rail_collapsed_width
         } else {
-            self.wanted_width(Panel::ServerBook, metrics.rail_width, cx)
+            self.wanted_width(wanted, Panel::ServerBook, metrics.rail_width, cx)
         };
-        let mut channels = self.wanted_width(Panel::Channels, metrics.channel_column_width, cx);
+        let mut channels =
+            self.wanted_width(wanted, Panel::Channels, metrics.channel_column_width, cx);
         let mut over = book + channels - (self.window_width - MAIN_LEAST);
         let give = (channels - bounds(Panel::Channels).0).clamp(0.0, over.max(0.0));
         channels -= give;
@@ -96,11 +107,11 @@ impl Shell {
     /// The room of a panel at the right of the main area, or of the panel of the call window,
     /// in pixels of the design: the window less the columns and the least width of the main
     /// area, or of the stage of the call window ([`STAGE_LEAST`]).
-    fn side_room(&self, panel: Panel, cx: &App) -> f32 {
+    fn side_room(&self, wanted: Wanted, panel: Panel, cx: &App) -> f32 {
         match panel {
             Panel::CallWindow => self.window_width - STAGE_LEAST,
             _ => {
-                let (book, channels) = self.column_widths(cx);
+                let (book, channels) = self.column_widths(wanted, cx);
                 self.window_width - book - channels - MAIN_LEAST
             }
         }
@@ -112,26 +123,45 @@ impl Shell {
     /// fit, it lies over the content ([`Shell::side_fits`]) at that least width or the width
     /// of its design, whichever is smaller than the width wanted.
     pub(crate) fn panel_width(&self, panel: Panel, design: f32, cx: &App) -> f32 {
-        let (book, channels) = self.column_widths(cx);
+        self.panel_width_with(self.dragged(), panel, design, cx)
+    }
+
+    fn panel_width_with(&self, wanted: Wanted, panel: Panel, design: f32, cx: &App) -> f32 {
+        let (book, channels) = self.column_widths(wanted, cx);
         match panel {
             Panel::ServerBook => book,
             Panel::Channels => channels,
             _ => {
-                let wanted = self.wanted_width(panel, design, cx);
+                let width = self.wanted_width(wanted, panel, design, cx);
                 let least = bounds(panel).0;
-                if self.side_fits(panel, cx) {
-                    wanted.min(self.side_room(panel, cx)).max(least)
+                if self.side_fits_with(wanted, panel, cx) {
+                    width.min(self.side_room(wanted, panel, cx)).max(least)
                 } else {
-                    wanted.min(design)
+                    width.min(design)
                 }
             }
         }
     }
 
+    /// The width that the window draws for `panel` when the person wants `width` for it,
+    /// within the bounds of the panel. A drag or a key keeps this width and not a wider one
+    /// that the room of the window does not show, so a later wider window draws the panel as
+    /// it was seen.
+    fn shown_width(&self, panel: Panel, width: f32, design: f32, cx: &App) -> f32 {
+        let (least, most) = bounds(panel);
+        let width = width.clamp(least, most);
+        self.panel_width_with(Some((panel, width)), panel, design, cx)
+            .clamp(least, width)
+    }
+
     /// A panel at the right fits beside the main area at its least width; otherwise the window
     /// draws it over the content, as a narrow window does.
     pub(crate) fn side_fits(&self, panel: Panel, cx: &App) -> bool {
-        self.side_room(panel, cx) >= bounds(panel).0
+        self.side_fits_with(self.dragged(), panel, cx)
+    }
+
+    fn side_fits_with(&self, wanted: Wanted, panel: Panel, cx: &App) -> bool {
+        self.side_room(wanted, panel, cx) >= bounds(panel).0
     }
 
     /// The edge of `panel`, to lie over the container of the panel at `at` pixels of the
@@ -193,6 +223,7 @@ impl Shell {
                         from: event.position.x,
                         start: width,
                         width,
+                        design,
                     });
                     cx.stop_propagation();
                     cx.notify();
@@ -204,8 +235,8 @@ impl Shell {
                     ("right", Side::Right) | ("left", Side::Left) => STEP,
                     _ => return,
                 };
-                let (least, most) = bounds(panel);
-                let width = (this.panel_width(panel, design, cx) + change).clamp(least, most);
+                let shown = this.panel_width(panel, design, cx);
+                let width = this.shown_width(panel, shown + change, design, cx);
                 this.state
                     .update(cx, |state, cx| state.set_panel_width(panel, width, cx));
                 cx.stop_propagation();
@@ -248,7 +279,7 @@ impl Shell {
     }
 
     fn drag_edge_to(&mut self, x: Pixels, rem: Pixels, cx: &mut Context<Self>) {
-        let Some(drag) = self.edge_drag.as_mut() else {
+        let Some(drag) = self.edge_drag else {
             return;
         };
         let moved = (x - drag.from) / rem * REM_AT_100;
@@ -256,8 +287,10 @@ impl Shell {
             Side::Right => drag.start + moved,
             Side::Left => drag.start - moved,
         };
-        let (least, most) = bounds(drag.panel);
-        drag.width = width.clamp(least, most);
+        let shown = self.shown_width(drag.panel, width, drag.design, cx);
+        if let Some(drag) = self.edge_drag.as_mut() {
+            drag.width = shown;
+        }
         cx.notify();
     }
 

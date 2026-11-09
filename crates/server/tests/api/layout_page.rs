@@ -1,7 +1,9 @@
 //! The layout page of the recorder, served from the built directory (ADR 0615).
 
 use junto_protocol::error::ErrorCode;
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
+#[cfg(unix)]
+use reqwest::StatusCode;
 use serde_json::Value;
 
 use crate::support::{Reply, Scratch, TestServer};
@@ -52,6 +54,22 @@ async fn fetch(server: &TestServer, method: Method, path: &str) -> Reply {
     server.send::<Value>(method, path, None, None, None).await
 }
 
+/// On another system than Unix the server serves no file of the page (ADR 0615).
+#[cfg(not(unix))]
+#[tokio::test]
+async fn rule_60_another_system_serves_no_file_of_the_page() {
+    let (_scratch, directory) = built();
+    let server =
+        TestServer::start_with(|config| config.recorder_layout_directory = Some(directory)).await;
+    let absent = fetch(&server, Method::GET, "/api/v1/absent").await;
+    absent.error(ErrorCode::NotFound);
+    for path in ["/recording-layout/", "/recording-layout/layout.js"] {
+        let reply = fetch(&server, Method::GET, path).await;
+        assert_eq!(reply.observable(), absent.observable(), "{path}");
+    }
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn rule_60_62_the_page_and_its_files_are_served_without_a_credential() {
     let (_scratch, directory) = built();

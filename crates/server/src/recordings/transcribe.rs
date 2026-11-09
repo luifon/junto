@@ -255,6 +255,7 @@ async fn run_worker(
                 .flatten(),
         )
         .env_clear()
+        .envs(crate::starter::system_environment())
         .envs(
             settings
                 .environment

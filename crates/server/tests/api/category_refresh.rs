@@ -178,3 +178,99 @@ async fn a_category_whose_last_channel_is_archived_sends_its_new_name_only_to_ma
     let told = scene.server.traffic(&scene.reader, &mut scene.stream).await;
     assert!(!renamed(&told), "{told:?}");
 }
+
+#[tokio::test]
+async fn one_request_of_several_moves_between_categories_sends_one_refresh() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = server.join(&owner, "Reader").await;
+    let workspace = server.default_workspace(&owner).await;
+    let source = server.category(&owner, workspace.id, "Plans", 0).await;
+    let destination = server.category(&owner, workspace.id, "Done", 1).await;
+    let mut channels = Vec::new();
+    for name in ["One", "Two", "Three"] {
+        let channel: Channel = server
+            .post(
+                &owner,
+                &format!("/api/v1/workspaces/{}/channels", workspace.id),
+                &json!({"name":name,"kind":"text","category_id":source.id}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        channels.push(channel);
+    }
+    let moves: Vec<_> = channels
+        .iter()
+        .map(|channel| {
+            json!({
+                "channel_id": channel.id,
+                "from": {"category_id": source.id, "position": channel.position},
+                "to": {"category_id": destination.id, "position": channel.position},
+            })
+        })
+        .collect();
+    let mut stream = server.subscribed(&reader, Level::Full).await;
+    server
+        .patch(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels/positions", workspace.id),
+            &json!({ "moves": moves }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let events = server.traffic(&reader, &mut stream).await;
+    let refreshes = events
+        .iter()
+        .filter(|(_, event)| {
+            matches!(event, Event::PermissionsChanged { workspace_id: Some(id) } if *id == workspace.id)
+        })
+        .count();
+    assert_eq!(refreshes, 1, "{events:?}");
+    let moved = events
+        .iter()
+        .filter(|(_, event)| matches!(event, Event::ChannelUpdated { .. }))
+        .count();
+    assert_eq!(moved, 3, "{events:?}");
+}
+
+/// One structure request changes the order of the categories and then moves a voice channel
+/// with a running call into a category whose rules deny "connect" to a person in the call.
+/// The refresh of the workspace is recorded once, and the room of the call is still marked,
+/// so the next check of the marked rooms removes that person (ADR 0509).
+#[tokio::test]
+async fn a_move_after_a_new_order_of_categories_in_one_request_marks_the_room_of_the_call() {
+    let scene = crate::calls_support::Scene::start().await;
+    let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
+    let workspace = scene.workspace_id;
+    let first = server.category(owner, workspace, "First", 0).await;
+    let denied = server.category(owner, workspace, "Denied", 1).await;
+    let connect = 1i64 << 24;
+    sqlx::query("insert into category_person_overrides(category_id,account_id,workspace_id,allow,deny) values($1,$2,$3,0,$4)")
+        .bind(denied.id).bind(ann.account_id).bind(workspace).bind(connect).execute(&server.db).await.unwrap();
+    let seat = server.enter_call(ann, scene.voice.id).await;
+    assert_eq!(server.fake().identities(&seat.room).len(), 1);
+    // A full check finds nothing to remove and states that the media server answers.
+    server.check().await;
+    let revision = server.structure(owner).await.revision;
+    server
+        .change_structure(
+            owner,
+            &revision,
+            json!([
+                { "change": "update_category", "id": first.id, "position": 1 },
+                { "change": "update_channel", "id": scene.voice.id, "category": denied.id },
+            ]),
+        )
+        .await
+        .ok::<serde_json::Value>(StatusCode::OK);
+    assert_eq!(
+        junto_server::calls::admission::check_marked(&server.state)
+            .await
+            .unwrap(),
+        junto_server::calls::admission::Outcome::Checked {
+            removed: 1,
+            updated: 0
+        }
+    );
+    assert!(server.fake().identities(&seat.room).is_empty());
+}

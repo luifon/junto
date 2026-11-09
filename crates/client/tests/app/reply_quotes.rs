@@ -2,6 +2,7 @@ use gpui::TestAppContext;
 use junto_client::shell::Pane;
 use junto_client::state::feed::{FeedRow, QuoteText};
 use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::ids::MessageId;
 use junto_client_core::protocol::message::SendMessage;
 
 use crate::harness::{World, member};
@@ -167,4 +168,279 @@ fn reply_quotes_open_originals_in_conversations_and_threads_without_sending_a_dr
         window.view().workspace().and_then(|workspace| workspace.thread.as_ref()).and_then(|thread| thread.feed.as_ref())
             .is_some_and(|feed| feed.rows.iter().any(|row| matches!(row, FeedRow::Message(row) if row.message.id == first && row.target)))
     });
+}
+
+/// A read of a quoted message that fails for a time is sent again after a wait of its own,
+/// also while nothing else changes in the state (ADR 0747).
+#[gpui::test]
+fn a_read_of_a_quoted_message_that_fails_for_a_time_is_read_again_by_itself(
+    cx: &mut TestAppContext,
+) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let channel = world.run(api.snapshot()).unwrap().snapshot.workspaces[0]
+        .channels
+        .iter()
+        .find(|channel| channel.kind == junto_client_core::protocol::structure::ChannelKind::Text)
+        .unwrap()
+        .id;
+    let original = admin.send(&world, channel, document("the older original"));
+    for index in 0..60 {
+        admin.send(&world, channel, document(&format!("later {index}")));
+    }
+    world
+        .run(api.send_message(
+            PlaceId::Channel(channel),
+            &SendMessage {
+                document: document("the answer"),
+                reply_to: Some(original.id),
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    let read = format!("/messages/{}", original.id);
+    proxy.fail_ending(&read, [Fault::Cut]);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until_message("the answer");
+    let quote = |window: &mut crate::harness::Window| {
+        window
+            .messages()
+            .iter()
+            .find(|row| row.message.reply_to == Some(original.id))
+            .and_then(|row| row.reply.as_ref())
+            .map(|quote| quote.text.clone())
+    };
+    window.until("the first read of the original was cut", |_| {
+        proxy
+            .all()
+            .iter()
+            .any(|seen| seen.method == "GET" && seen.path.ends_with(&read))
+    });
+    window.until(
+        "the quote shows the original after a read of its own",
+        |window| quote(window) == Some(QuoteText::Text("the older original".to_owned())),
+    );
+    assert!(
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.method == "GET" && seen.path.ends_with(&read))
+            .count()
+            >= 2
+    );
+}
+
+/// A forward keeps the original that the window read while a reload of the state reads it
+/// again (ADR 0747).
+#[gpui::test]
+fn a_forward_keeps_its_original_while_a_reload_reads_it_again(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let source_channel = window.selected_channel();
+    let source = admin.send(&world, source_channel, document("the forwarded plan"));
+    let target = admin.text_channel(&world, &mut window, "delivery");
+    let server_id = window.view().selected.unwrap().id;
+    window.until_message("the forwarded plan");
+    window.right_click_message(source.id);
+    window.click("message-forward");
+    window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
+    window.click("forward-send");
+    window.until("the forward shows its original", |window| {
+        window.selected_channel() == target
+            && window.shows_named(format!("forward-message:{}", source.id))
+    });
+    let read = format!("/messages/{}", source.id);
+    let reads = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.method == "GET" && seen.path.ends_with(&read))
+            .count()
+    };
+    let before = reads(&proxy);
+    proxy.hold_ending(&read);
+    let refreshing = window.state.read_with(&window.cx, |state, _| {
+        state.client().server(server_id).unwrap().live().refresh()
+    });
+    window.until("the reload reads the original again", |_| {
+        reads(&proxy) > before
+    });
+    window.settle();
+    assert!(
+        window.shows_named(format!("forward-message:{}", source.id)),
+        "the forward keeps its original while the read waits"
+    );
+    assert!(!window.shows_named(format!("forward-reading:{}", source.id)));
+    proxy.release();
+    window.until("the answer of the read is shown", |window| {
+        window.shows_named(format!("forward-message:{}", source.id))
+    });
+    drop(refreshing);
+}
+
+/// A channel with a reply to an original that the loaded messages do not hold, behind a
+/// proxy that loses the answer of the first `losses` reads of the original. The test keeps
+/// the server: a dropped `TestServer` ends the server behind the proxy.
+pub(crate) fn reply_behind_a_proxy(
+    cx: &mut TestAppContext,
+    losses: usize,
+) -> (
+    World,
+    crate::support::TestServer,
+    crate::support::FaultProxy,
+    tempfile::TempDir,
+    crate::harness::Window,
+    MessageId,
+    String,
+) {
+    use crate::support::{Fault, FaultProxy};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let api = admin.handle.api();
+    let snapshot = world.run(api.snapshot()).unwrap().snapshot;
+    let workspace = snapshot.workspaces[0].workspace.id;
+    let channel = snapshot.workspaces[0]
+        .channels
+        .iter()
+        .find(|channel| channel.kind == junto_client_core::protocol::structure::ChannelKind::Text)
+        .unwrap()
+        .id;
+    let original = admin.send(&world, channel, document("the older original"));
+    for index in 0..60 {
+        admin.send(&world, channel, document(&format!("later {index}")));
+    }
+    world
+        .run(api.create_channel(
+            workspace,
+            &junto_client_core::protocol::structure::CreateChannel {
+                topic: String::new(),
+                name: "elsewhere".to_owned(),
+                kind: junto_client_core::protocol::structure::ChannelKind::Text,
+                category_id: None,
+                position: None,
+            },
+        ))
+        .unwrap();
+    let read = format!("/messages/{}", original.id);
+    // A lost answer of a read is not repeated by the client core, so each read of the
+    // window is one request at the proxy.
+    proxy.fail_ending(&read, std::iter::repeat_n(Fault::LoseAnswer, losses));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    // The reply comes after the window has loaded the channel, so no load of the state
+    // reads the original again during the test.
+    window.until_message("later 59");
+    world
+        .run(api.send_message(
+            PlaceId::Channel(channel),
+            &SendMessage {
+                document: document("the answer"),
+                reply_to: Some(original.id),
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until_message("the answer");
+    (world, server, proxy, directory, window, original.id, read)
+}
+
+fn reads(proxy: &crate::support::FaultProxy, read: &str) -> usize {
+    proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.method == "GET" && seen.path.ends_with(read))
+        .count()
+}
+
+fn quote_of(window: &mut crate::harness::Window, original: MessageId) -> Option<QuoteText> {
+    window
+        .messages()
+        .iter()
+        .find(|row| row.message.reply_to == Some(original))
+        .and_then(|row| row.reply.as_ref())
+        .map(|quote| quote.text.clone())
+}
+
+/// The reads of a quoted message that fail for a time stop after six, and start again when
+/// the stream of the server connects again (ADR 0747).
+#[gpui::test]
+fn the_reads_of_a_quote_stop_after_six(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let (_world, _server, proxy, _directory, mut window, original, read) =
+        reply_behind_a_proxy(cx, 7);
+    // The waits of 1, 2, 4, 8 and 16 seconds pass on the clock of the test.
+    window.until("six reads failed", |_| reads(&proxy, &read) == 6);
+    // Far beyond the schedule, no seventh read.
+    for _ in 0..4 {
+        window.cx.executor().advance_clock(Duration::from_secs(60));
+        window.pass(Duration::from_millis(200));
+        window.settle();
+    }
+    assert_eq!(reads(&proxy, &read), 6, "the reads stop after six");
+    assert_eq!(quote_of(&mut window, original), Some(QuoteText::Unknown));
+
+    // The stream connects again: the quote is read again; the seventh answer is lost too,
+    // and the eighth read shows the original. The state is not loaded again meanwhile, so
+    // the rule of the reconnect reads it, and not the reads after a reload.
+    let server_id = window.view().selected.unwrap().id;
+    let reloads = window
+        .state
+        .read_with(&window.cx, |state, _| state.reloads_of(server_id));
+    proxy.cut_streams();
+    window.until(
+        "the quote is read after the stream connected again",
+        |window| {
+            reads(&proxy, &read) >= 8
+                && quote_of(window, original)
+                    == Some(QuoteText::Text("the older original".to_owned()))
+        },
+    );
+    assert_eq!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.reloads_of(server_id)),
+        reloads,
+        "the state was loaded again"
+    );
+}
+
+/// A read of a quoted message that waits after a failure is not sent when its reply is not
+/// shown any more (ADR 0747).
+#[gpui::test]
+fn a_quote_read_that_waits_stops_when_its_reply_is_not_shown(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let (world, _server, proxy, _directory, mut window, _original, read) =
+        reply_behind_a_proxy(cx, 6);
+    let _ = world;
+    window.until("a read failed", |_| reads(&proxy, &read) >= 1);
+    // The waits before the next reads are on the clock of the test, which stands from here
+    // on.
+    window.hold_clock();
+    let sent = reads(&proxy, &read);
+    window.click_channel("elsewhere");
+    window.until("the other channel is shown", |window| {
+        window
+            .messages()
+            .iter()
+            .all(|row| row.message.reply_to.is_none())
+    });
+    for _ in 0..3 {
+        window.cx.executor().advance_clock(Duration::from_secs(60));
+        window.pass(Duration::from_millis(200));
+        window.settle();
+    }
+    assert_eq!(
+        reads(&proxy, &read),
+        sent,
+        "a read was sent for a reply that is not shown"
+    );
 }

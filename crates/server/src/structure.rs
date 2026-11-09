@@ -376,6 +376,8 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
                 topic: Some(topic),
                 kind,
                 category: Some(category.map(StructureId::from_uuid)),
+                // The stored position: the administrator who exports sees every channel
+                // (ADR 0304).
                 position: Some(position),
                 permanent_messages: Some(permanent),
                 user_limit: voice
@@ -432,6 +434,8 @@ pub async fn apply(
         )));
     }
     let mut created = Vec::new();
+    // The groups that entries left are numbered once, after the last change (ADR 0304).
+    let mut departures = channels::Departures::default();
     let mut index = 0;
     while index < request.changes.len() {
         let change = &request.changes[index];
@@ -453,12 +457,14 @@ pub async fn apply(
             )
             .await?;
         } else {
-            apply_one(app, &mut *connection, access, now, change, &mut created)
+            let made = (&mut created, &mut departures);
+            apply_one(app, &mut *connection, access, now, change, made)
                 .await
                 .map_err(|error| error.in_change(index + 1, change.name()))?;
         }
         index += count;
     }
+    departures.number(connection, now).await?;
     let revision = if request.changes.is_empty() {
         current
     } else {
@@ -567,7 +573,7 @@ async fn apply_one(
     access: &Access,
     now: OffsetDateTime,
     change: &StructureChange,
-    created: &mut Vec<CreatedEntry>,
+    (created, departures): (&mut Vec<CreatedEntry>, &mut channels::Departures),
 ) -> ApiResult<()> {
     use StructureKind::{Category, Channel, ServerRole as ServerRoleKind, Workspace};
     let role_kind = StructureKind::WorkspaceRole;
@@ -746,6 +752,9 @@ async fn apply_one(
             let category =
                 channels::create_category_in(&mut *connection, access, now, ids, &name, *position)
                     .await?;
+            if position.is_some() {
+                departures.placed_category(ids.0);
+            }
             register(connection, created, Category, *id, category.id.as_uuid()).await
         }
         StructureChange::UpdateCategory { id, name, position } => {
@@ -759,7 +768,11 @@ async fn apply_one(
             let name = optional_name(name.as_deref())?;
             let ids = (workspace_id, CategoryId::from_uuid(category_id));
             let name = name.as_deref();
-            channels::update_category_in(connection, access, now, ids, name, *position).await?;
+            let target = position.map(channels::Target::Position);
+            channels::update_category_in(connection, access, now, ids, name, target).await?;
+            if position.is_some() {
+                departures.placed_category(workspace_id);
+            }
             Ok(())
         }
         StructureChange::CreateChannel {
@@ -790,6 +803,9 @@ async fn apply_one(
                 position: *position,
             };
             channels::create_channel_in(&mut *connection, access, now, &new).await?;
+            if position.is_some() {
+                departures.placed((new.workspace_id, new.category_id));
+            }
             register(connection, created, Channel, *id, new.id.as_uuid()).await
         }
         StructureChange::UpdateChannel {
@@ -818,7 +834,14 @@ async fn apply_one(
             };
             let channel_id = ChannelId::from_uuid(channel_id);
             let name = name.as_deref();
-            channels::update_channel_in(connection, access, now, channel_id, name, &update).await?;
+            let order = (channels::Order::Now, &mut *departures);
+            let channel = channels::update_channel_in(
+                connection, access, now, channel_id, name, &update, order,
+            )
+            .await?;
+            if position.is_some() {
+                departures.placed((channel.workspace_id, channel.category_id));
+            }
             Ok(())
         }
         StructureChange::UpdateCallSettings {
@@ -936,7 +959,8 @@ async fn apply_one(
             )
             .await?;
             if let Some(provisional) = provisional.filter(|id| *id != channel_id) {
-                channels::delete_channel_in(connection, &app.calls, access, now, provisional)
+                let deleting = (now, departures);
+                channels::delete_channel_in(connection, &app.calls, access, deleting, provisional)
                     .await?;
             }
             Ok(())
@@ -950,7 +974,8 @@ async fn apply_one(
         }
         StructureChange::DeleteChannel { id } => {
             let channel_id = ChannelId::from_uuid(resolve(&mut *connection, Channel, *id).await?);
-            channels::delete_channel_in(connection, &app.calls, access, now, channel_id).await
+            let deleting = (now, departures);
+            channels::delete_channel_in(connection, &app.calls, access, deleting, channel_id).await
         }
         StructureChange::DeleteCategory { id } => {
             let category_id = resolve(&mut *connection, Category, *id).await?;
@@ -961,7 +986,7 @@ async fn apply_one(
             )
             .await?;
             let ids = (workspace_id, CategoryId::from_uuid(category_id));
-            channels::delete_category_in(connection, access, now, ids).await
+            channels::delete_category_in(connection, access, (now, departures), ids).await
         }
         StructureChange::DeleteWorkspaceRole { id } => {
             let role_id = resolve(&mut *connection, role_kind, *id).await?;

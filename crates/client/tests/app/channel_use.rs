@@ -161,7 +161,15 @@ fn a_channel_without_send_messages_shows_a_read_only_line_in_place_of_the_compos
     window.until("the composer is replaced by the read-only line", |window| {
         window.shows("read-only-bar") && !window.shows("composer")
     });
-    // The server takes no edit and no reply from a person who may not send there.
+    // The server takes no edit and no reply from a person who may not send there. The rows
+    // of the channel can be read again after the change of the rule, so the test waits for
+    // both of them.
+    window.until("both messages are listed again", |window| {
+        let rows = window.messages();
+        [own.message.id, other]
+            .iter()
+            .all(|id| rows.iter().any(|row| row.message.id == *id))
+    });
     let own = window.row(own.message.id);
     assert!(!own.can_edit && !own.can_reply && own.can_delete);
     assert!(!window.row(other).can_reply);

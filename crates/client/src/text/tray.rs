@@ -13,6 +13,7 @@ pub const NOT_IN_A_CALL: &str = "Junto";
 pub const IN_A_CALL: &str = "Junto: in a call";
 pub const IN_A_CALL_MUTED: &str = "Junto: in a call, microphone muted";
 pub const IN_A_CALL_SOUND_OFF: &str = "Junto: in a call, sound off";
+pub const IN_A_CALL_MUTED_SOUND_OFF: &str = "Junto: in a call, microphone muted and sound off";
 pub const IN_A_CALL_HELD: &str = "Junto: in a call, microphone closed by the call";
 
 /// The unread messages for the person, the mentions and the direct messages, that the

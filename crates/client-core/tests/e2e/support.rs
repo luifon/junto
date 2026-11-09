@@ -622,7 +622,7 @@ pub struct Seen {
 
 #[derive(Default)]
 struct ProxyState {
-    json_answers: Vec<(String, String, Vec<u8>)>,
+    json_answers: Vec<(String, String, u16, Vec<u8>)>,
     faults: Vec<(String, Vec<Fault>)>,
     /// Faults for the requests whose path without its query ends with a text.
     faults_ending: Vec<(String, Vec<Fault>)>,
@@ -644,12 +644,39 @@ struct ProxyState {
     kept_answer: Option<usize>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
+    /// The numbers of the requests (`Junto-Test-Request`) whose request or answer waits at
+    /// the proxy now.
+    held_numbers: Vec<u64>,
     /// What the server sends on the event stream waits at the proxy.
     events_held: bool,
+    /// The event revision that the `hello` of the event stream states in place of the one of
+    /// the server, as a server of an older release states it.
+    stated_revision: Option<u32>,
     /// How many connections ended before a whole request arrived.
     unfinished: usize,
     /// The errors of the connections that the proxy served, with their time.
     failures: Vec<(std::time::Instant, String)>,
+}
+
+thread_local! {
+    /// The proxies that the test of this thread started.
+    static PROXIES: std::cell::RefCell<Vec<std::sync::Weak<Mutex<ProxyState>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The numbers of the requests (`Junto-Test-Request`, sent by the counting transport of
+/// the client core) whose request or answer a proxy that the test of this thread started
+/// holds now. A press of a window test waits for the requests that it started, except for
+/// these (ADR 0902).
+#[allow(dead_code)]
+pub fn held_by_proxies() -> Vec<u64> {
+    PROXIES.with_borrow(|proxies| {
+        proxies
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .flat_map(|state| state.lock().unwrap().held_numbers.clone())
+            .collect()
+    })
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -701,6 +728,10 @@ impl FaultProxy {
     fn serve_on(listener: TcpListener, upstream_port: u16) -> Self {
         let port = listener.local_addr().unwrap().port();
         let state = Arc::<Mutex<ProxyState>>::default();
+        PROXIES.with_borrow_mut(|proxies| {
+            proxies.retain(|held| held.strong_count() > 0);
+            proxies.push(Arc::downgrade(&state));
+        });
         let shared = state.clone();
         let cut = watch::Sender::new(0);
         let cuts = cut.clone();
@@ -733,13 +764,21 @@ impl FaultProxy {
 
     #[allow(dead_code)]
     pub fn answer_json(&self, method: &str, end: &str, body: Vec<u8>) {
+        self.answer_with(method, end, 200, body);
+    }
+
+    /// From now on the proxy answers every request with `method` whose path ends with `end`
+    /// itself, with this status and JSON body, as a server of a release without the route
+    /// answers 404.
+    #[allow(dead_code)]
+    pub fn answer_with(&self, method: &str, end: &str, status: u16, body: Vec<u8>) {
         let mut state = self.state.lock().unwrap();
         state
             .json_answers
-            .retain(|(of, path, _)| of != method || path != end);
+            .retain(|(of, path, ..)| of != method || path != end);
         state
             .json_answers
-            .push((method.to_owned(), end.to_owned(), body));
+            .push((method.to_owned(), end.to_owned(), status, body));
     }
 
     /// Ends every connection of the event stream that passes through the proxy, without a
@@ -802,6 +841,20 @@ impl FaultProxy {
     #[allow(dead_code)]
     pub fn answers_waiting(&self) -> usize {
         self.state.lock().unwrap().answers_waiting
+    }
+
+    /// From now on the `hello` of each event stream states `revision` as the event revision of
+    /// the server, as a server of an older release does. The revision has as many digits as
+    /// the one of the server, so the frame keeps its length.
+    #[allow(dead_code)]
+    pub fn state_event_revision(&self, revision: u32) {
+        assert_eq!(
+            revision.to_string().len(),
+            junto_client_core::protocol::events::EVENT_REVISION
+                .to_string()
+                .len()
+        );
+        self.state.lock().unwrap().stated_revision = Some(revision);
     }
 
     /// From now on what the server sends on every connection of the event stream waits at
@@ -984,6 +1037,22 @@ async fn serve(
     let method = first_line.next().unwrap_or_default().to_owned();
     let path = first_line.next().unwrap_or_default().to_owned();
     let body = request[head_end..head_end + length].to_vec();
+    let number = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("junto-test-request")
+            .then(|| value.trim().parse::<u64>().ok())?
+    });
+    let hold = |state: &Mutex<ProxyState>, holding: bool| {
+        if let Some(number) = number {
+            let mut state = state.lock().unwrap();
+            if holding {
+                state.held_numbers.push(number);
+            } else if let Some(at) = state.held_numbers.iter().position(|held| *held == number) {
+                state.held_numbers.remove(at);
+            }
+        }
+    };
 
     let upgrade = head
         .to_ascii_lowercase()
@@ -1027,6 +1096,20 @@ async fn serve(
                 while state.lock().unwrap().events_held {
                     if released.changed().await.is_err() {
                         return Ok(());
+                    }
+                }
+                let stated = state.lock().unwrap().stated_revision;
+                if let Some(revision) = stated {
+                    let own = format!(
+                        "\"event_revision\":{}",
+                        junto_client_core::protocol::events::EVENT_REVISION
+                    );
+                    let older = format!("\"event_revision\":{revision}");
+                    if let Some(at) = buffer[..count]
+                        .windows(own.len())
+                        .position(|window| window == own.as_bytes())
+                    {
+                        buffer[at..at + own.len()].copy_from_slice(older.as_bytes());
                     }
                 }
                 to_client.write_all(&buffer[..count]).await?;
@@ -1078,8 +1161,14 @@ async fn serve(
                 .iter()
                 .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
-    while held(&state.lock().unwrap()) {
-        if released.changed().await.is_err() {
+    if held(&state.lock().unwrap()) {
+        hold(&state, true);
+        let mut open = true;
+        while open && held(&state.lock().unwrap()) {
+            open = released.changed().await.is_ok();
+        }
+        hold(&state, false);
+        if !open {
             return Ok(());
         }
     }
@@ -1088,14 +1177,14 @@ async fn serve(
         .unwrap()
         .json_answers
         .iter()
-        .find(|(of, end, _)| *of == method && bare.ends_with(end.as_str()))
-        .map(|(_, _, body)| body.clone());
-    if let Some(body) = json_answer {
+        .find(|(of, end, ..)| *of == method && bare.ends_with(end.as_str()))
+        .map(|(_, _, status, body)| (*status, body.clone()));
+    if let Some((status, body)) = json_answer {
         let head = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            "HTTP/1.1 {status} Answer\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
             body.len()
         );
-        answered(200, &body);
+        answered(status, &body);
         client.write_all(head.as_bytes()).await?;
         client.write_all(&body).await?;
         return client.shutdown().await;
@@ -1161,11 +1250,13 @@ async fn serve(
     };
     if answer_held(&state.lock().unwrap()) {
         state.lock().unwrap().answers_waiting += 1;
+        hold(&state, true);
         let mut open = true;
         while open && answer_held(&state.lock().unwrap()) {
             open = released.changed().await.is_ok();
         }
         state.lock().unwrap().answers_waiting -= 1;
+        hold(&state, false);
         if !open {
             return Ok(());
         }

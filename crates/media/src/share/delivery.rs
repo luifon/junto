@@ -66,7 +66,11 @@ pub(crate) fn deliver<P: Send>(
                     break;
                 }
             };
+            #[cfg(feature = "test-support")]
+            let started = Instant::now();
             let buffer = frame.convert(quality.resolution);
+            #[cfg(feature = "test-support")]
+            crate::share::phases::add(crate::share::phases::Phase::Convert, started);
             if !life.stopped() {
                 sink.picture(Arc::new(buffer));
             }

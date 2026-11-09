@@ -12,7 +12,8 @@ use gpui::{
 };
 
 use crate::harness::{
-    dispatch_from_the_window, draw_from_a_task, native_frame, open_view, pad, press_pad,
+    dispatch_from_the_window, drag, draw_from_a_task, native_frame, open_view, pad, press_pad,
+    type_text,
 };
 
 gpui::actions!(gpui_panics, [Probe]);
@@ -356,4 +357,306 @@ fn the_text_input_handler_takes_text_again_after_a_panic_in_it(cx: &mut TestAppC
     handler.replace_text_in_range(None, "b");
     assert_eq!(*typed.borrow(), "b");
     assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+}
+
+/// The phase of a draw in which an element of the test panics.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Phase {
+    Prepaint,
+    Paint,
+}
+
+/// A leaf of 10 by 10 pixels that panics once in the phase that `armed` names, and counts its
+/// paints.
+#[derive(Clone, Default)]
+struct Phased {
+    armed: Rc<Cell<Option<Phase>>>,
+    paints: Rc<Cell<usize>>,
+}
+
+impl Phased {
+    fn panic_once_in(&self, phase: Phase) {
+        if self.armed.get() == Some(phase) {
+            self.armed.set(None);
+            panic!("{MESSAGE}");
+        }
+    }
+}
+
+impl gpui::IntoElement for Phased {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Phased {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        let style = gpui::Style {
+            size: gpui::size(gpui::px(10.0).into(), gpui::px(10.0).into()),
+            ..gpui::Style::default()
+        };
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+        self.panic_once_in(Phase::Prepaint);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        _: &mut gpui::Window,
+        _: &mut gpui::App,
+    ) {
+        self.panic_once_in(Phase::Paint);
+        self.paints.set(self.paints.get() + 1);
+    }
+}
+
+/// A view with a text input handler, given to the window in the paint of a canvas before the
+/// element of the test, and the element of the test.
+struct PhasedView {
+    phased: Phased,
+    focus: gpui::FocusHandle,
+    typed: Rc<std::cell::RefCell<String>>,
+}
+
+impl gpui::Render for PhasedView {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let (focus, typed) = (self.focus.clone(), self.typed.clone());
+        gpui::div()
+            .size_full()
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, (), window, cx| {
+                        window.handle_input(
+                            &focus,
+                            Typing {
+                                once: Once(Rc::new(Cell::new(true))),
+                                typed: typed.clone(),
+                            },
+                            cx,
+                        );
+                    },
+                )
+                .size(gpui::px(10.0)),
+            )
+            .child(self.phased.clone())
+    }
+}
+
+fn phased_view(
+    cx: &mut TestAppContext,
+) -> (VisualTestContext, Phased, Rc<std::cell::RefCell<String>>) {
+    let phased = Phased::default();
+    let typed = Rc::new(std::cell::RefCell::new(String::new()));
+    let (view_phased, view_typed) = (phased.clone(), typed.clone());
+    let mut cx = open_view(cx, move |window, cx| {
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        PhasedView {
+            phased: view_phased,
+            focus,
+            typed: view_typed,
+        }
+    });
+    draw_from_a_task(&mut cx);
+    (cx, phased, typed)
+}
+
+/// A panic in the prepaint or in the paint of an element: gpui stops it, and the next draw
+/// prepaints and paints the window again without another panic.
+#[gpui::test]
+fn a_draw_that_panics_in_prepaint_or_paint_is_followed_by_a_whole_draw(cx: &mut TestAppContext) {
+    for phase in [Phase::Prepaint, Phase::Paint] {
+        let (mut cx, phased, _) = phased_view(cx);
+        let before = junto_client::panics::panics_on_this_thread();
+        let painted = phased.paints.get();
+        assert!(painted > 0, "the first draw painted the element");
+        phased.armed.set(Some(phase));
+        draw_from_a_task(&mut cx);
+        assert_eq!(
+            junto_client::panics::panics_on_this_thread(),
+            before + 1,
+            "{phase:?}: the draw did not panic once"
+        );
+        let after_panic = phased.paints.get();
+        draw_from_a_task(&mut cx);
+        assert!(
+            phased.paints.get() > after_panic,
+            "{phase:?}: the draw after the panic did not paint the element"
+        );
+        assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+    }
+}
+
+/// The input handler that the window gave the platform before a draw that panics in a paint
+/// goes back to the platform window: typing reaches it after the failed draw.
+#[gpui::test]
+fn typing_reaches_the_input_handler_after_a_draw_that_panicked(cx: &mut TestAppContext) {
+    let (mut cx, phased, typed) = phased_view(cx);
+    type_text(&mut cx, "a");
+    assert_eq!(*typed.borrow(), "a", "typing before the panic");
+    let before = junto_client::panics::panics_on_this_thread();
+    phased.armed.set(Some(Phase::Paint));
+    draw_from_a_task(&mut cx);
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+    type_text(&mut cx, "b");
+    assert_eq!(*typed.borrow(), "ab", "typing after the failed draw");
+}
+
+/// A view that holds only the element of the test: the dragged view and the prompt.
+struct Holder {
+    phased: Phased,
+    focus: gpui::FocusHandle,
+}
+
+impl gpui::Render for Holder {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::ParentElement as _;
+        gpui::div().child(self.phased.clone())
+    }
+}
+
+impl EventEmitter<gpui::PromptResponse> for Holder {}
+
+impl gpui::Focusable for Holder {
+    fn focus_handle(&self, _: &gpui::App) -> gpui::FocusHandle {
+        self.focus.clone()
+    }
+}
+
+/// A square that can be dragged; the dragged view holds the element of the test.
+struct DragSource {
+    phased: Phased,
+}
+
+impl gpui::Render for DragSource {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, StatefulInteractiveElement as _, Styled as _};
+        let phased = self.phased.clone();
+        gpui::div()
+            .id("drag-source")
+            .size(gpui::px(20.0))
+            .on_drag((), move |_, _, _, cx| {
+                let phased = phased.clone();
+                cx.new(|cx| Holder {
+                    phased,
+                    focus: cx.focus_handle(),
+                })
+            })
+    }
+}
+
+/// A draw that panics in the prepaint of the dragged view, and then in the prepaint of a
+/// prompt that the window renders: gpui puts the drag and the prompt back, and the next draw
+/// draws each of them again.
+#[gpui::test]
+fn the_dragged_view_and_the_prompt_return_after_a_panic_in_their_prepaint(cx: &mut TestAppContext) {
+    use gpui::{point, px};
+
+    let phased = Phased::default();
+    let source = phased.clone();
+    let mut window = open_view(cx, move |_, _| DragSource { phased: source });
+    draw_from_a_task(&mut window);
+    drag(
+        &mut window,
+        point(px(5.0), px(5.0)),
+        point(px(60.0), px(60.0)),
+    );
+    draw_from_a_task(&mut window);
+    assert!(
+        window.update(|_, cx| cx.has_active_drag()),
+        "no drag started"
+    );
+    let before = junto_client::panics::panics_on_this_thread();
+    let painted = phased.paints.get();
+    assert!(painted > 0, "the dragged view was not drawn");
+    phased.armed.set(Some(Phase::Prepaint));
+    draw_from_a_task(&mut window);
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+    assert!(
+        window.update(|_, cx| cx.has_active_drag()),
+        "the drag ended at the panic of its view"
+    );
+    let after_panic = phased.paints.get();
+    draw_from_a_task(&mut window);
+    assert!(
+        phased.paints.get() > after_panic,
+        "the dragged view was not drawn after the panic"
+    );
+
+    let prompted = Phased::default();
+    let held = prompted.clone();
+    let mut window = open_view(cx, move |_, _| DragSource {
+        phased: Phased::default(),
+    });
+    let _answer = window.update(move |window, cx| {
+        cx.set_prompt_builder(move |_, _, _, _, handle, window, cx| {
+            let phased = held.clone();
+            let view = cx.new(|cx| Holder {
+                phased,
+                focus: cx.focus_handle(),
+            });
+            handle.with_view(view, window, cx)
+        });
+        window.prompt(gpui::PromptLevel::Info, "probe", None, &["OK"], cx)
+    });
+    draw_from_a_task(&mut window);
+    let before = junto_client::panics::panics_on_this_thread();
+    assert!(prompted.paints.get() > 0, "the prompt was not drawn");
+    prompted.armed.set(Some(Phase::Prepaint));
+    draw_from_a_task(&mut window);
+    assert_eq!(junto_client::panics::panics_on_this_thread(), before + 1);
+    let after_panic = prompted.paints.get();
+    draw_from_a_task(&mut window);
+    assert!(
+        prompted.paints.get() > after_panic,
+        "the prompt was not drawn after the panic"
+    );
 }

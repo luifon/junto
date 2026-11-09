@@ -11,6 +11,8 @@ use gpui::{
     ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder, px,
 };
+mod formatting;
+
 use gpui_base::input::{
     self, InlineToken, InputContent, InputEditorStyle, InputEvent, InputState, Textarea,
     TextareaState,
@@ -134,6 +136,8 @@ pub(crate) struct Composer {
     attaching: VecDeque<Attaching>,
     next_attaching: u64,
     pub(crate) mention: Option<MentionPicker>,
+    /// The formatting of the text while the person writes it (ADR 0740).
+    formatting: formatting::Formatting,
     emoji_completion: Option<EmojiCompletion>,
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
@@ -169,9 +173,8 @@ fn token_target(id: &str) -> Option<MentionTarget> {
 }
 
 /// The text of the input with its tokens as the mentions of [`compose`].
-fn mentions_of(content: &InputContent) -> Vec<Mention> {
-    content
-        .tokens()
+fn mentions_of(tokens: &[input::InlineTokenSpan]) -> Vec<Mention> {
+    tokens
         .iter()
         .filter_map(|span| {
             Some(Mention {
@@ -372,6 +375,7 @@ impl Composer {
             attaching: VecDeque::new(),
             next_attaching: 0,
             mention: None,
+            formatting: formatting::Formatting::default(),
             emoji_completion: None,
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
@@ -1396,9 +1400,14 @@ impl Shell {
         match &self.pen(pane).editing {
             Some(editing) => {
                 let (original, shown) = editing.original.as_ref();
-                compose::parse_edit(original, shown, content.text(), &mentions_of(&content))
+                compose::parse_edit(
+                    original,
+                    shown,
+                    content.text(),
+                    &mentions_of(content.tokens()),
+                )
             }
-            None => compose::parse(content.text(), &mentions_of(&content)),
+            None => compose::parse(content.text(), &mentions_of(content.tokens())),
         }
     }
 
@@ -2056,7 +2065,7 @@ impl Shell {
                             .role(Role::Button)
                             .aria_label(text::ATTACH_FILE)
                             .aria_description(refused)
-                            .debug_selector(|| "attach-file-refused".to_owned())
+                            .debug_selector(move || pane.id("attach-file-refused").to_owned())
                             .flex()
                             .flex_none()
                             .items_center()
@@ -2288,18 +2297,49 @@ impl Shell {
             .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
                 let sentence = SharedString::from(sentence);
+                // The line keeps one line of height, so a problem that arrives moves no
+                // control (ADR 0740). The line takes the keyboard focus and shows its whole
+                // sentence while it holds it, as the tooltip does for the pointer.
+                let focus = window
+                    .use_keyed_state("compose-problem-focus", cx, |_, cx| {
+                        cx.focus_handle().tab_stop(true)
+                    })
+                    .read(cx)
+                    .clone();
+                let focused = focus.is_focused(window);
                 div()
-                    .id("compose-problem")
-                    .debug_selector(|| "compose-problem".to_owned())
-                    .role(Role::Alert)
-                    .aria_label(sentence.clone())
-                    .tooltip(crate::ui::tooltip(sentence.clone()))
+                    .id("compose-problem-line")
+                    .relative()
                     .min_w_0()
-                    .truncate()
-                    .text_size(u(12.5))
-                    .line_height(u(18.0))
-                    .ink(colors.cinnabar_ink)
-                    .child(sentence)
+                    .child(
+                        div()
+                            .id("compose-problem")
+                            .debug_selector(|| "compose-problem".to_owned())
+                            .role(Role::Alert)
+                            .aria_label(sentence.clone())
+                            .track_focus(&focus)
+                            // Only the keyboard gives the line the focus: a press of the
+                            // pointer leaves it in the input, where the person writes.
+                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                window.prevent_default()
+                            })
+                            .tooltip(crate::ui::tooltip(sentence.clone()))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(u(12.5))
+                            .line_height(u(18.0))
+                            .ink(colors.cinnabar_ink)
+                            .child(sentence.clone()),
+                    )
+                    .when(focused, |line| {
+                        line.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .child(crate::ui::focused_tooltip(sentence, cx)),
+                        )
+                    })
             });
 
         // The line under the box: a problem of the message, or how to send. It always has
@@ -2888,6 +2928,36 @@ impl Shell {
         )
     }
 
+    /// Follows every change of the text area of the composer, of its text and of its
+    /// selection, to show the formatting of the text (ADR 0740).
+    pub(crate) fn observe_formatting(
+        pane: Pane,
+        input: &Entity<TextareaState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Subscription {
+        cx.observe_in(input, window, move |this, _, _, cx| {
+            this.show_formatting(pane, cx);
+        })
+    }
+
+    /// Shows the formatting of the text of a composer: the parts are read again after a
+    /// change of the text, and their marks are dimmed or not after a move of the selection.
+    pub(crate) fn show_formatting(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let colors = theme(cx).colors;
+        let pen = self.pen_mut(pane);
+        let input = pen.input.read(cx);
+        // The tokens without a copy of the text: the input also notifies at each blink of
+        // its caret.
+        let mentions = mentions_of(input.tokens());
+        let selection = input.selected_range();
+        let text = input.text().clone();
+        if let Some(decorations) = pen.formatting.update(&text, mentions, selection, colors) {
+            pen.input
+                .update(cx, |input, cx| input.set_text_decorations(decorations, cx));
+        }
+    }
+
     /// Moves the keyboard focus into the composer.
     pub fn focus_composer(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         self.pen_mut(pane)
@@ -2932,6 +3002,22 @@ impl Shell {
     /// The text that the composer holds.
     pub fn composer_text(&self, pane: Pane, cx: &gpui::App) -> String {
         self.pen(pane).input.read(cx).value().to_string()
+    }
+
+    /// The style that the text area of the composer gives each byte range of its text, as
+    /// the formatting of the text sets it (ADR 0740).
+    pub fn composer_formatting(
+        &self,
+        pane: Pane,
+        cx: &gpui::App,
+    ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
+        self.pen(pane)
+            .input
+            .read(cx)
+            .text_decorations()
+            .iter()
+            .map(|decoration| (decoration.range.clone(), decoration.style))
+            .collect()
     }
 
     /// Why the composer did not send its text.

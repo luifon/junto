@@ -101,7 +101,10 @@ publication as the newest release, titled "Junto <version>". A test build (`--te
 has the lightweight tag `v<version>-test.<n>` on the release commit and the title
 "Junto <version> test <n>", is published as a pre-release, which no client is offered, and
 holds only the first-install files, the Windows symbols file and a `SHA256SUMS` of those
-files; its notes are given with `--notes`. A test build is never edited into a release: the
+files; its notes are given with `--notes`. The notes `docs/releases/<version>.md`, with the
+section `## What is new`, are committed before the first test build of the version: the
+client compiles that section into its build and shows it after an update (ADR 0727), and
+`release_assets.py` refuses a version whose notes file lacks it, in both forms. A test build is never edited into a release: the
 release of the version is a new GitHub release of the tag `v<version>` with the update files.
 The files of a draft are not served, so every latest file becomes available with the
 archives that it names. Never replace or delete a file of

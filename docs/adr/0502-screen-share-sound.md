@@ -22,14 +22,14 @@ Choice of sound:
 
 - The sharer chooses the sound of a share: this application, all system sound, or none.
 - A choice that the operating system cannot provide is not offered.
-- Nothing is chosen automatically.
+- Nothing is chosen automatically, with one exception: a share of the windows of one application has the sound of that application while the sharer has chosen no other sound. The dialog shows that choice before the share starts, and the sharer changes it there (ADR 0738).
 - The sharer and the viewers see which choice is active for as long as the share runs.
 - The sound of the Junto application itself is always excluded, so a call does not hear itself.
 - Junto does not offer itself in the list of applications.
 
 Several shares:
 
-- Several people can share at once, and one person can run up to three shares at once, for example two screens, or a screen and a window. Each share has its own choice of sound.
+- Several people can share at once, and one person can run up to three shares at once, for example two screens, a screen and a window, or a window and the windows of one application. Each share has its own choice of sound.
 - Three is the limit because each share costs the sharer one capture and one encoder and costs every viewer one more received picture track; a fourth share of one person is refused by the client and by the server.
 - Each viewer picks which share to watch, as between the shares of two people, and hears the sound of that share only, also when the other share is a share of the same person.
 - A viewer can mute the sound of a share, or change its volume, and keep the picture.

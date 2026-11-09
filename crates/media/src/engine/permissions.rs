@@ -55,6 +55,9 @@ pub(super) struct ShareTracks {
     pub picture: Option<TrackSid>,
     /// The sound track, once its publication has answered.
     pub sound: Option<TrackSid>,
+    /// The picture track that replaces `picture` in another codec, once its publication has
+    /// answered and until the earlier track is withdrawn (ADR 0737).
+    pub replacement: Option<TrackSid>,
 }
 
 /// A track that the call library publishes for this device.
@@ -76,7 +79,13 @@ pub(super) fn permissions(
     viewers: &[Viewer],
 ) -> Permissions {
     let tracks = |share: &ShareTracks| -> Vec<TrackSid> {
-        share.picture.iter().chain(&share.sound).cloned().collect()
+        share
+            .picture
+            .iter()
+            .chain(&share.sound)
+            .chain(&share.replacement)
+            .cloned()
+            .collect()
     };
     let placed: Vec<TrackSid> = shares.iter().flat_map(tracks).collect();
     let unplaced = own
@@ -224,6 +233,7 @@ impl Actor {
                     slot: *slot,
                     picture,
                     sound,
+                    replacement: share.replacement_sid(),
                 })
             })
             .collect();
@@ -274,6 +284,7 @@ mod tests {
             slot,
             picture: picture.map(sid),
             sound: sound.map(sid),
+            replacement: None,
         }
     }
 

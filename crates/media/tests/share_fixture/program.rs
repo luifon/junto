@@ -6,7 +6,10 @@
 //! title whose inner area shows four quarters of known colours, above the other windows and
 //! without taking the focus, and writes its lines to its standard output (`window::run`). It
 //! reads the commands of the window from its standard input; the end of the input closes the
-//! window. With `--start` it then starts the program as its own child, with the variable
+//! window. The command `tone <hz>` plays a tone of that frequency at -12 dBFS on the default
+//! output device until the program ends, and writes `tone on`, or `tone failed <reason>`; a
+//! test of the sound of one application shares that sound (ADR 0706). With `--start` it then
+//! starts the program as its own child, with the variable
 //! `JUNTO_FIXTURE_WINDOW` set to the number of its window, and writes `ran <exit code>` when
 //! that program has ended.
 //!
@@ -66,12 +69,31 @@ fn main() {
             let _ = out.flush();
         }
     };
-    // The input thread of the window reads the commands.
-    let commands = std::iter::from_fn(|| {
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(line.trim().to_owned()),
+    // The input thread of the window reads the commands. It plays the tone itself.
+    let told = say.clone();
+    let mut playing = Vec::new();
+    let commands = std::iter::from_fn(move || {
+        loop {
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => {}
+            }
+            let line = line.trim().to_owned();
+            let Some(hz) = line.strip_prefix("tone ") else {
+                return Some(line);
+            };
+            match hz
+                .parse()
+                .map_err(|_| format!("{hz} is no frequency"))
+                .and_then(tone)
+            {
+                Ok(stream) => {
+                    playing.push(stream);
+                    told("tone on".to_owned());
+                }
+                Err(reason) => told(format!("tone failed {reason}")),
+            }
         }
     });
     let started = say.clone();
@@ -98,6 +120,27 @@ fn main() {
         say(line);
     });
     std::process::exit(code);
+}
+
+/// A tone at -12 dBFS on every channel of the default output device, while the value lives.
+#[cfg(target_os = "windows")]
+fn tone(hz: f32) -> Result<junto_media::audio::OpenStream, String> {
+    use junto_media::audio::AudioHost;
+
+    let mut phase = 0.0_f64;
+    let host = junto_media::audio::cpal_host::CpalHost::new();
+    host.open_output(
+        None,
+        Box::new(move |samples, format| {
+            let step = std::f64::consts::TAU * f64::from(hz) / f64::from(format.sample_rate);
+            for frame in samples.chunks_mut(usize::from(format.channels.max(1))) {
+                frame.fill((0.25 * phase.sin()) as f32);
+                phase = (phase + step) % std::f64::consts::TAU;
+            }
+        }),
+        Box::new(|_| {}),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -81,6 +81,17 @@ fn the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file(
         matches!(stage(window), Some(DownloadStage::Receiving)) && window.shows(cancel)
     });
     assert!(!window.shows(start));
+    // Cancel is pressed while the request of the file waits at the proxy and the unfinished
+    // file exists, so that the check below shows that the cancel removes it.
+    window.until("the request of the file waits at the proxy", |_| {
+        proxy.seen(&file).iter().any(|seen| seen.answer.is_none())
+    });
+    window.until("the unfinished file exists", |_| {
+        std::fs::read_dir(downloads.path())
+            .unwrap()
+            .next()
+            .is_some()
+    });
     window.click(cancel);
     window.until("the download is cancelled", |window| {
         stage(window).is_none() && window.shows(start)

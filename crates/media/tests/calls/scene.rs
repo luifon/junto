@@ -343,6 +343,39 @@ impl Person {
         tone_level(&played, rate, hz)
     }
 
+    /// Waits until the engine of this person has subscribed to the microphone track of `of`
+    /// and has received frames of it for at least 300 of the last 600 ms. Only then does
+    /// the absence of the tone of `of` in what this person played show that the device
+    /// kept the sound off: before the subscription nothing of `of` could be played.
+    pub async fn until_receiving(&self, of: &Person) {
+        let identity = of
+            .calls
+            .view()
+            .call
+            .map(|call| call.identity)
+            .expect("the other person is in a call");
+        step(format!("receives the microphone of {identity}"));
+        let started = tokio::time::Instant::now();
+        loop {
+            let check = self.calls.sound_check().await.expect("the engine runs");
+            let subscribed = check
+                .remote_tracks
+                .iter()
+                .any(|(held, source, subscribed, muted)| {
+                    *held == identity && source == "Microphone" && *subscribed && !*muted
+                });
+            let received = check.received.chars().filter(|slot| *slot != '.').count();
+            if subscribed && received >= 30 {
+                return;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the microphone of {identity} is not received: {check}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     pub async fn until_heard(&self, of: &Person) -> f32 {
         self.until_level(of.hz, "the tone arrives", |level| level > HEARD_DBFS)
             .await

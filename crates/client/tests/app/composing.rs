@@ -132,10 +132,43 @@ fn the_formatting_bar_marks_the_selected_text_of_the_message(cx: &mut TestAppCon
     };
     assert_eq!(drawn, expected);
     assert_eq!(stored(&world, &admin, id), expected);
-    let colours = window.in_shell(|shell, _, _| shell.code_colours(code, "rust"));
+    // The colours with which the text of the block is painted: the keyword, the name of
+    // the function and the number each have a colour of their own, other than the colour
+    // of the plain text between them.
+    let painted = {
+        let _record = junto_client::ui::record_painted_code();
+        window.cx.update(|window, _| window.refresh());
+        window.settle();
+        junto_client::ui::take_painted_code()
+    };
+    let block = painted
+        .iter()
+        .find(|painted| painted.text == code)
+        .unwrap_or_else(|| panic!("the code block is not painted: {painted:?}"));
+    let colour_at = |part: &str| {
+        let at = code.find(part).unwrap();
+        block
+            .colours
+            .iter()
+            .find(|(range, _)| range.contains(&at))
+            .map(|(_, colour)| *colour)
+            .unwrap()
+    };
+    let (keyword, function, value, plain) = (
+        colour_at("fn"),
+        colour_at("main"),
+        colour_at("4"),
+        colour_at("{"),
+    );
     assert!(
-        colours.is_some_and(|parts| parts > 0),
-        "the code block is drawn without colours: {colours:?}"
+        keyword != plain && function != plain && value != plain,
+        "the code block is drawn without its colours: {:?}",
+        block.colours
+    );
+    assert!(
+        keyword != function && function != value && keyword != value,
+        "{:?}",
+        block.colours
     );
 
     // A link with the selected words as its text; the person types the address in its

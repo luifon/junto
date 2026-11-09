@@ -13,7 +13,7 @@ use super::{FlowError, FlowView};
 use crate::address::ServerAddress;
 use crate::api::{ApiClient, server_info};
 use crate::book::{ConnectionMode, ServerEntry};
-use crate::manager::Inner;
+use crate::manager::{Inner, Reach};
 use crate::version::{ApiVersion, Incompatibility};
 
 /// What the server at an address says about itself, cut to what the client shows.
@@ -55,6 +55,10 @@ pub enum AddServerAction {
     /// Deletes the key that was created for the other address. The device loses the
     /// account that the key belongs to, and can then add the server as a new device.
     DiscardKey,
+    /// Deletes that key without telling the server, for a server that cannot be told: one
+    /// that does not answer the withdrawal of a join request, or a release without the route
+    /// (ADR 0712). A request of the key that waits stays on the server.
+    DiscardKeyHere,
     /// Returns to the entry of an address.
     Reset,
 }
@@ -64,6 +68,7 @@ pub enum AddServerActionKind {
     Fetch,
     Save,
     DiscardKey,
+    DiscardKeyHere,
     Reset,
 }
 
@@ -73,6 +78,7 @@ impl AddServerAction {
             Self::Fetch { .. } => AddServerActionKind::Fetch,
             Self::Save { .. } => AddServerActionKind::Save,
             Self::DiscardKey => AddServerActionKind::DiscardKey,
+            Self::DiscardKeyHere => AddServerActionKind::DiscardKeyHere,
             Self::Reset => AddServerActionKind::Reset,
         }
     }
@@ -83,7 +89,7 @@ pub fn actions(state: &AddServerState) -> &'static [AddServerActionKind] {
     match state {
         AddServerState::EnterAddress => &[K::Fetch],
         AddServerState::Preview(_) => &[K::Save, K::Fetch, K::Reset],
-        AddServerState::KeyOfOtherAddress { .. } => &[K::DiscardKey, K::Reset],
+        AddServerState::KeyOfOtherAddress { .. } => &[K::DiscardKey, K::DiscardKeyHere, K::Reset],
         AddServerState::Saved { .. } => &[],
     }
 }
@@ -160,7 +166,7 @@ impl AddServerFlow {
                 Err(error) => Outcome::failed(error),
             },
             (
-                AddServerAction::DiscardKey,
+                action @ (AddServerAction::DiscardKey | AddServerAction::DiscardKeyHere),
                 AddServerState::KeyOfOtherAddress {
                     preview,
                     key_address,
@@ -177,18 +183,26 @@ impl AddServerFlow {
                     Ok(None) => {}
                     Err(error) => return Outcome::failed(error),
                 }
-                if let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await {
+                if action == AddServerAction::DiscardKey
+                    && let Err(error) = self.withdraw_with_stored_key(&preview, &key_address).await
+                {
                     return Outcome::failed(error);
                 }
-                let discarded = core.book.lock().map_err(FlowError::from).and_then(|_lock| {
-                    let saved = core.book.entry(preview.server_id)?;
-                    if let Some(saved) = saved {
-                        return Err(FlowError::AlreadySaved {
-                            server_id: saved.server_id,
+                // The flow runs on the runtime of the client: it does not wait for another
+                // program that holds the data directory (ADR 0710).
+                let discarded =
+                    core.data_dir
+                        .try_lock()
+                        .map_err(FlowError::from)
+                        .and_then(|_lock| {
+                            let saved = core.book.entry(preview.server_id)?;
+                            if let Some(saved) = saved {
+                                return Err(FlowError::AlreadySaved {
+                                    server_id: saved.server_id,
+                                });
+                            }
+                            Ok(core.keys.remove(preview.server_id)?)
                         });
-                    }
-                    Ok(core.keys.remove(preview.server_id)?)
-                });
                 match discarded {
                     Ok(()) => Outcome::moved(AddServerState::Preview(preview)),
                     Err(error) => Outcome::failed(error),
@@ -197,15 +211,28 @@ impl AddServerFlow {
             (AddServerAction::Save { connection_mode }, AddServerState::Preview(preview)) => {
                 let mut entry = preview.entry.clone();
                 entry.connection_mode = connection_mode;
+                let held = match core.data_dir.try_lock() {
+                    Ok(held) => held,
+                    Err(error) => return Outcome::failed(FlowError::from(error)),
+                };
                 let checked = core.book.add_after(entry, || {
                     match self.key_of_other_address(preview.server_id, &preview.address)? {
                         None => Ok(()),
                         Some(stored) => Err(FlowError::KeyOfOtherAddress { stored }),
                     }
                 });
+                drop(held);
                 match checked {
+                    // A server without a common API version is shown as incompatible from
+                    // its save, with the reason that the preview found (ADR 0713).
                     Ok(entry) => Outcome::moved(AddServerState::Saved {
-                        server_id: self.client.adopt(entry),
+                        server_id: self.client.adopt(
+                            entry,
+                            preview
+                                .version
+                                .err()
+                                .map_or(Reach::Unknown, Reach::Incompatible),
+                        ),
                     }),
                     Err(FlowError::KeyOfOtherAddress { stored }) => Outcome::failed_and_moved(
                         AddServerState::KeyOfOtherAddress {
@@ -217,9 +244,12 @@ impl AddServerFlow {
                     Err(error) => Outcome::failed(error),
                 }
             }
-            (AddServerAction::Save { .. } | AddServerAction::DiscardKey, _) => {
-                Outcome::failed(FlowError::NotAvailable)
-            }
+            (
+                AddServerAction::Save { .. }
+                | AddServerAction::DiscardKey
+                | AddServerAction::DiscardKeyHere,
+                _,
+            ) => Outcome::failed(FlowError::NotAvailable),
         }
     }
 

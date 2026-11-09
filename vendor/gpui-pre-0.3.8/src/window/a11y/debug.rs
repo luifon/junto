@@ -1,3 +1,5 @@
+// Modified: this file differs from the published gpui-pre 0.3.8. The debug tree states the
+// disabled state of a node.
 //! Developer tooling for inspecting the accessibility tree.
 //!
 //! [`A11yDebug`] retains the last [`TreeUpdate`] sent to the platform adapter so
@@ -264,6 +266,10 @@ fn node_to_json(
     }
     if let Some(v) = node.is_expanded() {
         aria.insert("expanded".into(), json!(v));
+    }
+    // Modified: the disabled state.
+    if node.is_disabled() {
+        aria.insert("disabled".into(), json!(true));
     }
     if let Some(v) = node.toggled() {
         aria.insert("toggled".into(), json!(format!("{v:?}")));

@@ -2885,6 +2885,7 @@
             "type": "string"
           },
           "position": {
+            "description": "The position of the category as the reader reads it: the stored position when the\nreader sees every category of the workspace, otherwise its place among the categories\nthat the reader sees, counted from 0 (ADR 0304).",
             "format": "int32",
             "type": "integer"
           },
@@ -2934,6 +2935,7 @@
             "type": "boolean"
           },
           "position": {
+            "description": "The position of the channel as the reader reads it: the stored position when the\nreader sees every channel of its category, or of the root, archived ones included;\notherwise its place among the channels of the group that the reader sees in the\nlists, counted from 0 (ADR 0304). An archived channel has 0.",
             "format": "int32",
             "type": "integer"
           },
@@ -6408,7 +6410,18 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ShareKind",
-                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+                "description": "What the share shows, as the device reported it, in the values that a client of\n0.1.0 reads. Absent from a device that did not state it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareShows",
+                "description": "What the share shows, also an application. Absent from a server of 0.1.0 and for a\nshare whose device did not state it; [`ScreenShare::shows`] then reads `kind`."
               },
               {
                 "type": "null"
@@ -6757,10 +6770,19 @@
         "type": "string"
       },
       "ShareKind": {
-        "description": "What a screen share shows.",
+        "description": "What a screen share shows, in the values that a client of 0.1.0 reads: a share of every\nwindow of one application is a `window` here, and [`ShareShows`] tells it apart\n(ADR 0737).",
         "enum": [
           "screen",
           "window"
+        ],
+        "type": "string"
+      },
+      "ShareShows": {
+        "description": "What a screen share shows (ADR 0737). A value that this version does not know, as a later\nversion can send, is read as [`ShareShows::Unknown`], and the reader takes [`ShareKind`]\ninstead.",
+        "enum": [
+          "screen",
+          "window",
+          "application"
         ],
         "type": "string"
       },
@@ -6994,6 +7016,17 @@
           "is_default": {
             "description": "True for the workspace that an invite or an approval grants when it names none.",
             "type": "boolean"
+          },
+          "logo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "The logo of the workspace, when an administrator set one: its hash, format, bytes and\nsize. The image is read from `/api/v1/workspaces/{workspace_id}/logo`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"

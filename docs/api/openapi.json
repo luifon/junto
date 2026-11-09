@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/server": {
@@ -345,6 +345,17 @@
         ],
         "summary": "Stores the avatar of the caller's account. The body is the image itself: a still PNG,\nJPEG or WebP image of at most 2097152 bytes (`JUNTO_PICTURE_BYTES`) and at most 1024 by\n1024 pixels. The server reads the format from the bytes, not from `Content-Type`.",
         "operationId": "set_avatar",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The hash of the picture that the client saw, in lower-case hexadecimal, or `none` when\nthere was none. The server then stores the new picture only while the stored one is\nthat picture or already the new one, and answers `conflict` otherwise: a request that\nis sent again after its connection was cut does not replace a picture that was stored\nin between. Absent: no condition.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "image/jpeg": {
@@ -11457,6 +11468,17 @@
         ],
         "summary": "Sets the public logo. The caller is a server administrator with a session.",
         "operationId": "set_logo",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The hash of the picture that the client saw, in lower-case hexadecimal, or `none` when\nthere was none. The server then stores the new picture only while the stored one is\nthat picture or already the new one, and answers `conflict` otherwise: a request that\nis sent again after its connection was cut does not replace a picture that was stored\nin between. Absent: no condition.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "image/jpeg": {
@@ -13429,6 +13451,193 @@
                 "schema": {
                   "$ref": "#/components/schemas/Glossary"
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/logo": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "The image of the logo of a workspace that the caller sees.",
+        "operationId": "get_logo",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current image matches If-None-Match"
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Sets the logo of a workspace. The caller is a server administrator with a session.",
+        "operationId": "set_logo",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Avatar"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Removes the logo of a workspace. An absent logo is unchanged.",
+        "operationId": "remove_logo",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
               }
             }
           },
@@ -16678,6 +16887,35 @@
           },
           {
             "type": "object",
+            "description": "A person set or removed the logo of a workspace.",
+            "required": [
+              "workspace_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_logo_changed"
+                ]
+              },
+              "logo": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "bytes_per_file",
               "files_per_message",
@@ -18029,7 +18267,8 @@
           },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The position of the category as the reader reads it: the stored position when the\nreader sees every category of the workspace, otherwise its place among the categories\nthat the reader sees, counted from 0 (ADR 0304)."
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -18062,7 +18301,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: a new category goes after the last one, an existing one keeps its position."
+            "description": "The stored position: the categories of a workspace are in the order of position and\nthen identifier (ADR 0304). Absent: a new category goes after the last one, an\nexisting one keeps its position."
           }
         },
         "additionalProperties": false
@@ -18258,7 +18497,8 @@
           },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The position of the channel as the reader reads it: the stored position when the\nreader sees every channel of its category, or of the root, archived ones included;\notherwise its place among the channels of the group that the reader sees in the\nlists, counted from 0 (ADR 0304). An archived channel has 0."
           },
           "topic": {
             "type": "string",
@@ -18369,7 +18609,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: a new channel goes after the last one, an existing one keeps its position."
+            "description": "The stored position: the channels of a category, or of the root, are in the order of\nposition and then identifier (ADR 0304); an archived channel states its stored\nposition too. Absent: a new channel goes after the last one, an existing one keeps its\nposition."
           },
           "synced": {
             "type": [
@@ -18472,7 +18712,7 @@
       },
       "ChannelPlace": {
         "type": "object",
-        "description": "The category and the position of a channel.",
+        "description": "The category and the position of a channel, as the caller reads positions (ADR 0304).",
         "required": [
           "position"
         ],
@@ -18488,9 +18728,18 @@
               }
             ]
           },
+          "place": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Only in `to`: the place among the channels of the group that the caller sees after\nthe change, counted from 0; a place past the last puts it after the last. It replaces\n`position` (ADR 0206)."
+          },
           "position": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Where the client read the channel; in `to`, a position in the caller's view of the\ngroup: the channels that the caller sees are ordered by position and then identifier\nwith the new values of the request."
           }
         },
         "additionalProperties": false
@@ -18689,7 +18938,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: after the last category."
+            "description": "A position in the caller's view, as the caller reads positions: the categories that\nthe caller sees are ordered by position and then identifier with this value (ADR 0304).\nAbsent: after the last category."
           }
         }
       },
@@ -18737,7 +18986,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Absent: after the last channel."
+            "description": "A position in the caller's view of the category, or of the root, as the caller reads\npositions: the channels that the caller sees are ordered by position and then\nidentifier with this value (ADR 0304). Absent: after the last channel."
           },
           "topic": {
             "type": "string",
@@ -21696,7 +21945,8 @@
           "kind": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ShareKind"
+                "$ref": "#/components/schemas/ShareKind",
+                "description": "What the share shows, in the values that a server of 0.1.0 reads."
               },
               {
                 "type": "null"
@@ -21710,6 +21960,17 @@
             ],
             "format": "uuid",
             "description": "The share that the device started in the slot: a new identifier for each start. A\nreport with another identifier than the share that the slot holds is a new share,\nwhich starts at the report; a report with the same identifier changes the sound and\nthe kind of the share and keeps its start. Absent from a client from before it: a\nreport changes the share of the slot."
+          },
+          "shows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareShows",
+                "description": "What the share shows, also an application. A server of 0.1.0 ignores it and keeps\n`kind`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "slot": {
             "type": "integer",
@@ -21936,7 +22197,18 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ShareKind",
-                "description": "What the share shows, as the device reported it. Absent from a device that did not\nstate it."
+                "description": "What the share shows, as the device reported it, in the values that a client of\n0.1.0 reads. Absent from a device that did not state it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shows": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShareShows",
+                "description": "What the share shows, also an application. Absent from a server of 0.1.0 and for a\nshare whose device did not state it; [`ScreenShare::shows`] then reads `kind`."
               },
               {
                 "type": "null"
@@ -22614,10 +22886,19 @@
       },
       "ShareKind": {
         "type": "string",
-        "description": "What a screen share shows.",
+        "description": "What a screen share shows, in the values that a client of 0.1.0 reads: a share of every\nwindow of one application is a `window` here, and [`ShareShows`] tells it apart\n(ADR 0737).",
         "enum": [
           "screen",
           "window"
+        ]
+      },
+      "ShareShows": {
+        "type": "string",
+        "description": "What a screen share shows (ADR 0737). A value that this version does not know, as a later\nversion can send, is read as [`ShareShows::Unknown`], and the reader takes [`ShareKind`]\ninstead.",
+        "enum": [
+          "screen",
+          "window",
+          "application"
         ]
       },
       "Signature": {
@@ -24207,12 +24488,21 @@
               "null"
             ]
           },
+          "place": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The place among the categories that the caller sees after the change, counted from 0;\na place past the last puts it after the last. It replaces `position` (ADR 0206)."
+          },
           "position": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int32"
+            "format": "int32",
+            "description": "A position in the caller's view, as the caller reads positions: the categories that\nthe caller sees are ordered by position and then identifier with this value (ADR 0304)."
           }
         }
       },
@@ -24247,7 +24537,8 @@
               "integer",
               "null"
             ],
-            "format": "int32"
+            "format": "int32",
+            "description": "A position in the caller's view of the category, or of the root, as the caller reads\npositions: the channels that the caller sees are ordered by position and then\nidentifier with this value (ADR 0304). A channel that changes its category without a\nposition goes after the last channel of the new one."
           },
           "topic": {
             "type": [
@@ -24429,6 +24720,17 @@
           "is_default": {
             "type": "boolean",
             "description": "True for the workspace that an invite or an approval grants when it names none."
+          },
+          "logo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "The logo of the workspace, when an administrator set one: its hash, format, bytes and\nsize. The image is read from `/api/v1/workspaces/{workspace_id}/logo`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"

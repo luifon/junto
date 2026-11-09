@@ -9,15 +9,26 @@ use gpui::{
     LayoutId, Pixels, SharedString, Window,
 };
 
-/// Records the place of the control that holds it, with the clip that applies to it.
+/// Records the place of the control that holds it, with the clip that applies to it, and
+/// its accessible label and selection.
 #[cfg(feature = "test-support")]
-pub(crate) fn placed(name: SharedString) -> impl gpui::IntoElement {
+pub(crate) fn placed(
+    name: SharedString,
+    label: Option<SharedString>,
+    selected: Option<bool>,
+) -> impl gpui::IntoElement {
     use gpui::Styled;
     gpui::canvas(
         move |bounds, window, _| {
             let clip = window.content_mask().bounds;
             let (bounds, clip) = record::strip().unwrap_or((bounds, clip));
-            record::push(Placed { name, bounds, clip });
+            record::push(Placed {
+                name,
+                label,
+                selected,
+                bounds,
+                clip,
+            });
         },
         |_, (), _, _| {},
     )
@@ -29,6 +40,10 @@ pub(crate) fn placed(name: SharedString) -> impl gpui::IntoElement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placed {
     pub name: SharedString,
+    /// The accessible label that the control gives the system.
+    pub label: Option<SharedString>,
+    /// Whether the control is the selected one of a set, such as an open tab.
+    pub selected: Option<bool>,
     /// The bounds of the control, or of the outermost scrolling strip that holds it.
     pub bounds: Bounds<Pixels>,
     /// The part of the window in which those bounds can be seen.
@@ -193,6 +208,8 @@ mod tests {
     fn control(x: f32, width: f32, clip: (f32, f32)) -> Placed {
         Placed {
             name: "control".into(),
+            label: None,
+            selected: None,
             bounds: Bounds::new(point(px(x), px(10.0)), size(px(width), px(30.0))),
             clip: Bounds::new(point(px(clip.0), px(0.0)), size(px(clip.1), px(600.0))),
         }

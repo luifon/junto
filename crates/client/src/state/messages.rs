@@ -23,6 +23,90 @@ use crate::text;
 
 /// How many reads of quoted messages are on their way at one time.
 const QUOTE_READS: usize = 8;
+/// How often a quoted message is read while each read fails for a time (ADR 0747).
+const QUOTE_ATTEMPTS: u32 = 6;
+/// The wait after the first read of a quoted message that failed for a time. Each further
+/// wait is twice as long, up to [`LONGEST_QUOTE_WAIT`].
+const FIRST_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const LONGEST_QUOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Where the read of one quoted or forwarded message is (ADR 0747).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuoteRead {
+    /// The read with this number is on its way. `attempt` counts the reads of the message
+    /// before it that failed for a time. With `again`, the state of the server was loaded
+    /// again meanwhile: the answer is dropped and the message read once more, and the read
+    /// counts among those on their way until its answer.
+    Flying {
+        number: u64,
+        attempt: u32,
+        again: bool,
+    },
+    /// A read failed for a time: the next one waits for the timer of the read with this
+    /// number.
+    Waiting { number: u64, attempt: u32 },
+    /// The message is read at the next look. What the window held of it stays shown until
+    /// the answer.
+    Due { attempt: u32 },
+    /// The answer is in the quoted messages of the window.
+    Answered,
+    /// Every read failed for a time. The message is read again when the connection of its
+    /// server comes back, when an event names it or when the state is loaded again.
+    Exhausted,
+}
+
+type QuoteReads = std::collections::HashMap<(ServerId, MessageId), QuoteRead>;
+
+/// The state of a server was loaded again: every quoted message of the server is read again.
+/// A read on its way stays counted until its answer, which is dropped (ADR 0747).
+fn read_again(reads: &mut QuoteReads, server_id: ServerId) {
+    for (key, read) in reads.iter_mut() {
+        if key.0 != server_id {
+            continue;
+        }
+        match read {
+            QuoteRead::Waiting { .. } => {}
+            QuoteRead::Flying { again, .. } => *again = true,
+            QuoteRead::Due { .. } | QuoteRead::Answered | QuoteRead::Exhausted => {
+                *read = QuoteRead::Due { attempt: 0 }
+            }
+        }
+    }
+}
+
+/// A server whose event stream became live again since the last look reads again the quotes
+/// whose reads all failed, on a new schedule (ADR 0747). `connections` gives, for each
+/// server of the client, how many times its stream became live; servers that are gone are
+/// forgotten.
+fn read_after_reconnects(
+    reads: &mut QuoteReads,
+    seen: &mut std::collections::HashMap<ServerId, u64>,
+    connections: impl IntoIterator<Item = (ServerId, u64)>,
+) {
+    let mut held = std::collections::HashSet::new();
+    for (server_id, count) in connections {
+        held.insert(server_id);
+        if seen
+            .insert(server_id, count)
+            .is_some_and(|before| before < count)
+        {
+            for (key, read) in reads.iter_mut() {
+                if key.0 == server_id && *read == QuoteRead::Exhausted {
+                    *read = QuoteRead::Due { attempt: 0 };
+                }
+            }
+        }
+    }
+    seen.retain(|server_id, _| held.contains(server_id));
+}
+
+/// The wait before the read that follows `attempt` reads that failed for a time.
+fn quote_wait(attempt: u32, asked: Option<std::time::Duration>) -> std::time::Duration {
+    let doubled = FIRST_QUOTE_WAIT.saturating_mul(1 << attempt.saturating_sub(1).min(8));
+    doubled
+        .max(asked.unwrap_or_default())
+        .min(LONGEST_QUOTE_WAIT)
+}
 
 /// Why a file was not attached to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,14 +354,26 @@ impl AppState {
         }
         self.known.quoted.retain(|key, _| named.contains(key));
         self.asked_quotes.retain(|key, _| named.contains(key));
+        read_after_reconnects(
+            &mut self.asked_quotes,
+            &mut self.quote_streams,
+            servers
+                .iter()
+                .map(|server| (server.id(), server.live().view().connections)),
+        );
         let flying = self
             .asked_quotes
-            .keys()
-            .filter(|key| !self.known.quoted.contains_key(key))
+            .values()
+            .filter(|read| matches!(read, QuoteRead::Flying { .. }))
             .count();
         let mut missing: Vec<_> = named
             .into_iter()
-            .filter(|key| !self.asked_quotes.contains_key(key))
+            .filter(|key| {
+                matches!(
+                    self.asked_quotes.get(key),
+                    None | Some(QuoteRead::Due { .. })
+                )
+            })
             .collect();
         missing.sort_unstable();
         missing.truncate(QUOTE_READS.saturating_sub(flying));
@@ -289,16 +385,38 @@ impl AppState {
                 continue;
             };
             let key = (server_id, message_id);
+            let attempt = match self.asked_quotes.get(&key) {
+                Some(QuoteRead::Due { attempt }) => *attempt,
+                _ => 0,
+            };
             self.quote_asks += 1;
             let number = self.quote_asks;
-            self.asked_quotes.insert(key, number);
+            self.asked_quotes.insert(
+                key,
+                QuoteRead::Flying {
+                    number,
+                    attempt,
+                    again: false,
+                },
+            );
             let api = server.api_for(owner.account_id);
             cx.spawn(async move |this, cx| {
                 let read = api.message(message_id).await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.asked_quotes.get(&key) != Some(&number)
-                        || this.owner(server_id) != Some(owner)
-                    {
+                    let Some(QuoteRead::Flying {
+                        number: held,
+                        again,
+                        ..
+                    }) = this.asked_quotes.get(&key).copied()
+                    else {
+                        return;
+                    };
+                    if held != number || this.owner(server_id) != Some(owner) {
+                        return;
+                    }
+                    if again {
+                        this.asked_quotes.insert(key, QuoteRead::Due { attempt: 0 });
+                        this.changed(cx);
                         return;
                     }
                     match read {
@@ -312,17 +430,62 @@ impl AppState {
                             Some(quoted) => {
                                 this.known.quoted.insert(key, quoted);
                             }
+                            None if attempt + 1 < QUOTE_ATTEMPTS => {
+                                this.wait_for_quote(key, number, attempt + 1, &error, cx);
+                                return;
+                            }
+                            // The reads failed for a time each: what the window held stays,
+                            // and the message is read again when the connection of its
+                            // server comes back, an event names it or the state is loaded
+                            // again.
                             None => {
-                                this.asked_quotes.remove(&key);
+                                this.known
+                                    .quoted
+                                    .entry(key)
+                                    .or_insert(feed::Quoted::NotHeld);
+                                this.asked_quotes.insert(key, QuoteRead::Exhausted);
+                                this.changed(cx);
                                 return;
                             }
                         },
                     }
+                    this.asked_quotes.insert(key, QuoteRead::Answered);
                     this.changed(cx);
                 });
             })
             .detach();
         }
+    }
+
+    /// The read of a quoted message with this number failed for a time: it is read again
+    /// after a wait of its own, without another change of the state (ADR 0747).
+    fn wait_for_quote(
+        &mut self,
+        key: (ServerId, MessageId),
+        number: u64,
+        attempt: u32,
+        error: &ApiError,
+        cx: &mut Context<Self>,
+    ) {
+        self.asked_quotes
+            .insert(key, QuoteRead::Waiting { number, attempt });
+        let wait = quote_wait(attempt, error.retry_after());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.asked_quotes.get(&key) == Some(&QuoteRead::Waiting { number, attempt }) {
+                    this.asked_quotes.insert(key, QuoteRead::Due { attempt });
+                    this.changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The state of a server was loaded again: every quoted message of the server is read
+    /// again, and what the window holds of it stays shown until the answer (ADR 0747).
+    pub(super) fn read_quotes_again(&mut self, server_id: ServerId) {
+        read_again(&mut self.asked_quotes, server_id);
     }
 
     /// A quoted message changed, or with `None` every message of a server can have
@@ -1170,5 +1333,105 @@ impl AppState {
                 None => Err(TransferFailure::Stopped),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn exhausted_quotes_are_read_again_when_their_server_connects_again() {
+        let (server, other) = (ServerId::generate(), ServerId::generate());
+        let (first, second) = (MessageId::generate(), MessageId::generate());
+        let mut reads: QuoteReads = [
+            ((server, first), QuoteRead::Exhausted),
+            ((server, second), QuoteRead::Answered),
+            ((other, first), QuoteRead::Exhausted),
+        ]
+        .into_iter()
+        .collect();
+        let mut seen = std::collections::HashMap::new();
+        // The first look learns the counts and reads nothing again.
+        read_after_reconnects(&mut reads, &mut seen, [(server, 1), (other, 1)]);
+        read_after_reconnects(&mut reads, &mut seen, [(server, 1), (other, 1)]);
+        assert_eq!(reads[&(server, first)], QuoteRead::Exhausted);
+        // The stream of the server became live again: only its exhausted quote is due.
+        read_after_reconnects(&mut reads, &mut seen, [(server, 2), (other, 1)]);
+        assert_eq!(reads[&(server, first)], QuoteRead::Due { attempt: 0 });
+        assert_eq!(reads[&(server, second)], QuoteRead::Answered);
+        assert_eq!(reads[&(other, first)], QuoteRead::Exhausted);
+        // A server that is gone is forgotten.
+        read_after_reconnects(&mut reads, &mut seen, [(server, 2)]);
+        assert!(!seen.contains_key(&other));
+    }
+
+    #[test]
+    fn a_reload_reads_every_quote_again_and_keeps_a_read_on_its_way_counted() {
+        let (server, other) = (ServerId::generate(), ServerId::generate());
+        let ids: Vec<_> = (0..5).map(|_| MessageId::generate()).collect();
+        let flying = QuoteRead::Flying {
+            number: 7,
+            attempt: 2,
+            again: false,
+        };
+        let waiting = QuoteRead::Waiting {
+            number: 8,
+            attempt: 3,
+        };
+        let mut reads: QuoteReads = [
+            ((server, ids[0]), flying),
+            ((server, ids[1]), waiting),
+            ((server, ids[2]), QuoteRead::Answered),
+            ((server, ids[3]), QuoteRead::Exhausted),
+            ((other, ids[4]), QuoteRead::Answered),
+        ]
+        .into_iter()
+        .collect();
+        read_again(&mut reads, server);
+        assert_eq!(
+            reads[&(server, ids[0])],
+            QuoteRead::Flying {
+                number: 7,
+                attempt: 2,
+                again: true
+            },
+            "the read on its way stays counted and is read again after its answer"
+        );
+        assert_eq!(
+            reads[&(server, ids[1])],
+            waiting,
+            "a wait keeps its schedule"
+        );
+        assert_eq!(reads[&(server, ids[2])], QuoteRead::Due { attempt: 0 });
+        assert_eq!(reads[&(server, ids[3])], QuoteRead::Due { attempt: 0 });
+        assert_eq!(reads[&(other, ids[4])], QuoteRead::Answered);
+    }
+
+    #[test]
+    fn the_wait_between_quote_reads_doubles_up_to_its_bound() {
+        let waits: Vec<_> = (1..=7).map(|attempt| quote_wait(attempt, None)).collect();
+        assert_eq!(
+            waits,
+            [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs),
+            "the wait doubles from 1 second and stops at 30"
+        );
+        assert_eq!(
+            quote_wait(1, Some(Duration::from_secs(5))),
+            Duration::from_secs(5),
+            "a longer Retry-After of the server wins"
+        );
+        assert_eq!(
+            quote_wait(4, Some(Duration::from_secs(2))),
+            Duration::from_secs(8),
+            "a shorter Retry-After does not shorten the wait"
+        );
+        assert_eq!(
+            quote_wait(2, Some(Duration::from_secs(600))),
+            LONGEST_QUOTE_WAIT,
+            "the bound holds for a Retry-After too"
+        );
+        assert_eq!(QUOTE_ATTEMPTS, 6);
     }
 }

@@ -1255,7 +1255,7 @@ impl Shell {
                 CardState::Shown(detail) => self.card_body(index, card, detail, &theme, window, cx),
             };
         div()
-            .id(("recording", index))
+            .id(("recording", recording_id.as_uuid().as_u128() as u64))
             .role(Role::ListItem)
             .aria_label(title.clone())
             .debug_selector(move || format!("recording:{recording_id}"))

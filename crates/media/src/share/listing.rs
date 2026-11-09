@@ -1,7 +1,7 @@
 //! The rules that decide which applications a share offers, on the systems where the client
 //! lists them itself: macOS (ADR 0736) and Windows (ADR 0706).
 
-use super::{ApplicationId, ApplicationSource};
+use super::{ApplicationId, ApplicationPicture, ApplicationSource, DisplaySource, WindowSource};
 
 /// What the client is to the system: its process, the identity of its program, and its name.
 /// macOS gives a bundle identifier and a process name; Windows gives the path of the
@@ -45,6 +45,93 @@ pub(crate) fn shareable_applications(
             .then(one.id.process_id.cmp(&other.id.process_id))
     });
     applications
+}
+
+/// A rectangle in the coordinates of the screens of the system: points on macOS, pixels on
+/// Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Bounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Bounds {
+    /// The area that two rectangles have in common.
+    pub(crate) fn overlap(&self, other: &Self) -> f64 {
+        let width = (self.x + self.width).min(other.x + other.width) - self.x.max(other.x);
+        let height = (self.y + self.height).min(other.y + other.height) - self.y.max(other.y);
+        width.max(0.0) * height.max(0.0)
+    }
+}
+
+/// The applications whose windows can be shared together (ADR 0738), from the windows that
+/// a person can share, each with its frame, and the screens with theirs. The share of an
+/// application shows one screen: the screen that shows the largest part of the windows of
+/// the application, the first listed of equal ones. An application without a window on a
+/// screen is not offered. The list has the order of [`shareable_applications`].
+pub(crate) fn application_pictures(
+    windows: &[(WindowSource, Bounds)],
+    displays: &[(DisplaySource, Bounds)],
+) -> Vec<ApplicationPicture> {
+    let mut applications: Vec<(&ApplicationId, &str)> = Vec::new();
+    for (window, _) in windows {
+        if !applications
+            .iter()
+            .any(|(id, _)| **id == window.application)
+        {
+            applications.push((&window.application, &window.application_name));
+        }
+    }
+    let mut pictures: Vec<ApplicationPicture> = applications
+        .into_iter()
+        .filter_map(|(application, name)| {
+            let own: Vec<&Bounds> = windows
+                .iter()
+                .filter(|(window, _)| window.application == *application)
+                .map(|(_, frame)| frame)
+                .collect();
+            let (display, frame, shown) = displays
+                .iter()
+                .map(|(display, frame)| {
+                    let shown: f64 = own.iter().map(|window| window.overlap(frame)).sum();
+                    (display, frame, shown)
+                })
+                .fold(
+                    None,
+                    |best: Option<(&DisplaySource, &Bounds, f64)>, next| match best {
+                        Some(best) if best.2 >= next.2 => Some(best),
+                        _ => Some(next),
+                    },
+                )?;
+            if shown <= 0.0 {
+                return None;
+            }
+            Some(ApplicationPicture {
+                application: application.clone(),
+                name: name.to_owned(),
+                display: display.id,
+                width: display.width,
+                height: display.height,
+                windows: own
+                    .iter()
+                    .filter(|window| window.overlap(frame) > 0.0)
+                    .count(),
+            })
+        })
+        .collect();
+    pictures.sort_by(|one, other| {
+        one.name
+            .to_lowercase()
+            .cmp(&other.name.to_lowercase())
+            .then(
+                one.application
+                    .process_id
+                    .cmp(&other.application.process_id),
+            )
+    });
+    pictures
 }
 
 #[cfg(test)]
@@ -101,5 +188,73 @@ mod tests {
             .map(|application| application.name)
             .collect();
         assert_eq!(names, ["Player", "zeta"]);
+    }
+
+    #[test]
+    fn an_application_is_offered_on_the_screen_that_shows_most_of_its_windows() {
+        let frame = |x: f64, y: f64, width: f64, height: f64| Bounds {
+            x,
+            y,
+            width,
+            height,
+        };
+        let window = |id: u32, application: &ApplicationId, name: &str| WindowSource {
+            id,
+            title: format!("window {id}"),
+            application: application.clone(),
+            application_name: name.to_owned(),
+            width: 100,
+            height: 100,
+        };
+        let display = |id: u32| DisplaySource {
+            id,
+            width: 1920,
+            height: 1080,
+        };
+        let (editor, player, hidden) = (
+            application(7, "example.editor"),
+            application(8, "example.player"),
+            application(9, "example.hidden"),
+        );
+        let displays = [
+            (display(1), frame(0.0, 0.0, 1920.0, 1080.0)),
+            (display(2), frame(1920.0, 0.0, 1920.0, 1080.0)),
+        ];
+        let windows = [
+            // The editor shows a small window on screen 1 and a large one on screen 2,
+            // and a window that lies across both.
+            (
+                window(1, &editor, "editor"),
+                frame(10.0, 10.0, 100.0, 100.0),
+            ),
+            (
+                window(2, &editor, "editor"),
+                frame(2000.0, 10.0, 1000.0, 800.0),
+            ),
+            (
+                window(3, &editor, "editor"),
+                frame(1800.0, 10.0, 400.0, 100.0),
+            ),
+            // The player lies exactly across the edge: the first screen is taken.
+            (
+                window(4, &player, "Player"),
+                frame(1820.0, 0.0, 200.0, 100.0),
+            ),
+            // A window outside every screen.
+            (
+                window(5, &hidden, "Hidden"),
+                frame(5000.0, 5000.0, 100.0, 100.0),
+            ),
+        ];
+        let pictures = application_pictures(&windows, &displays);
+        let listed: Vec<(&str, u32, usize)> = pictures
+            .iter()
+            .map(|picture| (picture.name.as_str(), picture.display, picture.windows))
+            .collect();
+        assert_eq!(listed, [("editor", 2, 2), ("Player", 1, 1)]);
+        assert_eq!(pictures[0].application, editor);
+        assert_eq!((pictures[0].width, pictures[0].height), (1920, 1080));
+        assert!(application_pictures(&[], &displays).is_empty());
+        assert!(application_pictures(&windows, &[]).is_empty());
     }
 }

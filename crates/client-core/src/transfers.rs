@@ -37,11 +37,12 @@ const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_secs(30);
 /// The longest name of a file that the server accepts, in characters.
 const LONGEST_NAME: usize = 200;
-/// The largest file that the server marks as a picture (ADR 0408).
-pub const PICTURE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// The largest file that the server marks as a picture: a still PNG or JPEG that a client
+/// decodes reduced (ADR 0408).
+pub const PICTURE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// The longest time of the read of one picture, with its tries. A server that sends a
 /// picture slower than this holds none of the reads of the window for longer. A picture
-/// of the largest size arrives in this time at 55 KiB in a second.
+/// of the largest size, 64 MiB, arrives in this time at 110 KiB in a second.
 const PICTURE_TIME: Duration = Duration::from_secs(600);
 
 /// Why a file was not uploaded or not downloaded.
@@ -997,7 +998,7 @@ fn own_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 /// is refused before anything is written, so no file of another origin changes. The file
 /// is locked until it is closed, so a second download of the same file is refused while
 /// this one runs.
-fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
+fn open_part(part: &Path, bytes: u64) -> std::io::Result<(LockedFile, u64)> {
     let regular = |path: &Path| match std::fs::symlink_metadata(path) {
         Ok(named) if named.file_type().is_file() => Ok(Some(named)),
         Ok(_) => Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
@@ -1006,7 +1007,7 @@ fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
     };
     regular(part)?;
     // Not in append mode: Windows refuses `set_len` on a file that was opened to append.
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -1022,12 +1023,39 @@ fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
         std::fs::TryLockError::WouldBlock => std::io::ErrorKind::ResourceBusy.into(),
         std::fs::TryLockError::Error(error) => error,
     })?;
+    let mut file = LockedFile(file);
     if held.len() > bytes {
         empty(&mut file)?;
         return Ok((file, 0));
     }
     file.seek(SeekFrom::End(0))?;
     Ok((file, held.len()))
+}
+
+/// An unfinished file that a download holds locked. The lock is given back before the file
+/// is closed: a program that this process starts holds a copy of the open file from its start
+/// until its exec, and a close alone would leave the lock with that copy, so that the deletion
+/// of the file that follows a failed download found it held (ADR 0710).
+struct LockedFile(std::fs::File);
+
+impl std::ops::Deref for LockedFile {
+    type Target = std::fs::File;
+
+    fn deref(&self) -> &std::fs::File {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LockedFile {
+    fn deref_mut(&mut self) -> &mut std::fs::File {
+        &mut self.0
+    }
+}
+
+impl Drop for LockedFile {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// Removes every byte of an unfinished file; the next write is its first byte.
@@ -1046,7 +1074,7 @@ async fn receive<Open, Opened>(
     open: &Open,
     part: &Path,
     shared: &DownloadShared,
-) -> Result<std::fs::File, TransferFailure>
+) -> Result<LockedFile, TransferFailure>
 where
     Open: Fn(u64) -> Opened,
     Opened: Future<Output = Result<FileBody, ApiError>>,
@@ -1135,7 +1163,7 @@ where
             return Ok((file, length, None));
         }
         file.seek(SeekFrom::Start(0))?;
-        let (length, sha256) = measure(&mut file)?;
+        let (length, sha256) = measure(&mut *file)?;
         Ok((file, length, Some(sha256)))
     })
     .await?;
@@ -1154,7 +1182,7 @@ async fn receive_whole<Open, Opened>(
     open: &Open,
     part: &Path,
     shared: &DownloadShared,
-) -> Result<std::fs::File, TransferFailure>
+) -> Result<LockedFile, TransferFailure>
 where
     Open: Fn(u64) -> Opened,
     Opened: Future<Output = Result<FileBody, ApiError>>,

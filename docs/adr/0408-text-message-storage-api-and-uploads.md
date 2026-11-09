@@ -266,17 +266,52 @@ Attachments:
   and the card of the picture had landscape proportions (review H1). Tests:
   `image::tests::a_picture_turned_by_its_exif_orientation_states_its_turned_size` and the
   API test `previews_state_the_size_of_a_photo_after_its_exif_orientation`.
-  The bounds: a still picture has at most 33,554,432 pixels, the 128 MiB as RGBA that a
-  client decodes before it reduces the picture, and at most 16,384 pixels per side, the
-  longest side of a WebP file. An animation has a canvas of at most 4,194,304 pixels
-  (16 MiB as RGBA, decoded once for each frame), at most 2,048 frames, and at most
-  1,073,741,824 pixels in all its frames together, which bound the time of its decoding.
-  32 MiB is the most that a client reads into memory to draw a picture. The pixel bound
-  covers screenshots of screens up to 8K (7680 × 4320) and photos of 24 megapixels; a
-  photo of 48 megapixels and a file above 32 MiB remain files. HEIC and AVIF files remain files: the decoders of the
-  client (the `image` crate) read neither without a C library (libheif, dav1d). Every
-  other file, a file above a bound and an animation without frames remain downloads with
-  `application/octet-stream`.
+  The bounds of a picture that a client decodes whole: a still picture has at most
+  33,554,432 pixels, the 128 MiB as RGBA that a client decodes before it reduces the
+  picture, a file has at most 32 MiB, and a side has at most 16,384 pixels, the longest
+  side of a WebP file. An animation has a canvas of at most 4,194,304 pixels (16 MiB as
+  RGBA, decoded once for each frame), at most 2,048 frames, and at most 1,073,741,824
+  pixels in all its frames together, which bound the time of its decoding.
+  A picture that a client decodes reduced, at the size at which it draws it, without the
+  whole picture in memory, has at most 268,435,456 pixels (16,384 on each side) and a file
+  of at most 64 MiB: a still PNG without interlacing, whose rows a client reduces as it
+  reads them, and a JPEG of sequential coding (the baseline and the extended process,
+  markers SOF0 and SOF1) with 8-bit samples in one or three colour components, which the
+  JPEG decoder of the client reduces by 1/2, 1/4 or 1/8 while it decodes it. The server
+  reads the interlacing of a PNG from its header and the coding, the precision and the
+  components of a JPEG from its frame header (`Picture::reducible`). A JPEG of progressive
+  coding keeps the coefficients of the whole picture in its decoder and an interlaced PNG
+  delivers its rows in seven passes, so both keep the bounds of a whole decoding. The
+  client reads the whole file into memory and checks its hash before it decodes it; 64 MiB
+  covers a camera JPEG of 100 megapixels and a PNG screenshot of 8K. The memory and the
+  time of a decoding before and after are in `docs/client-performance.md`. Tests:
+  `image::tests::the_pictures_that_a_client_decodes_reduced_are_marked` and the API tests
+  `previews_refuse_files_and_pictures_above_their_bounds` and
+  `previews_state_the_size_of_a_reducible_picture_up_to_its_longest_side`.
+  Before, every still picture had the bounds of a whole decoding, so a photo above 33.5
+  megapixels and a file above 32 MiB remained files.
+  A client of 0.1.0 reads a picture only up to 32 MiB. It takes a reducible JPEG or PNG of
+  32 to 64 MiB within 33,554,432 pixels from a server of 0.2.0 as a picture, its read
+  refuses the file, and its card states "The picture could not be shown. You can download
+  the file." with the download control of the file, where a server of 0.1.0 gave a file
+  row. A larger reducible picture is not a picture for a client of 0.1.0 (its bound of the
+  pixels), and stays a file row there.
+  HEIC files remain files: no HEVC decoder in Rust exists without a C library (libheif,
+  libde265) or a decoder of the system, and the client builds no C code for its decoders.
+  AVIF files remain files: the AV1 decoders were measured on 2026-11-05 against the
+  conditions of a decoder of the client (no C build step, no tool that the CI images lack,
+  no new unsafe code in the client, a licence that `cargo deny` accepts, a 12-megapixel
+  photo decoded off the window thread in a time of seconds). `rav1d` 1.1.0 builds without
+  nasm with its `asm` feature off, but offers only `unsafe extern "C"` functions;
+  `rav1d-safe` is under AGPL-3.0; `avif-rust` 0.1.2 describes itself as experimental;
+  `oxideav-avif` 0.0.16 with `oxideav-av1` 0.1.21 (MIT,
+  Rust only) decoded a 4000 × 3000 AVIF in 0.40 s and a noisy 10 MB one in 2.04 s on an
+  Apple M-series Mac with pixels within 1 of the dav1d decoder of ffmpeg, but the manifest
+  of `oxideav-av1` describes it as a scaffold pending a clean-room re-implementation, so the
+  origin of its code is not settled, and the licence and origin of each dependency must be
+  clear.
+  Every other file, a file above a bound and an animation without frames remain downloads
+  with `application/octet-stream`.
   Before, only still PNG, JPEG and WebP files up to 8 MiB and 16,777,216 pixels got the
   metadata, so a GIF, an animated WebP or PNG, a PNG screenshot above 8 MiB and a photo
   above 16 megapixels were rows of files; before that the bound was 1,024 pixels per side.

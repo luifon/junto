@@ -29,6 +29,34 @@ pub(super) enum Encoder {
     /// VP8, by the encoder that WebRTC chooses: its software encoder on every system that
     /// this client is built for.
     Vp8,
+    /// VP8 as [`Encoder::Vp8`], a second value that the rule of a test chooses, so that the
+    /// publication again in the codec of a new size runs on every system (ADR 0737).
+    #[cfg(feature = "test-support")]
+    Vp8Second,
+}
+
+/// How an engine chooses the encoder of a picture track of a share. The product uses the
+/// rule of the system; a test can make it choose [`Encoder::Vp8Second`] for pictures wider
+/// than a width.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct EncoderRule {
+    #[cfg(feature = "test-support")]
+    pub(super) second_above: Option<u32>,
+}
+
+impl EncoderRule {
+    /// The encoder of a picture of `size` at `frame_rate` under this rule.
+    pub(super) fn encoder(self, size: (u32, u32), frame_rate: u32) -> Encoder {
+        #[cfg(feature = "test-support")]
+        if let Some(width) = self.second_above {
+            return if size.0 > width {
+                Encoder::Vp8Second
+            } else {
+                Encoder::Vp8
+            };
+        }
+        encoder(HARDWARE_H264, size, frame_rate)
+    }
 }
 
 /// Whether this system encodes H.264 with the encoder of its hardware.
@@ -58,15 +86,23 @@ pub(super) fn encoder(hardware_h264: bool, size: (u32, u32), frame_rate: u32) ->
 }
 
 /// The options of an own track of `size` pixels at `frame_rate` pictures per second with the
-/// codec and the encoder of [`encoder`]. Every system decodes both codecs (ADR 0737).
+/// codec and the encoder of [`encoder`] on this system. Every system decodes both codecs
+/// (ADR 0737).
 pub(super) fn encoded(
     options: TrackPublishOptions,
     size: (u32, u32),
     frame_rate: u32,
 ) -> TrackPublishOptions {
-    let (video_codec, video_encoder) = match encoder(HARDWARE_H264, size, frame_rate) {
+    encoded_with(options, encoder(HARDWARE_H264, size, frame_rate))
+}
+
+/// The options of an own track with the codec and the backend of `encoder`.
+pub(super) fn encoded_with(options: TrackPublishOptions, encoder: Encoder) -> TrackPublishOptions {
+    let (video_codec, video_encoder) = match encoder {
         Encoder::HardwareH264 => (VideoCodec::H264, VideoEncoderBackend::VideoToolbox),
         Encoder::Vp8 => (VideoCodec::VP8, VideoEncoderBackend::Auto),
+        #[cfg(feature = "test-support")]
+        Encoder::Vp8Second => (VideoCodec::VP8, VideoEncoderBackend::Auto),
     };
     TrackPublishOptions {
         video_codec,

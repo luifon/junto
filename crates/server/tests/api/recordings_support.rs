@@ -292,7 +292,8 @@ impl TestServer {
 /// A stand-in for the transcription worker: a script that the server runs as
 /// `<script> run <job> --out <transcript> --audio-root <directory>`. It keeps the job that
 /// it got, writes the transcript that the test gave it, and does what the test tells it
-/// before that. The contract between the server and the worker is ADR 0611.
+/// before that. The contract between the server and the worker is ADR 0611. On Windows the
+/// `sh` of Git for Windows, from the path of the CI job, runs it (ADR 0912).
 pub struct FakeWorker {
     scratch: crate::support::Scratch,
 }
@@ -322,8 +323,8 @@ impl FakeWorker {
     pub fn settings(&self) -> junto_server::config::TranscriberSettings {
         junto_server::config::TranscriberSettings {
             command: vec![
-                "/bin/sh".to_owned(),
-                self.path("worker.sh").to_str().unwrap().to_owned(),
+                if cfg!(windows) { "sh" } else { "/bin/sh" }.to_owned(),
+                self.path("worker.sh").to_str().unwrap().replace('\\', "/"),
             ],
             environment: vec![(
                 "JUNTO_TRANSCRIBE_MODELS".to_owned(),

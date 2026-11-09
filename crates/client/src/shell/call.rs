@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::WorkspacePermission;
-use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, ServerId, WorkspaceId};
 use junto_client_core::settings::Panel;
 use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
@@ -50,12 +50,23 @@ pub enum CallTab {
     Settings,
 }
 
-/// The kind of a sound device.
+/// The kind of a device of a call: a camera, or a sound input or output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
     Camera,
     Input,
     Output,
+}
+
+impl DeviceKind {
+    /// The icon of a device of this kind in a list of devices.
+    pub(crate) fn icon(self) -> Icon {
+        match self {
+            Self::Camera => Icon::Camera,
+            Self::Input => Icon::Microphone,
+            Self::Output => Icon::Phones,
+        }
+    }
 }
 
 /// The volume control of one person: its value, its keyboard focus, and the subscription
@@ -69,6 +80,17 @@ pub(crate) struct VolumeControl {
 /// A person outside the call in the member list of a call, with the line of the state.
 /// The people that the member list of a call lists: in the call and outside it.
 pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
+
+/// The server, the account and the workspace of a member list of the panel of a call; no
+/// workspace for a direct-message call.
+pub(crate) type CallMembersScope = (ServerId, AccountId, Option<WorkspaceId>);
+
+/// A member list of the panel of a call, which lays out only the rows in view, and the people
+/// that it lists.
+pub(crate) struct CallMembersList {
+    state: gpui::ListState,
+    rows: Option<CallMemberRows>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutsideRow {
@@ -482,6 +504,60 @@ impl Shell {
         cx.notify();
     }
 
+    /// The tile of a person on the stage: at `size`, or in the strip under the focused tile
+    /// `focus`.
+    fn stage_tile(
+        &self,
+        index: usize,
+        occupant: &Occupant,
+        focus: Option<junto_client_core::protocol::ids::AccountId>,
+        size: (f32, f32),
+        faces: &crate::state::people::ServerFaces,
+        cx: &gpui::App,
+    ) -> PersonTile {
+        let (marks, label) = tile_marks(occupant);
+        let name: SharedString = if occupant.is_self {
+            format!("{} ({})", occupant_name(occupant), text::YOU).into()
+        } else {
+            occupant_name(occupant)
+        };
+        let focused = focus == Some(occupant.account_id);
+        PersonTile::new(
+            ("tile", index),
+            name,
+            occupant.account_id.as_uuid().as_u128(),
+            label,
+        )
+        .map(|tile| {
+            if focus.is_some() && !focused {
+                tile.in_strip()
+            } else {
+                tile.size(size)
+            }
+        })
+        .focused(focused)
+        .picture(faces.image(occupant.account_id))
+        .presence(faces.presence(occupant.account_id))
+        .name_color(faces.color(occupant.account_id))
+        .when_some(faces.server_id(), |tile, server| {
+            tile.profile(crate::ui::OpenProfile {
+                server,
+                account: occupant.account_id,
+            })
+        })
+        .camera_view(self.camera_request(occupant, cx))
+        .camera_picture(self.camera_image(occupant))
+        .speaking(matches!(
+            occupant.microphone,
+            Microphone::Open { speaking: true }
+        ))
+        .marks(marks)
+        .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
+            tile.on_menu(open)
+        })
+        .selector(format!("call-tile:{}", occupant.account_id))
+    }
+
     /// The stage of the call: the people as tiles, or what the call waits for.
     pub(crate) fn render_stage(
         &self,
@@ -630,49 +706,6 @@ impl Shell {
                     Some(_) => crate::ui::tile::grid(1, area),
                     None => crate::ui::tile::grid(shown.len(), area),
                 };
-                let tile = |index: usize, occupant: &Occupant| {
-                    let (marks, label) = tile_marks(occupant);
-                    let name: SharedString = if occupant.is_self {
-                        format!("{} ({})", occupant_name(occupant), text::YOU).into()
-                    } else {
-                        occupant_name(occupant)
-                    };
-                    let focused = focus == Some(occupant.account_id);
-                    PersonTile::new(
-                        ("tile", index),
-                        name,
-                        occupant.account_id.as_uuid().as_u128(),
-                        label,
-                    )
-                    .map(|tile| {
-                        if focus.is_some() && !focused {
-                            tile.in_strip()
-                        } else {
-                            tile.size(size)
-                        }
-                    })
-                    .focused(focused)
-                    .picture(faces.image(occupant.account_id))
-                    .presence(faces.presence(occupant.account_id))
-                    .name_color(faces.color(occupant.account_id))
-                    .when_some(faces.server_id(), |tile, server| {
-                        tile.profile(crate::ui::OpenProfile {
-                            server,
-                            account: occupant.account_id,
-                        })
-                    })
-                    .camera_view(self.camera_request(occupant, cx))
-                    .camera_picture(self.camera_image(occupant))
-                    .speaking(matches!(
-                        occupant.microphone,
-                        Microphone::Open { speaking: true }
-                    ))
-                    .marks(marks)
-                    .when_some(self.call_menu_trigger(occupant, cx), |tile, open| {
-                        tile.on_menu(open)
-                    })
-                    .selector(format!("call-tile:{}", occupant.account_id))
-                };
                 let (large, strip): (Vec<_>, Vec<_>) = shown
                     .iter()
                     .enumerate()
@@ -684,6 +717,70 @@ impl Shell {
                             + crate::ui::tile::TILE_GAP * columns.saturating_sub(1) as f32
                     }
                 };
+                // A call of many people builds only the lines of tiles in view of the stage:
+                // the rows of the grid, or the rows of the strip under a focused tile
+                // (ADR 0735).
+                let gap = crate::ui::tile::TILE_GAP;
+                let lines = |id: &'static str,
+                             tiles: Vec<(usize, Occupant)>,
+                             across: usize,
+                             height: f32| {
+                    let across = across.max(1);
+                    let heights = vec![height; tiles.len().div_ceil(across)];
+                    let shell = shell.clone();
+                    let faces = faces.clone();
+                    crate::ui::in_view::in_view(id, heights, gap, move |range, _, cx| {
+                        let Some(shell) = shell.upgrade() else {
+                            return Vec::new();
+                        };
+                        let this = shell.read(cx);
+                        tiles
+                            .chunks(across)
+                            .skip(range.start)
+                            .take(range.len())
+                            .map(|row| {
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .justify_center()
+                                    .gap(u(gap))
+                                    .w_full()
+                                    .children(row.iter().map(|(index, person)| {
+                                        let id = person.account_id;
+                                        div()
+                                            .when(focus == Some(id), |tile| {
+                                                tile.debug_selector(move || {
+                                                    format!("person-stage:{id}")
+                                                })
+                                            })
+                                            .child(this.stage_tile(
+                                                *index, person, focus, size, &faces, cx,
+                                            ))
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect()
+                    })
+                };
+                let owned = |tiles: Vec<(usize, &&Occupant)>| {
+                    tiles
+                        .into_iter()
+                        .map(|(index, person)| (index, (*person).clone()))
+                        .collect::<Vec<_>>()
+                };
+                let large_lines = lines(
+                    "call-grid",
+                    owned(large),
+                    if focus.is_some() { 1 } else { columns },
+                    size.1,
+                );
+                let has_strip = !strip.is_empty();
+                let strip_lines = lines(
+                    "call-strip",
+                    owned(strip),
+                    crate::ui::tile::strip_across(area.0),
+                    crate::ui::tile::STRIP_TILE_SIZE.1,
+                );
                 let measured = self.stage_area.clone();
                 let shell = shell.clone();
                 // The size of the free area of the stage, in design pixels: a new size draws
@@ -726,6 +823,11 @@ impl Shell {
                                 .min_h_0()
                                 .w_full()
                                 .overflow_y_scroll()
+                                // A stage whose people are all hidden shows no tile, only
+                                // the note under it.
+                                .when(!shown.is_empty(), |stage| {
+                                    stage.child(crate::ui::area(crate::ui::CENTRED))
+                                })
                                 .child(measure)
                                 .child(
                                     div()
@@ -744,26 +846,14 @@ impl Shell {
                                                 .debug_selector(|| "call-people".to_owned())
                                                 .relative()
                                                 .flex()
-                                                .flex_wrap()
-                                                .justify_center()
-                                                .content_center()
-                                                .gap(u(crate::ui::tile::TILE_GAP))
+                                                .flex_col()
                                                 .w(u(width))
                                                 .max_w_full()
                                                 .flex_none()
-                                                .children(large.into_iter().map(|(index, p)| {
-                                                    let id = p.account_id;
-                                                    div()
-                                                        .when(focus == Some(id), |row| {
-                                                            row.debug_selector(move || {
-                                                                format!("person-stage:{id}")
-                                                            })
-                                                        })
-                                                        .child(tile(index, p))
-                                                }))
+                                                .child(large_lines)
                                                 .child(self.stage_controls.mark()),
                                         )
-                                        .when(!strip.is_empty(), |area| {
+                                        .when(has_strip, |area| {
                                             area.child(
                                                 div()
                                                     .debug_selector(|| {
@@ -771,17 +861,11 @@ impl Shell {
                                                     })
                                                     .relative()
                                                     .flex()
-                                                    .flex_wrap()
-                                                    .justify_center()
-                                                    .gap(u(crate::ui::tile::TILE_GAP))
+                                                    .flex_col()
                                                     .mt(u(crate::ui::tile::TILE_GAP))
                                                     .w_full()
                                                     .flex_none()
-                                                    .children(
-                                                        strip
-                                                            .into_iter()
-                                                            .map(|(index, p)| tile(index, p)),
-                                                    )
+                                                    .child(strip_lines)
                                                     .child(self.stage_controls.mark()),
                                             )
                                         }),
@@ -1107,13 +1191,56 @@ impl Shell {
             PanelPlace::Direct(_) => Vec::new(),
         });
         // The list lays out only the rows in view: a call in a workspace of hundreds of
-        // members lists all of them outside the call (open item CD8).
+        // members lists all of them outside the call. Each workspace has a
+        // list of its own, so another one does not open at the scroll position of the last.
+        // A list of another server, account or workspace keeps only its scroll position; the
+        // list of a server whose account changed, and of a workspace that the server does not
+        // list any more, goes.
+        let state = self.state.read(cx);
+        let scope = server_id
+            .zip(view.person.account_id)
+            .map(|(server, account)| {
+                (
+                    server,
+                    account,
+                    panel.channel().and(view.workspace().map(|shown| shown.id)),
+                )
+            });
+        self.call_members
+            .retain(|(server, account, workspace), list| {
+                let held = state
+                    .server(*server)
+                    .filter(|held| held.owner().map(|owner| owner.account_id) == Some(*account));
+                let listed = held.is_some_and(|held| {
+                    workspace.is_none_or(|workspace| {
+                        held.live()
+                            .view()
+                            .model
+                            .is_some_and(|model| model.workspace(workspace).is_some())
+                    })
+                });
+                if Some((*server, *account, *workspace)) != scope {
+                    list.rows = None;
+                }
+                listed
+            });
+        let list = match scope {
+            Some(scope) => self
+                .call_members
+                .entry(scope)
+                .or_insert_with(|| CallMembersList {
+                    state: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
+                    rows: None,
+                }),
+            None => return div().into_any_element(),
+        };
         let shape = (people.clone(), outside.clone());
-        if self.call_member_rows.as_ref() != Some(&shape) {
+        if list.rows.as_ref() != Some(&shape) {
             let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
-            super::changed_rows(&self.call_members_list, count);
-            self.call_member_rows = Some(shape);
+            super::changed_rows(&list.state, count);
+            list.rows = Some(shape);
         }
+        let state = list.state.clone();
         let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
             div()
                 .w_full()
@@ -1143,7 +1270,6 @@ impl Shell {
                     .into_any_element()
             })
             .collect();
-        let state = self.call_members_list.clone();
         let list = div()
             .id("call-members")
             .debug_selector(|| "call-members".to_owned())
@@ -1246,7 +1372,7 @@ impl Shell {
         };
         let row = |index: usize, account_id: AccountId, label: SharedString| {
             div()
-                .id(("call-member", index))
+                .id(("call-member", account_id.as_uuid().as_u128() as u64))
                 .role(Role::ListItem)
                 .aria_label(label)
                 .debug_selector(move || format!("call-member:{account_id}"))
@@ -1781,11 +1907,7 @@ impl Shell {
                             .icon(if choice.selected {
                                 Icon::Check
                             } else {
-                                match kind {
-                                    DeviceKind::Camera => Icon::Camera,
-                                    DeviceKind::Input => Icon::Microphone,
-                                    DeviceKind::Output => Icon::Phones,
-                                }
+                                kind.icon()
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let id = id.clone();

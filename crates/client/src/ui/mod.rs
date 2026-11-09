@@ -8,12 +8,14 @@ mod action_menu;
 mod area;
 mod avatar;
 mod button;
+mod code_text;
 mod controls;
 mod dialog;
 mod field;
 mod fit;
 mod form_space;
 mod held;
+pub mod in_view;
 mod input_menu;
 mod link_menu;
 mod marks;
@@ -41,12 +43,15 @@ use std::sync::Arc;
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
 pub use action_menu::{RowAction, bind_action_menu, bind_lazy_action_menu, collect_actions};
-pub use area::{COVER, KEPT, area, cover};
+pub use area::{CENTRED, COVER, KEPT, area, cover};
 #[cfg(feature = "test-support")]
 pub use area::{record_areas, take_areas};
 pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
-pub use controls::{LevelSlider, SelectBox, Stepper, Tab, Toggle, VolumeSlider};
+pub(crate) use code_text::code_text;
+#[cfg(feature = "test-support")]
+pub use code_text::{CodePaintRecord, PaintedCode, record_painted_code, take_painted_code};
+pub use controls::{LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use fit::Fit;
@@ -67,8 +72,8 @@ pub use paint_text::{PaintedText, TextPaintRecord, record_painted_text, take_pai
 pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBox};
 pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use picture::DrawnPicture;
-#[cfg(all(target_os = "macos", feature = "test-support"))]
-pub use picture::{PaintRecord, PaintedSurface, record_painted_surfaces, take_painted_surfaces};
+#[cfg(feature = "test-support")]
+pub use picture::{PaintRecord, PaintedPicture, record_painted_pictures, take_painted_pictures};
 pub(crate) use placed::strip;
 pub use placed::{Placed, outside};
 #[cfg(feature = "test-support")]
@@ -82,7 +87,7 @@ pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
 pub use text_targets::TextTargets;
 pub use tile::{PersonTile, TileMark};
-pub use tooltip::tooltip;
+pub use tooltip::{focused_tooltip, tooltip};
 
 use crate::assets::Icon;
 use crate::theme::{Theme, Type, u};

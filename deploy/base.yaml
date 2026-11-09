@@ -345,4 +345,4 @@ services:
       start_period: 30s
     mem_limit: ${JUNTO_LINK_MEMORY:-256m}
     cpus: ${JUNTO_LINK_CPUS:-1}
-    pids_limit: 2048
+    pids_limit: ${JUNTO_LINK_PIDS:-2048}

@@ -130,13 +130,35 @@ impl Measure {
         let apart = placed.len() > 1
             && (placed.iter().any(|glyph| !glyph.is_emoji)
                 || layout.width >= self.reference * MOST_WIDTH);
-        if missing || apart {
+        let drawn: Vec<gpui::GlyphId> = placed.iter().map(|glyph| glyph.id).collect();
+        if missing || apart || self.only_its_base(sequence, &drawn) {
             Drawing::Broken
         } else if glyphs[0].1.is_emoji {
             Drawing::Colour
         } else {
             Drawing::Text
         }
+    }
+
+    /// A sequence with tag characters, such as the flag of England (U+1F3F4 and the tags
+    /// of "gbeng"), that is drawn as the glyph of its first character alone: the font
+    /// ignores the tags and draws a plain black flag, so it does not draw the sequence.
+    fn only_its_base(&self, sequence: &str, drawn: &[gpui::GlyphId]) -> bool {
+        let mut characters = sequence.chars();
+        let Some(base) = characters.next() else {
+            return false;
+        };
+        if !characters.any(|character| ('\u{e0020}'..='\u{e007f}').contains(&character)) {
+            return false;
+        }
+        let mut buffer = [0u8; 4];
+        let alone = self.layout(base.encode_utf8(&mut buffer));
+        let base: Vec<gpui::GlyphId> = alone
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.id))
+            .collect();
+        base.len() == 1 && drawn == base.as_slice()
     }
 
     /// The glyphs of `sequence` as text: for each, its number, whether it is a colour

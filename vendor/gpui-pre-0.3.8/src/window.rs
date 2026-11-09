@@ -1144,6 +1144,33 @@ impl Frame {
         hit_test
     }
 
+    // Modified: added. The hitboxes at a point, from the front, up to the first one that
+    // blocks the pointer, with their place in the order of drawing, their visible bounds and
+    // behavior: what a press at the point lands on (`Interactivity::paint_mouse_listeners`).
+    pub(crate) fn hitboxes_at(
+        &self,
+        position: Point<Pixels>,
+    ) -> SmallVec<[(usize, Bounds<Pixels>, HitboxBehavior); 8]> {
+        let hit_test = self.hit_test(position);
+        hit_test
+            .ids
+            .iter()
+            .filter_map(|id| {
+                self.hitboxes
+                    .iter()
+                    .position(|hitbox| hitbox.id == *id)
+                    .map(|index| (index, &self.hitboxes[index]))
+            })
+            .map(|(index, hitbox)| {
+                (
+                    index,
+                    hitbox.bounds.intersect(&hitbox.content_mask.bounds),
+                    hitbox.behavior,
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn focus_path(&self) -> SmallVec<[FocusId; 8]> {
         self.focus
             .map(|focus_id| self.dispatch_tree.focus_path(focus_id))

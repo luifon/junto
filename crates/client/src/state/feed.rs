@@ -106,7 +106,7 @@ pub enum Quoted {
 /// What the window holds for a quoted message whose read failed. `None` when the same
 /// read can succeed later: no answer, `busy`, a limit on attempts, a failure of the
 /// server, and a request that was not sent because the device has no session at that
-/// moment. That read is sent again with a later change of the state. Every other answer
+/// moment. That read is sent again after a wait of its own (ADR 0747). Every other answer
 /// of the server is final for the message as it is now.
 pub fn quote_without_answer(error: &junto_client_core::api::ApiError) -> Option<Quoted> {
     use junto_client_core::api::{ApiError, ErrorCategory};
@@ -1429,6 +1429,7 @@ mod tests {
                     id: workspace_id,
                     name: "Studio".to_owned(),
                     is_default: true,
+                    logo: None,
                 },
                 own_role_ids: vec![role],
                 roles: Vec::new(),

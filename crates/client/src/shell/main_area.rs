@@ -1438,23 +1438,46 @@ impl Shell {
                     )
                     .action(remove(cx))
             }
-            ServerStatus::WaitingForApproval { name } => StatePanel::new(
-                text::REQUEST_SENT_TITLE,
-                text::request_sent(&server.name, name),
-            )
-            .icon(Icon::Clock)
-            .selector("waiting-for-approval")
-            .action(check(text::CHECK_AGAIN, cx))
-            .action(
-                Button::new("cancel-request")
-                    .label(text::CANCEL_REQUEST)
-                    .selector("cancel-request")
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state
-                            .update(cx, |state, cx| state.cancel_request(server_id, cx));
-                    })),
-            ),
+            ServerStatus::WaitingForApproval { name } => {
+                let panel = StatePanel::new(
+                    text::REQUEST_SENT_TITLE,
+                    text::request_sent(&server.name, name),
+                )
+                .icon(Icon::Clock)
+                .selector("waiting-for-approval")
+                .action(check(text::CHECK_AGAIN, cx))
+                .action(
+                    Button::new("cancel-request")
+                        .label(text::CANCEL_REQUEST)
+                        .selector("cancel-request")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.cancel_request(server_id, cx));
+                        })),
+                );
+                // A request that the server could not be told to withdraw is given up on
+                // this device only when the person asks (ADR 0712).
+                if error.is_some() && !busy {
+                    panel
+                        .after_actions([div()
+                            .mt(u(12.0))
+                            .child(Notice::new(text::SERVER_NOT_TOLD).selector("server-not-told"))
+                            .into_any_element()])
+                        .action(
+                            Button::new("cancel-request-here")
+                                .label(text::CANCEL_REQUEST_HERE)
+                                .selector("cancel-request-here")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.cancel_request_here(server_id, cx)
+                                    });
+                                })),
+                        )
+                } else {
+                    panel
+                }
+            }
             ServerStatus::WaitingForLink { code } => StatePanel::new(
                 text::WAITING_FOR_LINK_TITLE,
                 format!("{} {}", text::WAITING_FOR_LINK, text::link_code(code)),
@@ -1647,7 +1670,7 @@ impl Shell {
     }
 
     /// The member list of the side panel. It lays out only the rows in view, so a
-    /// workspace of hundreds of members costs no more per frame than a few (open item CD8:
+    /// workspace of hundreds of members costs no more per frame than a few (before,
     /// 601 members took 181 ms of each frame).
     fn member_list(
         &mut self,

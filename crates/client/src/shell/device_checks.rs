@@ -336,8 +336,9 @@ impl Shell {
                                 .icon(if choice.selected {
                                     Icon::Check
                                 } else {
-                                    Icon::Phones
+                                    kind.icon()
                                 })
+                                .selector(format!("check-device-item-{index}"))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         if this.state.read(cx).device_check_session() != session {

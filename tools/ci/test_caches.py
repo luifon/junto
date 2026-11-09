@@ -262,7 +262,7 @@ class Fixture(unittest.TestCase):
 
 class Local(Fixture):
     def test_a_cache_above_its_cap_is_emptied_before_and_after_a_run(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         for phase in ("before", "after"):
             sparse(self.directory / "cargo-target", 61 * GIB)
             stamped(self.directory / "cargo-target", self.directory / "checkout")
@@ -272,7 +272,7 @@ class Local(Fixture):
             self.assertIn(f"{phase}: cache cargo-target: {61 * GIB} KiB, above its cap", result.stdout)
 
     def test_a_target_above_its_cap_first_loses_its_incremental_directories(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         target = self.directory / "cargo-target"
         sparse(target / "debug" / "deps", 40 * GIB)
         sparse(target / "debug" / "incremental" / "junto_server-1", 15 * GIB)
@@ -293,7 +293,7 @@ class Local(Fixture):
         self.assertFalse(target.exists())
 
     def test_a_cache_within_its_cap_stays_and_the_run_is_recorded(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         sparse(self.directory / "cargo-target", 59 * GIB)
         stamped(self.directory / "cargo-target", self.directory / "checkout")
         sparse(self.directory / "cargo" / "registry", 1 * GIB)
@@ -320,7 +320,7 @@ class Local(Fixture):
         self.assertTrue((self.directory / "cargo-target").exists(), "the free space empties nothing after a run")
 
     def test_the_builder_of_the_deployment_job_is_a_cache_of_the_macos_machine(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\nJUNTO_CI_BUILDER_CAP_GIB=2\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\nJUNTO_CI_BUILDER_CAP_GIB=2\n")
         result = self.caches("macos", "after", FAKE_BUILDER_KIB=str(3 * GIB))
         self.assertEqual(result.returncode, 0, result.stderr)
         # docker buildx du states the size in GB with two decimals.
@@ -332,7 +332,7 @@ class Local(Fixture):
     # A builder whose container is stopped answers no buildx du or prune; the run went on to its
     # jobs only after the builder was started by hand.
     def test_a_stopped_builder_is_measured_by_its_state_volume_and_removed_above_its_cap(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\nJUNTO_CI_BUILDER_CAP_GIB=4\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\nJUNTO_CI_BUILDER_CAP_GIB=4\n")
         within = self.caches("macos", "before", FAKE_BUILDER_KIB=str(3 * GIB), FAKE_BUILDER_STOPPED="1")
         self.assertEqual(within.returncode, 0, within.stdout + within.stderr)
         self.assertRegex(within.stdout, r"cache builder junto-ci-deployment \(stopped\): 314\d{4} KiB of 4194304 KiB")
@@ -352,7 +352,7 @@ class Stamp(Fixture):
         return self.directory / "cargo-target"
 
     def before(self):
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         result = self.caches("macos", "before")
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
@@ -401,7 +401,7 @@ class Stamp(Fixture):
         target = self.target()
         (self.directory / "settings").write_text("JUNTO_CI_FREE_GIB=nothing\n")
         self.assertEqual(self.caches("macos", "before").returncode, 2)
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         after = self.caches("macos", "after")
         self.assertEqual(after.returncode, 0, after.stderr)
         self.assertIn("the stamp is not written: the check before this run did not examine it", after.stdout)
@@ -415,7 +415,7 @@ class Stamp(Fixture):
         stamped(target, self.directory / "checkout")
         writer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--out-dir={target}/debug/deps"])
         self.addCleanup(writer.kill)
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         before = self.caches("macos", "before")
         self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
         self.assertIn("a process outside the run lock writes the target cache", before.stderr)
@@ -428,7 +428,7 @@ class Stamp(Fixture):
     def test_the_target_volume_of_the_linux_host_is_stamped_and_checked_in_containers(self):
         volume = self.root / "volumes" / "junto-ci-target"
         sparse(volume, 1 * GIB)
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_COLD_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
         first = self.caches("linux", "before")
         self.assertIn("emptied, because it has no stamp of this runner", first.stdout, first.stderr)
         sparse(volume, 1 * GIB)

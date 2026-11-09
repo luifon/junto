@@ -202,7 +202,7 @@ async fn the_end_of_meeting_mode_states_who_ended_it_or_why() {
 }
 
 /// A person whom a moderator removed, and who enters the same running call again, has a line
-/// of the join (open item RP2: the latest note of the person said the person was inside).
+/// of the join (before, the latest note of the person said the person was inside).
 #[tokio::test]
 async fn a_person_who_returns_after_a_removal_has_a_line_of_the_join() {
     let scene = Scene::start().await;

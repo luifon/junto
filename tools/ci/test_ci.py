@@ -560,6 +560,63 @@ class CommitStatus(unittest.TestCase):
             self.assertIn(f"linux: no run of {self.commit} has {job}", result.stdout)
         self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
 
+    # The optional measurement job of the Windows runner (ADR 0905) is decided as the optional
+    # job of the Linux runner is.
+    def passed_except_windows(self):
+        self.passing("linux")
+        self.run_of("macos", "20261020T100000Z", ["rust-macos", "deployment"], {"rust-macos": 0, "deployment": 0})
+
+    def test_a_failed_windows_measurement_is_shown_and_does_not_fail_the_commit(self):
+        self.passed_except_windows()
+        self.passing("windows", **{"rust-windows-measure": 101})
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-windows-measure +FAILED .*  \(optional\)")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_a_later_run_of_only_the_windows_measurement_leaves_the_full_run_to_decide(self):
+        self.passed_except_windows()
+        full = self.passing("windows")
+        later = self.run_of("windows", "20261020T110000Z", ["rust-windows-measure"], {"rust-windows-measure": 0})
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"run {full}", result.stdout)
+        self.assertIn(f"run {later}", result.stdout)
+        self.assertRegex(result.stdout, r"rust-windows-measure +passed ")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_a_later_failed_run_of_only_the_windows_measurement_does_not_fail_the_commit(self):
+        self.passed_except_windows()
+        self.passing("windows")
+        self.run_of("windows", "20261020T110000Z", ["rust-windows-measure"], {"rust-windows-measure": 101})
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-windows-measure +FAILED .*  \(optional\)")
+        self.assertIn(f"commit {self.commit}: passed", result.stdout)
+
+    def test_the_status_of_a_windows_run_fails_with_its_measurement(self):
+        run = self.run_of("windows", "20261020T110000Z", ["rust-windows-measure"], {"rust-windows-measure": 101})
+        result = subprocess.run(["sh", str(CI), "status", run], env=self.environment, capture_output=True,
+                                text=True, timeout=300, cwd=self.root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-windows-measure +FAILED ")
+        self.assertNotIn("(optional)", result.stdout)
+
+    def test_the_status_of_a_passed_windows_measurement_run_passes(self):
+        run = self.run_of("windows", "20261020T110000Z", ["rust-windows-measure"], {"rust-windows-measure": 0})
+        result = subprocess.run(["sh", str(CI), "status", run], env=self.environment, capture_output=True,
+                                text=True, timeout=300, cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"rust-windows-measure +passed ")
+
+    def test_a_commit_with_only_a_run_of_the_windows_measurement_is_incomplete(self):
+        self.passed_except_windows()
+        self.run_of("windows", "20261020T110000Z", ["rust-windows-measure"], {"rust-windows-measure": 0})
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"windows: no run of {self.commit} has rust-windows", result.stdout)
+        self.assertIn(f"commit {self.commit}: incomplete", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

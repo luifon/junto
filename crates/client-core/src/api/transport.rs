@@ -84,6 +84,10 @@ pub struct HttpRequest {
     pub url: Url,
     pub bearer: Option<SecretToken>,
     pub body: Option<RequestBody>,
+    /// The number of the request in the window tests, sent as `Junto-Test-Request` so that
+    /// a proxy of a test can say which requests it holds (ADR 0902). Only the counting
+    /// transport of `test-support` sets it.
+    pub test_number: Option<u64>,
 }
 
 impl fmt::Debug for HttpRequest {
@@ -308,6 +312,9 @@ fn build(
     );
     if let Some(token) = &request.bearer {
         builder = builder.bearer_auth(token.expose());
+    }
+    if let Some(number) = request.test_number {
+        builder = builder.header("Junto-Test-Request", number.to_string());
     }
     if let Some(body) = &request.body {
         builder = builder
@@ -534,6 +541,7 @@ mod tests {
     #[test]
     fn formatting_a_request_or_a_response_shows_no_secret() {
         let request = HttpRequest {
+            test_number: None,
             method: Method::Post,
             url: Url::parse("https://chat.example.test/api/v1/join").unwrap(),
             bearer: Some(SecretToken::new("jst_secret-token".to_owned())),

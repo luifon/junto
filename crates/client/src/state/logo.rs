@@ -1,10 +1,11 @@
-//! The logo of each server as the window shows it (ADR 0101): the image that an
-//! administrator set, read from the public route of the server and decoded away from the
-//! window.
+//! The logo of each server (ADR 0101) and of each workspace (ADR 0122) as the window shows
+//! it: the image that an administrator set, read from the public route of the server or
+//! from the route of the workspace with the session, and decoded away from the window.
 //!
-//! [`Logos`] is the cache. It is plain data with every rule of the reads, so the rules are
-//! tested without a window and without a server. The state of the application starts the
-//! request that the cache names and gives it the answer.
+//! [`Logos`] is the cache, one for the servers and one for the workspaces, by their key. It
+//! is plain data with every rule of the reads, so the rules are tested without a window and
+//! without a server. The state of the application starts the request that the cache names
+//! and gives it the answer.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use junto_client_core::api::{ApiError, AvatarImage};
 use junto_client_core::live::Notice;
 use junto_client_core::model::LogoState;
 use junto_client_core::protocol::events::Event;
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
 use super::AppState;
 use super::people::{AVATAR_SIDE, Answer, PictureHash, TRIES, decode};
@@ -55,10 +56,14 @@ pub struct Logo {
     pub image: Arc<RenderImage>,
 }
 
+/// The key of the logo of a workspace: its server and the workspace.
+pub type WorkspaceKey = (ServerId, WorkspaceId);
+
 /// One read of a logo that the cache wants to be started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ask {
-    pub server_id: ServerId,
+pub struct Ask<K = ServerId> {
+    /// The server, or the server and the workspace, whose logo is read.
+    pub key: K,
     /// The number of the request. No other request of the cache has it, for any server,
     /// so an answer is taken only by the cache that asked.
     number: u64,
@@ -133,27 +138,35 @@ pub struct ShownLogo {
     pub image: Option<Arc<RenderImage>>,
 }
 
-/// The logos of the servers that have one, as the view takes them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ShownLogos {
-    servers: HashMap<ServerId, ShownLogo>,
+/// The logos that exist, as the view takes them, by server or by workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShownLogos<K: std::hash::Hash + Eq = ServerId> {
+    held: HashMap<K, ShownLogo>,
 }
 
-impl ShownLogos {
-    pub fn of(&self, server_id: ServerId) -> ShownLogo {
-        self.servers.get(&server_id).cloned().unwrap_or_default()
-    }
-
-    /// The image of the logo of a server, when the window holds it.
-    pub fn image(&self, server_id: ServerId) -> Option<Arc<RenderImage>> {
-        self.servers.get(&server_id)?.image.clone()
+impl<K: std::hash::Hash + Eq> Default for ShownLogos<K> {
+    fn default() -> Self {
+        Self {
+            held: HashMap::new(),
+        }
     }
 }
 
-/// The images of the logos that the window holds, by server.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Logos {
-    servers: HashMap<ServerId, Held>,
+impl<K: std::hash::Hash + Eq> ShownLogos<K> {
+    pub fn of(&self, key: K) -> ShownLogo {
+        self.held.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// The image of a logo, when the window holds it.
+    pub fn image(&self, key: K) -> Option<Arc<RenderImage>> {
+        self.held.get(&key)?.image.clone()
+    }
+}
+
+/// The images of the logos that the window holds, by server or by workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Logos<K: std::hash::Hash + Eq = ServerId> {
+    held: HashMap<K, Held>,
     /// The images that left the cache and that the window can still hold as textures.
     dropped: Vec<Arc<RenderImage>>,
     /// The number of the last request. It counts the requests of every server while the
@@ -161,26 +174,37 @@ pub struct Logos {
     asked: u64,
 }
 
-impl Logos {
-    /// Drops what is held of every server that is not one of these.
-    pub fn retain(&mut self, servers: &HashSet<ServerId>) {
-        let gone: Vec<ServerId> = self
-            .servers
+impl<K: std::hash::Hash + Eq> Default for Logos<K> {
+    fn default() -> Self {
+        Self {
+            held: HashMap::new(),
+            dropped: Vec::new(),
+            asked: 0,
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Copy> Logos<K> {
+    /// Drops what is held of every key that is not one of these.
+    pub fn retain(&mut self, keys: &HashSet<K>) {
+        let gone: Vec<K> = self
+            .held
             .keys()
-            .filter(|server_id| !servers.contains(server_id))
+            .filter(|key| !keys.contains(key))
             .copied()
             .collect();
-        for server_id in gone {
-            if let Some(held) = self.servers.remove(&server_id) {
+        for key in gone {
+            if let Some(held) = self.held.remove(&key) {
                 self.dropped.extend(held.image.map(|logo| logo.image));
             }
         }
     }
 
-    /// Takes what the state of a server and the server book tell of the logo now. The same
-    /// statement as before changes nothing.
-    pub fn want(&mut self, server_id: ServerId, told: Told) {
-        let held = self.servers.entry(server_id).or_default();
+    /// Takes what the state of a server and the server book tell of the logo now, or what
+    /// the state of the server tells of the logo of a workspace. The same statement as
+    /// before changes nothing.
+    pub fn want(&mut self, key: K, told: Told) {
+        let held = self.held.entry(key).or_default();
         if held.told == Some(told) {
             return;
         }
@@ -208,8 +232,8 @@ impl Logos {
     /// The request that starts now: one for a server at a time. `again` is true after a
     /// change of the state of the application: then a request that got no answer is sent
     /// again.
-    pub fn next(&mut self, server_id: ServerId, again: bool) -> Option<Ask> {
-        let held = self.servers.get_mut(&server_id)?;
+    pub fn next(&mut self, key: K, again: bool) -> Option<Ask<K>> {
+        let held = self.held.get_mut(&key)?;
         if held.on_way.is_some() {
             return None;
         }
@@ -221,15 +245,15 @@ impl Logos {
         };
         held.on_way = Some(self.asked);
         Some(Ask {
-            server_id,
+            key,
             number: self.asked,
         })
     }
 
     /// Takes the answer to a request. An absent logo in a read answer: the server has no
     /// logo.
-    pub fn answered(&mut self, ask: &Ask, answer: Answer<Option<Logo>>) {
-        let Some(held) = self.servers.get_mut(&ask.server_id) else {
+    pub fn answered(&mut self, ask: &Ask<K>, answer: Answer<Option<Logo>>) {
+        let Some(held) = self.held.get_mut(&ask.key) else {
             return;
         };
         // The cache of a server that was removed and added again did not ask for it.
@@ -268,8 +292,8 @@ impl Logos {
     /// stated since can have changed without an event. It is read again once; the held
     /// image is shown until the answer arrives. A request that is on its way started
     /// before this moment: its answer is not used.
-    pub fn stale(&mut self, server_id: ServerId) {
-        let Some(held) = self.servers.get_mut(&server_id) else {
+    pub fn stale(&mut self, key: K) {
+        let Some(held) = self.held.get_mut(&key) else {
             return;
         };
         if matches!(held.told, Some(Told::NotStated { .. })) {
@@ -282,34 +306,39 @@ impl Logos {
         std::mem::take(&mut self.dropped)
     }
 
-    /// The image of the logo of a server, when the window holds it.
-    pub fn image(&self, server_id: ServerId) -> Option<Arc<RenderImage>> {
-        self.servers.get(&server_id)?.image()
+    /// The image of a logo, when the window holds it.
+    pub fn image(&self, key: K) -> Option<Arc<RenderImage>> {
+        self.held.get(&key)?.image()
+    }
+
+    /// The keys of the logos that the cache holds.
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.held.keys().copied()
     }
 
     /// True when the server has a logo, as far as this device knows: an event stated one,
     /// or no event stated the logo and the server book names one or a read found one.
-    pub fn exists(&self, server_id: ServerId) -> bool {
-        self.servers.get(&server_id).is_some_and(Held::exists)
+    pub fn exists(&self, key: K) -> bool {
+        self.held.get(&key).is_some_and(Held::exists)
     }
 
     /// True while a request for the logo of a server is on its way.
-    pub fn on_way(&self, server_id: ServerId) -> bool {
-        self.servers
-            .get(&server_id)
+    pub fn on_way(&self, key: K) -> bool {
+        self.held
+            .get(&key)
             .is_some_and(|held| held.on_way.is_some())
     }
 
     /// The logos as the view takes them.
-    pub fn shown(&self) -> ShownLogos {
+    pub fn shown(&self) -> ShownLogos<K> {
         ShownLogos {
-            servers: self
-                .servers
+            held: self
+                .held
                 .iter()
                 .filter(|(_, held)| held.exists())
-                .map(|(server_id, held)| {
+                .map(|(key, held)| {
                     (
-                        *server_id,
+                        *key,
                         ShownLogo {
                             exists: true,
                             image: held.image(),
@@ -322,8 +351,8 @@ impl Logos {
 
     /// Holds a logo as if an event stated it and its image was read. A test of the
     /// derivation and the screen tool use it.
-    pub fn hold(&mut self, server_id: ServerId, logo: Logo) {
-        let held = self.servers.entry(server_id).or_default();
+    pub fn hold(&mut self, key: K, logo: Logo) {
+        let held = self.held.entry(key).or_default();
         held.told = Some(Told::Present(Some(logo.hash)));
         held.read = Read::Settled;
         held.none_found = false;
@@ -447,6 +476,100 @@ impl AppState {
     pub(super) fn logos_missed(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         self.logos.stale(server_id);
         self.read_logos(true, cx);
+    }
+
+    /// Before the view is derived: the cache of the logos of the workspaces takes what the
+    /// state of each server states of the logo of each of its workspaces, and the reads that
+    /// follow start. The state is the truth: an event that changes a logo replaces the
+    /// workspace in it with its new logo.
+    pub(super) fn keep_workspace_logos(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "test-support")]
+        if self.fixture.is_some() {
+            self.show_workspace_logos(cx);
+            return;
+        }
+        let mut keys = HashSet::new();
+        for server in &self.snapshots() {
+            let Some(model) = shown_model(server) else {
+                continue;
+            };
+            for workspace in &model.workspaces {
+                let key = (server.id, workspace.workspace.id);
+                keys.insert(key);
+                let told = match &workspace.workspace.logo {
+                    Some(logo) => Told::Present(PictureHash::parse(&logo.hash)),
+                    None => Told::Absent,
+                };
+                self.workspace_logos.want(key, told);
+            }
+        }
+        self.workspace_logos.retain(&keys);
+        self.read_workspace_logos(true, cx);
+    }
+
+    /// Starts the request that the cache names for each workspace, with the session of the
+    /// account. The answer starts the next one. The image is decoded away from the window.
+    fn read_workspace_logos(&mut self, again: bool, cx: &mut Context<Self>) {
+        for server in self.client.servers() {
+            let keys: Vec<WorkspaceKey> = self
+                .workspace_logos
+                .keys()
+                .filter(|(server_id, _)| *server_id == server.id())
+                .collect();
+            for key in keys {
+                let Some(ask) = self.workspace_logos.next(key, again) else {
+                    continue;
+                };
+                let api = server.api();
+                cx.spawn(async move |this, cx| {
+                    let read = api.workspace_logo(key.1).await;
+                    let answer = cx.background_spawn(async move { logo_of(read) }).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.workspace_logos.answered(&ask, answer);
+                        this.read_workspace_logos(false, cx);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+        self.show_workspace_logos(cx);
+    }
+
+    /// Gives the view the logos of the workspaces that the cache holds now.
+    fn show_workspace_logos(&mut self, cx: &mut Context<Self>) {
+        for image in self.workspace_logos.take_dropped() {
+            crate::images::release(image, cx);
+        }
+        let shown = self.workspace_logos.shown();
+        if self.known.workspace_logos != shown {
+            self.known.workspace_logos = shown;
+        }
+    }
+
+    /// True while a request for the logo of a workspace is on its way. A test waits with it
+    /// for the end of a request.
+    #[cfg(feature = "test-support")]
+    pub fn workspace_logo_on_way(&self, server_id: ServerId, workspace_id: WorkspaceId) -> bool {
+        self.workspace_logos.on_way((server_id, workspace_id))
+    }
+
+    /// Draws this image as the logo of a workspace of a screen. The screen tool uses it,
+    /// after the servers of the screen are shown.
+    #[cfg(feature = "test-support")]
+    pub fn show_workspace_logo_fixture(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        bytes: &[u8],
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(image) = decode(bytes, AVATAR_SIDE) {
+            let hash = PictureHash::of(bytes);
+            self.workspace_logos
+                .hold((server_id, workspace_id), Logo { hash, image });
+        }
+        self.changed(cx);
     }
 
     /// True while a request for the logo of a server is on its way. A test waits with it

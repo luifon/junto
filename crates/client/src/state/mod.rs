@@ -80,6 +80,7 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
+use junto_client_core::updates::Version;
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_client_core::{EntryKey, Owner};
@@ -148,6 +149,7 @@ pub fn finish_writes(cx: &mut gpui::App) {
 /// A setting of the interface, for the failure of its write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Setting {
+    LastBuild,
     Scale,
     ServerBook,
     Theme,
@@ -462,9 +464,10 @@ pub struct AppState {
     keybind_boundary: u64,
     keybind_global_ready: bool,
     /// The windows (by their entity) and the keyboard of the system (`None`) that hold the
-    /// keys of push to mute, and whether their hold closed the microphone.
+    /// keys of push to mute.
     mute_holds: HashSet<Option<gpui::EntityId>>,
-    muted_by_hold: bool,
+    /// The calls were told the press of push to mute and not yet its release.
+    hold_told: bool,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -504,6 +507,10 @@ pub struct AppState {
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
+    /// The release notes of the versions (ADR 0727), and those that the window shows once
+    /// after an update.
+    release_notes: crate::release_notes::ReleaseNotes,
+    release_notes_due: Vec<(Version, &'static str)>,
     camera_devices: Vec<junto_media::camera::CameraDevice>,
     device_checks: Option<device_checks::CheckSession>,
     device_check_sequence: u64,
@@ -566,6 +573,9 @@ pub struct AppState {
     /// The images of the logos of the servers, and where the read of each stands
     /// (ADR 0101).
     logos: logo::Logos,
+    /// The images of the logos of the workspaces, and where the read of each stands
+    /// (ADR 0122).
+    workspace_logos: logo::Logos<logo::WorkspaceKey>,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
@@ -613,7 +623,10 @@ pub struct AppState {
     reactions: reaction_people::Reactions,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
-    asked_quotes: HashMap<(ServerId, MessageId), u64>,
+    asked_quotes: HashMap<(ServerId, MessageId), messages::QuoteRead>,
+    /// How many times the event stream of each server had become live at the last look of the
+    /// quote reads.
+    quote_streams: HashMap<ServerId, u64>,
     quote_asks: u64,
     /// The account that uploaded the files that wait for a message, by server.
     upload_owners: HashMap<ServerId, AccountId>,
@@ -1025,7 +1038,7 @@ impl AppState {
             keybind_boundary: 0,
             keybind_global_ready: true,
             mute_holds: HashSet::new(),
-            muted_by_hold: false,
+            hold_told: false,
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,
@@ -1047,6 +1060,8 @@ impl AppState {
             client,
             calls,
             voice_failed,
+            release_notes: Default::default(),
+            release_notes_due: Vec::new(),
             camera_devices: Vec::new(),
             device_checks: None,
             device_check_sequence: 0,
@@ -1086,6 +1101,7 @@ impl AppState {
             preset_picture: people::PresetPicture::default(),
             people_followed: people::Followed::default(),
             logos: logo::Logos::default(),
+            workspace_logos: logo::Logos::default(),
             members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
@@ -1107,6 +1123,7 @@ impl AppState {
             unread_pauses: HashSet::new(),
             reactions: reaction_people::Reactions::default(),
             asked_quotes: HashMap::new(),
+            quote_streams: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
             uploads: HashMap::new(),
@@ -1770,6 +1787,7 @@ impl AppState {
     /// person does this after the presenter of meeting mode removed the block: the
     /// application never opens it by itself.
     pub fn open_microphone(&mut self, seat: &Seat) {
+        self.sound_on_for_microphone();
         self.calls.unmute_in(Some(seat));
     }
 
@@ -2186,7 +2204,7 @@ impl AppState {
         self.invalidate_profiles(server_id, cx);
         self.invalidate_switcher(server_id, cx);
         *self.reloads.entry(server_id).or_default() += 1;
-        self.forget_quotes(server_id, None, cx);
+        self.read_quotes_again(server_id);
         self.search_after_reload(server_id, cx);
         self.reaction_people_changed(server_id, None, cx);
         self.changed(cx);
@@ -2495,13 +2513,45 @@ impl AppState {
     pub fn use_microphone(&mut self, action: &MicrophoneAction) {
         match action {
             MicrophoneAction::Close => self.calls.mute(),
-            MicrophoneAction::Open(seat) => self.calls.unmute_in(seat.as_ref()),
+            MicrophoneAction::Open(seat) => {
+                self.sound_on_for_microphone();
+                self.calls.unmute_in(seat.as_ref());
+            }
         }
     }
 
-    /// Turns the sound off or on, as the control showed when it was drawn.
+    /// Turns the sound off or on, as the control showed when it was drawn. With the setting
+    /// "Turning the sound off also mutes the microphone", turning the sound off mutes the
+    /// microphone, and turning it on returns the microphone to its state before.
     pub fn set_sound_off(&mut self, off: bool) {
-        self.calls.set_deafened(off);
+        let deafened = self.calls.view().deafened;
+        if !self.known.media.voice.sound_off_mutes {
+            self.calls.set_deafened(off);
+        } else if off == deafened {
+            // A control drawn before the last change asks for the state that holds already.
+        } else if off {
+            // The sound off takes the place of a held key of push to mute: its release
+            // opens nothing, and the sound on opens the microphone that the key closed.
+            self.calls.sound_off_muting();
+        } else {
+            // While the key is still held, its release opens the microphone.
+            self.calls.sound_on_reopening();
+        }
+    }
+
+    /// Opening the microphone while the sound is off also turns the sound on, with the
+    /// setting "Turning the sound off also mutes the microphone".
+    fn sound_on_for_microphone(&mut self) {
+        if self.known.media.voice.sound_off_mutes && self.calls.view().deafened {
+            self.calls.set_deafened(false);
+        }
+    }
+
+    pub fn set_sound_off_mutes(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.calls.forget_sound_off_close();
+        self.change_voice(cx, move |voice| voice.sound_off_mutes = on);
+        // The tray shows both apart, or the sound off for both.
+        self.follow_tray();
     }
 
     /// The push-to-talk key is held or released.
@@ -2983,6 +3033,7 @@ impl AppState {
         self.settle_sent_settings(&snapshots);
         self.keep_people(cx);
         self.keep_logos(cx);
+        self.keep_workspace_logos(cx);
         self.follow_updates();
         self.follow_arrangement();
         self.follow_call_keys(&snapshots);
@@ -3311,6 +3362,22 @@ impl AppState {
     /// When the request was approved meanwhile, the device has its account and nothing is
     /// removed. Every other failure is told in [`Pending::remove_failed`].
     pub fn cancel_request(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.give_up_request(server_id, AccessAction::ForgetAccount, cx);
+    }
+
+    /// Gives up a request that waits without telling the server, after the server could
+    /// not be told: it cannot be reached, or its release has no withdrawal route
+    /// (ADR 0712). The request stays on the server.
+    pub fn cancel_request_here(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.give_up_request(server_id, AccessAction::ForgetAccountHere, cx);
+    }
+
+    fn give_up_request(
+        &mut self,
+        server_id: ServerId,
+        action: AccessAction,
+        cx: &mut Context<Self>,
+    ) {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
@@ -3322,7 +3389,7 @@ impl AppState {
         self.pending.remove_failed.remove(&server_id);
         self.waiting.remove(&server_id);
         let client = self.client.clone();
-        let forgetting = server.dispatch_when_free(AccessAction::ForgetAccount);
+        let forgetting = server.dispatch_when_free(action);
         cx.spawn(async move |this, cx| {
             let forgotten = forgetting.await;
             let removed = match &forgotten {
@@ -3476,6 +3543,44 @@ impl AppState {
         self.name_result.take()
     }
 
+    /// Takes the release notes of this start, and the notes of the versions after the one
+    /// that started last, which the window shows once (ADR 0727). A data directory without
+    /// that version and with a server book or a profile was used by 0.1.0, which did not
+    /// store it; an empty one is a first install, which shows none. The version of this build
+    /// is stored. The book and the profile are the ones that the start read already.
+    pub fn take_release_notes(
+        &mut self,
+        notes: crate::release_notes::ReleaseNotes,
+        cx: &mut Context<Self>,
+    ) {
+        let build = self.client.updates().build();
+        let used = !self.client.servers().is_empty() || !self.preset_name().is_empty();
+        let last = self
+            .settings
+            .last_build
+            .or_else(|| used.then_some(Version::new(0, 1, 0)));
+        self.release_notes_due = last.map_or_else(Vec::new, |last| notes.after(last, build));
+        self.release_notes = notes;
+        if self.settings.last_build != Some(build) {
+            self.settings.last_build = Some(build);
+            self.write_setting(Setting::LastBuild, cx);
+        }
+    }
+
+    /// The notes that the window shows once after an update, the newest first.
+    pub fn release_notes_due(&self) -> &[(Version, &'static str)] {
+        &self.release_notes_due
+    }
+
+    pub fn release_notes_shown(&mut self) {
+        self.release_notes_due.clear();
+    }
+
+    /// The notes of the version of this build, for "What is new" in the settings.
+    pub fn release_notes_of_this_build(&self) -> Option<(Version, &'static str)> {
+        self.release_notes.of(self.client.updates().build())
+    }
+
     /// Sets the interface scale and stores it.
     pub fn set_scale(&mut self, scale_percent: u32, cx: &mut Context<Self>) {
         self.scale_of_this_start = None;
@@ -3603,6 +3708,7 @@ impl AppState {
                             }
                             Setting::Scale => stored.scale_percent = wanted.scale_percent,
                             Setting::ClockFormat => stored.clock_format = wanted.clock_format,
+                            Setting::LastBuild => stored.last_build = wanted.last_build,
                             Setting::ServerBook => {
                                 stored.server_book_collapsed = wanted.server_book_collapsed;
                             }

@@ -632,7 +632,8 @@ async fn start_in(
         Some(state) => state,
         None => {
             let server_id = ServerId::generate();
-            let workspace_id = create_workspace(&mut *connection, server_name, now)
+            // The AFK channel goes after the two channels below.
+            let workspace_id = create_workspace(&mut *connection, server_name, now, 2)
                 .await?
                 .0;
             for (kind, name, position) in [
@@ -678,11 +679,13 @@ async fn start_in(
     })
 }
 
-/// A workspace with its "everyone" role and no member. Returns both.
+/// A workspace with its "everyone" role, its AFK channel at `afk_position` and no member.
+/// Returns the workspace and the role.
 pub async fn create_workspace(
     connection: &mut PgConnection,
     name: &str,
     now: OffsetDateTime,
+    afk_position: i32,
 ) -> Result<(WorkspaceId, WorkspaceRole), sqlx::Error> {
     let workspace_id = WorkspaceId::generate();
     sqlx::query("insert into workspaces (id, name, created_at) values ($1, $2, $3)")
@@ -692,8 +695,8 @@ pub async fn create_workspace(
         .execute(&mut *connection)
         .await?;
     let afk_id = ChannelId::generate();
-    sqlx::query("insert into channels (id, workspace_id, kind, name, position, created_at) values ($1, $2, 'voice', 'AFK', 2, $3)")
-        .bind(afk_id).bind(workspace_id).bind(now).execute(&mut *connection).await?;
+    sqlx::query("insert into channels (id, workspace_id, kind, name, position, created_at) values ($1, $2, 'voice', 'AFK', $4, $3)")
+        .bind(afk_id).bind(workspace_id).bind(now).bind(afk_position).execute(&mut *connection).await?;
     sqlx::query("insert into workspace_afk (workspace_id, channel_id) values ($1, $2)")
         .bind(workspace_id)
         .bind(afk_id)

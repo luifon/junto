@@ -279,7 +279,10 @@ impl Tools {
 
     fn command(program: &Path) -> Command {
         let mut command = Command::new(program);
-        command.env_clear().kill_on_drop(true);
+        command
+            .env_clear()
+            .envs(crate::starter::system_environment())
+            .kill_on_drop(true);
         if let Some(path) = std::env::var_os("PATH") {
             command.env("PATH", path);
         }
