@@ -2,6 +2,10 @@
 
 Changes reach `main` through pull requests on GitHub, which the maintainer of the project merges. [ADR 0907](docs/adr/0907-contributions-pull-requests-and-releases.md) records these rules and their reasons.
 
+## Issues
+
+Open an issue with one of the two forms of the repository: a problem report or a feature request. The problem report asks for the versions of Junto and of the server, the operating system and how Junto was installed. Remove from every field what you do not want to be public, such as server addresses and names.
+
 ## Steps
 
 1. Fork the repository, or create a branch if you can push to it.

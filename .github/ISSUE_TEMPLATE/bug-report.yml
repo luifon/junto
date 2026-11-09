@@ -1,0 +1,146 @@
+name: Problem report
+description: Junto does something wrong, stops, or does not do what its documents state.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in one report for each problem. Before you send it, remove from every field what you do not want to be public: server addresses, names of people and channels, and message text.
+  - type: input
+    id: client-version
+    attributes:
+      label: Junto version
+      description: Settings, Version. It is also below "Add server" in the list of servers. When Junto does not start, `junto --version` in a terminal prints it. For a test build, give its tag, for example `v0.3.0-test.1`. For a build from source, also give the commit. Write "none" for a problem of the server alone.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version
+      description: Select the arrow beside the server name at the top of the channel list. The menu shows "Server version". Write "unknown" if the client did not connect.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: system-version
+    attributes:
+      label: Version of the operating system
+      description: On Linux, also give the distribution, the desktop, and Wayland or X11.
+      placeholder: "macOS 26.1 / Windows 11 24H2 / Ubuntu 24.04, GNOME, Wayland"
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: How Junto was installed
+      options:
+        - macOS disk image
+        - macOS ZIP file
+        - Windows setup program
+        - Windows ZIP file
+        - Linux AppImage
+        - Linux Debian package
+        - Linux tarball
+        - Built from source
+        - No client (a problem of the server alone)
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Form of the server installation
+      description: For a problem of the server, its install or its upgrade (docs/install.md). Leave it empty when you do not run the server.
+      options:
+        - One host
+        - Two hosts
+        - Trial on one machine
+  - type: input
+    id: server-system
+    attributes:
+      label: System of the server host
+      description: For a problem of the server. The operating system and its version, and the version of Docker.
+      placeholder: "Debian 13, Docker 29.0"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Text chat
+        - Voice and video calls
+        - Screen sharing
+        - Recordings and transcripts
+        - Notifications and sounds
+        - Install, update and start
+        - Settings, accounts and servers
+        - Server install and administration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen again
+      placeholder: |
+        1. Join a call.
+        2. Share a window.
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often it happens
+      options:
+        - Every time
+        - Sometimes
+        - Once
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices
+      description: For a problem in a call or a share. The microphone, speakers or headset, the camera, and the number of monitors.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log and error report
+      description: |
+        The lines of the log from the time of the problem, and the error report when Junto showed a notice about one. The log is `junto.log` in the folder `logs` of the data directory, and the reports are in its folder `panics`. The default data directory:
+        - macOS: `~/Library/Application Support/Junto`
+        - Windows: `%LOCALAPPDATA%\Junto`
+        - Linux: `~/.local/share/junto` (or `$XDG_DATA_HOME/junto`)
+        When Junto was started with `--data-dir` or `JUNTO_DATA_DIR`, use that directory.
+        When Junto cannot start, it writes the reason to `junto-start-failure.txt`: on macOS in `$TMPDIR`, on Windows in `%TEMP%`, on Linux in `$XDG_RUNTIME_DIR`, or else in `~/.cache`, or else in `/tmp`.
+        For a problem of the server, give the lines of `docker compose -f <form file> logs <container>` from the time of the problem.
+        All of these can contain server addresses and names. Remove what you do not want to be public.
+      render: text
+  - type: textarea
+    id: other
+    attributes:
+      label: Other information
+      description: Screenshots, a screen recording, or anything else that helps.
