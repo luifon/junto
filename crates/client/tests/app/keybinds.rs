@@ -636,7 +636,7 @@ fn recording_a_binding_suppresses_global_actions_until_the_recording_press_is_re
             window.click("dialog-close");
         } else {
             window.in_shell(|shell, window, cx| {
-                shell.open_settings_section(SettingsSection::Voice, window, cx)
+                shell.open_settings_section(SettingsSection::VoiceAndVideo, window, cx)
             });
         }
         let readings = held.readings();

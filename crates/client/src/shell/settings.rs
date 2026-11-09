@@ -10,7 +10,9 @@ use gpui_base::slider::{SliderEvent, SliderState};
 
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::settings::ThemeChoice;
-use junto_client_core::voice::{InputMode, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey};
+use junto_client_core::voice::{
+    InputMode, SHARE_FRAME_RATES, ShareResolution, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey,
+};
 
 use super::account::Surface;
 use super::{Layer, Shell};
@@ -33,7 +35,7 @@ pub enum SettingsSection {
     Profile,
     Picture,
     Interface,
-    Voice,
+    VoiceAndVideo,
     /// The key bindings (ADR 0777).
     Keybinds,
     Quiet,
@@ -49,7 +51,7 @@ impl SettingsSection {
         Self::Profile,
         Self::Picture,
         Self::Interface,
-        Self::Voice,
+        Self::VoiceAndVideo,
         Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
@@ -64,7 +66,7 @@ impl SettingsSection {
             Self::Profile => text::PROFILE,
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
-            Self::Voice => text::VOICE,
+            Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
             Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
@@ -80,7 +82,7 @@ impl SettingsSection {
             Self::Profile => Icon::Person,
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
-            Self::Voice => Icon::Microphone,
+            Self::VoiceAndVideo => Icon::Microphone,
             Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
@@ -97,7 +99,7 @@ impl SettingsSection {
             Self::Profile => "settings-section-profile",
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
-            Self::Voice => "settings-section-voice",
+            Self::VoiceAndVideo => "settings-section-voice-and-video",
             Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
@@ -285,7 +287,7 @@ impl Shell {
         // The microphone is open for its level while the Voice section is shown (ADR 0733).
         // The permissions are read again when a section shows them (ADR 0708).
         self.state.update(cx, |state, cx| {
-            state.set_device_checks(section == SettingsSection::Voice, cx);
+            state.set_device_checks(section == SettingsSection::VoiceAndVideo, cx);
             if section == SettingsSection::Interface {
                 state.refresh_startup(cx);
             }
@@ -297,6 +299,28 @@ impl Shell {
             }
         });
         cx.notify();
+    }
+
+    /// Opens the settings of the application at "Voice and video", from the settings button
+    /// of a call. The call window has no settings: there the main window opens them and comes
+    /// to the front (ADR 0772).
+    pub fn open_voice_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.detached {
+            crate::app::in_main_window(
+                |shell, window, cx| shell.open_voice_settings(window, cx),
+                cx,
+            );
+            return;
+        }
+        if !matches!(self.layer, Layer::Settings) {
+            self.open_settings(window, cx);
+        }
+        self.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
+    }
+
+    /// Whether this shell draws the call window (ADR 0772).
+    pub fn is_detached(&self) -> bool {
+        self.detached
     }
 
     pub fn settings_section(&self) -> SettingsSection {
@@ -330,10 +354,11 @@ impl Shell {
                 parts
             }
             SettingsSection::Interface => self.render_interface_section(&theme, cx),
-            SettingsSection::Voice => {
-                let mut parts = vec![group_label(text::VOICE, &theme).into_any_element()];
+            SettingsSection::VoiceAndVideo => {
+                let mut parts = vec![group_label(text::VOICE_AND_VIDEO, &theme).into_any_element()];
                 parts.push(self.render_device_checks(&theme, cx));
                 parts.extend(self.render_voice_settings(&theme, window, cx));
+                parts.extend(self.render_share_and_view_settings(&theme, cx));
                 parts
             }
             SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
@@ -825,6 +850,117 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| press(this, cx))),
             )
             .into_any_element()
+    }
+
+    /// "Your screen share", the quality of the next share of this device, and "Your view",
+    /// what the window of this device leaves out of a call (ADR 0735, ADR 0738). They are
+    /// settings of the person and hold in every call.
+    fn render_share_and_view_settings(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let voice = self.state.read(cx).voice().clone();
+        let resolutions = [
+            ShareResolution::P720,
+            ShareResolution::P1080,
+            ShareResolution::Source,
+        ];
+        let choice_row = |label: &'static str, control: Segmented| {
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .mt(u(8.0))
+                .child(row_label(label, theme))
+                .child(control)
+                .into_any_element()
+        };
+        let resolution = Segmented::new(
+            "share-resolution",
+            text::RESOLUTION,
+            resolutions.map(|resolution| SharedString::from(text::share_resolution(resolution))),
+        )
+        .selected(
+            resolutions
+                .iter()
+                .position(|resolution| *resolution == voice.share_resolution),
+        )
+        .selector("share-resolution")
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(resolution) = resolutions.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        let frame_rate = Segmented::new(
+            "share-frame-rate",
+            text::FRAME_RATE,
+            SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
+        )
+        .selected(
+            SHARE_FRAME_RATES
+                .iter()
+                .position(|rate| *rate == voice.share_frame_rate),
+        )
+        .selector("share-frame-rate")
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        let hide_without_video = voice.hide_people_without_video;
+        let hide_own_camera = voice.hide_own_camera;
+        vec![
+            div()
+                .mt(u(20.0))
+                .child(group_label(text::YOUR_SCREEN_SHARE, theme))
+                .into_any_element(),
+            choice_row(text::RESOLUTION, resolution),
+            choice_row(text::FRAME_RATE, frame_rate),
+            help(text::SHARE_SETTINGS_HELP, theme).into_any_element(),
+            div()
+                .mt(u(20.0))
+                .child(group_label(text::YOUR_VIEW, theme))
+                .into_any_element(),
+            self.switch_row(
+                theme,
+                Setting {
+                    selector: "hide-without-video",
+                    title: text::HIDE_WITHOUT_VIDEO,
+                    sentence: text::HIDE_WITHOUT_VIDEO_HELP,
+                    on: hide_without_video,
+                },
+                Box::new(move |this, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_hide_without_video(!hide_without_video, cx)
+                    });
+                }),
+                cx,
+            ),
+            self.switch_row(
+                theme,
+                Setting {
+                    selector: "hide-own-camera-setting",
+                    title: text::HIDE_OWN_CAMERA,
+                    sentence: text::HIDE_OWN_CAMERA_HELP,
+                    on: hide_own_camera,
+                },
+                Box::new(move |this, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_hide_own_camera(!hide_own_camera, cx)
+                    });
+                }),
+                cx,
+            ),
+        ]
     }
 
     /// The data directory, the version of this build and its updates.

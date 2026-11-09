@@ -476,6 +476,8 @@ pub struct AppState {
     call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
     main_window_settings: junto_client_core::window_placement::WindowPlacement,
+    /// The main window shows the devices of the person during a call.
+    call_devices_shown: bool,
     main_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
@@ -1044,6 +1046,7 @@ impl AppState {
             call_window_closing: None,
             call_window_settings,
             main_window_settings,
+            call_devices_shown: false,
             main_window_writes: Default::default(),
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
@@ -1492,6 +1495,16 @@ impl AppState {
 
     pub fn set_share_frame_rate(&mut self, frame_rate: u32, cx: &mut Context<Self>) {
         self.change_voice(cx, move |voice| voice.share_frame_rate = frame_rate);
+    }
+
+    /// Whether the main window shows the devices of the person while a call runs; the camera
+    /// views of the call then hold the picture that the call sends (ADR 0735).
+    pub fn call_devices_shown(&self) -> bool {
+        self.call_devices_shown
+    }
+
+    pub fn set_call_devices_shown(&mut self, shown: bool) {
+        self.call_devices_shown = shown;
     }
 
     pub fn own_camera_hidden(&self) -> bool {

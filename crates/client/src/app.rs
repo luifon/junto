@@ -26,6 +26,40 @@ pub(crate) fn main_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
     cx.try_global::<MainWindow>().map(|main| main.0.into())
 }
 
+/// Brings the main window to the front and runs `open` on its shell, after the current
+/// update: from the call window, which has no settings of its own (ADR 0772). The main window
+/// is the one of `main_window`, or else the window whose shell does not draw a detached call.
+pub(crate) fn in_main_window(
+    open: impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) + 'static,
+    cx: &mut App,
+) {
+    cx.defer(move |cx| {
+        crate::notify::bring_to_front(None, cx);
+        let main = main_window(cx).or_else(|| {
+            cx.windows().into_iter().find(|handle| {
+                handle
+                    .update(cx, |root, _, cx| {
+                        root.downcast::<Root>()
+                            .ok()
+                            .and_then(|root| root.read(cx).view().clone().downcast::<Shell>().ok())
+                            .is_some_and(|shell| !shell.read(cx).is_detached())
+                    })
+                    .unwrap_or(false)
+            })
+        });
+        if let Some(main) = main {
+            let _ = main.update(cx, |root, window, cx| {
+                window.activate_window();
+                if let Ok(root) = root.downcast::<Root>()
+                    && let Ok(shell) = root.read(cx).view().clone().downcast::<Shell>()
+                {
+                    shell.update(cx, |shell, cx| open(shell, window, cx));
+                }
+            });
+        }
+    });
+}
+
 pub fn open_url(url: &str, token: Option<&str>, cx: &mut App) {
     if junto_client_core::links::parse(url).is_none() {
         return;
@@ -47,6 +81,9 @@ pub(crate) fn main_window_closing(state: &Entity<AppState>, cx: &mut App) {
     state.update(cx, |state, cx| {
         state.set_window_active(false, cx);
         state.set_input_test(false);
+        // The devices of the settings are gone with the window: the call window stops asking
+        // for the own picture of their preview.
+        state.set_call_devices_shown(false);
     });
     if state.read(cx).settings().keep_running_after_close {
         cx.set_global(BackgroundClient(state.clone()));

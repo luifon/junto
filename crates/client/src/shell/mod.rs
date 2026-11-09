@@ -117,8 +117,6 @@ pub(crate) enum Layer {
     Profile,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
-    /// The list of the input or of the output devices, in the sound settings of a call.
-    DeviceMenu(DeviceKind),
     /// The dialog in which the person chooses what to share. It holds the lists of the
     /// system, which are larger than every other layer.
     SharePicker(Box<share::SharePicker>),
@@ -197,7 +195,6 @@ impl Layer {
         match self {
             Layer::None
             | Layer::ServerMenu
-            | Layer::DeviceMenu(..)
             | Layer::ShareMenu
             | Layer::PersonMenu(..)
             | Layer::AccountMenu(..)
@@ -309,7 +306,7 @@ pub enum Open {
     ServerHoverMenu,
     /// A pane of the panel of the call.
     CallTab(CallTab),
-    /// The list of the input devices, in the sound settings of the call.
+    /// The list of the input devices, in the settings at "Voice and video".
     InputDevices,
     /// The dialog in which the person chooses what to share.
     SharePicker,
@@ -319,7 +316,7 @@ pub enum Open {
     RecordingDetails,
     /// The list of the members who can be invited into the call.
     MemberPicker,
-    /// The settings of the room, at the end of the Settings pane of the call.
+    /// The settings of the room, at the end of the Members pane of the call.
     RoomSettings,
     /// The list of the choices of a filter of the search.
     SearchFilter(FilterKind),
@@ -421,10 +418,6 @@ pub struct Shell {
     account_volume: Option<VolumeControl>,
     account_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     reaction_menu: Option<Box<reaction_people::MenuParent>>,
-    /// The kind of the list of devices of the call panel that a press of the pointer closed.
-    /// The click that follows on the box of that list does not open it again; a click on
-    /// the box of another list opens that list.
-    pub(crate) device_menu_closed_by_press: Option<DeviceKind>,
     /// A press closed the menu of the shares; the click on the share button that follows
     /// does not open it again.
     pub(crate) share_menu_closed_by_press: bool,
@@ -433,6 +426,8 @@ pub struct Shell {
     pub(crate) cameras: camera::ShownCameras,
     pub(crate) device_ui: device_checks::DeviceUi,
     drawing_call: bool,
+    /// The window draws the stage of the call, not only the devices of the person.
+    drawing_stage: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
     /// The pictures that the follower converted for the next frame of the display.
     pub(crate) pictures_prepared: Option<prepared::Converted>,
@@ -457,7 +452,7 @@ pub struct Shell {
     pub(crate) picture_draws: usize,
     /// The number of dialogs of a share that this window has opened.
     pub(crate) share_reads: u64,
-    /// The volume control of the sound of the watched share.
+    /// The volume control of the sound of the watched share, on its line.
     pub(crate) share_volume: Option<VolumeControl>,
     /// The slider of the sensitivity of voice activation in the settings.
     pub(crate) voice_threshold: Option<VolumeControl>,
@@ -493,7 +488,9 @@ pub struct Shell {
     /// (and one for the direct calls of an account), so that each keeps its own scroll
     /// position (ADR 0735).
     pub(crate) call_members: HashMap<call::CallMembersScope, call::CallMembersList>,
-    pub(crate) call_settings_scroll: ScrollHandle,
+    /// The member list of the call shows the settings of the room when it is drawn next
+    /// (`Open::RoomSettings`).
+    pub(crate) reveal_room: bool,
 
     // The fields of the layers.
     pub(crate) name: Entity<InputState>,
@@ -955,7 +952,6 @@ impl Shell {
             account_volume: None,
             account_menu_placement: Default::default(),
             reaction_menu: None,
-            device_menu_closed_by_press: None,
             share_menu_closed_by_press: false,
             detached,
             software_video: window
@@ -972,6 +968,7 @@ impl Shell {
             cameras: HashMap::new(),
             device_ui: Default::default(),
             drawing_call: false,
+            drawing_stage: false,
             picture_tasks: Vec::new(),
             pictures_prepared: None,
             pictures_again: std::sync::Arc::default(),
@@ -1003,7 +1000,7 @@ impl Shell {
             members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
             member_rows: None,
             call_members: HashMap::new(),
-            call_settings_scroll: ScrollHandle::new(),
+            reveal_room: false,
             name,
             name_error: None,
             name_saved: false,
@@ -1532,9 +1529,9 @@ impl Shell {
                 self.show_call_tab(tab, cx);
             }
             Open::InputDevices => {
-                self.open_call_panel(cx);
-                self.show_call_tab(CallTab::Settings, cx);
-                self.open_device_menu(DeviceKind::Input, window, cx);
+                self.open_voice_settings(window, cx);
+                self.state.update(cx, |state, cx| state.refresh_devices(cx));
+                self.device_ui.menu = Some(DeviceKind::Input);
             }
             Open::SharePicker => self.open_share_picker(window, cx),
             Open::ShareMenu => self.open_layer(Layer::ShareMenu, window, cx),
@@ -1544,8 +1541,8 @@ impl Shell {
             }
             Open::RoomSettings => {
                 self.open_call_panel(cx);
-                self.show_call_tab(CallTab::Settings, cx);
-                self.call_settings_scroll.scroll_to_bottom();
+                self.show_call_tab(CallTab::Members, cx);
+                self.reveal_room_settings(cx);
             }
             Open::SearchFilter(kind) => {
                 self.open_layer(Layer::SearchFilter(kind), window, cx);
@@ -1999,6 +1996,13 @@ impl Render for Shell {
             window.set_window_title(&crate::app_badge::title(for_person));
             crate::app_badge::show(for_person, window);
         }
+        if !self.detached {
+            let shown = self.shows_call_devices(cx);
+            if self.state.read(cx).call_devices_shown() != shown {
+                self.state
+                    .update(cx, |state, _| state.set_call_devices_shown(shown));
+            }
+        }
         self.refresh_picture_owner(cx);
         self.sync_camera_visibility(cx);
         // The frame sets this again when it draws the list of messages.
@@ -2231,7 +2235,6 @@ impl Shell {
 
     fn presses_over(&mut self) {
         self.server_menu_closed_by_press = false;
-        self.device_menu_closed_by_press = None;
         self.device_ui.closed_by_press = None;
         self.share_menu_closed_by_press = false;
         self.recording_details_closed_by_press = false;
@@ -2256,11 +2259,6 @@ impl Shell {
                 .reaction_people_owner_matches(&dialog.key),
             Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view, self.state.read(cx).client()),
-            // The list of devices belongs to the sound settings of the call.
-            Layer::DeviceMenu(_) => {
-                self.call_tab != CallTab::Settings
-                    || view.lists().is_none_or(|lists| lists.call.is_none())
-            }
             // The observer of the state closes the dialog of a share by its call and seat.
             Layer::SharePicker(_) => false,
             // The person left the voice channel, or the channel is no longer shown.
@@ -2435,10 +2433,8 @@ impl Shell {
                 .into_any_element();
         }
         match &self.layer {
-            // The list of devices is drawn at its box, in the panel of the call, and the
-            // menu of a person at the row of the person.
+            // The menu of a person is drawn at the row of the person.
             Layer::None
-            | Layer::DeviceMenu(_)
             | Layer::PersonMenu(_)
             | Layer::ThreadMenu(_)
             | Layer::MessageMenu(_)

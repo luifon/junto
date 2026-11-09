@@ -230,7 +230,7 @@ TLS implementation references: [platform selection](https://github.com/webrtc-sd
 - A build of the desktop client downloads and links the WebRTC library. The build directory grows by about 1 GiB for it.
 
 
-The personal Voice settings and the device check before joining a call offer the saved input,
+The settings at "Voice and video" and the device check before joining a call offer the saved input,
 output and camera choices, system defaults, disconnected saved choices and a refresh of the
 lists. A refresh reads the sound devices with the microphone permission in one task and the
 cameras in another, so that a camera list that takes seconds (ADR 0770) does not delay the
@@ -246,7 +246,7 @@ A camera preview opens a local capture after an explicit press, asks for permiss
 it was never asked, and draws mirrored pictures independently of call camera publications.
 A missing camera, refused permission or ended capture clears the picture and states the error;
 the person can choose another camera and retry. A preview creates no media track. Closing the
-check, leaving the Voice section, changing its account or server, starting a real call, or
+check, leaving the section "Voice and video", changing its account or server, starting a real call, or
 closing the application cancels pending requests and releases running streams. Device changes
 replace the tests with the new choices. Request generations reject delayed permission and
 open answers; audio callbacks also test an atomic cancellation flag, so a late output is silent

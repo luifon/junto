@@ -10,6 +10,10 @@ use crate::state::view::Occupant;
 use crate::theme::{Theme, u};
 use crate::ui::StyleExt;
 
+/// The size in pixels that the device preview asks for the picture that the call sends, when
+/// no tile of the own camera is drawn: the preview area of the settings at its widest.
+const OWN_PREVIEW_PIXELS: (u32, u32) = (640, 360);
+
 pub(crate) fn default_name() -> &'static str {
     "First available camera"
 }
@@ -86,6 +90,27 @@ impl super::Shell {
         })
     }
 
+    /// Whether this window converts the pictures of the call: it draws the call, or it shows
+    /// the devices of the person during the call, whose preview is the picture that the call
+    /// sends (ADR 0735).
+    pub(crate) fn wants_call_pictures(&self, cx: &gpui::App) -> bool {
+        self.draws_call(cx) || (!self.detached && self.state.read(cx).call_devices_shown())
+    }
+
+    /// Whether this window shows the device component of the person while a call runs: the
+    /// settings at "Voice and video", or the device check before a join.
+    pub(crate) fn shows_call_devices(&self, cx: &gpui::App) -> bool {
+        !self.detached
+            && self.state.read(cx).media_calls().call.is_some()
+            && match &self.layer {
+                super::Layer::Settings => {
+                    self.settings_section() == super::settings::SettingsSection::VoiceAndVideo
+                }
+                super::Layer::Prejoin(_) => true,
+                _ => false,
+            }
+    }
+
     pub(crate) fn camera_request(
         &self,
         person: &crate::state::view::Occupant,
@@ -115,19 +140,32 @@ impl super::Shell {
             return;
         }
         let visible = self.draws_call(cx);
+        // The devices of the person show the picture that the call sends, also while the
+        // own tile is hidden or the call is not drawn (ADR 0735).
+        let devices = state.call_devices_shown();
         let mut ids = Vec::new();
-        if visible
-            && let Some(call) = state.media_calls().call
+        let mut preview = false;
+        if let Some(call) = state.media_calls().call
             && call.phase == Phase::Connected
         {
-            ids.extend(call.cameras.into_iter().map(Person::Of));
-            if matches!(call.camera, CameraState::Starting | CameraState::Running)
-                && !state.voice().hide_own_camera
-            {
+            let own_on = matches!(call.camera, CameraState::Starting | CameraState::Running);
+            if visible {
+                ids.extend(call.cameras.into_iter().map(Person::Of));
+            }
+            if own_on && ((visible && !state.voice().hide_own_camera) || devices) {
                 ids.push(Person::Own);
             }
+            preview = own_on && devices;
         }
         state.calls().retain_camera_views(&ids);
+        // A drawn own tile states the size of the own picture. The tiles of the stage are
+        // built only in view, so the own tile can be absent although the call is drawn: the
+        // devices then ask for the picture at the size of their preview.
+        if preview && !state.calls().has_camera_view(Person::Own) {
+            state
+                .calls()
+                .set_camera_view(Person::Own, OWN_PREVIEW_PIXELS);
+        }
     }
 
     /// The people with a camera in the call: a published camera of another person, or the

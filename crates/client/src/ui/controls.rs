@@ -330,8 +330,6 @@ pub struct SelectBox {
     value: SharedString,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
-    /// Why the list cannot be opened now. A box with a reason takes no click.
-    held: Option<SharedString>,
 }
 
 impl SelectBox {
@@ -347,7 +345,6 @@ impl SelectBox {
             value: value.into(),
             selector: None,
             on_click: None,
-            held: None,
         }
     }
 
@@ -363,13 +360,6 @@ impl SelectBox {
         self.on_click = Some(Box::new(handler));
         self
     }
-
-    /// A box with a reason is shown as unavailable, states the reason in its tooltip and to a
-    /// screen reader, and takes no click and no keyboard focus.
-    pub fn held(mut self, reason: Option<impl Into<SharedString>>) -> Self {
-        self.held = reason.map(Into::into);
-        self
-    }
 }
 
 impl RenderOnce for SelectBox {
@@ -378,12 +368,10 @@ impl RenderOnce for SelectBox {
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         let focus = super::reveal::handle(&self.id, window, cx);
-        let held = self.held;
         div()
             .id(self.id)
             .role(Role::Button)
             .aria_label(format!("{}: {}", self.label, self.value))
-            .aria_disabled(held.is_some())
             .when_some(self.selector, |select, selector| {
                 select.debug_selector(|| selector.to_owned())
             })
@@ -402,22 +390,13 @@ impl RenderOnce for SelectBox {
             .typeface(theme.types.control, &theme)
             .font_weight(gpui::FontWeight::NORMAL)
             .ink(colors.ink)
-            .map(|select| match held {
-                // The reason is the description of the box for a screen reader too.
-                Some(reason) => select
-                    .aria_description(reason.clone())
-                    .opacity(0.55)
-                    .cursor_not_allowed()
-                    .tooltip(tooltip(reason)),
-                None => select
-                    .cursor_pointer()
-                    .track_focus(&focus)
-                    .children(super::reveal::report(&focus, window))
-                    .hover(move |style| style.bg(Hsla::from(colors.travertine)))
-                    .focus_visible(move |style| style.shadow(ring))
-                    .when_some(self.on_click, |select, handler| {
-                        select.on_click(move |event, window, cx| handler(event, window, cx))
-                    }),
+            .cursor_pointer()
+            .track_focus(&focus)
+            .children(super::reveal::report(&focus, window))
+            .hover(move |style| style.bg(Hsla::from(colors.travertine)))
+            .focus_visible(move |style| style.shadow(ring))
+            .when_some(self.on_click, |select, handler| {
+                select.on_click(move |event, window, cx| handler(event, window, cx))
             })
             .child(div().flex_1().min_w_0().truncate().child(self.value))
             .child(icon(Icon::ChevronDown, 14.0, colors.ink_2))
@@ -664,6 +643,8 @@ pub struct VolumeSlider {
     focus: FocusHandle,
     label: SharedString,
     selector: Option<SharedString>,
+    /// The percentage is drawn after the track.
+    value_shown: bool,
 }
 
 impl VolumeSlider {
@@ -680,7 +661,15 @@ impl VolumeSlider {
             focus: focus.clone(),
             label: label.into(),
             selector: None,
+            value_shown: true,
         }
+    }
+
+    /// A control without the percentage after its track, for a place where a control beside
+    /// it states the percentage.
+    pub fn without_value(mut self) -> Self {
+        self.value_shown = false;
+        self
     }
 
     /// The state of a volume control at `percent`.
@@ -786,15 +775,17 @@ impl RenderOnce for VolumeSlider {
                         ),
                 ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .w(u(38.0))
-                    .text_right()
-                    .typeface(theme.types.mono_field, &theme)
-                    .ink(colors.ink)
-                    .child(format!("{}%", value.round() as i32)),
-            )
+            .when(self.value_shown, |slider| {
+                slider.child(
+                    div()
+                        .flex_none()
+                        .w(u(38.0))
+                        .text_right()
+                        .typeface(theme.types.mono_field, &theme)
+                        .ink(colors.ink)
+                        .child(format!("{}%", value.round() as i32)),
+                )
+            })
     }
 }
 

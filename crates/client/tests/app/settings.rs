@@ -78,7 +78,7 @@ fn the_settings_show_one_section_at_a_time_from_a_list_of_sections(cx: &mut Test
         (SettingsSection::Profile, "name-field"),
         (SettingsSection::Picture, "preset-picture"),
         (SettingsSection::Interface, "scale-0"),
-        (SettingsSection::Voice, "input-mode-0"),
+        (SettingsSection::VoiceAndVideo, "input-mode-0"),
         (SettingsSection::Quiet, "quiet-no-server"),
         (SettingsSection::Notifications, "notifications-state"),
         (SettingsSection::Devices, "settings-link-first"),
@@ -119,7 +119,10 @@ fn a_section_ends_after_its_last_control_and_its_help(cx: &mut TestAppContext) {
     for (section, last) in [
         (SettingsSection::Profile, "save-name"),
         (SettingsSection::Interface, "theme-0"),
-        (SettingsSection::Voice, "automatic-gain-row"),
+        (
+            SettingsSection::VoiceAndVideo,
+            "hide-own-camera-setting-row",
+        ),
         (SettingsSection::Notifications, "notifications-state"),
         // The switch of the last kind of sounds, with its help, ends the section (ADR 0707).
         (SettingsSection::Sounds, "sound-kind-hand-raised-row"),

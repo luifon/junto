@@ -10,31 +10,27 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
-    Styled, StyledText, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
+    Styled, StyledText, Subscription, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{AccountId, ServerId, WorkspaceId};
 use junto_client_core::settings::Panel;
-use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
-use junto_media::permission::MicrophoneAccess;
 
 use super::channels::occupant_name;
-use super::room::option_row;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::CameraAction;
 use crate::state::view::{
-    CallPanel, CallStrip, ChannelRow, DeviceChoice, INPUT_SEGMENTS, Microphone, MicrophoneLine,
-    Occupant, OwnShare, PanelPlace, Presence, Relation, ShellView, SoundWarning, VoiceState,
+    CallPanel, CallStrip, ChannelRow, Microphone, Occupant, OwnShare, PanelPlace, Presence,
+    Relation, ShellView, SoundWarning, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Flag, FlagKind, Menu, MenuItem, Meter, PersonTile, ScrollArea,
-    SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, VolumeSlider,
-    float_shadow, icon, tooltip,
+    Button, ButtonKind, Flag, FlagKind, Meter, PersonTile, SectionLabel, StyleExt, Tab, TileMark,
+    VolumeSlider, float_shadow, icon, tooltip,
 };
 
 /// The width that a panel over the content adds for its close button, in pixels of the
@@ -47,7 +43,6 @@ pub enum CallTab {
     #[default]
     Chat,
     Members,
-    Settings,
 }
 
 /// The kind of a device of a call: a camera, or a sound input or output.
@@ -78,8 +73,13 @@ pub(crate) struct VolumeControl {
 }
 
 /// A person outside the call in the member list of a call, with the line of the state.
-/// The people that the member list of a call lists: in the call and outside it.
-pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
+/// What the member list of a call lists: the people in the call and outside it, and the room
+/// of a voice channel, whose settings end the list.
+pub(crate) type CallMemberRows = (
+    Rc<Vec<Occupant>>,
+    Rc<Vec<OutsideRow>>,
+    Option<crate::state::view::RoomView>,
+);
 
 /// The server, the account and the workspace of a member list of the panel of a call; no
 /// workspace for a direct-message call.
@@ -233,43 +233,6 @@ impl Shell {
         (control.state.clone(), control.focus.clone())
     }
 
-    /// The volume control of the sound of the watched share.
-    fn share_volume_control(
-        &mut self,
-        percent: u16,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> (Entity<SliderState>, FocusHandle) {
-        let control = self.share_volume.get_or_insert_with(|| {
-            let state = cx.new(|_| VolumeSlider::state(percent));
-            let changes = cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
-                let (value, release) = match event {
-                    SliderEvent::Change(value) => (value.end(), false),
-                    SliderEvent::Release(value) => (value.end(), true),
-                };
-                let percent = value.round().clamp(0.0, 200.0) as u16;
-                this.state.update(cx, |state, cx| {
-                    state.set_share_volume(percent, cx);
-                    if release {
-                        state.store_share_volume(cx);
-                    }
-                });
-            });
-            VolumeControl {
-                state,
-                focus: cx.focus_handle(),
-                _changes: changes,
-            }
-        });
-        let shown = control.state.read(cx).value().end().round() as u16;
-        if shown != percent {
-            control.state.update(cx, |state, cx| {
-                state.set_value(f32::from(percent), window, cx)
-            });
-        }
-        (control.state.clone(), control.focus.clone())
-    }
-
     /// What the header of a voice channel shows after its title, for a channel that this
     /// device is not in: the line about its chat, and the action that enters the call.
     pub(crate) fn render_voice_entry(
@@ -374,6 +337,18 @@ impl Shell {
         ]
     }
 
+    /// The button of the header of a call that opens the settings of the application at
+    /// "Voice and video", in the main window and in the call window (ADR 0735).
+    pub(crate) fn render_call_settings_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("open-call-settings")
+            .icon(Icon::Gear)
+            .tooltip(text::VOICE_AND_VIDEO_SETTINGS)
+            .accessible_label(text::VOICE_AND_VIDEO_SETTINGS)
+            .selector("open-call-settings")
+            .on_click(cx.listener(|this, _, window, cx| this.open_voice_settings(window, cx)))
+            .into_any_element()
+    }
+
     /// The buttons of the header that open the panel of the call at one tab, in a narrow
     /// window and in the call window, with the counts of the tabs.
     pub(crate) fn render_call_panel_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -390,19 +365,12 @@ impl Shell {
                 text::MEMBERS,
                 "open-call-members",
             ),
-            (
-                CallTab::Settings,
-                Icon::Gear,
-                text::SETTINGS,
-                "open-call-settings",
-            ),
         ]
         .into_iter()
         .map(|(tab, shown, label, selector)| {
             let waits = match tab {
                 CallTab::Chat => chat_waits,
                 CallTab::Members => members_wait,
-                CallTab::Settings => 0,
             };
             Button::new(selector)
                 .icon(shown)
@@ -497,9 +465,6 @@ impl Shell {
         self.call_tab = tab;
         if tab != CallTab::Members {
             self.invite_open = false;
-        }
-        if tab == CallTab::Settings {
-            self.state.update(cx, |state, cx| state.refresh_devices(cx));
         }
         cx.notify();
     }
@@ -946,7 +911,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The panel of a call, with the row of its three tabs.
+    /// The panel of a call, with the row of its two tabs.
     pub(crate) fn render_call_panel(
         &mut self,
         view: &ShellView,
@@ -973,7 +938,6 @@ impl Shell {
             let waits = match tab {
                 CallTab::Chat => chat_waits,
                 CallTab::Members => members_wait,
-                CallTab::Settings => 0,
             };
             Tab::new(selector, shown, label)
                 .on(open)
@@ -1015,13 +979,6 @@ impl Shell {
                         text::MEMBERS,
                         "call-tab-members",
                         cx,
-                    ))
-                    .child(tab(
-                        CallTab::Settings,
-                        Icon::Gear,
-                        text::SETTINGS,
-                        "call-tab-settings",
-                        cx,
                     )),
             )
             // The panel closes in every window, as the server book does; the stage then
@@ -1043,7 +1000,6 @@ impl Shell {
             (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
             (None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
             (None, CallTab::Members) => self.render_call_members(view, panel, theme, window, cx),
-            (None, CallTab::Settings) => self.render_call_settings(panel, theme, window, cx),
         };
         div()
             .id("call-panel")
@@ -1234,18 +1190,30 @@ impl Shell {
                 }),
             None => return div().into_any_element(),
         };
-        let shape = (people.clone(), outside.clone());
+        // The settings of the room of a voice channel are the last item of the list: they
+        // belong to the call, and the panel has no other place for them (ADR 0735).
+        let room = panel.room().cloned();
+        let shape = (people.clone(), outside.clone(), room.clone());
+        let listed = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
         if list.rows.as_ref() != Some(&shape) {
-            let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
-            super::changed_rows(&list.state, count);
+            super::changed_rows(&list.state, listed + usize::from(room.is_some()));
             list.rows = Some(shape);
         }
         let state = list.state.clone();
+        // The room item goes to the top of the list by its index: a reveal by the heights
+        // that the list measured counts a row that it has not measured yet as empty.
+        if room.is_some() && std::mem::take(&mut self.reveal_room) {
+            state.scroll_to(gpui::ListOffset {
+                item_ix: listed,
+                offset_in_item: px(0.0),
+            });
+        }
         let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
-            div()
-                .w_full()
-                .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
-                .into_any_element()
+            let item = match &room {
+                Some(room) if index == listed => this.render_room_item(room, cx),
+                _ => this.call_member_item(index, &people, &outside, server_id, window, cx),
+            };
+            div().w_full().child(item).into_any_element()
         });
         let share_controls: Vec<_> = panel
             .stage
@@ -1324,6 +1292,30 @@ impl Shell {
                     .map(|channel| self.render_invite_area(channel, theme, cx)),
             )
             .into_any_element()
+    }
+
+    /// The settings of the room of the call, the last item of its member list.
+    fn render_room_item(
+        &mut self,
+        room: &crate::state::view::RoomView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        div()
+            .id("room-settings")
+            .debug_selector(|| "room-settings".to_owned())
+            .flex()
+            .flex_col()
+            .pb(u(8.0))
+            .children(self.render_room_settings(room, &theme, cx))
+            .into_any_element()
+    }
+
+    /// Shows the settings of the room at the end of the member list of the call that the
+    /// window draws.
+    pub(crate) fn reveal_room_settings(&mut self, cx: &mut Context<Self>) {
+        self.reveal_room = true;
+        cx.notify();
     }
 
     /// One item of the member list of a call: the label of the people in the call, a
@@ -1541,407 +1533,6 @@ impl Shell {
             ),
             None => div().h(u(4.0)).into_any_element(),
         }
-    }
-
-    fn render_call_settings(
-        &mut self,
-        panel: &CallPanel,
-        theme: &Theme,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let audio = &panel.audio;
-        // A row with a name and a control of a few choices.
-        let choice_row = |label: &'static str, control: Segmented| {
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(u(10.0))
-                .py(u(3.0))
-                .px(u(14.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(u(84.0))
-                        .typeface(theme.types.control, theme)
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .ink(colors.ink)
-                        .child(label),
-                )
-                .child(control)
-        };
-        let resolutions = [
-            ShareResolution::P720,
-            ShareResolution::P1080,
-            ShareResolution::Source,
-        ];
-        let resolution = choice_row(
-            text::RESOLUTION,
-            Segmented::new(
-                "share-resolution",
-                text::RESOLUTION,
-                resolutions
-                    .map(|resolution| SharedString::from(text::share_resolution(resolution))),
-            )
-            .selected(
-                resolutions
-                    .iter()
-                    .position(|resolution| *resolution == panel.share_resolution),
-            )
-            .selector("share-resolution")
-            .on_select({
-                let select = cx.listener(move |this, index: &usize, _, cx| {
-                    if let Some(resolution) = resolutions.get(*index).copied() {
-                        this.state
-                            .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
-                    }
-                });
-                move |index, window, cx| select(&index, window, cx)
-            }),
-        );
-        let frame_rate = choice_row(
-            text::FRAME_RATE,
-            Segmented::new(
-                "share-frame-rate",
-                text::FRAME_RATE,
-                SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
-            )
-            .selected(
-                SHARE_FRAME_RATES
-                    .iter()
-                    .position(|rate| *rate == panel.share_frame_rate),
-            )
-            .selector("share-frame-rate")
-            .on_select({
-                let select = cx.listener(move |this, index: &usize, _, cx| {
-                    if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
-                        this.state
-                            .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
-                    }
-                });
-                move |index, window, cx| select(&index, window, cx)
-            }),
-        );
-        let hide = panel.hide_without_video;
-        let hide_row = option_row(
-            text::HIDE_WITHOUT_VIDEO,
-            text::HIDE_WITHOUT_VIDEO_HELP,
-            Toggle::new(
-                "hide-without-video",
-                text::HIDE_WITHOUT_VIDEO,
-                hide,
-                (text::ON, text::OFF),
-            )
-            .selector("hide-without-video")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.state
-                    .update(cx, |state, cx| state.set_hide_without_video(!hide, cx));
-            }))
-            .into_any_element(),
-            theme,
-        );
-        let room_rows = match panel.room() {
-            Some(room) => self.render_room_settings(room, theme, cx),
-            None => Vec::new(),
-        };
-        let share_volume = panel.stage.as_ref().map_or(100, |stage| stage.volume);
-        let (volume_state, volume_focus) = self.share_volume_control(share_volume, window, cx);
-        let volume_row = div()
-            .flex_none()
-            .pt(u(5.0))
-            .pb(u(6.0))
-            .px(u(14.0))
-            .child(
-                div()
-                    .typeface(theme.types.control, theme)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .line_height(u(19.0))
-                    .ink(colors.ink)
-                    .child(text::SHARE_VOLUME),
-            )
-            .child(
-                div().mt(u(3.0)).child(
-                    VolumeSlider::new(
-                        "share-volume",
-                        &volume_state,
-                        &volume_focus,
-                        text::SHARE_VOLUME,
-                    )
-                    .selector("share-volume"),
-                ),
-            )
-            .child(
-                div()
-                    .mt(u(2.0))
-                    .typeface(theme.types.small, theme)
-                    .line_height(u(17.0))
-                    .ink(colors.ink_2)
-                    .child(text::SHARE_VOLUME_HELP),
-            );
-        let help_line = |sentence: &'static str| {
-            div()
-                .flex_none()
-                .px(u(14.0))
-                .pb(u(4.0))
-                .typeface(theme.types.small, theme)
-                .line_height(u(17.0))
-                .ink(colors.ink_2)
-                .child(sentence)
-        };
-        let shown = |kind: DeviceKind, choices: &[DeviceChoice]| -> SharedString {
-            let chosen = choices.iter().find(|choice| choice.selected);
-            match chosen {
-                Some(choice) if choice.id.is_none() && kind == DeviceKind::Camera => {
-                    super::camera::default_name().into()
-                }
-                Some(choice) if choice.id.is_none() => text::system_default(&choice.name).into(),
-                Some(choice) if choice.name.is_empty() => text::DEVICE_NOT_CONNECTED.into(),
-                Some(choice) => choice.name.clone().into(),
-                None => text::SYSTEM_DEFAULT.into(),
-            }
-        };
-        let open = match &self.layer {
-            Layer::DeviceMenu(kind) => Some(*kind),
-            _ => None,
-        };
-        let field = |kind: DeviceKind,
-                     label: &'static str,
-                     choices: &[DeviceChoice],
-                     selector: &'static str,
-                     this: &mut Self,
-                     cx: &mut Context<Self>| {
-            let menu = (open == Some(kind)).then(|| this.render_device_menu(kind, choices, cx));
-            div()
-                .flex_none()
-                .pt(u(4.0))
-                .pb(u(5.0))
-                .px(u(14.0))
-                .child(
-                    div()
-                        .mb(u(3.0))
-                        .typeface(theme.types.control, theme)
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .ink(colors.ink)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .child(
-                            SelectBox::new(selector, label, shown(kind, choices))
-                                .selector(selector)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_device_menu(kind, window, cx);
-                                })),
-                        )
-                        .children(menu),
-                )
-        };
-        let camera_choices = self.state.read(cx).camera_choices();
-        let camera = field(
-            DeviceKind::Camera,
-            text::CAMERA,
-            &camera_choices,
-            "camera-device",
-            self,
-            cx,
-        );
-        let input = field(
-            DeviceKind::Input,
-            text::INPUT_DEVICE,
-            &audio.inputs,
-            "input-device",
-            self,
-            cx,
-        );
-        let output = field(
-            DeviceKind::Output,
-            text::OUTPUT_DEVICE,
-            &audio.outputs,
-            "output-device",
-            self,
-            cx,
-        );
-        let small = |sentence: SharedString| {
-            div()
-                .typeface(theme.types.small, theme)
-                .ink(colors.ink_2)
-                .child(sentence)
-        };
-        let unusable = matches!(
-            audio.microphone,
-            MicrophoneLine::NoPermission | MicrophoneLine::Failed
-        ) || audio.access == MicrophoneAccess::Refused;
-        let seat = self.drawn_seat();
-        // The question of the system, or the page of its settings (ADR 0708).
-        let microphone_permission = self.permission_button(
-            "microphone-permission-action",
-            crate::permissions::Permission::Microphone,
-            cx,
-        );
-        ScrollArea::new("call-settings", &self.call_settings_scroll, text::SETTINGS)
-            .selector("call-settings")
-            .child(camera)
-            .child(SectionLabel::new(text::YOUR_AUDIO))
-            .child(
-                input.child(
-                    div()
-                        .id("input-level")
-                        .role(Role::Meter)
-                        .aria_label(text::INPUT_LEVEL)
-                        .aria_numeric_value(audio.input_level as f64)
-                        .aria_max_numeric_value(INPUT_SEGMENTS as f64)
-                        .debug_selector(|| "input-level".to_owned())
-                        .flex()
-                        .items_center()
-                        .gap(u(9.0))
-                        .mt(u(6.0))
-                        .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .child(text::INPUT_LEVEL)
-                        .child(Meter::wide(audio.input_level)),
-                ),
-            )
-            .child(output)
-            .child(
-                div()
-                    .id("microphone-access")
-                    .role(Role::Status)
-                    .aria_label(text::microphone_access(audio.access))
-                    .debug_selector(|| "microphone-access".to_owned())
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .gap(u(6.0))
-                    .pt(u(6.0))
-                    .px(u(14.0))
-                    .child(small(text::microphone_access(audio.access).into()))
-                    .when_some(microphone_permission, |column, button| {
-                        column.child(div().flex().child(button))
-                    })
-                    .when(unusable, |column| {
-                        column.child(
-                            div().flex().child(
-                                Button::new("retry-microphone")
-                                    .label(text::TRY_AGAIN)
-                                    .icon(Icon::Retry)
-                                    .selector("retry-microphone")
-                                    .on_click({
-                                        let seat = seat.clone();
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.state.update(cx, |state, cx| {
-                                                state.retry_microphone(seat.as_ref(), cx);
-                                            });
-                                        })
-                                    }),
-                            ),
-                        )
-                    })
-                    .child(small(text::MORE_SOUND_SETTINGS.into())),
-            )
-            .child(SectionLabel::new(text::YOUR_SCREEN_SHARE))
-            .child(resolution)
-            .child(frame_rate)
-            .child(help_line(text::SHARE_SETTINGS_HELP))
-            .child(SectionLabel::new(text::YOUR_VIEW))
-            .child(hide_row)
-            .when(
-                panel
-                    .stage
-                    .as_ref()
-                    .and_then(|stage| stage.watched())
-                    .is_some_and(|share| share.id.person != junto_media::engine::Person::Own),
-                |settings| settings.child(volume_row),
-            )
-            .children(room_rows)
-            .child(div().flex_none().h(u(8.0)))
-            .into_any_element()
-    }
-
-    pub(crate) fn open_device_menu(
-        &mut self,
-        kind: DeviceKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // A click on the box of an open list closes the list: the press closed it, and
-        // the click must not open it again. A press on the box of another list closed the
-        // open list, and its click opens the other list.
-        if self.device_menu_closed_by_press.take() == Some(kind) {
-            return;
-        }
-        self.state.update(cx, |state, cx| state.refresh_devices(cx));
-        self.open_layer(Layer::DeviceMenu(kind), window, cx);
-    }
-
-    /// The list of the devices of one kind, under its box. It holds the keyboard focus
-    /// while it is open.
-    fn render_device_menu(
-        &mut self,
-        kind: DeviceKind,
-        choices: &[DeviceChoice],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let label = match kind {
-            DeviceKind::Camera => text::CAMERA,
-            DeviceKind::Input => text::INPUT_DEVICE,
-            DeviceKind::Output => text::OUTPUT_DEVICE,
-        };
-        let items: Vec<AnyElement> = choices
-            .iter()
-            .enumerate()
-            .map(|(index, choice)| {
-                let id = choice.id.clone();
-                let name: SharedString = match (&choice.id, choice.name.is_empty()) {
-                    (None, _) if kind == DeviceKind::Camera => super::camera::default_name().into(),
-                    (None, _) => text::system_default(&choice.name).into(),
-                    (Some(_), true) => text::DEVICE_NOT_CONNECTED.into(),
-                    (Some(_), false) => choice.name.clone().into(),
-                };
-                div()
-                    .flex_none()
-                    .debug_selector(move || format!("device-choice-{index}"))
-                    .child(
-                        MenuItem::new(("device", index), name)
-                            .icon(if choice.selected {
-                                Icon::Check
-                            } else {
-                                kind.icon()
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let id = id.clone();
-                                this.state.update(cx, |state, cx| match kind {
-                                    DeviceKind::Camera => state.choose_camera(id, cx),
-                                    DeviceKind::Input => state.choose_input(id, cx),
-                                    DeviceKind::Output => state.choose_output(id, cx),
-                                });
-                                this.close_layer(window, cx);
-                            })),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-        div()
-            .absolute()
-            .left_0()
-            .top(u(34.0))
-            .child(deferred(
-                anchored().snap_to_window().child(
-                    Menu::new("device-menu", label, self.layer_focus())
-                        .width(self.call_panel_width(cx) - 28.0)
-                        .selector("device-menu")
-                        .on_close(Self::handler(cx, move |this, window, cx| {
-                            this.device_menu_closed_by_press =
-                                (!window.last_input_was_keyboard()).then_some(kind);
-                            this.close_layer(window, cx);
-                        }))
-                        .children(items)
-                        .child(div().h(u(4.0))),
-                ),
-            ))
-            .into_any_element()
     }
 
     /// The strip of the person's call, above the profile strip. It is drawn while this
@@ -2320,13 +1911,10 @@ impl Shell {
                                 Button::new("camera-settings")
                                     .label(text::SETTINGS)
                                     .selector("camera-settings")
-                                    // The camera is chosen in the Settings tab of the call.
+                                    // The camera is chosen in the settings of the
+                                    // application, at "Voice and video".
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open(
-                                            super::Open::CallTab(CallTab::Settings),
-                                            window,
-                                            cx,
-                                        )
+                                        this.open_voice_settings(window, cx)
                                     })),
                             )
                             .child(
@@ -2575,7 +2163,7 @@ impl Shell {
                 .child(self.return_call_button(cx))
                 .into_any_element()
         } else {
-            self.render_call_stage(panel, &theme, cx)
+            self.render_call_stage(panel, &theme, window, cx)
         };
         self.call_panel_overlay = narrow;
         let side = self.call_panel_shown(narrow, cx).then(|| {
@@ -2651,6 +2239,7 @@ impl Shell {
         &mut self,
         panel: &CallPanel,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let hidden = self.state.read(cx).own_camera_hidden();
@@ -2667,7 +2256,7 @@ impl Shell {
                     && shares.watched().is_some()
                     && !pin.as_ref().is_some_and(|pin| pin.show_person) =>
             {
-                self.render_share_stage(panel, shares, theme, cx)
+                self.render_share_stage(panel, shares, theme, window, cx)
             }
             _ => {
                 let bar = panel

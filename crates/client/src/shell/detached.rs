@@ -267,6 +267,7 @@ impl Shell {
                     .when(panel.is_some(), |buttons| {
                         buttons.children(self.render_call_panel_buttons(cx))
                     })
+                    .child(self.render_call_settings_button(cx))
                     .child(self.render_call_notices_button(&view, cx)),
             );
         body = body.child(header);
@@ -290,7 +291,7 @@ impl Shell {
         let notices = self.render_call_notices(&view, cx);
         self.stage_controls.clear();
         let stage = match panel {
-            Some(panel) => self.render_call_stage(panel, &theme, cx),
+            Some(panel) => self.render_call_stage(panel, &theme, window, cx),
             None => div().flex_1().into_any_element(),
         };
         let column = div()

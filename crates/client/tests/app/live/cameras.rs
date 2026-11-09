@@ -94,9 +94,17 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
     });
     window.click("call-camera");
     window.until("failure shown", |window| window.shows("camera-failed"));
-    // The button opens the Settings tab of the call, where the camera is chosen.
+    // The button opens the settings of the application at "Voice and video", where the
+    // camera is chosen.
     window.click("camera-settings");
-    assert!(window.shows("camera-device"));
+    assert!(
+        window.shows("settings-page-settings-section-voice-and-video")
+            && window.shows("camera-device")
+    );
+    window.press("escape");
+    window.until("the settings are closed", |window| {
+        !window.shows("settings-dialog")
+    });
     window.click("camera-dismiss");
     window.until("failure dismissed", |window| !window.shows("camera-failed"));
     window.click("call-camera");
@@ -118,16 +126,16 @@ fn a_camera_failure_can_open_settings_or_be_dismissed_in_both_windows(cx: &mut T
         .center();
     detached.simulate(|cx| cx.simulate_click(settings, Modifiers::none()));
     detached.run_tasks();
-    assert!(detached.cx.debug_bounds("camera-device").is_some());
-    // The narrow call window draws the panel over the stage; it is closed before the notice
-    // is reached.
-    let close = detached
-        .cx
-        .debug_bounds("close-call-panel")
-        .unwrap()
-        .center();
-    detached.simulate(|cx| cx.simulate_click(close, Modifiers::none()));
-    detached.run_tasks();
+    // The call window has no settings: the main window opens them (ADR 0772).
+    window.until("the main window shows the camera setting", |window| {
+        window.shows("settings-page-settings-section-voice-and-video")
+            && window.shows("camera-device")
+    });
+    assert!(detached.cx.debug_bounds("camera-device").is_none());
+    window.press("escape");
+    // The press on "Settings" did not open the panel of the call window, whose notice stays
+    // in reach.
+    assert!(detached.cx.debug_bounds("call-panel").is_none());
     let dismiss = detached.cx.debug_bounds("camera-dismiss").unwrap().center();
     detached.simulate(|cx| cx.simulate_click(dismiss, Modifiers::none()));
     window.until("detached failure dismissed", |window| {
@@ -454,8 +462,9 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
 
     // Nobody has a camera: the setting leaves out both tiles and says so.
-    window.click("call-tab-settings");
-    window.click("hide-without-video");
+    window.click("open-call-settings");
+    window.click_in_settings("hide-without-video");
+    window.press("escape");
     window.until("both tiles are hidden", |window| {
         !tile(window, ada)
             && !tile(window, own)
@@ -543,8 +552,9 @@ fn the_people_without_video_are_hidden_in_every_layout(cx: &mut TestAppContext) 
     });
 
     // The setting is turned off: both tiles return.
-    window.click("call-tab-settings");
-    window.click("hide-without-video");
+    window.click("open-call-settings");
+    window.click_in_settings("hide-without-video");
+    window.press("escape");
     window.until("both tiles return", |window| {
         tile(window, ada) && tile(window, own) && !window.shows("people-hidden")
     });
