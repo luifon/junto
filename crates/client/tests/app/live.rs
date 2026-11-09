@@ -57,6 +57,8 @@ mod tones;
 mod tray;
 mod voice_status;
 #[cfg(target_os = "windows")]
+mod windows_own_share;
+#[cfg(target_os = "windows")]
 mod windows_share;
 
 /// The voice channel of the tests. A new server has a voice channel of its own beside it.
