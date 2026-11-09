@@ -6,7 +6,10 @@ press after a minimize does not restore the window, and names which explanation 
 Run it in the desktop session of a person (a scheduled task, as the unelevated CI steps do), with the
 program of an installed client:
 
-    python packaging/taskbar_clicks.py "<folder>\\junto.exe"
+    python packaging/taskbar_clicks.py "<folder>\\junto.exe" [presses]
+
+With a count of presses (6 for three cycles) it states whether each press toggled the window,
+and ends with 1 when one did not.
 
 It starts the program with an empty data directory of its own and ends it afterwards. The decision
 (`verdict`) is a plain function with tests on every system (`test_taskbar_clicks.py`)."""
@@ -21,6 +24,8 @@ from pathlib import Path
 # The time after a press in which the window has to reach its new state.
 SETTLE_SECONDS = 1.5
 SAMPLE_SECONDS = 0.05
+# The presses of one record.
+PRESSES = 3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,6 +40,14 @@ class Observation:
     buttons: int
     # The main window was minimized at some sample during the settle time.
     minimized_meanwhile: bool = False
+
+
+def alternates(observations):
+    """Whether each press toggled the window as a person expects: the odd presses minimize it and
+    the even presses restore it, and the taskbar shows one running button of Junto each time."""
+    return bool(observations) and all(
+        observation.minimized == (index % 2 == 0) and observation.buttons == 1
+        for index, observation in enumerate(observations))
 
 
 def verdict(observations):
@@ -166,7 +179,7 @@ def wintypes_rect():
     return wintypes.RECT()
 
 
-def run(program):
+def run(program, presses=PRESSES):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import ctypes
     import window_frame
@@ -199,7 +212,11 @@ def run(program):
                 raise RuntimeError(f"the taskbar shows {len(buttons)} running buttons of Junto")
             point = (buttons[0]["x"], buttons[0]["y"])
             observations = []
-            for _ in range(3):
+            print(f"    main window {main:#x}", flush=True)
+            for number in range(1, presses + 1):
+                # The time in milliseconds since 1970, to read the press beside a log of the
+                # messages of the window.
+                print(f"    press {number} at {int(time.time() * 1000)}", flush=True)
                 _press(point)
                 observations.append(_observe(user32, main, process.pid))
                 print(f"    {observations[-1]}", flush=True)
@@ -210,12 +227,16 @@ def run(program):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.platform != "win32":
+    if len(sys.argv) not in (2, 3) or sys.platform != "win32":
         print(__doc__)
         return 2
-    observations = run(Path(sys.argv[1]))
-    print(verdict(observations))
-    return 0
+    presses = int(sys.argv[2]) if len(sys.argv) == 3 else PRESSES
+    observations = run(Path(sys.argv[1]), presses)
+    if presses == PRESSES:
+        print(verdict(observations))
+    toggled = alternates(observations)
+    print("each press toggled the window" if toggled else "a press did not toggle the window")
+    return 0 if toggled else 1
 
 
 if __name__ == "__main__":

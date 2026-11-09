@@ -354,7 +354,7 @@ fn the_lists_name_the_screens_the_window_of_another_program_and_its_application(
         .find(|window| window.id == own_window.number)
         .expect("the window of the client is listed");
     assert_eq!(listed.application.process_id, own);
-    assert_eq!(sources.clients, [listed.application.clone()]);
+    assert_eq!(sources.clients, std::slice::from_ref(&listed.application));
     assert!(
         sources
             .application_pictures
