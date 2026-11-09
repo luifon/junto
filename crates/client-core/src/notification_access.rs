@@ -27,13 +27,34 @@ pub fn read() -> Answer {
     }
     #[cfg(windows)]
     {
-        let state = windows::read();
-        Box::pin(std::future::ready(state))
+        on_own_thread(windows::read)
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         Box::pin(std::future::ready(NotificationAccess::Allowed))
     }
+}
+
+/// Runs a read on a thread of its own, so that the thread of the window does not wait in it
+/// (ADR 0755). The read of Windows is a call into the notification service of the system
+/// through COM. While a thread of the window waits in such a call, the modal loop of COM takes
+/// a `WM_SYSCOMMAND` that another program posts to the window: the restore that the taskbar
+/// posts after it activates a minimized window is lost, and the window stays minimized. A
+/// thread that cannot start, or a read that ends without an answer, gives "allowed", as a read
+/// that fails does.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn on_own_thread(read: impl FnOnce() -> NotificationAccess + Send + 'static) -> Answer {
+    let (sender, answer) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new()
+        .name("junto-notification-access".to_owned())
+        .spawn(move || {
+            let _ = sender.send(read());
+        });
+    if let Err(error) = started {
+        tracing::warn!(%error, "the state of the notifications was not read");
+        return Box::pin(std::future::ready(NotificationAccess::Allowed));
+    }
+    Box::pin(async move { answer.await.unwrap_or(NotificationAccess::Allowed) })
 }
 
 /// Makes macOS ask the person when it has not asked yet, and returns the state after the
@@ -138,5 +159,33 @@ mod windows {
             Ok(NotificationSetting::Enabled) | Err(_) => NotificationAccess::Allowed,
             Ok(_) => NotificationAccess::Refused,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The read runs on a thread other than the caller's, and its answer arrives; a read that
+    /// ends without an answer gives "allowed" (ADR 0755).
+    #[test]
+    fn a_read_runs_on_a_thread_of_its_own() {
+        let caller = std::thread::current().id();
+        let (sender, ran_on) = std::sync::mpsc::channel();
+        let answer = on_own_thread(move || {
+            let _ = sender.send(std::thread::current().id());
+            NotificationAccess::Refused
+        });
+        assert_eq!(
+            futures_executor::block_on(answer),
+            NotificationAccess::Refused
+        );
+        assert!(ran_on.recv().is_ok_and(|thread| thread != caller));
+
+        let answer = on_own_thread(|| panic!("the read failed"));
+        assert_eq!(
+            futures_executor::block_on(answer),
+            NotificationAccess::Allowed
+        );
     }
 }

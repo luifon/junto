@@ -15,6 +15,7 @@ It starts the program with an empty data directory of its own and ends it afterw
 (`verdict`) is a plain function with tests on every system (`test_taskbar_clicks.py`)."""
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -66,20 +67,15 @@ def verdict(observations):
     findings = ["reproduced: the second press left the window minimized"]
     if third.minimized:
         findings.append("the third press did not restore the window either")
-    two_buttons = any(observation.buttons > 1 for observation in observations)
-    if two_buttons:
-        findings.append("possible cause: Junto has more than one taskbar button, so the presses and "
-                        "the active state can belong to two buttons (the window properties of ADR "
-                        "0755 are set after the window is shown)")
-    if first.client_in_front:
-        findings.append("possible cause: after the minimize the main window stayed the foreground "
-                        "window, so the taskbar can have taken the second press as a press on the "
-                        "active button" if first.main_in_front else
-                        "possible cause: after the minimize another window of the client became the "
-                        "foreground window")
-    elif not two_buttons:
-        findings.append("after the minimize the foreground window belonged to another program")
-    findings.append("the messages that the window received decide the cause")
+    if second.main_in_front:
+        findings.append("the second press made the minimized window the foreground window without "
+                        "restoring it: the restore that the taskbar posts after the activation did "
+                        "not reach the window, as when the thread of the window waits in a call "
+                        "through COM (ADR 0755)")
+    elif first.client_in_front:
+        findings.append("after the minimize a window of the client stayed the foreground window")
+    if any(observation.buttons > 1 for observation in observations):
+        findings.append("Junto has more than one taskbar button")
     return "; ".join(findings)
 
 
@@ -129,7 +125,7 @@ foreach ($element in $bar.FindAll([System.Windows.Automation.TreeScope]::Descend
 ConvertTo-Json -Compress -InputObject @($found)
 """
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                            capture_output=True, text=True, timeout=60)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(f"the taskbar buttons could not be read: {result.stderr}")
     text = result.stdout.strip()
@@ -192,18 +188,42 @@ def run(program, presses=PRESSES):
                            "running button of Junto is the button of this check")
     # The client writes the identity of its notifications with the picture of its data
     # directory; the check leaves the key as it was (ADR 0915).
-    with window_frame.kept_identity(), tempfile.TemporaryDirectory() as data:
-        process = subprocess.Popen([str(program), "--data-dir", data, "--no-activate"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The client refuses a data directory that other accounts can read, and makes a missing one
+    # readable by the account alone, as packaging/check_windows.py lets it.
+    with window_frame.kept_identity(), tempfile.TemporaryDirectory() as folder:
+        data = str(Path(folder) / "data")
+        output = Path(folder) / "client.out"
+        written = output.open("w")
+        # How the main window becomes the foreground window before the presses: "strip", a
+        # press on the strip of the window; "client", a press in the middle of the list of
+        # messages; "start", the start of the program itself.
+        activation = os.environ.get("JUNTO_TASKBAR_ACTIVATION", "strip")
+        arguments = [str(program), "--data-dir", data]
+        if activation != "start":
+            arguments.append("--no-activate")
+        process = subprocess.Popen(arguments,
+                                   stdin=subprocess.DEVNULL, stdout=written, stderr=written)
         try:
-            main = window_frame.until("the main window opens",
-                                      lambda: next(iter(window_frame.windows_of(process.pid)), None))
+            def opened():
+                if process.poll() is not None:
+                    written.flush()
+                    raise RuntimeError(f"the program ended with {process.returncode}: "
+                                       f"{output.read_text(errors='replace')[-2000:]}")
+                return next(iter(window_frame.windows_of(process.pid)), None)
+
+            # A debug build takes minutes to its first frame (packaging/check_windows.py).
+            main = window_frame.until("the main window opens", opened, seconds=300)
             # A program of a scheduled task may not take the foreground itself: a press on the
             # strip of the window, at the name of the application, makes it the foreground
             # window as a person does.
             frame = wintypes_rect()
             user32.GetWindowRect(main, ctypes.byref(frame))
-            _press((frame.left + 60, frame.top + 16))
+            if activation == "strip":
+                _press((frame.left + 60, frame.top + 16))
+            elif activation == "client":
+                _press((frame.left + (frame.right - frame.left) * 7 // 10,
+                        (frame.top + frame.bottom) // 2))
+            print(f"    activation by {activation}", flush=True)
             window_frame.until("the main window is the foreground window",
                                lambda: user32.GetForegroundWindow() == main, seconds=30)
             buttons = window_frame.until("the taskbar shows the running button of Junto",
@@ -224,6 +244,8 @@ def run(program, presses=PRESSES):
         finally:
             process.kill()
             process.communicate(timeout=60)
+            written.close()
+            output.unlink(missing_ok=True)
 
 
 def main():

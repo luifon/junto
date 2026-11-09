@@ -17,22 +17,17 @@ class Verdict(unittest.TestCase):
         result = verdict([seen(False, True, True), seen(True), seen(False)])
         self.assertTrue(result.startswith("not reproduced: the first press"), result)
 
-    def test_the_report_with_the_main_window_still_in_front_names_the_active_button(self):
-        result = verdict([seen(True, True, True), seen(True), seen(False, True, True)])
+    def test_the_report_names_a_restore_that_did_not_reach_the_window(self):
+        result = verdict([seen(True), seen(True, True, True), seen(False, True, True)])
         self.assertIn("reproduced", result)
-        self.assertIn("press on the active button", result)
-        self.assertIn("possible cause", result)
+        self.assertIn("did not reach the window", result)
         self.assertNotIn("third press", result)
 
-    def test_the_report_with_two_buttons_names_the_window_properties(self):
-        result = verdict([seen(True, buttons=2), seen(True, buttons=2), seen(False, True, True)])
+    def test_the_report_names_a_second_taskbar_button_and_a_third_press_without_restore(self):
+        result = verdict([seen(True, buttons=2), seen(True, buttons=2), seen(True)])
         self.assertIn("more than one taskbar button", result)
-
-    def test_the_report_without_an_explanation_asks_for_the_messages(self):
-        result = verdict([seen(True), seen(True), seen(True)])
         self.assertIn("third press did not restore", result)
-        self.assertIn("belonged to another program", result)
-        self.assertIn("the messages that the window received decide the cause", result)
+        self.assertNotIn("did not reach the window", result)
 
     def test_only_a_button_of_a_running_window_is_pressed_and_counted(self):
         buttons = [{"name": "Junto", "x": 1, "y": 1},
