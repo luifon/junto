@@ -498,32 +498,38 @@ fn set_type(reader: &IMFSourceReader, media: &IMFMediaType) -> Result<Layout, Ca
     }
 }
 
-/// The native types of a source for the log: their count, and the modes of those that capture
-/// reads.
+/// A native type for the log: its subtype, size and rate.
+fn describe(media: &IMFMediaType) -> String {
+    // SAFETY: reading attributes of a retained type does not change it.
+    let (subtype, size, rate) = unsafe {
+        (
+            media.GetGUID(&MF_MT_SUBTYPE),
+            media.GetUINT64(&MF_MT_FRAME_SIZE),
+            media.GetUINT64(&MF_MT_FRAME_RATE),
+        )
+    };
+    let (subtype, size, rate) = (subtype.ok(), size.ok().map(pair), rate.ok().map(pair));
+    super::format::describe(
+        &subtype.map_or_else(
+            || "no subtype".to_owned(),
+            |subtype| super::bitmap::subtype_name(subtype.to_u128()),
+        ),
+        size,
+        rate,
+    )
+}
+
+/// The native types of a source for the log: their count and each type, marked when capture
+/// does not read it.
 fn offered(types: &[IMFMediaType]) -> String {
-    let readable: Vec<String> = types
-        .iter()
-        .filter_map(mode)
-        .map(|mode| {
-            super::format::describe(
-                if mode.compressed {
-                    "MJPG"
-                } else {
-                    "uncompressed"
-                },
-                Some((mode.width, mode.height)),
-                mode.rate,
-            )
-        })
-        .collect();
     format!(
-        "{} native types; capture reads: {}",
+        "{} native types: {}",
         types.len(),
-        if readable.is_empty() {
-            "none".to_owned()
-        } else {
-            readable.join(", ")
-        }
+        super::format::offered(types.iter().map(|media| {
+            let read =
+                mode(media).is_some_and(|mode| super::format::takes((mode.width, mode.height)));
+            (describe(media), read)
+        }))
     )
 }
 
@@ -915,6 +921,25 @@ mod tests {
             video(&MFVideoFormat_YUY2, (640, 480), 30),
         ];
         assert_eq!(choose_type(&types), Some(1));
+    }
+
+    #[test]
+    fn the_log_names_every_native_type_and_marks_those_that_capture_does_not_read() {
+        initialize().unwrap();
+        let types = [
+            video(&MFVideoFormat_NV12, (1920, 1080), 30),
+            video(&MFVideoFormat_H264, (1920, 1080), 30),
+            video(&MFVideoFormat_RGB32, (640, 480), 30),
+            video(&MFVideoFormat_MJPG, (1280, 720), 30),
+            video(&MFVideoFormat_MJPG, (7680, 4320), 30),
+        ];
+        assert_eq!(
+            offered(&types),
+            "5 native types: NV12 1920x1080 30.00 fps, H264 1920x1080 30.00 fps (not read), \
+             RGB32 640x480 30.00 fps (not read), MJPG 1280x720 30.00 fps, \
+             MJPG 7680x4320 30.00 fps (not read)"
+        );
+        assert_eq!(offered(&[]), "0 native types: none");
     }
 
     #[test]

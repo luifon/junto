@@ -1,9 +1,13 @@
 //! Capture sizes and modes, in order of preference, bounded by the camera publication limit.
+
+/// The capture sizes that capture asks for where a camera states a range of sizes or none: the
+/// session presets of macOS, and the sizes inside a range of a V4L2 driver.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub(super) const PRESETS: [(u32, u32); 3] = [(1280, 720), (640, 480), (352, 288)];
+
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn choose(mut accepts: impl FnMut((u32, u32)) -> bool) -> Option<(u32, u32)> {
-    [(1280, 720), (640, 480), (352, 288)]
-        .into_iter()
-        .find(|size| accepts(*size))
+    PRESETS.into_iter().find(|size| accepts(*size))
 }
 
 #[cfg(any(test, target_os = "windows", target_os = "linux"))]
@@ -94,6 +98,27 @@ pub(super) fn describe(
     text
 }
 
+/// The types that a camera offered, for the log: the description of each type, and
+/// "(not read)" after a type that capture does not read.
+#[cfg(any(test, target_os = "windows"))]
+pub(super) fn offered(types: impl IntoIterator<Item = (String, bool)>) -> String {
+    let listed: Vec<String> = types
+        .into_iter()
+        .map(|(text, read)| {
+            if read {
+                text
+            } else {
+                format!("{text} (not read)")
+            }
+        })
+        .collect();
+    if listed.is_empty() {
+        "none".to_owned()
+    } else {
+        listed.join(", ")
+    }
+}
+
 #[cfg(any(test, target_os = "windows", target_os = "linux"))]
 fn reaches_minimum(mode: &Mode) -> bool {
     mode.rate
@@ -141,6 +166,16 @@ pub(super) fn order(modes: &[Mode]) -> Vec<usize> {
             .then_with(|| source(a).cmp(&source(b)))
             .then_with(|| within_size(a, b))
     });
+    indices
+}
+
+/// The order of `order`, with every uncompressed mode before every compressed mode. DirectShow
+/// takes this order: there a compressed mode needs a decoder filter between the source and the
+/// sink, which decodes each picture on the processor (ADR 0770).
+#[cfg(any(test, target_os = "windows"))]
+pub(super) fn uncompressed_first(modes: &[Mode]) -> Vec<usize> {
+    let mut indices = order(modes);
+    indices.sort_by_key(|index| modes[*index].compressed);
     indices
 }
 
@@ -308,6 +343,40 @@ mod tests {
         assert_eq!(fit((2560, 1080)), (1280, 540));
         assert_eq!(fit((1080, 1920)), (404, 720));
         assert_eq!(fit((4096, 2)), (1280, 2));
+    }
+
+    #[test]
+    fn every_uncompressed_mode_comes_before_every_compressed_mode_where_a_decoder_is_a_filter() {
+        let modes = [
+            mode(1280, 720, Some((30, 1)), true),
+            mode(1280, 720, Some((10, 1)), false),
+            mode(640, 480, Some((30, 1)), false),
+            mode(640, 480, Some((30, 1)), true),
+            mode(1920, 1080, Some((30, 1)), true),
+            mode(7680, 4320, Some((30, 1)), false),
+        ];
+        assert_eq!(order(&modes), [0, 4, 2, 3, 1]);
+        assert_eq!(uncompressed_first(&modes), [2, 1, 0, 4, 3]);
+        // A camera that offers only compressed modes keeps the order of the rule.
+        let modes = [
+            mode(1920, 1080, Some((30, 1)), true),
+            mode(1280, 720, Some((30, 1)), true),
+            mode(640, 480, Some((30, 1)), true),
+        ];
+        assert_eq!(uncompressed_first(&modes), [1, 0, 2]);
+        assert!(uncompressed_first(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_offered_types_name_each_type_and_mark_those_that_capture_does_not_read() {
+        assert_eq!(
+            offered([
+                ("NV12 1920x1080 30.00 fps".to_owned(), true),
+                ("H264 1920x1080 30.00 fps".to_owned(), false),
+            ]),
+            "NV12 1920x1080 30.00 fps, H264 1920x1080 30.00 fps (not read)"
+        );
+        assert_eq!(offered([]), "none");
     }
 
     #[test]

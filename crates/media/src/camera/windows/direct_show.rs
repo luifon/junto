@@ -8,11 +8,11 @@ use ::windows::Win32::Foundation::{E_NOTIMPL, E_POINTER, E_UNEXPECTED, S_FALSE, 
 use ::windows::Win32::Media::DirectShow::*;
 use ::windows::Win32::Media::IReferenceClock;
 use ::windows::Win32::Media::MediaFoundation::{
-    AM_MEDIA_TYPE, CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, CLSID_SystemDeviceEnum,
-    CLSID_VideoInputDeviceCategory, FORMAT_VideoInfo, FORMAT_VideoInfo2, MEDIASUBTYPE_ARGB32,
-    MEDIASUBTYPE_I420, MEDIASUBTYPE_IYUV, MEDIASUBTYPE_NV12, MEDIASUBTYPE_RGB24,
-    MEDIASUBTYPE_RGB32, MEDIASUBTYPE_UYVY, MEDIASUBTYPE_YUY2, MEDIATYPE_Video,
-    PIN_CATEGORY_CAPTURE, VIDEOINFOHEADER, VIDEOINFOHEADER2,
+    AM_MEDIA_TYPE, CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, CLSID_MjpegDec,
+    CLSID_SystemDeviceEnum, CLSID_VideoInputDeviceCategory, FORMAT_VideoInfo, FORMAT_VideoInfo2,
+    MEDIASUBTYPE_ARGB32, MEDIASUBTYPE_I420, MEDIASUBTYPE_IYUV, MEDIASUBTYPE_MJPG,
+    MEDIASUBTYPE_NV12, MEDIASUBTYPE_RGB24, MEDIASUBTYPE_RGB32, MEDIASUBTYPE_UYVY,
+    MEDIASUBTYPE_YUY2, MEDIATYPE_Video, PIN_CATEGORY_CAPTURE, VIDEOINFOHEADER, VIDEOINFOHEADER2,
 };
 use ::windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use ::windows::Win32::System::Com::{
@@ -23,7 +23,7 @@ use ::windows::core::{
     BOOL, ComObject, GUID, HRESULT, Interface, PCWSTR, PWSTR, Ref, implement, w,
 };
 
-use super::super::bitmap::{self, Subtype, Video};
+use super::super::bitmap::{self, Kind, Subtype, Video};
 use super::super::format::{self, Mode};
 use super::super::raw::Layout;
 use super::super::{CameraDevice, CameraError, worker};
@@ -281,18 +281,26 @@ impl Owned {
         bitmap::layout_of(self.subtype()?, &self.video()?)
     }
 
-    /// The capture mode of an uncompressed type that `layout` accepts. An MJPEG type gives no
-    /// mode: the MJPEG decoder of DirectShow is a filter between the source and the sink,
-    /// which the direct connection of the capture does not insert (ADR 0770).
+    /// The kind of this type, when capture reads it.
+    fn kind(&self) -> Option<Kind> {
+        if self.sub == MEDIASUBTYPE_MJPG {
+            Some(Kind::Mjpeg)
+        } else {
+            self.subtype().map(Kind::Uncompressed)
+        }
+    }
+
+    /// The capture mode of an uncompressed type that `layout` accepts, or of an MJPEG type,
+    /// which the MJPEG decoder of DirectShow decodes between the source and the sink
+    /// (`connect_decoded`, ADR 0770).
     fn mode(&self) -> Option<Mode> {
-        let video = self.video()?;
-        let layout = self.layout()?;
-        Some(Mode {
-            width: layout.width,
-            height: layout.height,
-            rate: video.rate(),
-            compressed: false,
-        })
+        bitmap::mode_of(self.kind()?, &self.video()?)
+    }
+
+    /// Whether capture reads this type: a type with a mode of a size that capture takes.
+    fn read(&self) -> bool {
+        self.mode()
+            .is_some_and(|mode| format::takes((mode.width, mode.height)))
     }
 
     /// The subtype, the size and the rate of this type, for the log.
@@ -759,8 +767,9 @@ impl IBaseFilter_Impl for Sink_Impl {
     }
 }
 
-/// The graph of one capture: the source, the sink and the controls. Dropping it stops the
-/// graph, removes both filters and breaks the reference between the pin and the sink.
+/// The graph of one capture: the source, the sink, the MJPEG decoder when a start tried an
+/// MJPEG type, and the controls. Dropping it stops the graph, removes the filters and breaks
+/// the reference between the pin and the sink.
 struct Graph<'a> {
     delivery: &'a worker::Delivery,
     graph: IGraphBuilder,
@@ -771,6 +780,8 @@ struct Graph<'a> {
     /// The filters that joined the graph: only these are removed at the end.
     source_added: bool,
     sink_added: bool,
+    /// The MJPEG decoder, after it joined the graph (`decoder`).
+    decoder: Option<IBaseFilter>,
 }
 
 impl Drop for Graph<'_> {
@@ -782,12 +793,21 @@ impl Drop for Graph<'_> {
                     .cleanup_failed(format!("camera graph stop: {error}"));
             }
             for (filter, added, operation) in [
-                (&self.sink, self.sink_added, "camera sink removal"),
-                (&self.source, self.source_added, "camera source removal"),
+                (Some(&self.sink), self.sink_added, "camera sink removal"),
+                (
+                    self.decoder.as_ref(),
+                    self.decoder.is_some(),
+                    "camera decoder removal",
+                ),
+                (
+                    Some(&self.source),
+                    self.source_added,
+                    "camera source removal",
+                ),
             ] {
-                if !added {
+                let Some(filter) = filter.filter(|_| added) else {
                     continue;
-                }
+                };
                 if let Err(error) = self.graph.RemoveFilter(filter) {
                     self.delivery
                         .cleanup_failed(format!("{operation}: {error}"));
@@ -818,40 +838,55 @@ fn at(step: &'static str) -> impl Fn(::windows::core::Error) -> CameraError {
 /// for a source that states no category for its pins, such as the virtual camera of OBS
 /// Studio, the first output pin with a stream configuration.
 fn capture_pin(builder: &ICaptureGraphBuilder2, source: &IBaseFilter) -> Result<IPin, CameraError> {
-    // SAFETY: the builder and the source belong to the graph of this thread; each pin of the
-    // enumeration is an owned reference.
-    unsafe {
-        let found = builder.FindPin(
+    // SAFETY: the builder and the source belong to the graph of this thread; the pin is an
+    // owned reference.
+    let found = unsafe {
+        builder.FindPin(
             source,
             PINDIR_OUTPUT,
             Some(&PIN_CATEGORY_CAPTURE),
             Some(&MEDIATYPE_Video),
             true,
             0,
-        );
-        let failure = match found {
-            Ok(pin) => return Ok(pin),
-            Err(failure) => failure,
-        };
-        let pins = source.EnumPins().map_err(at("the pins of the source"))?;
-        loop {
-            let mut item = [None];
-            let mut fetched = 0;
-            if pins.Next(&mut item, Some(&mut fetched)) != S_OK || fetched == 0 {
-                break;
-            }
-            let Some(pin) = item[0].take() else {
-                break;
-            };
-            if pin
-                .QueryDirection()
-                .is_ok_and(|direction| direction == PINDIR_OUTPUT)
-                && pin.cast::<IAMStreamConfig>().is_ok()
-            {
-                return Ok(pin);
-            }
+        )
+    };
+    let failure = match found {
+        Ok(pin) => return Ok(pin),
+        Err(failure) => failure,
+    };
+    find_pin(source, PINDIR_OUTPUT, "the pins of the source", |pin| {
+        pin.cast::<IAMStreamConfig>().is_ok()
+    })?
+    .ok_or_else(|| at("the capture pin")(failure))
+}
+
+/// The first pin of `filter` in `direction` that `wanted` accepts; `step` names the
+/// enumeration in an error.
+fn find_pin(
+    filter: &IBaseFilter,
+    direction: PIN_DIRECTION,
+    step: &'static str,
+    wanted: impl Fn(&IPin) -> bool,
+) -> Result<Option<IPin>, CameraError> {
+    // SAFETY: the filter belongs to the graph of this thread; the enumeration is an owned
+    // reference.
+    let pins = unsafe { filter.EnumPins() }.map_err(at(step))?;
+    loop {
+        let mut item = [None];
+        let mut fetched = 0;
+        // SAFETY: the enumeration writes at most one owned pin into the array of one and the
+        // count into `fetched`.
+        if unsafe { pins.Next(&mut item, Some(&mut fetched)) } != S_OK || fetched == 0 {
+            return Ok(None);
         }
-        Err(at("the capture pin")(failure))
+        let Some(pin) = item[0].take() else {
+            return Ok(None);
+        };
+        // SAFETY: the pin is an owned reference that this thread uses.
+        let stated = unsafe { pin.QueryDirection() };
+        if stated.is_ok_and(|stated| stated == direction) && wanted(&pin) {
+            return Ok(Some(pin));
+        }
     }
 }
 
@@ -941,8 +976,68 @@ fn connect(
     result
 }
 
-/// Captures a DirectShow device: the first type of the order of `format::order` that connects,
-/// with the same pictures, sizes and errors as the Media Foundation path.
+/// The MJPEG decoder of DirectShow in the graph of the capture: created and added to the graph
+/// at the first MJPEG type that a start tries, and kept for the next.
+fn decoder(graph: &mut Graph<'_>) -> Result<IBaseFilter, CameraError> {
+    if let Some(decoder) = &graph.decoder {
+        return Ok(decoder.clone());
+    }
+    // SAFETY: the system creates the filter as an owned reference for this thread.
+    let decoder: IBaseFilter =
+        unsafe { CoCreateInstance(&CLSID_MjpegDec, None, CLSCTX_INPROC_SERVER) }
+            .map_err(at("the MJPEG decoder"))?;
+    // SAFETY: the filter joins the graph of this thread; `Graph` removes it at the end.
+    unsafe { graph.graph.AddFilter(&decoder, w!("MJPEG decoder")) }
+        .map_err(at("the MJPEG decoder in the graph"))?;
+    graph.decoder = Some(decoder.clone());
+    Ok(decoder)
+}
+
+/// Asks the capture pin for the MJPEG type `media`, connects the pin directly to the MJPEG
+/// decoder of DirectShow with that type, and the decoder directly to the sink with a type of
+/// the decoder that the sink takes.
+fn connect_decoded(
+    graph: &mut Graph<'_>,
+    output: &IPin,
+    input: &IPin,
+    config: &IAMStreamConfig,
+    media: &mut Owned,
+) -> Result<(), CameraError> {
+    let decoder = decoder(graph)?;
+    let decoder_input = find_pin(&decoder, PINDIR_INPUT, "the pins of the decoder", |_| true)?
+        .ok_or(CameraError::Unsupported)?;
+    let decoder_output = find_pin(&decoder, PINDIR_OUTPUT, "the pins of the decoder", |_| true)?
+        .ok_or(CameraError::Unsupported)?;
+    let borrowed = media.borrowed();
+    // SAFETY: the borrowed type points into `media`, which outlives the call. A pin that
+    // refuses the format as a request can still take it in the connection, as in `connect`.
+    let _ = unsafe { config.SetFormat(&borrowed) };
+    // SAFETY: the borrowed type points into `media`, which outlives the call; both pins belong
+    // to filters of this graph.
+    let result = unsafe {
+        graph
+            .graph
+            .ConnectDirect(output, &decoder_input, Some(&borrowed))
+    }
+    .map_err(at("the connection of the source to the MJPEG decoder"))
+    .and_then(|()| {
+        // SAFETY: both pins belong to filters of this graph; without a type the two pins
+        // agree on a type of the decoder that the sink accepts.
+        unsafe { graph.graph.ConnectDirect(&decoder_output, input, None) }
+            .map_err(at("the connection of the MJPEG decoder to the sink"))
+    });
+    if result.is_err() {
+        for pin in [output, &decoder_input, &decoder_output, input] {
+            // SAFETY: disconnecting a pin of this graph that may be half connected.
+            let _ = unsafe { graph.graph.Disconnect(pin) };
+        }
+    }
+    result
+}
+
+/// Captures a DirectShow device: the first type of the order of `format::uncompressed_first`
+/// that connects, with the same pictures, sizes and errors as the Media Foundation path. An
+/// MJPEG type is tried only after every uncompressed type, through the MJPEG decoder.
 pub(super) fn capture(
     device: Device,
     chosen: &CameraDevice,
@@ -1000,6 +1095,7 @@ pub(super) fn capture(
         input,
         source_added: false,
         sink_added: false,
+        decoder: None,
     };
     reading.step = "the capture pin";
     // SAFETY: both filters join the graph of this thread.
@@ -1024,13 +1120,9 @@ pub(super) fn capture(
     if types.is_empty() {
         types = pin_types(&output);
     }
-    reading.offered = Some(
-        types
-            .iter()
-            .map(Owned::describe)
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
+    reading.offered = Some(format::offered(
+        types.iter().map(|media| (media.describe(), media.read())),
+    ));
     reading.step = "a type of the capture pin that capture reads";
     let modes: Vec<(usize, Mode)> = types
         .iter()
@@ -1040,18 +1132,24 @@ pub(super) fn capture(
     let listed: Vec<Mode> = modes.iter().map(|(_, mode)| *mode).collect();
     let mut failure = CameraError::Unsupported;
     let mut connected = None;
-    for chosen_mode in format::order(&listed) {
-        reading.step = "the direct connection of a type";
+    for chosen_mode in format::uncompressed_first(&listed) {
         let (index, mode) = modes[chosen_mode];
-        match connect(&graph.graph, &output, &pin, &config, &mut types[index]) {
+        let result = if mode.compressed {
+            reading.step = "the connection of an MJPEG type through the MJPEG decoder";
+            connect_decoded(&mut graph, &output, &pin, &config, &mut types[index])
+        } else {
+            reading.step = "the direct connection of a type";
+            connect(&graph.graph, &output, &pin, &config, &mut types[index])
+        };
+        match result {
             Ok(()) => {
-                connected = Some(mode.rate);
+                connected = Some((mode.rate, mode.compressed.then(|| types[index].describe())));
                 break;
             }
             Err(error) => failure = error,
         }
     }
-    let rate = connected.ok_or(failure)?;
+    let (rate, decoded) = connected.ok_or(failure)?;
     reading.step = "the layout of the connected type";
     let layout = graph.input.layout().ok_or(CameraError::Unsupported)?;
     reading.connected = graph
@@ -1059,7 +1157,11 @@ pub(super) fn capture(
         .state
         .lock()
         .ok()
-        .and_then(|state| state.connected.as_ref().map(|(_, media)| media.describe()));
+        .and_then(|state| state.connected.as_ref().map(|(_, media)| media.describe()))
+        .map(|sink| match &decoded {
+            Some(source) => format!("{sink} decoded from {source}"),
+            None => sink,
+        });
     reading.step = "the start of the graph";
     // SAFETY: the graph of this thread is connected; `Graph` stops it.
     unsafe { graph.control.Run() }.map_err(at("the start of the graph"))?;
@@ -1156,7 +1258,6 @@ fn lost(events: &IMediaEvent) -> Result<(), CameraError> {
 mod tests {
     use super::*;
     use crate::camera::raw::Pixel;
-    use ::windows::Win32::Media::MediaFoundation::MEDIASUBTYPE_MJPG;
 
     fn video_type(subtype: GUID, width: i32, height: i32, frame_time: i64) -> Owned {
         let mut header = VIDEOINFOHEADER {
@@ -1208,11 +1309,24 @@ mod tests {
             (480, 640, Pixel::Nv12)
         );
         assert_eq!(nv12.mode().unwrap().rate, None);
-        // The MJPEG decoder of DirectShow is not inserted by the direct connection.
+        // An MJPEG type is read through the MJPEG decoder of DirectShow: it has a compressed
+        // mode and no layout of the sink.
         let mjpeg = video_type(MEDIASUBTYPE_MJPG, 1280, 720, 333_333);
-        assert!(mjpeg.mode().is_none());
+        assert_eq!(
+            mjpeg.mode(),
+            Some(Mode {
+                width: 1280,
+                height: 720,
+                rate: Some((10_000_000, 333_333)),
+                compressed: true,
+            })
+        );
+        assert!(mjpeg.read());
         assert!(mjpeg.layout().is_none());
+        assert!(!Input::accepts(&mjpeg));
         assert_eq!(mjpeg.describe(), "MJPG 1280x720 30.00 fps");
+        assert!(!video_type(MEDIASUBTYPE_MJPG, 7680, 4320, 333_333).read());
+        assert!(!video_type(MEDIASUBTYPE_RGB24, 7680, 4320, 333_333).read());
         // The one size of a virtual camera above the published size is taken.
         let large = video_type(MEDIASUBTYPE_NV12, 1920, 1080, 166_666);
         assert_eq!(large.layout().unwrap().published(), (1280, 720));

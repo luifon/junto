@@ -1,6 +1,7 @@
 //! The layout of the pictures of a DirectShow video format block (`VIDEOINFOHEADER` and
 //! `VIDEOINFOHEADER2`), from the fields that capture reads (ADR 0770).
 
+use super::format::Mode;
 use super::matrix::Tag;
 use super::raw::{Layout, Pixel};
 
@@ -15,6 +16,38 @@ pub(super) enum Subtype {
     Rgb24,
     /// RGB32 and ARGB32.
     Rgb32,
+}
+
+/// The kinds of DirectShow types that capture reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// An uncompressed type, which the sink takes directly.
+    Uncompressed(Subtype),
+    /// An MJPEG type, which the MJPEG decoder of DirectShow decodes between the source and the
+    /// sink to an uncompressed picture of the same size.
+    Mjpeg,
+}
+
+/// The capture mode of a type of `kind`: the size of the layout of an uncompressed type, or the
+/// size of the bitmap header of an MJPEG type, and the rate of the frame time.
+pub(super) fn mode_of(kind: Kind, video: &Video) -> Option<Mode> {
+    let (width, height, compressed) = match kind {
+        Kind::Uncompressed(subtype) => {
+            let layout = layout_of(subtype, video)?;
+            (layout.width, layout.height, false)
+        }
+        Kind::Mjpeg => (
+            u32::try_from(video.width).ok().filter(|width| *width > 0)?,
+            video.height.unsigned_abs(),
+            true,
+        ),
+    };
+    Some(Mode {
+        width,
+        height,
+        rate: video.rate(),
+        compressed,
+    })
 }
 
 /// The fields of a video format block that capture reads.
@@ -104,8 +137,8 @@ impl Video {
 /// field of the identifier.
 const FOUR_CHARACTER_BASE: u128 = 0x0000_0000_0000_0010_8000_00aa_0038_9b71;
 
-/// The name of a video subtype for the log: its four-character code, the name of a known RGB
-/// subtype, or the identifier.
+/// The name of a video subtype for the log: the name of a known RGB subtype of DirectShow or
+/// Media Foundation, its four-character code, or the identifier.
 pub(super) fn subtype_name(identifier: u128) -> String {
     const NAMED: [(u128, &str); 4] = [
         (0xe436eb7d_524f_11ce_9f53_0020af0ba770, "RGB24"),
@@ -113,7 +146,25 @@ pub(super) fn subtype_name(identifier: u128) -> String {
         (0x773c9ac0_3274_11d0_b724_00aa006c1a01, "ARGB32"),
         (0xe436eb7c_524f_11ce_9f53_0020af0ba770, "RGB555"),
     ];
+    // The RGB subtypes of Media Foundation have the base of the four-character codes and a
+    // Direct3D format number as their first field.
+    const DIRECT_3D: [(u32, &str); 7] = [
+        (20, "RGB24"),
+        (21, "ARGB32"),
+        (22, "RGB32"),
+        (23, "RGB565"),
+        (24, "RGB555"),
+        (31, "A2R10G10B10"),
+        (41, "RGB8"),
+    ];
     if let Some((_, name)) = NAMED.iter().find(|(known, _)| *known == identifier) {
+        return (*name).to_owned();
+    }
+    if identifier & ((1 << 96) - 1) == FOUR_CHARACTER_BASE
+        && let Some((_, name)) = DIRECT_3D
+            .iter()
+            .find(|(number, _)| u128::from(*number) == identifier >> 96)
+    {
         return (*name).to_owned();
     }
     if identifier & ((1 << 96) - 1) == FOUR_CHARACTER_BASE {
@@ -228,9 +279,84 @@ mod tests {
             subtype_name(0x773c9ac0_3274_11d0_b724_00aa006c1a01),
             "ARGB32"
         );
+        // The RGB subtypes of Media Foundation.
         assert_eq!(
             subtype_name(0x00000016_0000_0010_8000_00aa00389b71),
-            "0000001600000010800000aa00389b71"
+            "RGB32"
         );
+        assert_eq!(
+            subtype_name(0x00000014_0000_0010_8000_00aa00389b71),
+            "RGB24"
+        );
+        assert_eq!(
+            subtype_name(0x00000015_0000_0010_8000_00aa00389b71),
+            "ARGB32"
+        );
+        assert_eq!(
+            subtype_name(0x00000099_0000_0010_8000_00aa00389b71),
+            "0000009900000010800000aa00389b71"
+        );
+        assert_eq!(
+            subtype_name(0x00000016_0000_0010_8000_00aa00389b72),
+            "0000001600000010800000aa00389b72"
+        );
+    }
+
+    #[test]
+    fn an_mjpeg_type_gives_a_compressed_mode_of_its_header_size() {
+        let mjpeg = mode_of(Kind::Mjpeg, &video(1920, 1080)).unwrap();
+        assert_eq!(
+            mjpeg,
+            Mode {
+                width: 1920,
+                height: 1080,
+                rate: Some((10_000_000, 333_333)),
+                compressed: true,
+            }
+        );
+        // A top-down header states a negative height.
+        assert_eq!(
+            mode_of(Kind::Mjpeg, &video(1280, -720)).map(|mode| (mode.width, mode.height)),
+            Some((1280, 720))
+        );
+        assert!(mode_of(Kind::Mjpeg, &video(0, 720)).is_none());
+        assert!(mode_of(Kind::Mjpeg, &video(-1280, 720)).is_none());
+        let raw = mode_of(Kind::Uncompressed(Subtype::Yuy2), &video(1280, 720)).unwrap();
+        assert!(!raw.compressed);
+        assert_eq!((raw.width, raw.height), (1280, 720));
+        // An uncompressed type needs a layout that capture takes.
+        assert!(mode_of(Kind::Uncompressed(Subtype::Nv12), &video(8192, 480)).is_none());
+    }
+
+    /// The types of a capture pin, as fake format blocks, in the order of a DirectShow start:
+    /// every uncompressed type that capture takes before every MJPEG type.
+    #[test]
+    fn a_direct_show_start_tries_the_uncompressed_types_and_then_the_mjpeg_types() {
+        let at = |frame_time| Video {
+            frame_time,
+            ..video(1280, 720)
+        };
+        let types = [
+            (Kind::Mjpeg, at(333_333)),
+            (Kind::Uncompressed(Subtype::Yuy2), at(1_000_000)),
+            (Kind::Mjpeg, video(1920, 1080)),
+            (Kind::Uncompressed(Subtype::Nv12), video(640, 480)),
+            (Kind::Mjpeg, video(640, 480)),
+        ];
+        let modes: Vec<Mode> = types
+            .iter()
+            .map(|(kind, video)| mode_of(*kind, video).unwrap())
+            .collect();
+        assert_eq!(
+            super::super::format::uncompressed_first(&modes),
+            [3, 1, 0, 2, 4]
+        );
+        // A camera with only MJPEG types, such as a capture device that offers no other, is
+        // started through the decoder in the order of the rule.
+        let modes: Vec<Mode> = [video(1920, 1080), video(1280, 720), video(4096, 4096)]
+            .iter()
+            .map(|video| mode_of(Kind::Mjpeg, video).unwrap())
+            .collect();
+        assert_eq!(super::super::format::uncompressed_first(&modes), [1, 0]);
     }
 }

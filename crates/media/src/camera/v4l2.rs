@@ -1,5 +1,6 @@
 //! The decisions of V4L2 capture that need no device, so that every system tests them.
 use super::CameraError;
+use super::format;
 use super::matrix::Tag;
 
 /// A buffer that the driver returned, as `junto_camera_next` reports it.
@@ -99,6 +100,42 @@ pub(super) fn fits(range: &Range, (width, height): (u32, u32)) -> bool {
         2 | 3 => within(width, v[0], v[1], v[2]) && within(height, v[3], v[4], v[5]),
         _ => false,
     }
+}
+
+/// The sizes that capture asks a driver for, from the frame sizes that the driver states for
+/// one pixel format: each discrete size that capture takes (`format::takes`), because a camera
+/// that offers one size, such as a v4l2loopback device of OBS Studio, offers only the size that
+/// its application sets; for a continuous or stepwise range, the sizes of `format::PRESETS`
+/// inside it and the largest size of the range when capture takes it. A driver that states no
+/// frame size is asked for each size of `format::PRESETS`.
+pub(super) fn sizes(ranges: &[Range]) -> Vec<(u32, u32)> {
+    if ranges.is_empty() {
+        return format::PRESETS.to_vec();
+    }
+    let mut sizes = Vec::new();
+    let mut add = |size: (u32, u32)| {
+        if format::takes(size) && !sizes.contains(&size) {
+            sizes.push(size);
+        }
+    };
+    for range in ranges {
+        match range.kind {
+            1 => add((range.values[0], range.values[1])),
+            2 | 3 => {
+                for preset in format::PRESETS {
+                    if fits(range, preset) {
+                        add(preset);
+                    }
+                }
+                let largest = (range.values[1], range.values[4]);
+                if fits(range, largest) {
+                    add(largest);
+                }
+            }
+            _ => {}
+        }
+    }
+    sizes
 }
 
 /// The frame rates, as fractions of frames per second, that the intervals of the driver
@@ -220,6 +257,40 @@ mod tests {
         assert!(!fits(&range(3, [160, 640, 16, 120, 480, 8]), (1280, 720)));
         assert!(fits(&range(2, [1, 4096, 1, 1, 2160, 1]), (640, 480)));
         assert!(fits(&range(3, [1, 4096, 0, 1, 2160, 0]), (640, 480)));
+    }
+
+    #[test]
+    fn every_discrete_size_that_capture_takes_is_asked_for() {
+        // A v4l2loopback device of OBS Studio states the one size of the output of OBS.
+        assert_eq!(sizes(&[range(1, [1920, 1080, 0, 0, 0, 0])]), [(1920, 1080)]);
+        assert_eq!(sizes(&[range(1, [1092, 614, 0, 0, 0, 0])]), [(1092, 614)]);
+        assert_eq!(
+            sizes(&[
+                range(1, [1280, 720, 0, 0, 0, 0]),
+                range(1, [1279, 720, 0, 0, 0, 0]),
+                range(1, [7680, 4320, 0, 0, 0, 0]),
+                range(1, [640, 480, 0, 0, 0, 0]),
+                range(1, [1280, 720, 0, 0, 0, 0]),
+            ]),
+            [(1280, 720), (640, 480)]
+        );
+    }
+
+    #[test]
+    fn a_range_gives_the_presets_inside_it_and_its_largest_size() {
+        assert_eq!(
+            sizes(&[range(3, [160, 1920, 16, 120, 1080, 8])]),
+            [(1280, 720), (640, 480), (352, 288), (1920, 1080)]
+        );
+        // A range above the presets gives its largest size; one above the limit of capture
+        // gives none.
+        assert_eq!(
+            sizes(&[range(3, [1920, 3840, 16, 1080, 2160, 8])]),
+            [(3840, 2160)]
+        );
+        assert!(sizes(&[range(2, [4096, 8192, 1, 4096, 8192, 1])]).is_empty());
+        // A driver that states no frame size is asked for the presets.
+        assert_eq!(sizes(&[]), format::PRESETS);
     }
 
     #[test]
