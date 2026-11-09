@@ -284,7 +284,7 @@ mod virtual_cameras {
         }
     }
 
-    /// The registration of the two sources for this check, removed when dropped. Each check
+    /// The registration of the three sources for this check, removed when dropped. Each check
     /// registers new class identifiers, because COM in the Frame Server keeps the class of an
     /// identifier that it loaded once, and a later check would use the earlier library. The
     /// Frame Server runs as a service and reads the classes of the machine, so this needs an
@@ -294,7 +294,11 @@ mod virtual_cameras {
     impl Registered {
         fn new(library: &std::path::Path) -> Result<Self, Failure> {
             let mut registered = Registered(Vec::new());
-            for profile in [super::profiles::UNCOMPRESSED, super::profiles::COMPRESSED] {
+            for profile in [
+                super::profiles::UNCOMPRESSED,
+                super::profiles::COMPRESSED,
+                super::profiles::LARGE,
+            ] {
                 // SAFETY: creates a new identifier.
                 let class = unsafe { CoCreateGuid()? };
                 registered.0.push(class);
@@ -377,11 +381,11 @@ mod virtual_cameras {
             (110, 183, 73),
             (100, 193, 193),
         ];
-        for (class, name) in registered
-            .0
-            .iter()
-            .zip(["Junto test camera NV12", "Junto test camera MJPEG"])
-        {
+        for (class, name) in registered.0.iter().zip([
+            "Junto test camera NV12",
+            "Junto test camera MJPEG",
+            "Junto test camera 1080p",
+        ]) {
             let source = HSTRING::from(format!("{{{class:?}}}"));
             // SAFETY: valid strings; the camera lives for this session of the process.
             let started = unsafe {

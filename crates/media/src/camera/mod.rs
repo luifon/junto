@@ -41,6 +41,22 @@ mod v4l2;
 #[allow(unsafe_code)]
 mod linux;
 
+#[cfg(any(
+    test,
+    all(
+        target_os = "windows",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
+mod bitmap;
+#[cfg(any(
+    test,
+    all(
+        target_os = "windows",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
+mod listing;
 #[cfg(all(
     target_os = "windows",
     any(test, not(feature = "test-support"), feature = "native-device-tests")

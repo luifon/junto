@@ -498,18 +498,24 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The settings of the room in the Settings tab of a call: meeting mode, the lock, the
-    /// user limit, and the setting that hides who is inside.
+    /// The settings of the room of a call, in the settings section "Call": meeting mode, the
+    /// lock, the user limit, and the setting that hides who is inside.
     pub(crate) fn render_room_settings(
         &mut self,
         room: &RoomView,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        if !room.ready {
-            return vec![SectionLabel::new(text::CALL_ENTERING_HELP).into_any_element()];
-        }
         let colors = theme.colors;
+        if !room.ready {
+            return vec![
+                div()
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.ink_2)
+                    .child(text::CALL_ENTERING_HELP)
+                    .into_any_element(),
+            ];
+        }
         let (meeting_on, meeting_held, _) = meeting_switch(room);
         let locked = room.locked;
         let hides = room.hides_occupants;
@@ -521,7 +527,6 @@ impl Shell {
         let lower = step(false).map(|next| self.limit_listener(next, cx));
         let raise = step(true).map(|next| self.limit_listener(next, cx));
         let mut rows = vec![
-            SectionLabel::new(text::room_section(&room.name)).into_any_element(),
             option_row(
                 text::MEETING_MODE,
                 text::MEETING_MODE_HELP,
@@ -540,6 +545,7 @@ impl Shell {
                 .into_any_element(),
                 theme,
             )
+            .px_0()
             .into_any_element(),
             option_row(
                 text::LOCK_ROOM,
@@ -554,6 +560,7 @@ impl Shell {
                     .into_any_element(),
                 theme,
             )
+            .px_0()
             .into_any_element(),
             option_row(
                 text::USER_LIMIT,
@@ -575,6 +582,7 @@ impl Shell {
                 .into_any_element(),
                 theme,
             )
+            .px_0()
             .into_any_element(),
             option_row(
                 text::HIDE_OCCUPANTS,
@@ -605,6 +613,7 @@ impl Shell {
                 .into_any_element(),
                 theme,
             )
+            .px_0()
             .into_any_element(),
         ];
         if !manage {
@@ -613,7 +622,6 @@ impl Shell {
                     .id("room-no-manage")
                     .debug_selector(|| "room-no-manage".to_owned())
                     .flex_none()
-                    .px(u(14.0))
                     .pb(u(4.0))
                     .typeface(theme.types.small, theme)
                     .line_height(u(17.0))

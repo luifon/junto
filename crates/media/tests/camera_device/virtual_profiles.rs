@@ -1,4 +1,4 @@
-//! The profiles of the two virtual camera sources of the Windows device check. Each check
+//! The profiles of the three virtual camera sources of the Windows device check. Each check
 //! registers new class identifiers and stores the profile of each as the value `PROFILE` of
 //! its class key; the source library (`virtual_source.rs`) reads it. The check (`runner.rs`)
 //! and the library both read this file.
@@ -9,3 +9,6 @@ pub const UNCOMPRESSED: &str = "uncompressed";
 /// Offers YUY2 at 1280 by 720 at 10 pictures per second and MJPEG at 1280 by 720 at 30, as
 /// common USB cameras do.
 pub const COMPRESSED: &str = "compressed";
+/// Offers only NV12 at 1920 by 1080 at 30 pictures per second, as a virtual camera offers the
+/// one size that its own application sets.
+pub const LARGE: &str = "large";

@@ -607,17 +607,25 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             && heard(&call.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
 
-    // The devices.
-    call.click("call-tab-settings");
-    call.until("the devices are listed", |call| call.shows("input-device"));
-    call.click("input-device");
-    call.click("device-choice-1");
+    // The devices: the call window has no settings and no Settings tab. Its settings
+    // button opens the settings of the application at "Voice and video" in the main window,
+    // which comes to the front (ADR 0772); a device chosen there is used by the call.
+    assert!(!call.shows("call-tab-settings"));
+    call.click("open-call-settings");
+    window.until("the main window shows the devices", |window| {
+        window.shows("settings-page-settings-section-voice-and-video")
+            && window.shows("input-device")
+    });
+    assert!(window.cx.update(|window, _| window.is_window_active()));
+    window.click_in_settings("input-device");
+    window.click("check-device-item-1");
     call.until("the microphone is chosen", |call| {
         call.view()
             .lists()
             .and_then(|lists| lists.call.clone())
             .is_some_and(|panel| panel.audio.inputs[1].selected)
     });
+    window.press("escape");
 
     // The panel closes with its button, which is inside the window.
     let close = call.cx.debug_bounds("close-call-panel").unwrap();

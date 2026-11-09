@@ -133,7 +133,7 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
     )?;
     studio.draw(
         Screen::call("camera-settings", in_call(Phase::Connected)),
-        show_daily_tab(CallTab::Settings),
+        super::show_daily_voice_settings,
     )?;
     for (name, incoming, active, outcome) in [
         (

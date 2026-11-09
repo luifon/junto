@@ -159,7 +159,7 @@ fn own(window: &mut Window) -> Option<Occupant> {
 /// the three parts off in the settings of the application.
 fn turn_processing_off(window: &mut Window) {
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     for part in ["echo-cancellation", "noise-suppression", "automatic-gain"] {
         window.click_in_settings(part);
     }
@@ -469,24 +469,57 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
         (full - heard(&window.sound, ADMIN_TONE_HZ) - 6.0).abs() < 2.0
     });
 
-    // The sound settings of the call: the devices of the call and the input level.
-    window.click("call-tab-settings");
-    window.until("the settings show the microphone", |window| {
-        window
-            .view()
-            .lists()
-            .and_then(|lists| lists.call.clone())
-            .is_some_and(|panel| {
-                panel.audio.microphone == MicrophoneLine::Running
-                    && panel.audio.input_level > 5
-                    && panel.audio.inputs.len() == 2
-            })
+    // The devices during the call: the settings button of the call opens the settings of the
+    // application at "Voice and video". Their input level is the level of the call's own
+    // microphone, they open no test, and a device chosen there is used by the call at once
+    // (ADR 0735).
+    window.click("open-call-settings");
+    assert!(window.shows("settings-page-settings-section-voice-and-video"));
+    window.until(
+        "the settings show the level of the call's microphone",
+        |window| {
+            window
+                .view()
+                .lists()
+                .and_then(|lists| lists.call.clone())
+                .is_some_and(|panel| {
+                    panel.audio.microphone == MicrophoneLine::Running
+                        && panel.audio.inputs.len() == 2
+                })
+                && window.shows("device-check-input-level")
+                && window
+                    .state
+                    .read_with(&window.cx, |state, _| state.shown_levels().input > 5)
+        },
+    );
+    assert!(!window.shows("test-microphone") && !window.shows("preview-camera"));
+    assert!(window.shows("microphone-access"));
+    let chosen = window
+        .state
+        .read_with(&window.cx, |state, _| {
+            state.audio_device_choices(true)[1].id.clone()
+        })
+        .expect("a listed microphone");
+    let opened = window.sound.opened_inputs().len();
+    window.click_in_settings("input-device");
+    assert!(window.shows("check-device-menu"));
+    window.click("check-device-item-1");
+    window.until("the call opens the chosen microphone", |window| {
+        let inputs = window.sound.opened_inputs();
+        inputs.len() > opened
+            && inputs.last() == Some(&Some(junto_media::audio::DeviceId(chosen.clone())))
     });
-    assert!(window.shows("input-device") && window.shows("input-level"));
-    window.click("input-device");
-    assert!(window.shows("device-menu") && window.shows("device-choice-1"));
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after the microphone was changed in the settings",
+    );
     window.press("escape");
-    assert!(!window.shows("device-menu"));
+    window.until("the settings are closed", |window| {
+        !window.shows("settings-dialog")
+    });
 
     // The call goes on while another channel is shown, and the strip leads back to it.
     window.click_channel("general");
@@ -612,7 +645,7 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
 
     // Push-to-talk with the Control key, chosen in the settings.
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("input-mode-1");
     window.click_in_settings("confirm-push-to-talk");
     window.until("the key is offered", |window| window.shows("talk-key-1"));
@@ -913,10 +946,11 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     });
 
     // The settings of a share and of the view are stored, and the strip hides the people.
-    window.click("call-tab-settings");
-    window.click("share-resolution-0");
-    window.click("share-frame-rate-0");
-    window.click("hide-without-video");
+    window.click("open-call-settings");
+    window.click_in_settings("share-resolution-0");
+    window.click_in_settings("share-frame-rate-0");
+    window.click_in_settings("hide-without-video");
+    window.press("escape");
     // Nobody has a camera: the strip leaves out both people and says so. A camera that
     // starts brings its tile back.
     let own_tile = format!("call-tile:{}", window.view().person.account_id.unwrap());
@@ -932,6 +966,21 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
                 && window.shows_named(own_tile.clone())
         },
     );
+    // The preview of the settings is the picture that the call sends: no capture of its own
+    // opens the camera that the call holds (ADR 0735).
+    let (started, active) = (window.camera.started(), window.camera.active());
+    assert_eq!(active, 1, "the call holds one capture");
+    window.click("open-call-settings");
+    window.until("the settings show the picture of the call", |window| {
+        window.shows("camera-preview-picture")
+    });
+    assert!(!window.shows("preview-camera"));
+    assert_eq!(
+        (window.camera.started(), window.camera.active()),
+        (started, active),
+        "the settings opened no capture"
+    );
+    window.press("escape");
     window.until("the settings are stored", |_| {
         std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {
             stored.contains("\"share_resolution\": \"p720\"")
@@ -1559,9 +1608,9 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
     );
     assert!(!window.shows("warning-retry-microphone"));
 
-    // The device stops, and it cannot be opened again by itself: the settings of the call
-    // state it with "Try again".
-    window.click("call-tab-settings");
+    // The device stops, and it cannot be opened again by itself: the settings at "Voice and
+    // video" state it with "Try again".
+    window.click("open-call-settings");
     assert!(!window.shows("retry-microphone"));
     let opened = window.sound.opened_inputs().len();
     let unplugged = AudioError::Failed("the device was disconnected".to_owned());

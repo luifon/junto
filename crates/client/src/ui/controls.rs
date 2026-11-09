@@ -643,6 +643,8 @@ pub struct VolumeSlider {
     focus: FocusHandle,
     label: SharedString,
     selector: Option<SharedString>,
+    /// The percentage is drawn after the track.
+    value_shown: bool,
 }
 
 impl VolumeSlider {
@@ -659,7 +661,15 @@ impl VolumeSlider {
             focus: focus.clone(),
             label: label.into(),
             selector: None,
+            value_shown: true,
         }
+    }
+
+    /// A control without the percentage after its track, for a place where a control beside
+    /// it states the percentage.
+    pub fn without_value(mut self) -> Self {
+        self.value_shown = false;
+        self
     }
 
     /// The state of a volume control at `percent`.
@@ -765,15 +775,17 @@ impl RenderOnce for VolumeSlider {
                         ),
                 ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .w(u(38.0))
-                    .text_right()
-                    .typeface(theme.types.mono_field, &theme)
-                    .ink(colors.ink)
-                    .child(format!("{}%", value.round() as i32)),
-            )
+            .when(self.value_shown, |slider| {
+                slider.child(
+                    div()
+                        .flex_none()
+                        .w(u(38.0))
+                        .text_right()
+                        .typeface(theme.types.mono_field, &theme)
+                        .ink(colors.ink)
+                        .child(format!("{}%", value.round() as i32)),
+                )
+            })
     }
 }
 

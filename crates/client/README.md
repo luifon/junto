@@ -181,7 +181,7 @@ What macOS asks for:
 - When the answer was "Don't Allow", the call shows "Junto may not use the microphone": you hear the call and are not heard. Open System Settings, Privacy & Security, Microphone, turn the terminal on, and press "Try again" in the call. macOS can ask to restart the terminal.
 - **Screen & System Audio Recording.** A share needs this permission. macOS has no "Allow" button for it: the person turns it on in System Settings. See the next section.
 
-The Settings tab of the call shows the state of the permission (not asked yet, allowed, refused), the input level and the two devices.
+During a call, the settings of the application at "Voice and video", which the settings button of the call opens, show the state of the permission (not asked yet, allowed, refused), the input level of the call and the devices.
 
 Two instances on one machine share one microphone and one output:
 
@@ -193,7 +193,7 @@ Echo cancellation, noise suppression, automatic gain and push-to-talk are in the
 
 ## Cameras and the detached window
 
-The camera button starts and stops the chosen camera. The Settings tab of a voice call chooses the camera and stores the choice for calls. Permission is requested only after the person starts a camera. Refused permission, a restricted system, a disconnected device and interrupted capture have separate notices. The local preview is mirrored; pictures sent to other people are not. Clicking a camera tile focuses it, and the view setting can hide people without video.
+The camera button starts and stops the chosen camera. The settings of the application at "Voice and video" choose the camera and store the choice for calls. Permission is requested only after the person starts a camera. Refused permission, a restricted system, a disconnected device and interrupted capture have separate notices. The local preview is mirrored; pictures sent to other people are not. Clicking a camera tile focuses it, and the view setting can hide people without video.
 
 Detach opens the current call in another window. Return or closing that window puts it back; Leave ends the call. Pin stores the always-on-top choice, and Fullscreen changes the call window. Its normal position and size and its maximized state are stored in `call-window.json`; the main window keeps its own placement in `main-window.json`. Both are checked against the available displays and work area when reopened. Native always-on-top behavior on Linux requires the platform integration described in ADR 0772.
 
@@ -209,7 +209,7 @@ These permission and source-list steps describe macOS. Linux uses the desktop ch
 4. Choose the sound under "Sound of this share": "No sound", "All system sound", or "This application" for a window ("One application" for a screen, with the application chosen from the list under it). Nothing is chosen for you, and "Share" works only after both choices.
 5. Press "Share". The share button is lit while the share runs; a press on it ends the share.
 
-The second instance shows the picture in the stage of the call, with the line "… is sharing" and the sound choice, and plays the sound. When both instances share, a bar lists the two shares; a press on a card watches that share, and the sound follows the choice. The Settings tab of the call has the resolution and the frame rate of the next share, and "Sound of the share you watch" (0 % keeps the picture without its sound).
+The second instance shows the picture in the stage of the call, with the line "… is sharing" and the sound choice, and plays the sound. When both instances share, a bar lists the two shares; a press on a card watches that share, and the sound follows the choice. The settings of the application at "Voice and video" have the resolution and the frame rate of the next share, and the line of the watched share has the volume of its sound (0 % keeps the picture without its sound).
 
 What to expect on one machine:
 
@@ -226,7 +226,7 @@ Both instances are on one server; the one that claimed the server is its owner a
 
 - **Hand.** The hand button of the call strip raises and lowers the hand. The mark appears beside the name in the channel list, on the tile and in Members.
 - **Meeting mode.** The instance that shares presses "Meeting mode" in the header of the call. A press in the first second of a share can be refused, and the notice says so. The other instance shows the bar "Meeting mode is on" and its microphone as closed by the meeting. It raises the hand; the presenter sees "… raised a hand" and presses "Allow"; the other instance shows "You may speak" and opens the microphone with "Unmute". When the presenter turns meeting mode off or stops sharing, an instance whose microphone was still blocked and not muted shows the notice that its microphone is open again.
-- **Lock, user limit, hidden occupants.** "Lock room" is in the header and in the Settings tab of the call under "Room"; the user limit and "Hide who is inside" are there for a person with "manage channel". A call keeps the hide setting that the room had when the call began; a change holds from the next call, and the row of the setting says so. With the room locked, the instance outside selects the voice channel, presses "Ask to enter" in the channel list, and the instance inside answers the notice with "Let in" or "Deny".
+- **Lock, user limit, hidden occupants.** "Lock room" is in the header and in the settings of the application at "Call"; the user limit and "Hide who is inside" are there for a person with "manage channel". A call keeps the hide setting that the room had when the call began; a change holds from the next call, and the row of the setting says so. With the room locked, the instance outside selects the voice channel, presses "Ask to enter" in the channel list, and the instance inside answers the notice with "Let in" or "Deny".
 - **Invitation.** Members tab of the call, "Invite a member", "Invite". The other instance shows a card with "Join" and "Decline" at the top of each of its windows, over what they show. An invitation passes the lock and the limit.
 - **Menu of a person.** A right click on a person in a voice channel of the channel list (or Shift and F10 while the row has the focus). The owner sees "Move to…", "Mute for everyone", the sound block and "Disconnect"; a member sees "Invite to my room" and the volume. A move needs a second voice channel.
 

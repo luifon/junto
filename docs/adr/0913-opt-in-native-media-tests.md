@@ -89,14 +89,17 @@ tests need permissions and must never select a physical sound output by fallback
   720 at 30.0 per second with none lost in a release build; a debug build lost about a
   quarter (21 of the pictures of three seconds), because its conversion of each picture is slower than the camera. NVIDIA
   Broadcast needs an NVIDIA graphics card, which that machine does not have, and is not
-  checked.
-- On Windows, `camera-device --virtual` checks the production capture against two virtual
+  checked. The scene of the check has the size 1280 by 720, so the virtual camera of OBS at another
+  output size, which capture scales to its published size (ADR 0770), is not checked by it.
+- On Windows, `camera-device --virtual` checks the production capture against three virtual
   cameras of Media Foundation (`MFCreateVirtualCamera`, Windows 11) without hardware. The
-  example `virtual-camera-source` is a COM server with two sources that generate pictures
+  example `virtual-camera-source` is a COM server with three sources that generate pictures
   in memory at the rate of their media type: one offers NV12 at 1280 by 720 and YUY2 at
-  640 by 480, both at 30 pictures per second; the other offers YUY2 at 1280 by 720 at 10
+  640 by 480, both at 30 pictures per second; the second offers YUY2 at 1280 by 720 at 10
   and MJPEG at 1280 by 720 at 30, as common USB cameras do, so that capture takes MJPEG and
-  decodes it (ADR 0770). Each check registers two new class identifiers as volatile keys of the
+  decodes it (ADR 0770); the third offers only NV12 at 1920 by 1080 at 30, as a virtual camera
+  offers the one size of its application, so that capture takes it and scales it to the
+  published 1280 by 720. Each check registers three new class identifiers as volatile keys of the
   machine, with the profile of each source as a value of its key, because the Frame Server
   runs as a service and reads only the classes of the machine, and keeps the class of an
   identifier that it loaded once, so that a later check with the same identifier would run the

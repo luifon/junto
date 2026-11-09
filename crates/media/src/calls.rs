@@ -1254,6 +1254,15 @@ impl Calls {
         }
     }
 
+    /// Whether a drawing window asks for the picture of this camera.
+    pub fn has_camera_view(&self, id: Person) -> bool {
+        self.inner
+            .shared()
+            .camera_views
+            .as_ref()
+            .is_some_and(|views| views.contains_key(&id))
+    }
+
     /// Removes requests for cameras which the drawing window no longer shows.
     pub fn retain_camera_views(&self, visible: &[Person]) {
         let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();

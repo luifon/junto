@@ -7,7 +7,11 @@ pub const STOP: &str = "Stop test";
 pub const STOP_CAMERA: &str = "Stop preview";
 pub const REFRESH: &str = "Refresh devices";
 pub const LOCAL: &str = "These tests stay on this device. Use headphones for the microphone test.";
-pub const IN_CALL: &str = "Use the call settings to change devices while a call is running.";
+pub const IN_CALL: &str = "A device that you choose here is used by your call at once. The \
+     input level is the level of your call's microphone, and the preview shows the picture that \
+     your call sends.";
+pub const CALL_CAMERA_OFF: &str = "Your camera is off in the call. Turn it on in the call to see \
+     the picture that it sends.";
 pub const STARTING: &str = "Opening device…";
 pub const PLAYING: &str = "The test is playing through your selected output.";
 pub const CAMERA_OFF: &str = "Your camera preview appears here. It is not sent to anyone.";
