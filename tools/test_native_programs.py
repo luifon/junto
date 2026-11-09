@@ -183,7 +183,7 @@ class LiveKit(unittest.TestCase):
                         {"enforcement": ["ProfileInactive"]}, {"enforcement": ["NotApplicable"]},
                         {"enforcement": "Enforced"}, {"primary_status": "Degraded"},
                         {"remote_port": ["53"]}, {"interface_alias": ["Ethernet"]}, {"protocol": "TCP"},
-                        {"remote": ["LocalSubnet"]}, {"local": ["192.168.5.6"]}, {"local_port": ["17882"]},
+                        {"remote": ["LocalSubnet"]}, {"local": ["192.0.2.10"]}, {"local_port": ["17882"]},
                         {"profile": "Domain, Public"}, {"interface_type": "Wired"}, {"action": "Allow"},
                         {"direction": "Outbound"}, {"enabled": "False"}, {"remote_port": None},
                         {"interface_alias": "Any"}, {"enforcement": []}]:
