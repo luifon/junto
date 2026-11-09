@@ -77,6 +77,23 @@ microphone for an input and headphones for an output (`DeviceKind::icon`). Test:
 `device_checks::each_device_list_of_the_voice_settings_has_the_icon_of_its_kind` in the window
 tests.
 
+In the personal Voice settings and in the device check, the boxes of the three device lists
+are shown as unavailable while this device is in a call or joins one: they are dimmed, take
+no press and no keyboard focus, and state "Use the call settings to change devices while a call
+is running." in their tooltip and to a screen reader. Reason: before, they looked like boxes
+that open, and a press on one in a call did nothing. A list of the Voice settings opens also
+when no check session runs, because a device choice is a setting of the person and not a
+check: a change of the account of the selected server, a join and the end of a call end the
+session while the section stays shown (ADR 0733), and the three lists then did not open until
+the section was opened again. The tests and the camera preview still need a session, which
+"Check" starts. In the Voice settings and in the settings of the call, a press on the box of
+another list while one list is open closes the open list and opens the other one, and a press
+on the box of the open list closes it. Before, the press on the box of another list closed
+the open list and its click did not open the other list. Tests:
+`device_checks::the_device_lists_of_the_settings_open_without_a_check_session`,
+`device_checks::in_a_call_the_device_lists_of_the_settings_are_unavailable` and
+`device_checks::a_press_on_the_box_of_another_device_list_of_the_call_opens_that_list`.
+
 Each person can pin one participant, including themselves, to their own person stage from the
 tile or member menu. A pin overrides speaker focus and the grid, including for an avatar without
 video and when other audio-only tiles are hidden. It follows the account rather than a tile's

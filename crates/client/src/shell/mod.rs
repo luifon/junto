@@ -421,9 +421,10 @@ pub struct Shell {
     account_volume: Option<VolumeControl>,
     account_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
     reaction_menu: Option<Box<reaction_people::MenuParent>>,
-    /// The press of the pointer that closed a list of devices was on the box of that
-    /// list: the click that follows does not open the list again.
-    pub(crate) device_menu_closed_by_press: bool,
+    /// The kind of the list of devices of the call panel that a press of the pointer closed.
+    /// The click that follows on the box of that list does not open it again; a click on
+    /// the box of another list opens that list.
+    pub(crate) device_menu_closed_by_press: Option<DeviceKind>,
     /// A press closed the menu of the shares; the click on the share button that follows
     /// does not open it again.
     pub(crate) share_menu_closed_by_press: bool,
@@ -954,7 +955,7 @@ impl Shell {
             account_volume: None,
             account_menu_placement: Default::default(),
             reaction_menu: None,
-            device_menu_closed_by_press: false,
+            device_menu_closed_by_press: None,
             share_menu_closed_by_press: false,
             detached,
             software_video: window
@@ -2230,7 +2231,8 @@ impl Shell {
 
     fn presses_over(&mut self) {
         self.server_menu_closed_by_press = false;
-        self.device_menu_closed_by_press = false;
+        self.device_menu_closed_by_press = None;
+        self.device_ui.closed_by_press = None;
         self.share_menu_closed_by_press = false;
         self.recording_details_closed_by_press = false;
         self.invite_closed_by_press = false;

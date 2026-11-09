@@ -1867,8 +1867,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         // A click on the box of an open list closes the list: the press closed it, and
-        // the click must not open it again.
-        if std::mem::take(&mut self.device_menu_closed_by_press) {
+        // the click must not open it again. A press on the box of another list closed the
+        // open list, and its click opens the other list.
+        if self.device_menu_closed_by_press.take() == Some(kind) {
             return;
         }
         self.state.update(cx, |state, cx| state.refresh_devices(cx));
@@ -1931,8 +1932,9 @@ impl Shell {
                     Menu::new("device-menu", label, self.layer_focus())
                         .width(self.call_panel_width(cx) - 28.0)
                         .selector("device-menu")
-                        .on_close(Self::handler(cx, |this, window, cx| {
-                            this.device_menu_closed_by_press = !window.last_input_was_keyboard();
+                        .on_close(Self::handler(cx, move |this, window, cx| {
+                            this.device_menu_closed_by_press =
+                                (!window.last_input_was_keyboard()).then_some(kind);
                             this.close_layer(window, cx);
                         }))
                         .children(items)

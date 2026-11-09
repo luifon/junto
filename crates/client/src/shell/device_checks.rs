@@ -30,6 +30,9 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct DeviceUi {
     pub menu: Option<DeviceKind>,
+    /// The kind of the list that a press of the pointer closed: the click that follows on
+    /// the box of that list does not open it again.
+    pub closed_by_press: Option<DeviceKind>,
     pub scroll: gpui::ScrollHandle,
     pub preview: prepared::Shown<()>,
 }
@@ -292,11 +295,16 @@ impl Shell {
             let mut field = div().relative().flex_none().child(
                 SelectBox::new((selector, key), label, shown)
                     .selector(selector)
+                    // In a call the settings of the call choose its devices (ADR 0735).
+                    .held(active.then_some(words::IN_CALL))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if active
-                            || session.is_none()
-                            || this.state.read(cx).device_check_session() != session
-                        {
+                        // A device choice is a setting of the person, not a check: the list
+                        // opens also when no check session runs, as after a change of the
+                        // account or of the call ended the session.
+                        if active || this.state.read(cx).device_check_session() != session {
+                            return;
+                        }
+                        if this.device_ui.closed_by_press.take() == Some(kind) {
                             return;
                         }
                         this.state.update(cx, |state, cx| state.refresh_devices(cx));
@@ -376,8 +384,10 @@ impl Shell {
                             Menu::new("check-device-menu", label, self.layer_focus())
                                 .width(310.0)
                                 .selector("check-device-menu")
-                                .on_close(Self::handler(cx, |this, _, cx| {
+                                .on_close(Self::handler(cx, move |this, window, cx| {
                                     this.device_ui.menu = None;
+                                    this.device_ui.closed_by_press =
+                                        (!window.last_input_was_keyboard()).then_some(kind);
                                     cx.notify();
                                 }))
                                 .children(items),

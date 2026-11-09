@@ -518,3 +518,132 @@ fn an_actual_account_replacement_releases_checks_and_ignores_late_permission(
     assert_eq!(window.camera.active(), 0);
     assert!(!window.shows("camera-preview-picture"));
 }
+
+/// Two more microphones and one camera, so that the list of the microphones has a third choice and
+/// the list of the cameras has none.
+fn two_microphones_and_a_camera(window: &mut crate::harness::Window) {
+    window
+        .sound
+        .add_input("headset", "Headset", Tone::new(880.0));
+    window
+        .sound
+        .add_input("desk-microphone", "Desk microphone", Tone::new(440.0));
+    window.sound.add_output("headphones", "Headphones");
+    window.camera.set_devices(vec![CameraDevice {
+        id: "desk".into(),
+        name: "Desk camera".into(),
+    }]);
+}
+
+/// The calls of the window state this call of this device, without a media server.
+fn in_call(window: &mut crate::harness::Window, call: junto_media::calls::ActiveCall) {
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    calls.show_view_for_test(junto_media::calls::CallsView {
+        call: Some(call),
+        ..Default::default()
+    });
+    window.settle();
+}
+
+/// The lists of the devices of Settings → Voice open on a press while no check session runs,
+/// as after a change of the account or of the call ended the session. A press on the box of
+/// an open list closes it, and a press on the box of another list opens that list.
+#[gpui::test]
+fn the_device_lists_of_the_settings_open_without_a_check_session(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    two_microphones_and_a_camera(&mut window);
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    window.until("the device choices are read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.audio_device_choices(true).len() == 4 && state.camera_choices().len() == 2
+        })
+    });
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_device_checks(false, cx)
+    });
+    window.settle();
+    assert!(window.shows("refresh-check-devices"));
+    window.click_in_settings("input-device");
+    assert!(
+        window.shows("check-device-menu") && window.shows("check-device-choice-2"),
+        "the list of the microphones opens without a check session"
+    );
+    // The press on the box of the open list closes it, and the click does not open it again.
+    window.click_in_settings("input-device");
+    window.settle();
+    assert!(!window.shows("check-device-menu"));
+    window.click_in_settings("input-device");
+    assert!(window.shows("check-device-choice-2"));
+    // A press on the box of another list closes the open list and opens the other one.
+    window.click_in_settings("camera-device");
+    assert!(
+        window.shows("check-device-menu")
+            && window.shows("check-device-choice-1")
+            && !window.shows("check-device-choice-2"),
+        "the list of the cameras is open"
+    );
+}
+
+/// In a call, the boxes of the device lists of Settings → Voice are shown as unavailable,
+/// and a press on one does not open its list (ADR 0735).
+#[gpui::test]
+fn in_a_call_the_device_lists_of_the_settings_are_unavailable(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    crate::calls::voice_channel(&world, &admin, &mut window, "Daily");
+    two_microphones_and_a_camera(&mut window);
+    let call = crate::calls::connected_call(&mut window, "Daily");
+    in_call(&mut window, call);
+    window.click("app-settings");
+    window.click("settings-section-voice");
+    for field in ["input-device", "output-device", "camera-device"] {
+        window.click_in_settings(field);
+        window.settle();
+        assert!(
+            !window.shows("check-device-menu"),
+            "{field} opened in a call"
+        );
+    }
+}
+
+/// In the settings of the call, a press on the box of another device list while one is open
+/// closes the open list and opens the other one; a press on the box of the open list closes
+/// it.
+#[gpui::test]
+fn a_press_on_the_box_of_another_device_list_of_the_call_opens_that_list(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    crate::calls::voice_channel(&world, &admin, &mut window, "Daily");
+    two_microphones_and_a_camera(&mut window);
+    window.click_channel("Daily");
+    let call = crate::calls::connected_call(&mut window, "Daily");
+    in_call(&mut window, call);
+    window.click("call-tab-settings");
+    window.until("the call settings list the devices", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.audio_device_choices(true).len() == 4 && state.camera_choices().len() == 2
+        })
+    });
+    window.click("input-device");
+    assert!(window.shows("device-menu") && window.shows("device-choice-2"));
+    window.click("camera-device");
+    assert!(
+        window.shows("device-menu")
+            && window.shows("device-choice-1")
+            && !window.shows("device-choice-2"),
+        "the list of the cameras is open"
+    );
+    window.click("camera-device");
+    window.settle();
+    assert!(!window.shows("device-menu"));
+}
