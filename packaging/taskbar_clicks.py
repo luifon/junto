@@ -55,20 +55,25 @@ def verdict(observations):
         findings.append("the third press did not restore the window either")
     two_buttons = any(observation.buttons > 1 for observation in observations)
     if two_buttons:
-        findings.append("Junto has more than one taskbar button: the presses and the active state "
-                        "can belong to two buttons (the window properties of ADR 0755 are set after "
-                        "the window is shown)")
+        findings.append("possible cause: Junto has more than one taskbar button, so the presses and "
+                        "the active state can belong to two buttons (the window properties of ADR "
+                        "0755 are set after the window is shown)")
     if first.client_in_front:
-        findings.append("after the minimize a window of the client stayed the foreground window, so "
-                        "the taskbar took the second press as a press on the active button and "
-                        "minimized the window again" if first.main_in_front else
-                        "after the minimize another window of the client became the foreground "
-                        "window")
+        findings.append("possible cause: after the minimize the main window stayed the foreground "
+                        "window, so the taskbar can have taken the second press as a press on the "
+                        "active button" if first.main_in_front else
+                        "possible cause: after the minimize another window of the client became the "
+                        "foreground window")
     elif not two_buttons:
-        findings.append("after the minimize the foreground window belonged to another program: the "
-                        "record does not explain the second press; the messages of the window are "
-                        "needed")
+        findings.append("after the minimize the foreground window belonged to another program")
+    findings.append("the messages that the window received decide the cause")
     return "; ".join(findings)
+
+
+def running_buttons(buttons):
+    """The taskbar buttons of Junto that stand for a running window. Windows 11 names such a
+    button "Junto - 1 running window"; a pinned button without a window is named "Junto"."""
+    return [button for button in buttons if "running" in button["name"].lower()]
 
 
 def _user32():
@@ -152,8 +157,13 @@ def _observe(user32, main, process_id):
     return Observation(minimized=bool(user32.IsIconic(main)),
                        client_in_front=bool(front) and _process_of(user32, front) == process_id,
                        main_in_front=bool(front) and front == main,
-                       buttons=len(_buttons()),
+                       buttons=len(running_buttons(_buttons())),
                        minimized_meanwhile=minimized_meanwhile)
+
+
+def wintypes_rect():
+    from ctypes import wintypes
+    return wintypes.RECT()
 
 
 def run(program):
@@ -164,15 +174,29 @@ def run(program):
     # Pixels of the screen, as UI Automation states the rectangles of the buttons
     # (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).
     user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    with tempfile.TemporaryDirectory() as data:
-        process = subprocess.Popen([str(program), "--data-dir", data], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
+    if running_buttons(_buttons()):
+        raise RuntimeError("another window of Junto runs: close it first, so that the only "
+                           "running button of Junto is the button of this check")
+    # The client writes the identity of its notifications with the picture of its data
+    # directory; the check leaves the key as it was (ADR 0915).
+    with window_frame.kept_identity(), tempfile.TemporaryDirectory() as data:
+        process = subprocess.Popen([str(program), "--data-dir", data, "--no-activate"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             main = window_frame.until("the main window opens",
                                       lambda: next(iter(window_frame.windows_of(process.pid)), None))
+            # A program of a scheduled task may not take the foreground itself: a press on the
+            # strip of the window, at the name of the application, makes it the foreground
+            # window as a person does.
+            frame = wintypes_rect()
+            user32.GetWindowRect(main, ctypes.byref(frame))
+            _press((frame.left + 60, frame.top + 16))
             window_frame.until("the main window is the foreground window",
                                lambda: user32.GetForegroundWindow() == main, seconds=30)
-            buttons = window_frame.until("the taskbar shows a button of Junto", _buttons)
+            buttons = window_frame.until("the taskbar shows the running button of Junto",
+                                         lambda: running_buttons(_buttons()))
+            if len(buttons) != 1:
+                raise RuntimeError(f"the taskbar shows {len(buttons)} running buttons of Junto")
             point = (buttons[0]["x"], buttons[0]["y"])
             observations = []
             for _ in range(3):
