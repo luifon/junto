@@ -375,10 +375,19 @@ pub fn unused_action(unused: Unused) -> &'static str {
     }
 }
 
-/// "Room · Daily": the heading of the settings of the room of a call.
-pub fn room_section(channel: &str) -> String {
-    format!("Room · {channel}")
+/// The heading of the settings section "Call": the voice channel of the call.
+pub fn call_section_heading(channel: &str) -> String {
+    format!("The call in {channel}")
 }
+
+pub const CALL_SECTION: &str = "Call";
+pub const CALL_SECTION_FOR_EVERYONE: &str = "These settings apply to everyone in the call.";
+pub const CALL_SECTION_NO_CALL: &str = "This section holds the settings of the call that you are \
+     in. You are in no call now.";
+pub const CALL_SECTION_NO_ROOM: &str = "This section holds the settings of the call that you are \
+     in. A direct call has no such settings.";
+pub const CALL_SECTION_NOT_READ: &str = "The settings of your call appear here once its voice \
+     channel is read.";
 
 /// " · Carla runs it", after the statement that meeting mode is on.
 pub fn runs_it(presenter: Option<&str>) -> String {
@@ -411,7 +420,7 @@ pub fn occupancy_help(inside: usize, limit: u32) -> String {
     format!(
         "{inside} {} in the call, user limit {limit}. Invited people, people moved in by a \
          moderator and people let in after they asked can join above the limit. Change the \
-         limit at the end of Members, under Room.",
+         limit in the app settings, under Call.",
         if inside == 1 { "person" } else { "people" }
     )
 }

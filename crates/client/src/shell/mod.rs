@@ -316,7 +316,7 @@ pub enum Open {
     RecordingDetails,
     /// The list of the members who can be invited into the call.
     MemberPicker,
-    /// The settings of the room, at the end of the Members pane of the call.
+    /// The settings of the room of the call, in the settings section "Call".
     RoomSettings,
     /// The list of the choices of a filter of the search.
     SearchFilter(FilterKind),
@@ -488,9 +488,6 @@ pub struct Shell {
     /// (and one for the direct calls of an account), so that each keeps its own scroll
     /// position (ADR 0735).
     pub(crate) call_members: HashMap<call::CallMembersScope, call::CallMembersList>,
-    /// The member list of the call shows the settings of the room when it is drawn next
-    /// (`Open::RoomSettings`).
-    pub(crate) reveal_room: bool,
 
     // The fields of the layers.
     pub(crate) name: Entity<InputState>,
@@ -1000,7 +997,6 @@ impl Shell {
             members_list: gpui::ListState::new(0, gpui::ListAlignment::Top, gpui::px(400.0)),
             member_rows: None,
             call_members: HashMap::new(),
-            reveal_room: false,
             name,
             name_error: None,
             name_saved: false,
@@ -1539,11 +1535,7 @@ impl Shell {
                 self.recording_details_open = true;
                 cx.notify();
             }
-            Open::RoomSettings => {
-                self.open_call_panel(cx);
-                self.show_call_tab(CallTab::Members, cx);
-                self.reveal_room_settings(cx);
-            }
+            Open::RoomSettings => self.open_room_settings(window, cx),
             Open::SearchFilter(kind) => {
                 self.open_layer(Layer::SearchFilter(kind), window, cx);
             }

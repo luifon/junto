@@ -1042,6 +1042,17 @@ pub enum MeetingStart {
     MicrophoneBlocked,
 }
 
+/// The room of the call of this device, for the settings section "Call".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallRoom {
+    /// The call of a voice channel and its room.
+    Channel(RoomView),
+    /// A direct-message or group call, which has no room (ADR 0501).
+    Direct,
+    /// A call of a voice channel whose channel the state does not hold.
+    Unknown,
+}
+
 /// The room of the call of this device: its rules and what the person may change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomView {
@@ -1777,6 +1788,9 @@ pub struct ShellView {
     pub person: Person,
     pub controls: Controls,
     pub call: Option<CallStrip>,
+    /// The room of the call of this device, whatever the window shows: the place of the
+    /// settings of the call (ADR 0739).
+    pub call_room: Option<CallRoom>,
     pub call_notice: Option<CallNotice>,
     /// Why the share of this device ended, when the person did not end it.
     pub share_notice: Option<junto_media::share::CaptureNotice>,
@@ -3732,7 +3746,14 @@ fn call_panel(
             row.allowed.record,
             known,
         ),
-        room: room_view(server_id, row, active, workspace, model, known),
+        room: room_view(
+            server_id,
+            RoomBasis::of_row(row),
+            active,
+            workspace,
+            model,
+            known,
+        ),
     }));
     media_panel(
         server_id,
@@ -3868,9 +3889,47 @@ fn allowed(held: &[WorkspacePermission]) -> Allowed {
     }
 }
 
+/// What the room of a call takes from its voice channel.
+struct RoomBasis<'a> {
+    name: &'a str,
+    /// The number of people inside.
+    inside: usize,
+    locked: bool,
+    user_limit: Option<u32>,
+    allowed: Allowed,
+}
+
+impl<'a> RoomBasis<'a> {
+    /// The basis of the row of the shown voice channel.
+    fn of_row(row: &'a ChannelRow) -> Self {
+        let voice = row.voice.as_ref();
+        Self {
+            name: &row.name,
+            inside: voice.map_or(0, |voice| voice.occupants.len()),
+            locked: voice.is_some_and(|voice| voice.locked),
+            user_limit: voice.and_then(|voice| voice.user_limit),
+            allowed: row.allowed,
+        }
+    }
+
+    /// The basis of a voice channel of the model, with the rules of `voice_state` for the
+    /// lock and without the list of the people, whose number is that of the participants of
+    /// its call.
+    fn of_channel(channel: &'a ChannelModel, workspace: &WorkspaceModel) -> Self {
+        let call = channel.call.as_ref();
+        Self {
+            name: &channel.channel.name,
+            inside: call.map_or(0, |call| call.participants.len()),
+            locked: channel.in_use && call.is_some_and(|call| call.lock.is_some()),
+            user_limit: channel.channel.user_limit,
+            allowed: allowed(workspace.permissions_in(channel.channel.id)),
+        }
+    }
+}
+
 fn room_view(
     server_id: ServerId,
-    row: &ChannelRow,
+    basis: RoomBasis<'_>,
     active: &ActiveCall,
     workspace: &WorkspaceModel,
     model: &ServerModel,
@@ -3913,8 +3972,7 @@ fn room_view(
                 may_speak: may_speak(active, call, Some(model), known),
             }
         });
-    let voice = row.voice.as_ref();
-    let allowed = row.allowed;
+    let allowed = basis.allowed;
     let hides = active
         .target
         .place
@@ -3923,8 +3981,8 @@ fn room_view(
         .is_some_and(|channel| channel.channel.hides_occupants);
     RoomView {
         ready: active.phase == Phase::Connected,
-        name: row.name.clone(),
-        inside: voice.map_or(0, |voice| voice.occupants.len()),
+        name: basis.name.to_owned(),
+        inside: basis.inside,
         meeting_start: if !allowed.run_meeting {
             MeetingStart::NoPermission
         } else if active.microphone_block.is_some() {
@@ -3939,8 +3997,8 @@ fn room_view(
             MeetingStart::Possible
         },
         meeting,
-        locked: voice.is_some_and(|voice| voice.locked),
-        user_limit: voice.and_then(|voice| voice.user_limit),
+        locked: basis.locked,
+        user_limit: basis.user_limit,
         hides_occupants: hides,
         hide_waits_for_next_call: call.is_some_and(|call| call.hides_occupants != hides),
         allowed,
@@ -4126,6 +4184,39 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         }),
     );
     controls
+}
+
+/// The room of the call of this device, from the server of the call, whatever server and
+/// place the window shows.
+fn call_room(servers: &[ServerSnapshot], known: &Known) -> Option<CallRoom> {
+    let active = known.media.calls.call.as_ref()?;
+    let CallPlace::Channel {
+        workspace_id,
+        channel_id,
+    } = active.target.place
+    else {
+        return Some(CallRoom::Direct);
+    };
+    let room = servers
+        .iter()
+        .find(|server| server.id == active.target.server_id)
+        .and_then(shown_model)
+        .and_then(|model| {
+            let workspace = model.workspace(workspace_id)?;
+            let channel = workspace
+                .channels
+                .iter()
+                .find(|channel| channel.channel.id == channel_id)?;
+            Some(room_view(
+                active.target.server_id,
+                RoomBasis::of_channel(channel, workspace),
+                active,
+                workspace,
+                model,
+                known,
+            ))
+        });
+    Some(room.map_or(CallRoom::Unknown, CallRoom::Channel))
 }
 
 fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option<CallStrip> {
@@ -4447,6 +4538,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         }),
         controls: controls(servers, known),
         call: None,
+        call_room: None,
         call_notice: call_notice(servers, known),
         invitations: invitations(servers, known),
         entry_prompts: entry_prompts(servers, known),
@@ -4499,6 +4591,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .filter(|notice| !known.share_notice_dismissed.contains(&notice.generation)),
     };
     view.call = call_strip(servers, known, view.shown());
+    view.call_room = call_room(servers, known);
     view.faces = people::faces(servers, &known.people).with_presence(&known.presence);
     view.wanted_people = people::wanted(servers, &view);
     view

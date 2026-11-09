@@ -73,13 +73,8 @@ pub(crate) struct VolumeControl {
 }
 
 /// A person outside the call in the member list of a call, with the line of the state.
-/// What the member list of a call lists: the people in the call and outside it, and the room
-/// of a voice channel, whose settings end the list.
-pub(crate) type CallMemberRows = (
-    Rc<Vec<Occupant>>,
-    Rc<Vec<OutsideRow>>,
-    Option<crate::state::view::RoomView>,
-);
+/// The people that the member list of a call lists: in the call and outside it.
+pub(crate) type CallMemberRows = (Rc<Vec<Occupant>>, Rc<Vec<OutsideRow>>);
 
 /// The server, the account and the workspace of a member list of the panel of a call; no
 /// workspace for a direct-message call.
@@ -1190,30 +1185,18 @@ impl Shell {
                 }),
             None => return div().into_any_element(),
         };
-        // The settings of the room of a voice channel are the last item of the list: they
-        // belong to the call, and the panel has no other place for them (ADR 0735).
-        let room = panel.room().cloned();
-        let shape = (people.clone(), outside.clone(), room.clone());
-        let listed = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
+        let shape = (people.clone(), outside.clone());
         if list.rows.as_ref() != Some(&shape) {
-            super::changed_rows(&list.state, listed + usize::from(room.is_some()));
+            let count = 1 + people.len() + usize::from(!outside.is_empty()) + outside.len() + 1;
+            super::changed_rows(&list.state, count);
             list.rows = Some(shape);
         }
         let state = list.state.clone();
-        // The room item goes to the top of the list by its index: a reveal by the heights
-        // that the list measured counts a row that it has not measured yet as empty.
-        if room.is_some() && std::mem::take(&mut self.reveal_room) {
-            state.scroll_to(gpui::ListOffset {
-                item_ix: listed,
-                offset_in_item: px(0.0),
-            });
-        }
         let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
-            let item = match &room {
-                Some(room) if index == listed => this.render_room_item(room, cx),
-                _ => this.call_member_item(index, &people, &outside, server_id, window, cx),
-            };
-            div().w_full().child(item).into_any_element()
+            div()
+                .w_full()
+                .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
+                .into_any_element()
         });
         let share_controls: Vec<_> = panel
             .stage
@@ -1292,30 +1275,6 @@ impl Shell {
                     .map(|channel| self.render_invite_area(channel, theme, cx)),
             )
             .into_any_element()
-    }
-
-    /// The settings of the room of the call, the last item of its member list.
-    fn render_room_item(
-        &mut self,
-        room: &crate::state::view::RoomView,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = theme(cx);
-        div()
-            .id("room-settings")
-            .debug_selector(|| "room-settings".to_owned())
-            .flex()
-            .flex_col()
-            .pb(u(8.0))
-            .children(self.render_room_settings(room, &theme, cx))
-            .into_any_element()
-    }
-
-    /// Shows the settings of the room at the end of the member list of the call that the
-    /// window draws.
-    pub(crate) fn reveal_room_settings(&mut self, cx: &mut Context<Self>) {
-        self.reveal_room = true;
-        cx.notify();
     }
 
     /// One item of the member list of a call: the label of the people in the call, a

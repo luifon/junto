@@ -18,6 +18,7 @@ use super::account::Surface;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::ProcessingPart;
+use crate::state::view::CallRoom;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
 use crate::ui::{
@@ -36,6 +37,8 @@ pub enum SettingsSection {
     Picture,
     Interface,
     VoiceAndVideo,
+    /// The settings of the room of the call of this device (ADR 0739).
+    Call,
     /// The key bindings (ADR 0777).
     Keybinds,
     Quiet,
@@ -47,11 +50,12 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
         Self::VoiceAndVideo,
+        Self::Call,
         Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
@@ -67,6 +71,7 @@ impl SettingsSection {
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
             Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
+            Self::Call => text::CALL_SECTION,
             Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
@@ -83,6 +88,7 @@ impl SettingsSection {
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::VoiceAndVideo => Icon::Microphone,
+            Self::Call => Icon::Phone,
             Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
@@ -100,6 +106,7 @@ impl SettingsSection {
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::VoiceAndVideo => "settings-section-voice-and-video",
+            Self::Call => "settings-section-call",
             Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
@@ -318,6 +325,69 @@ impl Shell {
         self.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
     }
 
+    /// Opens the settings of the application at "Call", the settings of the room of the
+    /// call. The call window opens them in the main window, as `open_voice_settings` does.
+    pub fn open_room_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.detached {
+            crate::app::in_main_window(
+                |shell, window, cx| shell.open_room_settings(window, cx),
+                cx,
+            );
+            return;
+        }
+        if !matches!(self.layer, Layer::Settings) {
+            self.open_settings(window, cx);
+        }
+        self.open_settings_section(SettingsSection::Call, window, cx);
+    }
+
+    /// The settings of the room of the call of this device: they apply to everyone in the
+    /// call, apart from the personal settings at "Voice and video" (ADR 0739). Without a call,
+    /// and in a call without a room, the section states it and shows no control.
+    fn render_call_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut parts = vec![group_label(text::CALL_SECTION, theme).into_any_element()];
+        let room = self.view.as_ref().and_then(|view| view.call_room.clone());
+        // The statement of each case has a name of its own, for a test.
+        let statement = |case: &'static str, sentence: &'static str| {
+            div()
+                .debug_selector(move || format!("call-section-statement:{case}"))
+                .child(help(sentence, theme))
+                .into_any_element()
+        };
+        match room {
+            None => parts.push(statement("no-call", text::CALL_SECTION_NO_CALL)),
+            Some(CallRoom::Direct) => parts.push(statement("no-room", text::CALL_SECTION_NO_ROOM)),
+            Some(CallRoom::Unknown) => {
+                parts.push(statement("not-read", text::CALL_SECTION_NOT_READ))
+            }
+            Some(CallRoom::Channel(room)) => {
+                parts.push(
+                    div()
+                        .debug_selector({
+                            let name = room.name.clone();
+                            move || format!("call-section-channel:{name}")
+                        })
+                        .mt(u(4.0))
+                        .typeface(theme.types.name, theme)
+                        .ink(theme.colors.ink)
+                        .child(text::call_section_heading(&room.name))
+                        .into_any_element(),
+                );
+                parts.push(help(text::CALL_SECTION_FOR_EVERYONE, theme).into_any_element());
+                parts.push(
+                    div()
+                        .debug_selector(|| "room-settings".to_owned())
+                        .mt(u(8.0))
+                        .flex()
+                        .flex_col()
+                        .children(self.render_room_settings(&room, theme, cx))
+                        .into_any_element(),
+                );
+            }
+        }
+        parts
+    }
+
     /// Whether this shell draws the call window (ADR 0772).
     pub fn is_detached(&self) -> bool {
         self.detached
@@ -361,6 +431,7 @@ impl Shell {
                 parts.extend(self.render_share_and_view_settings(&theme, cx));
                 parts
             }
+            SettingsSection::Call => self.render_call_section(&theme, cx),
             SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
             SettingsSection::Quiet => {
                 let quiet = self

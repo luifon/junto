@@ -84,6 +84,7 @@ fn the_sources_of_a_call_follow_the_rules_of_the_voice_channel(cx: &mut TestAppC
             .and_then(|call| call.room().map(|room| room.user_limit))
             == Some(Some(2))
     });
+    window.press("escape");
 
     // "speak" again, without "use voice activity": the microphone sends only while the
     // key is held. "share screen" is taken.
