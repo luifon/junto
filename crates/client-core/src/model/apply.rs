@@ -675,11 +675,13 @@ impl ServerModel {
                 // A channel of the workspace can be the fork of an open thread.
                 return Follow::loads(self.thread_heads());
             }
+            // The state holds the call of the AFK channel as any other call (ADR 0523).
             Event::CallStarted {
                 hides_occupants,
                 call_id,
                 place,
                 started_at,
+                afk: _,
             } => {
                 // The event states the setting that the call keeps (ADR 0517). An older
                 // server does not: the setting is then the one that the state holds.

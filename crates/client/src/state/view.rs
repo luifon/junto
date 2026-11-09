@@ -1133,6 +1133,10 @@ pub struct ShareCard {
     /// For the share of this device: the people in the call who watch it, with their names
     /// (ADR 0502). Empty for the share of another person.
     pub viewers: Vec<(AccountId, Option<String>)>,
+    /// The share of this device shows a window or the windows of Junto itself: its picture is
+    /// not drawn here, so that a window that shows the call does not show its own picture
+    /// again inside itself (ADR 0738). False for the share of another person.
+    pub shows_the_client: bool,
 }
 
 /// The shares of the call of this device. Present while at least one share runs.
@@ -3522,6 +3526,7 @@ fn share_stage(
                     frame_rate: seen.frame_rate,
                     watched: active.watched == Some(id),
                     viewers: Vec::new(),
+                    shows_the_client: false,
                 }
             })
             .collect();
@@ -3540,6 +3545,7 @@ fn share_stage(
                 size: Some(info.size),
                 frame_rate: Some(info.frame_rate),
                 watched: active.watched == Some(id),
+                shows_the_client: info.shows_the_client,
                 viewers: call
                     .map(|call| call.participants.as_slice())
                     .unwrap_or_default()

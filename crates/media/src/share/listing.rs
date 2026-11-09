@@ -15,8 +15,9 @@ pub(crate) struct Own {
 
 impl Own {
     /// Whether an application is the client: this process, or another start of the same
-    /// program. The exclusion of the own sound has no effect on a capture that selects an
-    /// application of the same program, so none of them is offered (ADR 0502).
+    /// program. Its windows are listed for their picture. Its sound is never offered: the
+    /// exclusion of the own sound has no effect on a capture that selects an application of
+    /// the same program, and another start plays the sound of its own call (ADR 0502).
     pub(crate) fn is(&self, process_id: i32, bundle_id: &str, name: &str) -> bool {
         process_id == self.process_id || (bundle_id == self.bundle_id && name == self.name)
     }
@@ -45,6 +46,23 @@ pub(crate) fn shareable_applications(
             .then(one.id.process_id.cmp(&other.id.process_id))
     });
     applications
+}
+
+/// The applications of the listed windows that are the client, once each, in the order of
+/// the list ([`super::ShareSources::clients`]).
+pub(crate) fn clients(windows: &[WindowSource], own: &Own) -> Vec<ApplicationId> {
+    let mut clients: Vec<ApplicationId> = Vec::new();
+    for window in windows {
+        if own.is(
+            window.application.process_id,
+            &window.application.bundle_id,
+            &window.application_name,
+        ) && !clients.contains(&window.application)
+        {
+            clients.push(window.application.clone());
+        }
+    }
+    clients
 }
 
 /// A rectangle in the coordinates of the screens of the system: points on macOS, pixels on
@@ -188,6 +206,43 @@ mod tests {
             .map(|application| application.name)
             .collect();
         assert_eq!(names, ["Player", "zeta"]);
+    }
+
+    /// The windows of the client and of a second start of it are listed; their applications
+    /// are named as the client, once each, and none of them is offered for its sound.
+    #[test]
+    fn the_windows_of_the_client_are_named_and_its_sound_is_not_offered() {
+        let window = |id: u32, application: ApplicationId, name: &str| WindowSource {
+            id,
+            title: format!("window {id}"),
+            application,
+            application_name: name.to_owned(),
+            width: 800,
+            height: 600,
+        };
+        let windows = [
+            window(1, application(100, "chat.junto.client"), "Junto"),
+            window(2, application(7, "example.player"), "Player"),
+            window(3, application(100, "chat.junto.client"), "Junto"),
+            window(4, application(200, "chat.junto.client"), "Junto"),
+        ];
+        assert_eq!(
+            clients(&windows, &own()),
+            [
+                application(100, "chat.junto.client"),
+                application(200, "chat.junto.client")
+            ]
+        );
+        let listed = windows
+            .iter()
+            .map(|window| (window.application.clone(), window.application_name.clone()))
+            .collect();
+        let names: Vec<String> = shareable_applications(listed, &own())
+            .into_iter()
+            .map(|application| application.name)
+            .collect();
+        assert_eq!(names, ["Player"]);
+        assert!(clients(&windows[1..2], &own()).is_empty());
     }
 
     #[test]

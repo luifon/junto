@@ -38,8 +38,11 @@ macOS:
 
 The client itself:
 
-- An application is the client when it has the process identifier of the client, or the same bundle identifier and the same name. The rule and the list of applications are shared with the Windows capture (`share/listing.rs`, ADR 0706). No such application and none of its windows is listed. The second rule covers a second instance of the client: the exclusion of the own sound has no effect on a capture that selects an application of the same responsible application (ADR 0502).
-- A window is listed when it is an ordinary window on a screen (layer 0), each side has at least 64 points, and it belongs to an application that is not the client.
+- An application is the client when it has the process identifier of the client, or the same bundle identifier and the same name. The second rule covers a second instance of the client, as another profile. The rule and the lists are shared with the Windows capture (`share/listing.rs`, ADR 0706).
+- The windows of the client and its application are listed for their picture, so that a person can share a window of Junto to get help or to show a problem. The lists name these applications in `ShareSources::clients` (`listing::clients`). Their sound is never offered: the list of applications whose sound can be shared alone leaves them out (`listing::shareable_applications`), and a start that asks for the sound of the client fails with "the source is gone". The exclusion of the own sound has no effect on a capture that selects an application of the same responsible application, and a second instance plays the sound of its own call (ADR 0502). The filter of a picture of the application of the client has no sound; the filter of a sound refuses the client (`Content::filter`, `Selection::Application` with `sound`). A share of a window or of the application of the client offers all system sound, which leaves out the sound of this process, or no sound.
+- The capture states at the start whether the picture shows the client (`CaptureStream::shows_the_client`): a window of the client, or the application of the client. The media engine then gives the sharer no preview of it (ADR 0738).
+- A window is listed when it is an ordinary window on a screen (layer 0) and each side has at least 64 points. The lists keep the order of the system: the windows in the order that ScreenCaptureKit gives, and the applications in the order of their names. Junto has no place of its own in them; a person who shares Junto finds it by its name, as any other application.
+- Tests: `share::listing::tests::the_windows_of_the_client_are_named_and_its_sound_is_not_offered`, `share::macos::tests::only_ordinary_windows_are_listed_in_pixels_and_the_client_is_named`.
 
 Permission:
 
@@ -56,7 +59,7 @@ Unsafe code:
 - A share costs two streams of the system. The sound stream captures a picture of 16 by 16 pixels once a second that nobody reads.
 - The picture and the sound of a share come from two streams with their own clocks. Each is sent as it arrives; the client does not align them.
 - The list of windows and applications is read when the dialog opens. A window that is closed before the person presses "Share" gives "not available any more".
-- A person who shares the window of a second instance of the client cannot: it is not listed.
+- A person shares a window of the client, of a second instance of it, or the application of the client, with its picture only. The sound of a second instance is in all system sound on macOS and Windows, as before: the dialog states that sound from another running copy of Junto may include the call.
 - When the system ends a stream (the window was closed, or the person stopped the capture in the menu bar of the system), the share ends and the person is told. The client does not start it again.
 - New direct dependencies of `junto-media` on macOS, all already linked by gpui: `objc2-screen-capture-kit`, `objc2-core-media`, `objc2-core-audio-types`, `objc2-core-foundation` and `objc2-core-graphics`.
 

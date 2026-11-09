@@ -100,8 +100,9 @@ pub struct ApplicationPicture {
     pub windows: usize,
 }
 
-/// What a person can share now. Application-owned lists exclude the client itself.
-/// A desktop portal owns its chooser and cannot be given an exclusion list (ADR 0751).
+/// What a person can share now. The windows and the applications of the client itself are
+/// listed for their picture; the sound of the client is never offered (ADR 0502, ADR 0736).
+/// A desktop portal owns its chooser, which also lists the windows of the client (ADR 0751).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShareSources {
     pub displays: Vec<DisplaySource>,
@@ -125,6 +126,37 @@ pub struct ShareSources {
     /// application can have started it: no application is offered for its sound alone
     /// (ADR 0706). The other systems state false.
     pub creators_unknown: bool,
+    /// Applications of listed windows that are the client: this process, or another start of
+    /// the same program, as another profile. Their windows are offered for their picture. Their
+    /// sound holds the sound of a call, so it is never offered alone (ADR 0502); and the picture
+    /// of such a share is not drawn in the client that shares it, because a window that shows
+    /// the call would show its own picture again inside itself (ADR 0738).
+    pub clients: Vec<ApplicationId>,
+}
+
+impl ShareSources {
+    /// The application that a picture of a window or of an application shows, as listed.
+    pub fn application_of(&self, picture: PictureSource) -> Option<(&ApplicationId, &str)> {
+        match picture {
+            PictureSource::Window(id) => self
+                .windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(|window| (&window.application, window.application_name.as_str())),
+            PictureSource::Application(process_id) => self
+                .application_pictures
+                .iter()
+                .find(|listed| listed.application.process_id == process_id)
+                .map(|listed| (&listed.application, listed.name.as_str())),
+            PictureSource::Display(_) | PictureSource::Portal(_) => None,
+        }
+    }
+
+    /// Whether a picture shows a window or the windows of the client itself.
+    pub fn shows_the_client(&self, picture: PictureSource) -> bool {
+        self.application_of(picture)
+            .is_some_and(|(application, _)| self.clients.contains(application))
+    }
 }
 
 /// The picture of a share.
@@ -334,6 +366,9 @@ pub struct CaptureStream {
     /// The size of the pictures in pixels.
     pub width: u32,
     pub height: u32,
+    /// The picture shows a window or the windows of the client itself
+    /// ([`ShareSources::clients`]). The system capture decides it at the start.
+    pub shows_the_client: bool,
     _stream: Box<dyn Any + Send>,
     stopped: Option<tokio::sync::oneshot::Receiver<Result<(), CaptureError>>>,
 }
@@ -343,9 +378,16 @@ impl CaptureStream {
         Self {
             width,
             height,
+            shows_the_client: false,
             _stream: Box::new(stream),
             stopped: None,
         }
+    }
+
+    /// States whether the picture shows the client itself.
+    pub fn showing_the_client(mut self, shows: bool) -> Self {
+        self.shows_the_client = shows;
+        self
     }
 
     pub(crate) fn with_stop_result(
@@ -383,6 +425,7 @@ impl fmt::Debug for CaptureStream {
             .debug_struct("CaptureStream")
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("shows_the_client", &self.shows_the_client)
             .finish_non_exhaustive()
     }
 }

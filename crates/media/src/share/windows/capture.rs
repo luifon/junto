@@ -23,8 +23,8 @@ use crate::share::delivery::{CAPACITY, Latest, Life, deliver};
 use crate::share::listing::Own;
 use crate::share::picture::PictureFrame;
 use crate::share::{
-    CaptureError, CaptureRequest, CaptureSink, CaptureStream, FRAME_RATES, Pending, PictureSource,
-    ScreenAccess, ScreenCapture, ShareSources, SoundChoice,
+    ApplicationId, CaptureError, CaptureRequest, CaptureSink, CaptureStream, FRAME_RATES, Pending,
+    PictureSource, ScreenAccess, ScreenCapture, ShareSources, SoundChoice,
 };
 
 /// How long the system has to start the capture of the picture and of the sound. Without
@@ -125,7 +125,7 @@ impl ScreenCapture for SystemCapture {
         source: PictureSource,
         bound: (u32, u32),
     ) -> Pending<Result<PictureFrame, CaptureError>> {
-        let (own, supported) = (self.own.clone(), self.supported);
+        let supported = self.supported;
         Box::pin(async move {
             if !supported {
                 return Err(CaptureError::Unsupported);
@@ -134,7 +134,7 @@ impl ScreenCapture for SystemCapture {
                 let still = match source {
                     PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
                     PictureSource::Application(process_id) => {
-                        return application::preview(&own, process_id, bound);
+                        return application::preview(process_id, bound);
                     }
                     PictureSource::Display(id) => Still::Monitor(
                         sources::displays()
@@ -144,7 +144,7 @@ impl ScreenCapture for SystemCapture {
                             .monitor,
                     ),
                     PictureSource::Window(id) => {
-                        if !sources::windows(&own).iter().any(|window| window.id == id) {
+                        if !sources::windows().iter().any(|window| window.id == id) {
                             return Err(CaptureError::SourceGone);
                         }
                         Still::Window(HWND(rules::window_handle(id) as *mut c_void))
@@ -181,30 +181,41 @@ enum Picture {
 }
 
 /// The picture and the sound of a request, checked against the lists of now: a share
-/// starts only with a source that a person could choose.
+/// starts only with a source that a person could choose. Also whether the picture shows the
+/// client itself (ADR 0738).
 fn resolve(
     own: &Own,
     request: &CaptureRequest,
-) -> Result<(Picture, Option<Loopback>), CaptureError> {
-    let picture = match request.picture {
+) -> Result<(Picture, Option<Loopback>, bool), CaptureError> {
+    let is_client = |(id, name): (&ApplicationId, &str)| own.is(id.process_id, &id.bundle_id, name);
+    let (picture, shows_the_client) = match request.picture {
         PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
-        PictureSource::Display(id) => Picture::One(Target::Monitor(
-            sources::displays()
-                .into_iter()
-                .find(|display| display.source.id == id)
-                .ok_or(CaptureError::SourceGone)?
-                .monitor,
-        )),
+        PictureSource::Display(id) => (
+            Picture::One(Target::Monitor(
+                sources::displays()
+                    .into_iter()
+                    .find(|display| display.source.id == id)
+                    .ok_or(CaptureError::SourceGone)?
+                    .monitor,
+            )),
+            false,
+        ),
         PictureSource::Window(id) => {
-            if !sources::windows(own).iter().any(|window| window.id == id) {
-                return Err(CaptureError::SourceGone);
-            }
-            Picture::One(Target::Window(
-                HWND(rules::window_handle(id) as *mut c_void),
-            ))
+            let window = sources::windows()
+                .into_iter()
+                .find(|window| window.id == id)
+                .ok_or(CaptureError::SourceGone)?;
+            (
+                Picture::One(Target::Window(
+                    HWND(rules::window_handle(id) as *mut c_void),
+                )),
+                is_client((&window.application, &window.application_name)),
+            )
         }
         PictureSource::Application(process_id) => {
-            Picture::Application(application::resolve(own, process_id)?)
+            let shared = application::resolve(process_id)?;
+            let shows = is_client((&shared.application.0, &shared.application.1));
+            (Picture::Application(shared), shows)
         }
     };
     let loopback = match &request.sound {
@@ -229,7 +240,7 @@ fn resolve(
             Some(Loopback::Include(id.process_id as u32))
         }
     };
-    Ok((picture, loopback))
+    Ok((picture, loopback, shows_the_client))
 }
 
 async fn answer<T>(
@@ -258,7 +269,7 @@ async fn start(
             "unsupported share frame rate".to_owned(),
         ));
     }
-    let (target, loopback) = tokio::task::spawn_blocking({
+    let (target, loopback, shows_the_client) = tokio::task::spawn_blocking({
         let request = request.clone();
         move || resolve(&own, &request)
     })
@@ -318,7 +329,9 @@ async fn start(
         move || deliver(life, sink, pictures, read, samples, quality)
     })?;
     let (width, height) = request.quality.resolution.fit(size.0, size.1);
-    Ok(CaptureStream::new(width, height, workers).with_stop_result(stopped))
+    Ok(CaptureStream::new(width, height, workers)
+        .with_stop_result(stopped)
+        .showing_the_client(shows_the_client))
 }
 
 pub(super) type Ready<T> = oneshot::Sender<Result<T, CaptureError>>;

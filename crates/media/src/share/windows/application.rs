@@ -22,7 +22,7 @@ use super::sources;
 use super::still::{self, Still};
 use crate::share::delivery::pixels::{Format, Frame};
 use crate::share::delivery::{Latest, Life};
-use crate::share::listing::{Bounds, Own, application_pictures};
+use crate::share::listing::{Bounds, application_pictures};
 use crate::share::picture::PictureFrame;
 use crate::share::{ApplicationId, CaptureError};
 
@@ -32,7 +32,7 @@ const FOLLOW: Duration = Duration::from_millis(250);
 
 /// The application and the screen of a share of an application.
 pub(super) struct Shared {
-    application: (ApplicationId, String),
+    pub application: (ApplicationId, String),
     /// The application is a store application, whose windows the frame host draws.
     store: bool,
     screen: Bounds,
@@ -43,8 +43,8 @@ pub(super) struct Shared {
 /// The application of the process `process_id` and the screen of its share, as the dialog
 /// of a share lists them now: a share starts only with an application that a person could
 /// choose.
-pub(super) fn resolve(own: &Own, process_id: i32) -> Result<Shared, CaptureError> {
-    let placed = sources::placed_windows(own);
+pub(super) fn resolve(process_id: i32) -> Result<Shared, CaptureError> {
+    let placed = sources::placed_windows();
     let displays: Vec<_> = sources::displays()
         .into_iter()
         .map(|display| (display.source, display.bounds))
@@ -285,12 +285,8 @@ pub(super) fn draw(drawn: &Drawn, size: (u32, u32)) -> Result<Option<Frame>, Cap
 /// The preview of a shared application: a still picture of each of its windows on its
 /// screen, drawn at its place into a picture of at most `bound` pixels with the
 /// proportions of the screen.
-pub(super) fn preview(
-    own: &Own,
-    process_id: i32,
-    bound: (u32, u32),
-) -> Result<PictureFrame, CaptureError> {
-    let shared = resolve(own, process_id)?;
+pub(super) fn preview(process_id: i32, bound: (u32, u32)) -> Result<PictureFrame, CaptureError> {
+    let shared = resolve(process_id)?;
     let (width, height) = crate::share::picture::fit(shared.size, bound);
     let scale = f64::from(width) / f64::from(shared.size.0.max(1));
     let mut stills = Vec::new();

@@ -431,11 +431,15 @@ async fn seen_in_room(
     if started.rows_affected() > 0 {
         let first = Some(account_id);
         store::note(&mut *connection, now, call, store::Note::CallStarted, first).await?;
+        // A person who is moved into the AFK channel, or enters it, starts no call that
+        // anyone is told about (ADR 0523).
+        let afk = crate::routes::afk::is_afk(&mut *connection, &call.place).await?;
         let started = Event::CallStarted {
             hides_occupants: Some(call.hides_occupants),
             call_id: call.id,
             place: call.place,
             started_at: now,
+            afk: Some(afk),
         };
         events::publish(&mut *connection, now, &started).await?;
     } else if announce {

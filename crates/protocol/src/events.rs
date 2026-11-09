@@ -292,7 +292,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 21;
+pub const EVENT_REVISION: u32 = 22;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -468,6 +468,11 @@ pub enum Event {
         place: CallPlace,
         #[serde(with = "time::serde::rfc3339")]
         started_at: OffsetDateTime,
+        /// The call is in the AFK channel of its workspace (ADR 0523): a person who was
+        /// moved there or entered it is not the start of a call that anyone is told about.
+        /// Absent from a server before revision 22.
+        #[serde(default)]
+        afk: Option<bool>,
     },
     /// Nobody is in the call any more. Its lock, its blocks, its requests and its
     /// invitations have ended with it.
@@ -1403,6 +1408,7 @@ mod tests {
                 call_id,
                 place,
                 started_at: time(),
+                afk: Some(false),
             },
             Event::CallEnded { call_id, place },
             Event::CallParticipantJoined {

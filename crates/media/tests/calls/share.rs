@@ -264,6 +264,7 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
                 sound_held: false,
                 size: (1280, 720),
                 frame_rate: 30,
+                shows_the_client: false,
             }
         );
         assert_eq!(ann.capture.started(), [screen(player())]);
@@ -1913,6 +1914,86 @@ async fn a_shared_window_that_changes_its_size_is_sent_and_stated_at_its_new_siz
     .await;
 }
 
+/// A window of the client itself is shared without its sound (ADR 0502), and the sharer gets
+/// no preview of it, so that a window that shows the call does not draw its own picture again
+/// inside itself (ADR 0738). The viewers get the picture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_window_of_the_client_is_shared_without_its_sound_and_without_a_preview() {
+    use junto_media::share::synthetic::CLIENT_WINDOW;
+    limited(async {
+        let _media = media_server_shared().await;
+        let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+        let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+        let ben_at = room.member(&ann_at, &ben, "Ben").await;
+        let _ = &ben_at;
+        let ann_id = account(&ann_at);
+        for person in [&ann, &ben] {
+            person.enter(room.target).await;
+        }
+        ann.capture.list_the_client();
+        let own_window = |sound: SoundChoice| CaptureRequest {
+            picture: PictureSource::Window(CLIENT_WINDOW),
+            sound,
+            quality: ShareQuality::default(),
+            dialog_parent: None,
+        };
+        // The sound of the client is never captured, also when a request names it.
+        ann.calls.start_share(own_window(SoundChoice::Application(
+            SyntheticCapture::client(),
+        )));
+        ann.until("a share with the sound of the client is refused", |view| {
+            view.call.as_ref().is_some_and(|call| {
+                call.share_ended.as_ref().map(|notice| &notice.error)
+                    == Some(&CaptureError::SourceGone)
+            })
+        })
+        .await;
+        assert_eq!(ann.capture.started(), []);
+
+        ann.calls.start_share(own_window(SoundChoice::None));
+        let info = ann.until_sharing().await;
+        assert!(info.shows_the_client, "{info:?}");
+        assert_eq!(info.sound, ShareAudio::None);
+        assert_eq!(
+            ann.calls.view().call.unwrap().watched,
+            Some(ShareId::own(0))
+        );
+        // Ben sees the window.
+        ben.until_shown(ShareId::of(ann_id, 0), RED, BLUE).await;
+        // Ann gets no picture of her own share, neither large nor small.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(
+            ann.calls
+                .main_picture()
+                .borrow()
+                .as_ref()
+                .is_none_or(|picture| picture.share != ShareId::own(0)),
+            "the share of the client is drawn for its sharer"
+        );
+        assert!(
+            !ann.calls
+                .small_pictures()
+                .borrow()
+                .contains_key(&ShareId::own(0))
+        );
+
+        // A share of a window of another application has its preview again.
+        ann.calls.stop_share(None);
+        ann.until("the share has ended", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| call.own_shares.is_empty())
+        })
+        .await;
+        ann.calls.start_share(window(SoundChoice::None));
+        let info = ann.until_sharing().await;
+        assert!(!info.shows_the_client);
+        ann.until_shown(ShareId::own(0), RED, BLUE).await;
+    })
+    .await;
+}
+
 /// The bitrate of a share follows the size of its pictures (ADR 0737): a window shared at
 /// 640 × 400 is encoded within the bitrate of that size; after the window grows to
 /// 1920 × 1080 the encoder aims above it; when the window becomes small again it returns
@@ -2976,6 +3057,7 @@ async fn a_share_larger_than_the_levels_of_h264_arrives_at_its_size_in_vp8() {
             system_sound: false,
             started_the_client: Vec::new(),
             creators_unknown: false,
+            clients: Vec::new(),
         });
         ann.enter(room.target).await;
         ben.enter(room.target).await;

@@ -177,6 +177,9 @@ pub struct ShareInfo {
     /// The size of the picture in pixels.
     pub size: (u32, u32),
     pub frame_rate: u32,
+    /// The picture shows a window or the windows of the client itself. The sharer gets no
+    /// preview of it (ADR 0738).
+    pub shows_the_client: bool,
 }
 
 /// A share of this device in its slot.
@@ -348,9 +351,17 @@ pub(super) struct ShareSink {
     stops: Arc<Stops>,
     /// The count of stops of the slot of this share when it was asked for.
     stop: u64,
+    /// The picture shows the client itself, so the sharer gets no preview of it: a window
+    /// that shows the call would draw its own picture again inside itself (ADR 0738). Set
+    /// when the capture has started.
+    shows_the_client: AtomicBool,
 }
 
 impl ShareSink {
+    fn shows_the_client(&self) -> bool {
+        self.shows_the_client.load(Ordering::Acquire)
+    }
+
     /// The share was ended by the capture, or stopped at the handle of the engine.
     fn over(&self) -> bool {
         self.ended.load(Ordering::Relaxed) || self.stops.share(self.slot) != self.stop
@@ -430,11 +441,12 @@ impl CaptureSink for ShareSink {
 }
 
 /// Sends the last picture again while the capture gives none, and draws the own share for
-/// the sharer.
+/// the sharer, unless its picture shows the client itself.
 async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receiver<View>) {
     let mut tick = tokio::time::interval(IDLE_RESEND / 4);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut small_at: Option<Instant> = None;
+    let mut hidden = false;
     // What was drawn last: the picture, the view, and when.
     let mut drawn: Option<(Arc<dyn VideoBuffer>, View, Instant)> = None;
     loop {
@@ -457,6 +469,14 @@ async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receive
         }
         if sink.over() {
             return;
+        }
+        if sink.shows_the_client() {
+            // A picture drawn before the start was known is taken away once.
+            if !hidden {
+                pictures.forget(ShareId::own(sink.slot));
+                hidden = true;
+            }
+            continue;
         }
         let Some((buffer, _)) = sink.last() else {
             continue;
@@ -819,6 +839,7 @@ impl Actor {
                                 && !matches!(share.sound, Publication::Published(_)),
                             size: share.sink.size().unwrap_or((stream.width, stream.height)),
                             frame_rate: share.request.quality.frame_rate,
+                            shows_the_client: stream.shows_the_client,
                         })
                     }
                     _ => ShareState::Starting,
@@ -1260,12 +1281,14 @@ impl Actor {
             ended: AtomicBool::new(false),
             stops: self.stops.clone(),
             stop: stops[usize::from(slot)],
+            shows_the_client: AtomicBool::new(false),
         });
         let sound_source: Arc<Mutex<Option<NativeAudioSource>>> = Arc::default();
         let starting = self.options.capture.start(request.clone(), sink.clone());
         let internal = self.internal.clone();
         let started: Started = Arc::default();
         let held = started.clone();
+        let started_sink = sink.clone();
         let tasks = vec![
             self.runtime.spawn(pump_sound(taken, sound_source.clone())),
             self.runtime.spawn(tend(
@@ -1279,6 +1302,12 @@ impl Actor {
             // nobody takes it any more is dropped with its message.
             self.runtime.spawn(async move {
                 let answer = starting.await;
+                if let Ok(stream) = &answer {
+                    started_sink
+                        .shows_the_client
+                        .store(stream.shows_the_client, Ordering::Release);
+                    started_sink.arrived.notify_one();
+                }
                 *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
                 let _ = internal.send(Internal::ShareStarted(generation));
             }),

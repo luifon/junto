@@ -41,6 +41,62 @@ async fn a_workspace_has_an_afk_channel_and_only_a_manager_changes_its_settings(
         .error(ErrorCode::InvalidRequest);
 }
 
+/// A person moved into the AFK channel starts the call there for the state of every device,
+/// and that start is told to nobody: the event states `afk`, and a background connection,
+/// which receives a call start only for its system notification, does not get it. The start
+/// of a call in another voice channel is told as before (ADR 0523).
+#[tokio::test]
+async fn a_move_to_the_afk_channel_starts_no_call_that_anyone_is_told_about() {
+    use crate::discovery_support::events;
+    use junto_protocol::call::{CallJoin, CallMove, CallPlace};
+    use junto_protocol::events::{Event, Level};
+    use junto_protocol::ids::ChannelId;
+    let scene = Scene::start().await;
+    let server = &scene.server;
+    let path = format!("/api/v1/workspaces/{}/afk", scene.workspace_id);
+    let settings: Value = server.get(&scene.ann, &path).await.ok(StatusCode::OK);
+    let afk: ChannelId = serde_json::from_value(settings["channel_id"].clone()).unwrap();
+    let before = server.snapshot(&scene.ben).await.cursor;
+    let source = server.enter_call(&scene.ann, scene.voice.id).await;
+    let idle = json!({"call_id":source.join.call.id, "identity":source.identity,
+        "system_idle_seconds":900, "microphone_silent_seconds":900});
+    let moved: CallMove = server
+        .post(&scene.ann, "/api/v1/call/idle", &idle)
+        .await
+        .ok(StatusCode::OK);
+    let join: CallJoin = server
+        .post(
+            &scene.ann,
+            &format!("/api/v1/call/moves/{}/join", moved.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::OK);
+    server.connect(join);
+    server.check().await;
+    let starts = |received: &[Event]| -> Vec<(Option<ChannelId>, Option<bool>)> {
+        received
+            .iter()
+            .filter_map(|event| match event {
+                Event::CallStarted { place, afk, .. } => Some((place.channel_id(), *afk)),
+                _ => None,
+            })
+            .collect()
+    };
+    let full = events(server, &scene.ben, before, Level::Full).await;
+    assert_eq!(
+        starts(&full),
+        [(Some(scene.voice.id), Some(false)), (Some(afk), Some(true))]
+    );
+    assert!(full.iter().any(|event| matches!(
+        event,
+        Event::CallParticipantJoined { place: CallPlace::Channel { channel_id, .. }, .. }
+            if *channel_id == afk
+    )));
+    let background = events(server, &scene.ben, before, Level::Background).await;
+    assert_eq!(starts(&background), [(Some(scene.voice.id), Some(false))]);
+}
+
 #[tokio::test]
 async fn an_idle_move_rechecks_the_seat_and_destination_and_refuses_every_publishing_source() {
     use crate::calls_support::claims;

@@ -868,6 +868,7 @@ fn a_running_share_holds_the_notification_of_a_mention(cx: &mut TestAppContext) 
             sound_held: false,
             size: (64, 36),
             frame_rate: 30,
+            shows_the_client: false,
         }),
     )]);
     crate::calls::show_call(&mut window, call.clone());
