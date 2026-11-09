@@ -232,7 +232,9 @@ TLS implementation references: [platform selection](https://github.com/webrtc-sd
 
 The personal Voice settings and the device check before joining a call offer the saved input,
 output and camera choices, system defaults, disconnected saved choices and a refresh of the
-lists. The microphone test plays the processed microphone through the selected output; the
+lists. A refresh reads the sound devices with the microphone permission in one task and the
+cameras in another, so that a camera list that takes seconds (ADR 0770) does not delay the
+sound lists. The microphone test plays the processed microphone through the selected output; the
 output test plays a quiet repeating tone without opening the microphone. Only an explicit
 microphone test asks for a permission that the system has not asked yet. The ordinary input
 meter starts only when permission is already granted and never asks for it. The tests use the same format conversion and processing

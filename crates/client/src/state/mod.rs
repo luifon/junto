@@ -2447,21 +2447,20 @@ impl AppState {
 
     /// Reads the sound devices and the microphone permission again, on a background
     /// thread: the list of a system can take a moment.
+    /// Reads the sound devices with the microphone permission, and the cameras, in two tasks:
+    /// the camera list of a system can take seconds (ADR 0770), and the sound lists do not
+    /// wait for it.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
         let read = self
             .permissions
             .order(crate::permissions::Permission::Microphone)
             .read();
         let calls = self.calls.clone();
-        let reading = cx.background_executor().spawn(async move {
-            (
-                calls.devices(),
-                calls.microphone_access(),
-                calls.camera_devices(),
-            )
-        });
+        let sound = cx
+            .background_executor()
+            .spawn(async move { (calls.devices(), calls.microphone_access()) });
         cx.spawn(async move |this, cx| {
-            let (devices, access, cameras) = reading.await;
+            let (devices, access) = sound.await;
             let _ = this.update(cx, |this, cx| {
                 match devices {
                     Ok(devices) => this.known.media.devices = devices,
@@ -2474,6 +2473,17 @@ impl AppState {
                 {
                     this.known.media.access = Some(access);
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+        let calls = self.calls.clone();
+        let cameras = cx
+            .background_executor()
+            .spawn(async move { calls.camera_devices() });
+        cx.spawn(async move |this, cx| {
+            let cameras = cameras.await;
+            let _ = this.update(cx, |this, cx| {
                 this.camera_devices = cameras.unwrap_or_default();
                 cx.notify();
             });

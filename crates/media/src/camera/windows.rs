@@ -7,10 +7,11 @@ use ::windows::Win32::Foundation::E_ACCESSDENIED;
 use ::windows::Win32::Media::MediaFoundation::*;
 use ::windows::Win32::System::Com::CoTaskMemFree;
 use ::windows::core::{GUID, HRESULT, Interface, Ref, implement};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use super::format::Mode;
+use super::listing;
 use super::matrix::Tag;
 use super::raw::{Layout, Pixel};
 use super::{worker, *};
@@ -123,25 +124,32 @@ fn listed<T: Interface>(items: Vec<T>) -> Result<Vec<(CameraDevice, T)>, CameraE
     Ok(devices)
 }
 
+/// The DirectShow enumeration of the process, for the camera lists and the capture starts
+/// (`listing`).
+static DIRECT_SHOW: Mutex<listing::DirectShow> = Mutex::new(listing::DirectShow::new());
+
 /// Where a listed camera is captured from.
 enum Found {
     MediaFoundation(IMFActivate),
     DirectShow(direct_show::Device),
 }
 
-/// The cameras of Media Foundation and of DirectShow (ADR 0770). A DirectShow device whose
-/// device path names a device of the Media Foundation list is that device and is listed once;
-/// a failure of the DirectShow list leaves the Media Foundation list.
-fn found() -> Result<Vec<(CameraDevice, Found)>, CameraError> {
-    let listed = enumerate()?
+/// The cameras of `media_foundation` and the DirectShow devices that are not among them
+/// (`listing::merge`, ADR 0770); a failure of the DirectShow list leaves the Media Foundation
+/// cameras.
+fn found(media_foundation: Vec<(CameraDevice, IMFActivate)>) -> Vec<(CameraDevice, Found)> {
+    let listed = media_foundation
         .into_iter()
         .map(|(device, activation)| (device, Found::MediaFoundation(activation)))
         .collect();
-    let direct_show = direct_show::enumerate().unwrap_or_else(|error| {
+    let direct_show = listing::claimed(&DIRECT_SHOW, direct_show::enumerate, |device| {
+        (device.device.clone(), device.path.clone())
+    })
+    .unwrap_or_else(|error| {
         tracing::warn!(?error, "the DirectShow cameras could not be listed");
         Vec::new()
     });
-    Ok(merge(
+    listing::merge(
         listed,
         direct_show
             .into_iter()
@@ -153,35 +161,22 @@ fn found() -> Result<Vec<(CameraDevice, Found)>, CameraError> {
                 )
             })
             .collect(),
-    ))
+    )
 }
 
-/// The device instance of a device interface path: the path without its interface class and
-/// reference string, which differ between the camera category of Media Foundation and the
-/// capture category of DirectShow for one device.
-fn instance(path: &str) -> &str {
-    path.rfind('#').map_or(path, |at| &path[..at])
-}
-
-/// The cameras of `listed` and then those of `direct_show` that are not in it: a DirectShow
-/// entry with a device path whose device instance is that of a listed camera, compared
-/// without case, or with the identifier of a listed camera, is left out.
-fn merge<T>(
-    mut listed: Vec<(CameraDevice, T)>,
-    direct_show: Vec<(CameraDevice, Option<String>, T)>,
-) -> Vec<(CameraDevice, T)> {
-    for (device, path, item) in direct_show {
-        let known = listed.iter().any(|(known, _)| {
-            known.id == device.id
-                || path
-                    .as_deref()
-                    .is_some_and(|path| instance(&known.id).eq_ignore_ascii_case(instance(path)))
-        });
-        if !known {
-            listed.push((device, item));
-        }
-    }
-    listed
+/// What a camera start read before it ended, for the log line of a capture that failed.
+#[derive(Default)]
+pub(super) struct Reading {
+    /// The step of the start that ran last.
+    pub step: &'static str,
+    /// The chosen camera.
+    pub device: Option<CameraDevice>,
+    /// The interface of the system that captures it: Media Foundation or DirectShow.
+    pub interface: &'static str,
+    /// The types that the camera offered.
+    pub offered: Option<String>,
+    /// The type that capture set.
+    pub connected: Option<String>,
 }
 
 pub(super) struct SystemCamera;
@@ -193,23 +188,18 @@ impl CameraCapture for SystemCamera {
         Box::pin(async { access() })
     }
     fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
-        let (ready, answer) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("camera-devices".into())
-            .spawn(move || {
-                let _ =
-                    ready
-                        .send(found().map(|devices| {
-                            devices.into_iter().map(|(device, _)| device).collect()
-                        }));
-            })
-            .map_err(|error| CameraError::Failed(error.to_string()))?;
-        answer
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|error| {
-                tracing::error!(%error, "camera enumeration did not finish");
-                CameraError::Failed(format!("camera enumeration did not finish: {error}"))
-            })?
+        listing::devices(
+            || Ok(enumerate()?.into_iter().map(|(device, _)| device).collect()),
+            || {
+                initialize()?;
+                Ok(direct_show::enumerate()?
+                    .into_iter()
+                    .map(|device| (device.device, device.path))
+                    .collect())
+            },
+            &DIRECT_SHOW,
+            &listing::BOUNDS,
+        )
     }
     fn start(
         &self,
@@ -508,8 +498,41 @@ fn set_type(reader: &IMFSourceReader, media: &IMFMediaType) -> Result<Layout, Ca
     }
 }
 
+/// The native types of a source for the log: their count, and the modes of those that capture
+/// reads.
+fn offered(types: &[IMFMediaType]) -> String {
+    let readable: Vec<String> = types
+        .iter()
+        .filter_map(mode)
+        .map(|mode| {
+            super::format::describe(
+                if mode.compressed {
+                    "MJPG"
+                } else {
+                    "uncompressed"
+                },
+                Some((mode.width, mode.height)),
+                mode.rate,
+            )
+        })
+        .collect();
+    format!(
+        "{} native types; capture reads: {}",
+        types.len(),
+        if readable.is_empty() {
+            "none".to_owned()
+        } else {
+            readable.join(", ")
+        }
+    )
+}
+
 /// Sets the first native type of the rule's order that the reader accepts.
-fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
+fn configure(
+    reader: &IMFSourceReader,
+    reading: &mut Reading,
+) -> Result<(Layout, Option<(u32, u32)>), CameraError> {
+    reading.step = "the native types of the source";
     let mut types = Vec::new();
     for index in 0..1024 {
         // SAFETY: the reader owns the source and returns a retained type.
@@ -519,6 +542,8 @@ fn configure(reader: &IMFSourceReader) -> Result<(Layout, Option<(u32, u32)>), C
             Err(e) => return Err(error(e)),
         }
     }
+    reading.offered = Some(offered(&types));
+    reading.step = "a native type that capture reads";
     first_accepted(&types, |media| set_type(reader, media))
 }
 
@@ -558,19 +583,78 @@ fn frame(
     }
 }
 
+/// Captures the chosen camera, and writes one log line when the capture fails: the camera,
+/// the interface, the step, the types that the camera offered and the type that capture set,
+/// so that a report with the log names the reason.
 fn capture(
     chosen: Option<String>,
     delivery: &worker::Delivery,
     ready: &mut Option<worker::Ready>,
 ) -> Result<(), CameraError> {
+    let mut reading = Reading::default();
+    let result = capture_chosen(chosen, delivery, ready, &mut reading);
+    if let Err(error) = &result {
+        let (name, id) = reading.device.as_ref().map_or(("", ""), |device| {
+            (device.name.as_str(), device.id.as_str())
+        });
+        let offered = reading.offered.as_deref().unwrap_or("not read");
+        let connected = reading.connected.as_deref().unwrap_or("none");
+        if ready.is_some() {
+            tracing::warn!(
+                camera = name,
+                id,
+                interface = reading.interface,
+                step = reading.step,
+                offered,
+                connected,
+                %error,
+                "the camera did not start"
+            );
+        } else {
+            tracing::warn!(
+                camera = name,
+                id,
+                interface = reading.interface,
+                connected,
+                %error,
+                "the camera capture ended"
+            );
+        }
+    }
+    result
+}
+
+fn capture_chosen(
+    chosen: Option<String>,
+    delivery: &worker::Delivery,
+    ready: &mut Option<worker::Ready>,
+    reading: &mut Reading,
+) -> Result<(), CameraError> {
+    reading.step = "the camera permission";
     initialize()?;
     let permission = access();
     if permission != CameraAccess::Allowed {
         return Err(CameraError::NoPermission(permission));
     }
-    let devices = found()?;
+    reading.step = "the camera list";
+    let media_foundation = enumerate()?;
+    let listed: Vec<_> = media_foundation
+        .iter()
+        .map(|(device, _)| device.clone())
+        .collect();
+    // A camera of Media Foundation starts without the DirectShow enumeration, so that a
+    // DirectShow enumeration that does not end does not hold its start.
+    let devices = if choose(&listed, chosen.as_deref()).is_ok() {
+        media_foundation
+            .into_iter()
+            .map(|(device, activation)| (device, Found::MediaFoundation(activation)))
+            .collect()
+    } else {
+        found(media_foundation)
+    };
     let listed: Vec<_> = devices.iter().map(|(device, _)| device.clone()).collect();
     let chosen = choose(&listed, chosen.as_deref())?;
+    reading.device = Some(chosen.clone());
     let (_, found) = devices
         .into_iter()
         .find(|(device, _)| device.id == chosen.id)
@@ -581,9 +665,13 @@ fn capture(
     };
     match found {
         Found::MediaFoundation(activation) => {
-            capture_media_foundation(activation, &chosen, delivery, ready)
+            reading.interface = "Media Foundation";
+            capture_media_foundation(activation, &chosen, delivery, ready, reading)
         }
-        Found::DirectShow(device) => direct_show::capture(device, &chosen, delivery, ready),
+        Found::DirectShow(device) => {
+            reading.interface = "DirectShow";
+            direct_show::capture(device, &chosen, delivery, ready, reading)
+        }
     }
 }
 
@@ -592,7 +680,9 @@ fn capture_media_foundation(
     chosen: &CameraDevice,
     delivery: &worker::Delivery,
     ready: &mut Option<worker::Ready>,
+    reading: &mut Reading,
 ) -> Result<(), CameraError> {
+    reading.step = "the activation of the source";
     // SAFETY: activation is used only on this capture thread and shut down by Source.
     let source = Source {
         delivery,
@@ -601,6 +691,7 @@ fn capture_media_foundation(
     };
     let (send, receive) = mpsc::channel();
     let callback: IMFSourceReaderCallback = Callback(send).into();
+    reading.step = "the source reader";
     let attributes = attributes()?;
     // SAFETY: the reader retains the callback and its own reference to the source.
     let reader = unsafe {
@@ -618,7 +709,13 @@ fn capture_media_foundation(
         reader.SetStreamSelection(VIDEO, true).map_err(error)?;
         reader
     };
-    let (layout, rate) = configure(&reader)?;
+    let (layout, rate) = configure(&reader, reading)?;
+    reading.connected = Some(super::format::describe(
+        &format!("{:?}", layout.pixel),
+        Some((layout.width, layout.height)),
+        rate,
+    ));
+    reading.step = "the first picture";
     // SAFETY: asynchronous mode requires null out parameters; only one read is outstanding.
     let read = || unsafe {
         reader
@@ -660,9 +757,10 @@ fn capture_media_foundation(
             if pacer.due(at) {
                 let picture = frame(&sample, layout)?;
                 if let Some(ready) = ready.take() {
+                    let (width, height) = layout.published();
                     let _ = ready.send(Ok(worker::Started {
-                        width: layout.width,
-                        height: layout.height,
+                        width,
+                        height,
                         rate,
                     }));
                 }
@@ -901,61 +999,6 @@ mod tests {
             ]
         );
     }
-    #[test]
-    fn a_direct_show_device_of_the_media_foundation_list_is_listed_once() {
-        let device = |id: &str, name: &str| CameraDevice {
-            id: id.into(),
-            name: name.into(),
-        };
-        let listed = vec![(
-            device(
-                r"\\?\usb#vid_046d&pid_085e&mi_00#7&1a2b3c&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global",
-                "Webcam",
-            ),
-            "media foundation",
-        )];
-        let direct_show = vec![
-            (
-                device(
-                    r"\\?\USB#VID_046D&PID_085E&MI_00#7&1A2B3C&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global",
-                    "Webcam",
-                ),
-                Some(r"\\?\USB#VID_046D&PID_085E&MI_00#7&1A2B3C&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global".to_owned()),
-                "direct show webcam",
-            ),
-            (
-                device(
-                    r"@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}",
-                    "OBS Virtual Camera",
-                ),
-                None,
-                "direct show virtual camera",
-            ),
-            (
-                device(
-                    r"@device:sw:{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}",
-                    "OBS Virtual Camera",
-                ),
-                None,
-                "the same filter listed again",
-            ),
-        ];
-        let merged: Vec<_> = merge(listed, direct_show)
-            .into_iter()
-            .map(|(device, from)| (device.name, from))
-            .collect();
-        assert_eq!(
-            merged,
-            [
-                ("Webcam".to_owned(), "media foundation"),
-                (
-                    "OBS Virtual Camera".to_owned(),
-                    "direct show virtual camera"
-                ),
-            ]
-        );
-    }
-
     struct CleanupSink;
     impl CameraSink for CleanupSink {
         fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {}

@@ -1,4 +1,4 @@
-//! Capture sizes, in order of preference, bounded by the camera publication limit.
+//! Capture sizes and modes, in order of preference, bounded by the camera publication limit.
 #[cfg(any(test, target_os = "macos"))]
 pub(super) fn choose(mut accepts: impl FnMut((u32, u32)) -> bool) -> Option<(u32, u32)> {
     [(1280, 720), (640, 480), (352, 288)]
@@ -32,25 +32,87 @@ pub(super) struct Mode {
 /// The lowest frame rate that is taken before a larger picture.
 const MINIMUM_RATE: u32 = 24;
 
+/// The largest published camera picture. A larger camera picture is scaled down to fit inside
+/// it, with its proportions (ADR 0770).
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+pub(super) const PUBLISHED: (u32, u32) = (1280, 720);
+
+/// The largest camera picture that capture takes: 4096 pixels on a side and the pixels of
+/// 3840 by 2160 in all.
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+const LARGEST: (u32, u32) = (3840, 2160);
+
+/// Whether capture takes pictures of `size`: both sides even and not zero, and within
+/// `LARGEST`.
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+pub(super) fn takes((width, height): (u32, u32)) -> bool {
+    width > 0
+        && height > 0
+        && width.is_multiple_of(2)
+        && height.is_multiple_of(2)
+        && width <= 4096
+        && height <= 4096
+        && u64::from(width) * u64::from(height) <= u64::from(LARGEST.0) * u64::from(LARGEST.1)
+}
+
+/// The published size of a camera picture of `size`: the size itself when it fits inside
+/// `PUBLISHED`, otherwise the largest size with the same proportions that fits, with even
+/// sides.
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+pub(super) fn fit((width, height): (u32, u32)) -> (u32, u32) {
+    if width <= PUBLISHED.0 && height <= PUBLISHED.1 {
+        return (width, height);
+    }
+    let (wide, high) = (u64::from(width), u64::from(height));
+    let (limit_w, limit_h) = (u64::from(PUBLISHED.0), u64::from(PUBLISHED.1));
+    let (fitted_w, fitted_h) = if wide * limit_h >= high * limit_w {
+        (limit_w, high * limit_w / wide.max(1))
+    } else {
+        (wide * limit_h / high.max(1), limit_h)
+    };
+    let even = |side: u64| (u32::try_from(side).unwrap_or(0) & !1).max(2);
+    (even(fitted_w), even(fitted_h))
+}
+
+/// A mode, a type or a format of a camera for the log: its subtype, size and rate.
+#[cfg(any(test, target_os = "windows"))]
+pub(super) fn describe(
+    subtype: &str,
+    size: Option<(u32, u32)>,
+    rate: Option<(u32, u32)>,
+) -> String {
+    let mut text = subtype.to_owned();
+    if let Some((width, height)) = size {
+        text.push_str(&format!(" {width}x{height}"));
+    }
+    if let Some((numerator, denominator)) = rate.filter(|(_, denominator)| *denominator > 0) {
+        text.push_str(&format!(
+            " {:.2} fps",
+            f64::from(numerator) / f64::from(denominator)
+        ));
+    }
+    text
+}
+
 #[cfg(any(test, target_os = "windows", target_os = "linux"))]
 fn reaches_minimum(mode: &Mode) -> bool {
     mode.rate
         .is_none_or(|(n, d)| u64::from(n) >= u64::from(MINIMUM_RATE) * u64::from(d))
 }
 
-/// The modes at the capture sizes, best first: the modes of at least 24 frames per second by
-/// size, largest first; then the others by rate, highest first, then by size. Within one size
-/// and rate class: the best rate of `rate_order`, then a stated rate, then an uncompressed
-/// mode, because decoding costs processor time for each picture. A mode without a stated rate
-/// counts as reaching 24.
+/// The modes that capture takes (`takes`), best first: the modes of at least 24 frames per
+/// second by published size (`fit`), largest first; then the others by rate, highest first,
+/// then by published size. At one published size: the smaller picture first, because a larger
+/// one costs a scale for each picture; then the best rate of `rate_order`, then a stated rate,
+/// then an uncompressed mode, because decoding costs processor time for each picture. A mode
+/// without a stated rate counts as reaching 24.
 #[cfg(any(test, target_os = "windows", target_os = "linux"))]
 pub(super) fn order(modes: &[Mode]) -> Vec<usize> {
-    let presets = [(1280, 720), (640, 480), (352, 288)];
-    let preset = |mode: &Mode| {
-        presets
-            .iter()
-            .position(|size| *size == (mode.width, mode.height))
+    let published = |mode: &Mode| {
+        let (width, height) = fit((mode.width, mode.height));
+        u64::from(width) * u64::from(height)
     };
+    let source = |mode: &Mode| u64::from(mode.width) * u64::from(mode.height);
     let within_size = |a: &Mode, b: &Mode| {
         a.rate
             .is_none()
@@ -62,7 +124,7 @@ pub(super) fn order(modes: &[Mode]) -> Vec<usize> {
             .then_with(|| a.compressed.cmp(&b.compressed))
     };
     let mut indices: Vec<usize> = (0..modes.len())
-        .filter(|index| preset(&modes[*index]).is_some())
+        .filter(|index| takes((modes[*index].width, modes[*index].height)))
         .collect();
     indices.sort_by(|a, b| {
         let (a, b) = (&modes[*a], &modes[*b]);
@@ -70,12 +132,13 @@ pub(super) fn order(modes: &[Mode]) -> Vec<usize> {
             .cmp(&reaches_minimum(a))
             .then_with(|| {
                 if reaches_minimum(a) {
-                    preset(a).cmp(&preset(b))
+                    published(b).cmp(&published(a))
                 } else {
                     rate_order(a.rate.unwrap_or((0, 1)), b.rate.unwrap_or((0, 1)))
-                        .then_with(|| preset(a).cmp(&preset(b)))
+                        .then_with(|| published(b).cmp(&published(a)))
                 }
             })
+            .then_with(|| source(a).cmp(&source(b)))
             .then_with(|| within_size(a, b))
     });
     indices
@@ -180,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_at_a_capture_size_is_ordered_by_the_rule() {
+    fn every_mode_that_capture_takes_is_ordered_by_the_rule() {
         let modes = [
             mode(1280, 720, Some((30, 1)), true),
             mode(1280, 720, Some((10, 1)), false),
@@ -188,14 +251,75 @@ mod tests {
             mode(1920, 1080, Some((30, 1)), false),
             mode(352, 288, Some((30, 1)), false),
             mode(640, 480, Some((15, 1)), false),
+            mode(7680, 4320, Some((30, 1)), false),
         ];
-        assert_eq!(order(&modes), [0, 2, 4, 5, 1]);
+        assert_eq!(order(&modes), [0, 3, 2, 4, 5, 1]);
         assert_eq!(select(&modes), Some(0));
     }
 
+    /// A virtual camera offers one size, the size that its own application sets: OBS Studio
+    /// its output size, NVIDIA Broadcast the size of its camera setting.
     #[test]
-    fn sizes_outside_the_presets_are_not_chosen() {
-        assert_eq!(select(&[mode(1920, 1080, Some((30, 1)), false)]), None);
+    fn a_camera_that_offers_only_another_size_is_taken_at_that_size() {
+        for size in [
+            (1920, 1080),
+            (1092, 614),
+            (1152, 720),
+            (2560, 1440),
+            (1080, 1920),
+        ] {
+            assert_eq!(
+                select(&[mode(size.0, size.1, Some((60, 1)), false)]),
+                Some(0),
+                "{size:?}"
+            );
+        }
+        assert_eq!(select(&[mode(1279, 720, Some((30, 1)), false)]), None);
+        assert_eq!(select(&[mode(4096, 2304, Some((30, 1)), false)]), None);
+        assert_eq!(select(&[mode(5120, 1440, Some((30, 1)), false)]), None);
         assert_eq!(select(&[]), None);
+    }
+
+    #[test]
+    fn of_two_sizes_with_the_same_published_size_the_smaller_is_chosen() {
+        let modes = [
+            mode(1920, 1080, Some((30, 1)), false),
+            mode(1280, 720, Some((30, 1)), false),
+            mode(3840, 2160, Some((30, 1)), false),
+        ];
+        assert_eq!(order(&modes), [1, 0, 2]);
+        // A size between the presets gives a larger published picture than 640 by 480.
+        let modes = [
+            mode(640, 480, Some((30, 1)), false),
+            mode(1092, 614, Some((30, 1)), false),
+        ];
+        assert_eq!(select(&modes), Some(1));
+    }
+
+    #[test]
+    fn a_larger_picture_is_published_inside_the_limit_with_its_proportions() {
+        assert_eq!(fit((1280, 720)), (1280, 720));
+        assert_eq!(fit((640, 480)), (640, 480));
+        assert_eq!(fit((1092, 614)), (1092, 614));
+        assert_eq!(fit((1920, 1080)), (1280, 720));
+        assert_eq!(fit((3840, 2160)), (1280, 720));
+        assert_eq!(fit((1440, 1080)), (960, 720));
+        assert_eq!(fit((1920, 1200)), (1152, 720));
+        assert_eq!(fit((2560, 1080)), (1280, 540));
+        assert_eq!(fit((1080, 1920)), (404, 720));
+        assert_eq!(fit((4096, 2)), (1280, 2));
+    }
+
+    #[test]
+    fn a_mode_for_the_log_names_its_subtype_size_and_rate() {
+        assert_eq!(
+            describe("NV12", Some((1920, 1080)), Some((10_000_000, 166_666))),
+            "NV12 1920x1080 60.00 fps"
+        );
+        assert_eq!(describe("MJPG", None, None), "MJPG");
+        assert_eq!(
+            describe("RGB24", Some((640, 480)), Some((30, 0))),
+            "RGB24 640x480"
+        );
     }
 }

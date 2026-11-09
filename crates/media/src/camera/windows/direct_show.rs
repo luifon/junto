@@ -9,9 +9,10 @@ use ::windows::Win32::Media::DirectShow::*;
 use ::windows::Win32::Media::IReferenceClock;
 use ::windows::Win32::Media::MediaFoundation::{
     AM_MEDIA_TYPE, CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, CLSID_SystemDeviceEnum,
-    CLSID_VideoInputDeviceCategory, FORMAT_VideoInfo, FORMAT_VideoInfo2, MEDIASUBTYPE_I420,
-    MEDIASUBTYPE_IYUV, MEDIASUBTYPE_NV12, MEDIASUBTYPE_YUY2, MEDIATYPE_Video, PIN_CATEGORY_CAPTURE,
-    VIDEOINFOHEADER, VIDEOINFOHEADER2,
+    CLSID_VideoInputDeviceCategory, FORMAT_VideoInfo, FORMAT_VideoInfo2, MEDIASUBTYPE_ARGB32,
+    MEDIASUBTYPE_I420, MEDIASUBTYPE_IYUV, MEDIASUBTYPE_NV12, MEDIASUBTYPE_RGB24,
+    MEDIASUBTYPE_RGB32, MEDIASUBTYPE_UYVY, MEDIASUBTYPE_YUY2, MEDIATYPE_Video,
+    PIN_CATEGORY_CAPTURE, VIDEOINFOHEADER, VIDEOINFOHEADER2,
 };
 use ::windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use ::windows::Win32::System::Com::{
@@ -22,13 +23,14 @@ use ::windows::core::{
     BOOL, ComObject, GUID, HRESULT, Interface, PCWSTR, PWSTR, Ref, implement, w,
 };
 
+use super::super::bitmap::{self, Subtype, Video};
 use super::super::format::{self, Mode};
-use super::super::matrix::Tag;
-use super::super::raw::{Layout, Pixel};
+use super::super::raw::Layout;
 use super::super::{CameraDevice, CameraError, worker};
-use super::error;
+use super::{Reading, error};
 
-/// The largest picture that a sample may carry: two bytes per pixel at 1280 × 720 fit well.
+/// The largest picture that a sample may carry: four bytes per pixel at the largest size that
+/// capture takes (`format::takes`) fit.
 const LARGEST_SAMPLE: usize = 32 * 1024 * 1024;
 
 /// A DirectShow video input device: its entry of the camera list, the device path of a device
@@ -254,89 +256,54 @@ impl Owned {
         None
     }
 
-    /// The layout of the pictures of an uncompressed type that capture can read.
-    fn layout(&self) -> Option<Layout> {
-        let pixel = if self.sub == MEDIASUBTYPE_NV12 {
-            Pixel::Nv12
-        } else if self.sub == MEDIASUBTYPE_I420 || self.sub == MEDIASUBTYPE_IYUV {
-            Pixel::I420
-        } else if self.sub == MEDIASUBTYPE_YUY2 {
-            Pixel::Yuy2
+    /// The uncompressed subtype of this type that capture reads.
+    fn subtype(&self) -> Option<Subtype> {
+        let sub = self.sub;
+        Some(if sub == MEDIASUBTYPE_NV12 {
+            Subtype::Nv12
+        } else if sub == MEDIASUBTYPE_I420 || sub == MEDIASUBTYPE_IYUV {
+            Subtype::I420
+        } else if sub == MEDIASUBTYPE_YUY2 {
+            Subtype::Yuy2
+        } else if sub == MEDIASUBTYPE_UYVY {
+            Subtype::Uyvy
+        } else if sub == MEDIASUBTYPE_RGB24 {
+            Subtype::Rgb24
+        } else if sub == MEDIASUBTYPE_RGB32 || sub == MEDIASUBTYPE_ARGB32 {
+            Subtype::Rgb32
         } else {
             return None;
-        };
-        let video = self.video()?;
-        layout_of(pixel, &video)
+        })
+    }
+
+    /// The layout of the pictures of an uncompressed type that capture can read.
+    fn layout(&self) -> Option<Layout> {
+        bitmap::layout_of(self.subtype()?, &self.video()?)
     }
 
     /// The capture mode of an uncompressed type that `layout` accepts. An MJPEG type gives no
-    /// mode: the MJPEG decoder of DirectShow gives RGB pictures, which the sink does not
-    /// take (ADR 0770).
+    /// mode: the MJPEG decoder of DirectShow is a filter between the source and the sink,
+    /// which the direct connection of the capture does not insert (ADR 0770).
     fn mode(&self) -> Option<Mode> {
         let video = self.video()?;
-        let rate = rate(video.frame_time);
         let layout = self.layout()?;
         Some(Mode {
             width: layout.width,
             height: layout.height,
-            rate,
+            rate: video.rate(),
             compressed: false,
         })
     }
-}
 
-/// The fields of a video format block that capture reads.
-struct Video {
-    width: i32,
-    height: i32,
-    visible: i32,
-    frame_time: i64,
-    flags: Option<u32>,
-}
-
-/// The control flags of a format block carry the colour of the pictures.
-const COLOR_INFO_PRESENT: u32 = 0x80;
-
-/// The layout of uncompressed pictures of `pixel`. The width of the bitmap header is the
-/// stride in pixels, and the target rectangle, when it is set, the visible width. The planes
-/// of YUV formats run from the top whatever the sign of the height. A stated full range is
-/// refused, as the Media Foundation path refuses it.
-fn layout_of(pixel: Pixel, video: &Video) -> Option<Layout> {
-    let stride_pixels = u32::try_from(video.width).ok().filter(|width| *width > 0)?;
-    let width = match u32::try_from(video.visible) {
-        Ok(visible) if visible > 0 && visible <= stride_pixels => visible,
-        _ => stride_pixels,
-    };
-    let height = video.height.unsigned_abs();
-    let mut matrix = Tag::Missing;
-    if let Some(flags) = video.flags.filter(|flags| flags & COLOR_INFO_PRESENT != 0) {
-        if (flags >> 12) & 0x7 == 1 {
-            return None;
-        }
-        matrix = match (flags >> 15) & 0x7 {
-            0 => Tag::Missing,
-            1 => Tag::Bt709,
-            2 => Tag::Bt601,
-            3 => Tag::Smpte240m,
-            _ => Tag::Other,
-        };
+    /// The subtype, the size and the rate of this type, for the log.
+    fn describe(&self) -> String {
+        let video = self.video();
+        format::describe(
+            &bitmap::subtype_name(self.sub.to_u128()),
+            video.map(|video| (video.width.unsigned_abs(), video.height.unsigned_abs())),
+            video.and_then(|video| video.rate()),
+        )
     }
-    let stride = stride_pixels as usize * if pixel == Pixel::Yuy2 { 2 } else { 1 };
-    let layout = Layout {
-        width,
-        height,
-        stride,
-        pixel,
-        matrix,
-    };
-    layout.length()?;
-    Some(layout)
-}
-
-/// The frame rate of a frame time in units of 100 nanoseconds.
-fn rate(frame_time: i64) -> Option<(u32, u32)> {
-    let frame_time = u32::try_from(frame_time).ok().filter(|time| *time > 0)?;
-    Some((10_000_000, frame_time))
 }
 
 /// What the input pin hands to the capture thread.
@@ -981,7 +948,9 @@ pub(super) fn capture(
     chosen: &CameraDevice,
     delivery: &worker::Delivery,
     ready: &mut Option<worker::Ready>,
+    reading: &mut Reading,
 ) -> Result<(), CameraError> {
+    reading.step = "the source filter and the filter graph";
     let (send, receive) = mpsc::sync_channel(2);
     // SAFETY: the objects are created and used on this capture thread; `Graph` ends them.
     let (graph, builder, control, events, source) = unsafe {
@@ -1032,6 +1001,7 @@ pub(super) fn capture(
         source_added: false,
         sink_added: false,
     };
+    reading.step = "the capture pin";
     // SAFETY: both filters join the graph of this thread.
     let output = unsafe {
         graph
@@ -1049,10 +1019,19 @@ pub(super) fn capture(
     let config: IAMStreamConfig = output
         .cast()
         .map_err(at("the stream configuration of the capture pin"))?;
+    reading.step = "the types of the capture pin";
     let mut types = stream_types(&config)?;
     if types.is_empty() {
         types = pin_types(&output);
     }
+    reading.offered = Some(
+        types
+            .iter()
+            .map(Owned::describe)
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    reading.step = "a type of the capture pin that capture reads";
     let modes: Vec<(usize, Mode)> = types
         .iter()
         .enumerate()
@@ -1062,6 +1041,7 @@ pub(super) fn capture(
     let mut failure = CameraError::Unsupported;
     let mut connected = None;
     for chosen_mode in format::order(&listed) {
+        reading.step = "the direct connection of a type";
         let (index, mode) = modes[chosen_mode];
         match connect(&graph.graph, &output, &pin, &config, &mut types[index]) {
             Ok(()) => {
@@ -1072,9 +1052,18 @@ pub(super) fn capture(
         }
     }
     let rate = connected.ok_or(failure)?;
+    reading.step = "the layout of the connected type";
     let layout = graph.input.layout().ok_or(CameraError::Unsupported)?;
+    reading.connected = graph
+        .input
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.connected.as_ref().map(|(_, media)| media.describe()));
+    reading.step = "the start of the graph";
     // SAFETY: the graph of this thread is connected; `Graph` stops it.
     unsafe { graph.control.Run() }.map_err(at("the start of the graph"))?;
+    reading.step = "the first picture";
     let start = Instant::now();
     let mut last_picture = start;
     let mut pacer = worker::Pacer::default();
@@ -1124,9 +1113,10 @@ pub(super) fn capture(
         if pacer.due(at) {
             let picture = layout.convert(&bytes)?;
             if let Some(ready) = ready.take() {
+                let (width, height) = layout.published();
                 let _ = ready.send(Ok(worker::Started {
-                    width: layout.width,
-                    height: layout.height,
+                    width,
+                    height,
                     rate,
                 }));
             }
@@ -1165,6 +1155,7 @@ fn lost(events: &IMediaEvent) -> Result<(), CameraError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::raw::Pixel;
     use ::windows::Win32::Media::MediaFoundation::MEDIASUBTYPE_MJPG;
 
     fn video_type(subtype: GUID, width: i32, height: i32, frame_time: i64) -> Owned {
@@ -1217,42 +1208,24 @@ mod tests {
             (480, 640, Pixel::Nv12)
         );
         assert_eq!(nv12.mode().unwrap().rate, None);
-        // The MJPEG decoder of DirectShow gives RGB pictures, which the sink does not take.
+        // The MJPEG decoder of DirectShow is not inserted by the direct connection.
         let mjpeg = video_type(MEDIASUBTYPE_MJPG, 1280, 720, 333_333);
         assert!(mjpeg.mode().is_none());
         assert!(mjpeg.layout().is_none());
-        assert!(
-            video_type(MEDIASUBTYPE_YUY2, 1920, 1080, 333_333)
-                .mode()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_stated_full_range_is_refused_and_a_stated_matrix_is_kept() {
-        let pixel = Pixel::Nv12;
-        let video = |flags| Video {
-            width: 640,
-            height: 480,
-            visible: 0,
-            frame_time: 0,
-            flags,
-        };
-        assert_eq!(layout_of(pixel, &video(None)).unwrap().matrix, Tag::Missing);
-        let bt709 = COLOR_INFO_PRESENT | (1 << 15) | (2 << 12);
-        assert_eq!(
-            layout_of(pixel, &video(Some(bt709))).unwrap().matrix,
-            Tag::Bt709
-        );
-        let full = COLOR_INFO_PRESENT | (2 << 15) | (1 << 12);
-        assert!(layout_of(pixel, &video(Some(full))).is_none());
-        // Without the flag the bits are not colour information.
-        assert_eq!(
-            layout_of(pixel, &video(Some((1 << 15) | (1 << 12))))
-                .unwrap()
-                .matrix,
-            Tag::Missing
-        );
+        assert_eq!(mjpeg.describe(), "MJPG 1280x720 30.00 fps");
+        // The one size of a virtual camera above the published size is taken.
+        let large = video_type(MEDIASUBTYPE_NV12, 1920, 1080, 166_666);
+        assert_eq!(large.layout().unwrap().published(), (1280, 720));
+        for (subtype, pixel) in [
+            (MEDIASUBTYPE_UYVY, Pixel::Uyvy),
+            (MEDIASUBTYPE_RGB24, Pixel::Bgr24 { bottom_up: true }),
+            (MEDIASUBTYPE_RGB32, Pixel::Bgrx { bottom_up: true }),
+            (MEDIASUBTYPE_ARGB32, Pixel::Bgrx { bottom_up: true }),
+        ] {
+            let media = video_type(subtype, 1920, 1080, 333_333);
+            assert_eq!(media.layout().unwrap().pixel, pixel);
+            assert!(media.mode().is_some());
+        }
     }
 
     #[test]
