@@ -69,9 +69,9 @@ def verdict(observations):
         findings.append("the third press did not restore the window either")
     if second.main_in_front:
         findings.append("the second press made the minimized window the foreground window without "
-                        "restoring it: the restore that the taskbar posts after the activation did "
-                        "not reach the window, as when the thread of the window waits in a call "
-                        "through COM (ADR 0755)")
+                        "restoring it, which is consistent with a restore that the taskbar posts "
+                        "after the activation and that the window does not receive (ADR 0755); a "
+                        "log of the messages of the window shows whether it was received")
     elif first.client_in_front:
         findings.append("after the minimize a window of the client stayed the foreground window")
     if any(observation.buttons > 1 for observation in observations):

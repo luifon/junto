@@ -131,6 +131,30 @@ pub fn mark_pins_of_this_program(identifier: &'static str) {
     }
 }
 
+/// Runs `work` on a thread of its own in the single-threaded apartment of COM, which the thread
+/// leaves at the end. A call of the taskbar through COM waits in the modal loop of COM, which
+/// takes a system command that the taskbar posts to a window of the waiting thread; on a
+/// thread of its own it takes none of them (ADR 0755).
+pub fn on_apartment_thread(
+    name: &str,
+    work: impl FnOnce() + Send + 'static,
+) -> std::io::Result<()> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            // SAFETY: the thread enters the apartment, uses COM and leaves it.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                tracing::warn!("a thread of the taskbar did not enter COM");
+                return;
+            }
+            work();
+            // SAFETY: balances the successful call above on the same thread.
+            unsafe { CoUninitialize() };
+        })
+        .map(|_| ())
+}
+
 fn mark_pin(path: &Path, program: &Path, identifier: &str) -> std::io::Result<bool> {
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READWRITE,

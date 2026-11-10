@@ -87,11 +87,17 @@ impl SecondStart {
             .spawn()
             .unwrap();
         let adopted = crate::limit::adopt(child.id());
-        let output = BufReader::new(child.stdout.take().unwrap());
+        let output = child.stdout.take().unwrap();
+        // The value ends the second start when the test fails from here on.
+        let mut start = Self {
+            child,
+            _adopted: adopted,
+            title,
+        };
         // The lines are read on a thread of their own, so that the wait has a bound.
         let (sender, lines) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            for line in output.lines().map_while(Result::ok) {
+            for line in BufReader::new(output).lines().map_while(Result::ok) {
                 if sender.send(line).is_err() {
                     return;
                 }
@@ -99,11 +105,6 @@ impl SecondStart {
         });
         let started = Instant::now();
         let mut written = Vec::new();
-        let mut start = Self {
-            child,
-            _adopted: adopted,
-            title,
-        };
         loop {
             let left = OPEN_LIMIT.saturating_sub(started.elapsed());
             match lines.recv_timeout(left) {
@@ -112,10 +113,11 @@ impl SecondStart {
                 Err(RecvTimeoutError::Timeout) => panic!(
                     "the second start opened no window within {OPEN_LIMIT:?}; it wrote {written:?}"
                 ),
+                // The output ended: the second start has ended, or writes no more lines.
                 Err(RecvTimeoutError::Disconnected) => panic!(
-                    "the second start ended with {:?} before its window opened; it wrote \
-                     {written:?}",
-                    start.child.wait()
+                    "the output of the second start ended before its window opened (state of the \
+                     process: {:?}); it wrote {written:?}",
+                    start.child.try_wait()
                 ),
             }
         }

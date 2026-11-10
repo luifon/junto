@@ -27,14 +27,8 @@ pub fn show(count: u64, window: &gpui::Window) {
         );
     }
     #[cfg(windows)]
-    if let Some(handle) = crate::taskbar::handle(window)
-        && let Err(error) = junto_client_core::app_badge::set_overlay(
-            handle,
-            count,
-            &crate::text::for_person(count),
-        )
-    {
-        tracing::warn!(%error, "the count of the taskbar button was not set");
+    if let Some(handle) = crate::taskbar::handle(window) {
+        junto_client_core::app_badge::show_overlay(handle, count, crate::text::for_person(count));
     }
     #[cfg(target_os = "linux")]
     {
