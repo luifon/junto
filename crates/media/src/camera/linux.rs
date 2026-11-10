@@ -96,7 +96,6 @@ const PIXELS: [(u32, Pixel); 3] = [
     (u32::from_le_bytes(*b"YU12"), Pixel::I420),
     (u32::from_le_bytes(*b"YUYV"), Pixel::Yuy2),
 ];
-const SIZES: [(u32, u32); 3] = [(1280, 720), (640, 480), (352, 288)];
 /// Bounds on the entries of a driver's enumerations.
 const ENTRIES: u32 = 256;
 
@@ -155,8 +154,8 @@ impl Camera {
         Ok(entries)
     }
 
-    /// The capture modes of the accepted pixel formats at the capture sizes, with the V4L2
-    /// code of each.
+    /// The capture modes of the accepted pixel formats at the sizes of `v4l2::sizes`, with the
+    /// V4L2 code of each.
     fn modes(&self) -> Result<Vec<(Mode, u32)>, CameraError> {
         // SAFETY: the camera is open and each out parameter is valid for the call.
         let formats =
@@ -170,13 +169,7 @@ impl Camera {
             let sizes = self.entries(|index, range| unsafe {
                 junto_camera_size(self.0, fourcc, index, range)
             })?;
-            for (width, height) in SIZES {
-                // A driver without the enumeration of sizes is asked for each capture size.
-                if !sizes.is_empty()
-                    && !sizes.iter().any(|range| v4l2::fits(range, (width, height)))
-                {
-                    continue;
-                }
+            for (width, height) in v4l2::sizes(&sizes) {
                 // SAFETY: as above.
                 let intervals = self.entries(|index, range| unsafe {
                     junto_camera_interval(self.0, fourcc, width, height, index, range)
@@ -460,9 +453,10 @@ fn capture(
                 camera.release(buffer.index, Some(&mut bytes))?;
                 let frame = layout.convert(&bytes)?;
                 if let Some(ready) = ready.take() {
+                    let (width, height) = layout.published();
                     let _ = ready.send(Ok(worker::Started {
-                        width: layout.width,
-                        height: layout.height,
+                        width,
+                        height,
                         rate,
                     }));
                 }
@@ -650,14 +644,14 @@ mod tests {
     }
 
     #[test]
-    fn only_nodes_with_an_accepted_mode_at_a_capture_size_are_listed() {
+    fn only_nodes_with_an_accepted_mode_of_a_size_that_capture_takes_are_listed() {
         let fake = Fake::new(vec![
             Spec {
                 modes: vec![mode(BAYER, 1280, 720, 30)],
                 ..Spec::default()
             },
             Spec {
-                modes: vec![mode(NV12, 1920, 1080, 30)],
+                modes: vec![mode(NV12, 7680, 4320, 30)],
                 ..Spec::default()
             },
             Spec {
@@ -679,6 +673,60 @@ mod tests {
             .collect();
         assert_eq!(listed, ["Fake camera 4"]);
         assert_eq!(access(fake.system(), fake.nodes()), CameraAccess::Allowed);
+    }
+
+    /// A virtual camera offers one size, the size that its own application sets: a
+    /// v4l2loopback device of OBS Studio the output size of OBS.
+    #[tokio::test]
+    async fn a_camera_that_offers_only_another_size_is_listed_and_published_inside_the_limit() {
+        for (fourcc, size, published) in [
+            (NV12, (1920, 1080), (1280, 720)),
+            (YUYV, (1092, 614), (1092, 614)),
+            (YUYV, (1080, 1920), (404, 720)),
+        ] {
+            let fake = Fake::new(vec![Spec {
+                modes: vec![mode(fourcc, size.0, size.1, 30)],
+                frames: (0..10).map(|index| frame(100 + index)).collect(),
+                ..Spec::default()
+            }]);
+            assert_eq!(devices(fake.system(), fake.nodes()).len(), 1, "{size:?}");
+            let (stream, receive) = capture_of(fake).await;
+            let stream = stream.unwrap();
+            assert_eq!((stream.width, stream.height), published, "{size:?}");
+            let record = fake.record(0);
+            assert_eq!((record.width, record.height), size);
+            let received = pictures(&receive, 3);
+            assert!(
+                received
+                    .iter()
+                    .all(|(width, height, _)| (*width, *height) == published),
+                "{size:?}: {received:?}"
+            );
+            assert_eq!(
+                received
+                    .iter()
+                    .map(|(_, _, luma)| *luma)
+                    .collect::<Vec<_>>(),
+                [100, 101, 102]
+            );
+            drop(stream);
+            closed(fake, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn of_a_camera_size_and_a_preset_with_one_published_size_the_preset_is_requested() {
+        let fake = Fake::new(vec![Spec {
+            modes: vec![mode(NV12, 1920, 1080, 30), mode(NV12, 1280, 720, 30)],
+            ..Spec::default()
+        }]);
+        let (stream, _receive) = capture_of(fake).await;
+        let stream = stream.unwrap();
+        assert_eq!((stream.width, stream.height), (1280, 720));
+        let record = fake.record(0);
+        assert_eq!((record.width, record.height), (1280, 720));
+        drop(stream);
+        closed(fake, 0);
     }
 
     #[test]

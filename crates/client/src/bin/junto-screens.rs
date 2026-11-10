@@ -1094,15 +1094,20 @@ fn no_call() -> MediaSnapshot {
     }
 }
 
-/// What the capture of a screen lists: one screen, two windows and their applications.
+/// The window of Junto itself in the lists of [`capture`].
+const JUNTO_WINDOW: u32 = 13;
+
+/// What the capture of a screen lists: one screen, a window of Junto itself and two windows
+/// of other applications, and their applications.
 fn capture() -> SyntheticCapture {
     let application = |process_id: i32, bundle_id: &str| ApplicationId {
         process_id,
         bundle_id: bundle_id.to_owned(),
     };
-    let (desktop, editor) = (
+    let (desktop, editor, junto) = (
         application(501, "example.remote-desktop"),
         application(502, "example.editor"),
+        application(500, "chat.junto.client"),
     );
     let capture = SyntheticCapture::new();
     capture.set_sources(ShareSources {
@@ -1110,12 +1115,22 @@ fn capture() -> SyntheticCapture {
         system_sound: true,
         started_the_client: Vec::new(),
         creators_unknown: false,
+        // Junto itself is listed for its picture (ADR 0736).
+        clients: vec![junto.clone()],
         displays: vec![DisplaySource {
             id: 1,
             width: 1920,
             height: 1200,
         }],
         windows: vec![
+            WindowSource {
+                id: JUNTO_WINDOW,
+                title: "Junto".to_owned(),
+                application: junto.clone(),
+                application_name: "Junto".to_owned(),
+                width: 1280,
+                height: 800,
+            },
             WindowSource {
                 id: 11,
                 title: "alpha-review-vm".to_owned(),
@@ -1135,6 +1150,14 @@ fn capture() -> SyntheticCapture {
         ],
         application_capture: true,
         application_pictures: vec![
+            ApplicationPicture {
+                application: junto.clone(),
+                name: "Junto".to_owned(),
+                display: 1,
+                width: 1920,
+                height: 1200,
+                windows: 1,
+            },
             ApplicationPicture {
                 application: editor.clone(),
                 name: "Editor".to_owned(),
@@ -1504,6 +1527,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                     sound_held,
                     size: (1280, 800),
                     frame_rate: 30,
+                    shows_the_client: false,
                 }),
             )]);
             call.watched = Some(ShareId::own(0));
@@ -1511,6 +1535,27 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     };
     studio.draw(
         Screen::call("share-own", own(false))
+            .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
+    )?;
+    // A share of a window of Junto itself: its picture is not drawn for the sharer (ADR 0738).
+    let own_junto = with_call(in_call(Phase::Connected), |call| {
+        call.own_shares = BTreeMap::from([(
+            0,
+            ShareState::Running(ShareInfo {
+                id: uuid::Uuid::from_u128(4),
+                kind: ShareKind::Window,
+                sound: ShareAudio::None,
+                sound_held: false,
+                size: (1280, 800),
+                frame_rate: 30,
+                shows_the_client: true,
+            }),
+        )]);
+        call.watched = Some(ShareId::own(0));
+    });
+    studio.draw(
+        Screen::call("share-own-junto-window", own_junto)
             .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
         show_pictures((ShareId::own(0), editor_picture(1280, 800)), Vec::new()),
     )?;
@@ -1590,6 +1635,7 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
                             sound_held: false,
                             size: (1280, 800),
                             frame_rate: 30,
+                            shows_the_client: false,
                         }),
                     )
                 })
@@ -1670,6 +1716,12 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         picker(|shell, cx| shell.pick_share_tab(ShareTab::Window, cx)),
         Shell::share_picker_is_listed,
     )?;
+    // A window of Junto itself: its picture without its sound (ADR 0502).
+    studio.draw_after(
+        Screen::call("share-dialog-junto-window", in_call(Phase::Connected)),
+        picker(|shell, cx| shell.pick_share_picture(PictureSource::Window(JUNTO_WINDOW), cx)),
+        Shell::share_picker_is_listed,
+    )?;
     studio.draw_after(
         Screen::call(
             "share-dialog-application-with-its-sound",
@@ -1730,7 +1782,10 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
     // The settings of a share and of the view.
     studio.draw(
         Screen::call("call-settings-share-and-view", in_call(Phase::Connected)),
-        show_daily_tab(CallTab::Settings),
+        |shell, window, cx| {
+            show_daily_voice_settings(shell, window, cx);
+            shell.settings_scroll_handle().scroll_to_bottom();
+        },
     )?;
 
     // The recording of the call (views B and F).
@@ -1966,6 +2021,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
                     sound_held: false,
                     size: (1280, 800),
                     frame_rate: 30,
+                    shows_the_client: false,
                 }),
             )]);
             call.watched = Some(ShareId::own(0));
@@ -2379,6 +2435,17 @@ fn show_daily(shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Sh
     select_channel(shell, "Daily", cx);
 }
 
+/// The settings of the application at "Voice and video" during the call of Daily: the place
+/// of the devices and of the settings of a share and of the view (ADR 0735).
+fn show_daily_voice_settings(
+    shell: &mut Shell,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<Shell>,
+) {
+    select_channel(shell, "Daily", cx);
+    shell.open_voice_settings(window, cx);
+}
+
 fn show_daily_tab(
     tab: CallTab,
 ) -> impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) {
@@ -2397,7 +2464,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     )?;
     studio.draw(
         Screen::call("call-settings", in_call(Phase::Connected)),
-        show_daily_tab(CallTab::Settings),
+        show_daily_voice_settings,
     )?;
     studio.draw(
         Screen::call("call-settings-input-devices", in_call(Phase::Connected)),
@@ -2460,7 +2527,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     });
     studio.draw(
         Screen::call("call-no-microphone-access", refused.clone()),
-        show_daily_tab(CallTab::Settings),
+        show_daily_voice_settings,
     )?;
     // With the rules of macOS the settings of the call have the button of the page of System
     // Settings (ADR 0708).
@@ -2470,7 +2537,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
             shell.state().clone().update(cx, |state, cx| {
                 state.use_permission_rules_of(junto_client::permissions::System::MacOs, cx);
             });
-            show_daily_tab(CallTab::Settings)(shell, window, cx);
+            show_daily_voice_settings(shell, window, cx);
         },
     )?;
     let asking = with_call(in_call(Phase::Connected), |call| {
@@ -2480,7 +2547,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
     });
     studio.draw(
         Screen::call("call-microphone-access-not-asked", asking),
-        show_daily_tab(CallTab::Settings),
+        show_daily_voice_settings,
     )?;
     let failed = with_call(in_call(Phase::Connected), |call| {
         call.microphone = MicrophoneState::Failed(AudioError::NoDevice);
@@ -2582,7 +2649,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::new("settings-push-to-talk", two_servers()).media(talk.clone()),
         |shell, window, cx| {
             shell.open(Open::Settings, window, cx);
-            shell.open_settings_section(SettingsSection::Voice, window, cx);
+            shell.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
         },
     )?;
     // The question before the switch to push to talk.
@@ -2590,7 +2657,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::new("settings-push-to-talk-question", two_servers()).media(no_call()),
         |shell, window, cx| {
             shell.open(Open::Settings, window, cx);
-            shell.open_settings_section(SettingsSection::Voice, window, cx);
+            shell.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
             shell.ask_push_to_talk_fixture(cx);
         },
     )?;
@@ -2607,7 +2674,7 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| {
             show_daily(shell, window, cx);
             shell.open(Open::Settings, window, cx);
-            shell.open_settings_section(SettingsSection::Voice, window, cx);
+            shell.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
         },
     )?;
     Ok(())
@@ -2806,7 +2873,9 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
     for (name, section) in [
         ("settings-picture", SettingsSection::Picture),
         ("settings-interface", SettingsSection::Interface),
-        ("settings-voice", SettingsSection::Voice),
+        ("settings-voice", SettingsSection::VoiceAndVideo),
+        // Outside a call the section states what it holds (ADR 0739).
+        ("settings-call-without-a-call", SettingsSection::Call),
         ("settings-quiet", SettingsSection::Quiet),
         ("settings-notifications", SettingsSection::Notifications),
         ("settings-devices", SettingsSection::Devices),

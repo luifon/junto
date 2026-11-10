@@ -476,6 +476,8 @@ pub struct AppState {
     call_window_closing: Option<CallWindowClosing>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
     main_window_settings: junto_client_core::window_placement::WindowPlacement,
+    /// The main window shows the devices of the person during a call.
+    call_devices_shown: bool,
     main_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
@@ -1044,6 +1046,7 @@ impl AppState {
             call_window_closing: None,
             call_window_settings,
             main_window_settings,
+            call_devices_shown: false,
             main_window_writes: Default::default(),
             call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
@@ -1492,6 +1495,16 @@ impl AppState {
 
     pub fn set_share_frame_rate(&mut self, frame_rate: u32, cx: &mut Context<Self>) {
         self.change_voice(cx, move |voice| voice.share_frame_rate = frame_rate);
+    }
+
+    /// Whether the main window shows the devices of the person while a call runs; the camera
+    /// views of the call then hold the picture that the call sends (ADR 0735).
+    pub fn call_devices_shown(&self) -> bool {
+        self.call_devices_shown
+    }
+
+    pub fn set_call_devices_shown(&mut self, shown: bool) {
+        self.call_devices_shown = shown;
     }
 
     pub fn own_camera_hidden(&self) -> bool {
@@ -2447,21 +2460,20 @@ impl AppState {
 
     /// Reads the sound devices and the microphone permission again, on a background
     /// thread: the list of a system can take a moment.
+    /// Reads the sound devices with the microphone permission, and the cameras, in two tasks:
+    /// the camera list of a system can take seconds (ADR 0770), and the sound lists do not
+    /// wait for it.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
         let read = self
             .permissions
             .order(crate::permissions::Permission::Microphone)
             .read();
         let calls = self.calls.clone();
-        let reading = cx.background_executor().spawn(async move {
-            (
-                calls.devices(),
-                calls.microphone_access(),
-                calls.camera_devices(),
-            )
-        });
+        let sound = cx
+            .background_executor()
+            .spawn(async move { (calls.devices(), calls.microphone_access()) });
         cx.spawn(async move |this, cx| {
-            let (devices, access, cameras) = reading.await;
+            let (devices, access) = sound.await;
             let _ = this.update(cx, |this, cx| {
                 match devices {
                     Ok(devices) => this.known.media.devices = devices,
@@ -2474,6 +2486,17 @@ impl AppState {
                 {
                     this.known.media.access = Some(access);
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+        let calls = self.calls.clone();
+        let cameras = cx
+            .background_executor()
+            .spawn(async move { calls.camera_devices() });
+        cx.spawn(async move |this, cx| {
+            let cameras = cameras.await;
+            let _ = this.update(cx, |this, cx| {
                 this.camera_devices = cameras.unwrap_or_default();
                 cx.notify();
             });

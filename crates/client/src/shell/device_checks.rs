@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, Window, anchored, deferred, div,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
 };
 use junto_client_core::{
     Owner,
@@ -30,6 +30,9 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct DeviceUi {
     pub menu: Option<DeviceKind>,
+    /// The kind of the list that a press of the pointer closed: the click that follows on
+    /// the box of that list does not open it again.
+    pub closed_by_press: Option<DeviceKind>,
     pub scroll: gpui::ScrollHandle,
     pub preview: prepared::Shown<()>,
 }
@@ -238,6 +241,12 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The devices of the person, in the settings at "Voice and video" and in the device check
+    /// before a join: the camera, input and output lists, the input level and the camera
+    /// preview (ADR 0735). A choice is a setting of the person and is used at once, also by a
+    /// running call. Out of a call the tests and the preview open the devices of a check;
+    /// in a call the level is that of the call's microphone and the preview shows the picture
+    /// that the call sends, so that no second capture opens a device that the call holds.
     pub(crate) fn render_device_checks(
         &mut self,
         theme: &Theme,
@@ -245,7 +254,8 @@ impl Shell {
     ) -> AnyElement {
         let state = self.state.read(cx);
         let view = state.calls().device_check_view();
-        let active = state.media_calls().call.is_some() || state.media_calls().joining.is_some();
+        let call = state.media_calls().call;
+        let active = call.is_some() || state.media_calls().joining.is_some();
         let session = state.device_check_session();
         let key = session.map_or(0, |session| session.key());
         let inputs = state.audio_device_choices(true);
@@ -293,10 +303,13 @@ impl Shell {
                 SelectBox::new((selector, key), label, shown)
                     .selector(selector)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if active
-                            || session.is_none()
-                            || this.state.read(cx).device_check_session() != session
-                        {
+                        // A device choice is a setting of the person, not a check: the list
+                        // opens also when no check session runs, as after a change of the
+                        // account or of the call ended the session, and in a call.
+                        if this.state.read(cx).device_check_session() != session {
+                            return;
+                        }
+                        if this.device_ui.closed_by_press.take() == Some(kind) {
                             return;
                         }
                         this.state.update(cx, |state, cx| state.refresh_devices(cx));
@@ -376,8 +389,10 @@ impl Shell {
                             Menu::new("check-device-menu", label, self.layer_focus())
                                 .width(310.0)
                                 .selector("check-device-menu")
-                                .on_close(Self::handler(cx, |this, _, cx| {
+                                .on_close(Self::handler(cx, move |this, window, cx| {
                                     this.device_ui.menu = None;
+                                    this.device_ui.closed_by_press =
+                                        (!window.last_input_was_keyboard()).then_some(kind);
                                     cx.notify();
                                 }))
                                 .children(items),
@@ -400,15 +415,17 @@ impl Shell {
             );
         }
 
+        // The tests open devices of their own: they run only out of a call.
         let mut tests = div().flex().flex_wrap().gap(u(6.0));
-        for (kind, label, selector) in [
+        let audio_tests = [
             (
                 AudioCheckKind::Microphone,
                 words::MICROPHONE,
                 "test-microphone",
             ),
             (AudioCheckKind::Output, words::OUTPUT, "test-output"),
-        ] {
+        ];
+        for (kind, label, selector) in audio_tests.into_iter().filter(|_| !active) {
             tests = tests.child(
                 Button::new((selector, key))
                     .label(if view.audio.kind() == Some(kind) {
@@ -417,7 +434,7 @@ impl Shell {
                         label
                     })
                     .selector(selector)
-                    .disabled(active || session.is_none())
+                    .disabled(session.is_none())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.state.read(cx).device_check_session() != session {
                             return;
@@ -428,28 +445,38 @@ impl Shell {
             );
         }
         let camera_on = matches!(view.camera, CameraState::Starting | CameraState::Running);
-        tests = tests.child(
-            Button::new(("preview-camera", key))
-                .label(if camera_on {
-                    words::STOP_CAMERA
-                } else {
-                    words::CAMERA
-                })
-                .selector("preview-camera")
-                .disabled(active || session.is_none())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.state.read(cx).device_check_session() != session {
-                        return;
-                    }
-                    prepared::take(&mut this.device_ui.preview, HashMap::new(), cx);
-                    this.state.update(cx, |state, cx| state.preview_camera(cx));
-                })),
-        );
+        if !active {
+            tests = tests.child(
+                Button::new(("preview-camera", key))
+                    .label(if camera_on {
+                        words::STOP_CAMERA
+                    } else {
+                        words::CAMERA
+                    })
+                    .selector("preview-camera")
+                    .disabled(session.is_none())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.state.read(cx).device_check_session() != session {
+                            return;
+                        }
+                        prepared::take(&mut this.device_ui.preview, HashMap::new(), cx);
+                        this.state.update(cx, |state, cx| state.preview_camera(cx));
+                    })),
+            );
+        }
         column = column.child(tests).child(
             div()
+                .id("device-check-input-level")
+                .role(gpui::Role::Meter)
+                .aria_label(text::INPUT_LEVEL)
+                .aria_numeric_value(level as f64)
+                .aria_max_numeric_value(crate::state::view::INPUT_SEGMENTS as f64)
                 .debug_selector(|| "device-check-input-level".to_owned())
                 .child(Meter::new(level)),
         );
+        if let Some(call) = &call {
+            column = column.child(self.render_call_microphone(call, theme, cx));
+        }
         column =
             column.child(
                 crate::ui::notice_slot("device-check-missing-slot").children(missing.then(|| {
@@ -475,14 +502,25 @@ impl Shell {
             AudioCheckState::Off => None,
         };
         column = column.child(crate::ui::notice_slot("device-audio-status-slot").children(status));
-        let picture = (view.camera == CameraState::Running)
-            .then(|| {
-                self.device_ui
-                    .preview
-                    .get(&())
-                    .map(|(_, picture)| picture.clone())
-            })
-            .flatten();
+        // In a call the preview is the picture that the call sends: the own camera of the
+        // call, which the window asks the engine for while this component is shown
+        // (`sync_camera_visibility`).
+        let call_camera = call.as_ref().map(|call| call.camera.clone());
+        let picture = match &call_camera {
+            Some(CameraState::Running) => self
+                .cameras
+                .get(&junto_media::engine::Person::Own)
+                .map(|(_, picture)| picture.clone()),
+            Some(_) => None,
+            None => (view.camera == CameraState::Running)
+                .then(|| {
+                    self.device_ui
+                        .preview
+                        .get(&())
+                        .map(|(_, picture)| picture.clone())
+                })
+                .flatten(),
+        };
         let mut preview = div()
             .relative()
             .h(u(160.0))
@@ -502,15 +540,16 @@ impl Shell {
                     .p(u(10.0))
                     .typeface(theme.types.small, theme)
                     .ink(theme.colors.ink_2)
-                    .child(if view.camera == CameraState::Starting {
-                        words::STARTING
-                    } else {
-                        words::CAMERA_OFF
+                    .child(match &call_camera {
+                        Some(CameraState::Starting | CameraState::Running) => words::STARTING,
+                        Some(_) => words::CALL_CAMERA_OFF,
+                        None if view.camera == CameraState::Starting => words::STARTING,
+                        None => words::CAMERA_OFF,
                     }),
             );
         }
         column = column.child(preview);
-        let camera_error = match &view.camera {
+        let camera_error = match call_camera.as_ref().unwrap_or(&view.camera) {
             CameraState::Failed(error) => {
                 Some(Notice::error(words::camera_failed(error)).selector("camera-preview-error"))
             }
@@ -521,13 +560,12 @@ impl Shell {
         column
             .child(
                 Button::new(("refresh-check-devices", key))
-                    .label(if session.is_some() {
+                    .label(if session.is_some() || active {
                         words::REFRESH
                     } else {
                         words::CHECK
                     })
                     .selector("refresh-check-devices")
-                    .disabled(active)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.state.read(cx).device_check_session() != session {
                             return;
@@ -539,6 +577,63 @@ impl Shell {
                     })),
             )
             .into_any_element()
+    }
+
+    /// The state of the microphone of the running call and its permission, with "Try again"
+    /// when the call cannot use the microphone.
+    fn render_call_microphone(
+        &mut self,
+        call: &junto_media::calls::ActiveCall,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use junto_media::engine::MicrophoneState;
+        use junto_media::permission::MicrophoneAccess;
+        let access = call.access;
+        let unusable = matches!(
+            call.microphone,
+            MicrophoneState::NoPermission | MicrophoneState::Failed(_)
+        ) || access == MicrophoneAccess::Refused;
+        let seat = call.seat();
+        // The question of the system, or the page of its settings (ADR 0708).
+        let permission = self.permission_button(
+            "microphone-permission-action",
+            crate::permissions::Permission::Microphone,
+            cx,
+        );
+        let mut column = div()
+            .id("microphone-access")
+            .role(gpui::Role::Status)
+            .aria_label(text::microphone_access(access))
+            .debug_selector(|| "microphone-access".to_owned())
+            .flex()
+            .flex_col()
+            .gap(u(6.0))
+            .child(
+                div()
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_2)
+                    .child(text::microphone_access(access)),
+            );
+        if let Some(button) = permission {
+            column = column.child(div().flex().child(button));
+        }
+        if unusable {
+            column = column.child(
+                div().flex().child(
+                    Button::new("retry-microphone")
+                        .label(text::TRY_AGAIN)
+                        .icon(Icon::Retry)
+                        .selector("retry-microphone")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.retry_microphone(Some(&seat), cx);
+                            });
+                        })),
+                ),
+            );
+        }
+        column.into_any_element()
     }
 
     pub(crate) fn follow_device_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {

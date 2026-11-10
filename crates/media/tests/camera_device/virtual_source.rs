@@ -94,6 +94,8 @@ mod source {
                 kind(MFVideoFormat_YUY2, 1280, 720, 10),
                 kind(MFVideoFormat_MJPG, 1280, 720, 30),
             ])
+        } else if profile == profiles::LARGE {
+            Some(vec![kind(MFVideoFormat_NV12, 1920, 1080, 30)])
         } else {
             None
         }
@@ -988,7 +990,7 @@ mod source {
         }
     }
 
-    /// The entry of a COM server: the class factory of one of the two sources.
+    /// The entry of a COM server: the class factory of one of the three sources.
     ///
     /// # Safety
     ///

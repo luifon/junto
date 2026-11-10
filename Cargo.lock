@@ -3839,11 +3839,11 @@ dependencies = [
 
 [[package]]
 name = "junto-alloc-count"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "junto-authz"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "serde",
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "junto-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ashpd",
  "backtrace",
@@ -3904,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "junto-client-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "block2 0.6.2",
@@ -3951,7 +3951,7 @@ dependencies = [
 
 [[package]]
 name = "junto-icon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "resvg",
  "thiserror 2.0.21",
@@ -3959,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "junto-media"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "block2 0.6.2",
  "cc",
@@ -4004,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "junto-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "junto-authz",
@@ -4020,7 +4020,7 @@ dependencies = [
 
 [[package]]
 name = "junto-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -4065,7 +4065,7 @@ dependencies = [
 
 [[package]]
 name = "junto-setup"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "junto-protocol",
  "reqwest 0.12.28",

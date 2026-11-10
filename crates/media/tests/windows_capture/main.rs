@@ -345,21 +345,21 @@ fn the_lists_name_the_screens_the_window_of_another_program_and_its_application(
             .iter()
             .any(|application| application.id == window.application)
     );
-    // The program that runs the test is the client here: none of its windows and not its
-    // own application is offered.
+    // The program that runs the test is the client here: its window and its application are
+    // offered for their picture, named among the clients, and never for their sound.
     let own = std::process::id() as i32;
+    let listed = sources
+        .windows
+        .iter()
+        .find(|window| window.id == own_window.number)
+        .expect("the window of the client is listed");
+    assert_eq!(listed.application.process_id, own);
+    assert_eq!(sources.clients, std::slice::from_ref(&listed.application));
     assert!(
         sources
-            .windows
+            .application_pictures
             .iter()
-            .all(|window| window.id != own_window.number),
-        "the window of the client is listed"
-    );
-    assert!(
-        sources
-            .windows
-            .iter()
-            .all(|window| window.application.process_id != own)
+            .any(|picture| picture.application.process_id == own)
     );
     assert!(
         sources
@@ -367,6 +367,29 @@ fn the_lists_name_the_screens_the_window_of_another_program_and_its_application(
             .iter()
             .all(|application| application.id.process_id != own)
     );
+    assert!(sources.shows_the_client(PictureSource::Window(own_window.number)));
+    assert!(sources.shows_the_client(PictureSource::Application(own)));
+    assert!(!sources.shows_the_client(PictureSource::Window(fixture.window)));
+
+    // A share of the window of the client with its own sound does not start; without sound
+    // it starts and states that it shows the client (ADR 0502, ADR 0738).
+    let request = |sound: SoundChoice| CaptureRequest {
+        picture: PictureSource::Window(own_window.number),
+        sound,
+        quality: ShareQuality::default(),
+        dialog_parent: None,
+    };
+    let sink = Arc::new(Pictures::default());
+    let refused = runtime().block_on(capture.start(
+        request(SoundChoice::Application(listed.application.clone())),
+        sink.clone(),
+    ));
+    assert_eq!(refused.err(), Some(CaptureError::SourceGone));
+    let stream = runtime()
+        .block_on(capture.start(request(SoundChoice::None), sink))
+        .expect("a share of the window of the client starts");
+    assert!(stream.shows_the_client);
+    drop(stream);
 }
 
 /// The preview of a window whose application does not answer fails at once instead of

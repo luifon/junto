@@ -123,7 +123,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             ),
             harbor(),
         ]),
-        show_daily_tab(CallTab::Settings),
+        super::show_daily_voice_settings,
     )?;
     // The server lists a category without a channel only to a person who manages it
     // (ADR 0304): the column draws its heading (ADR 0730).

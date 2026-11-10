@@ -2321,12 +2321,15 @@ mod events {
     #[test]
     fn a_call_that_starts_is_told_only_in_a_channel_that_notifies_of_every_message() {
         let mut scene = scene();
-        let started = Event::CallStarted {
+        let place = scene.daily_place();
+        let started_with = move |afk| Event::CallStarted {
             hides_occupants: None,
             call_id: CallId::generate(),
-            place: scene.daily_place(),
+            place,
             started_at: morning(),
+            afk,
         };
+        let started = started_with(Some(false));
         // The level of the account is "mentions only".
         assert_eq!(scene.fact(&started, None), None);
         scene.settings(
@@ -2344,6 +2347,10 @@ mod events {
                 channel_id: scene.daily,
             })
         );
+        // A server before revision 22 states nothing about the AFK channel.
+        assert!(scene.fact(&started_with(None), None).is_some());
+        // A call in the AFK channel is told to nobody (ADR 0523).
+        assert_eq!(scene.fact(&started_with(Some(true)), None), None);
         // Not for the device in that call, and not in a muted channel.
         assert_eq!(scene.fact(&started, Some(scene.daily_place())), None);
         scene.settings(

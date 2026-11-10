@@ -369,6 +369,7 @@ fn join_answers_are_held_while_sharing_on_another_server(cx: &mut TestAppContext
                 sound_held: false,
                 size: (64, 36),
                 frame_rate: 30,
+                shows_the_client: false,
             }),
         )]);
         crate::calls::show_call(&mut window, call);

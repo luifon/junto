@@ -47,7 +47,7 @@ fn devices_can_be_checked_in_settings_before_a_call(cx: &mut TestAppContext) {
         state.set_processing(ProcessingPart::AutomaticGain, false, cx);
     });
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     assert!(
         window.shows("input-device"),
         "microphone choice outside a call"
@@ -197,7 +197,7 @@ fn each_device_list_of_the_voice_settings_has_the_icon_of_its_kind(cx: &mut Test
         name: "Desk camera".into(),
     }]);
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.until("the device choices are read", |window| {
         window.state.read_with(&window.cx, |state, _| {
             state.audio_device_choices(true).len() > 1
@@ -249,7 +249,7 @@ fn the_camera_preview_is_drawn_inside_its_area(cx: &mut TestAppContext) {
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("preview-camera");
     window.until("the camera picture is drawn", |window| {
         window.shows("camera-preview-picture")
@@ -272,7 +272,7 @@ fn refused_preview_can_retry_and_closing_settings_releases_it(cx: &mut TestAppCo
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
     window.camera.set_access(CameraAccess::Refused);
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("preview-camera");
     window.until("refused camera is explained", |window| {
         window.shows("camera-preview-error")
@@ -378,7 +378,7 @@ fn removing_the_current_server_cancels_its_open_device_checks(cx: &mut TestAppCo
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("preview-camera");
     window.until("local preview", |window| {
         window.shows("camera-preview-picture")
@@ -406,7 +406,7 @@ fn a_late_microphone_permission_answer_does_not_reopen_closed_checks(cx: &mut Te
     window.permission.set(MicrophoneAccess::NotAsked);
     window.permission.hold();
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("test-microphone");
     window.until("the system permission question is pending", |window| {
         window.permission.asked() == 1
@@ -428,7 +428,7 @@ fn a_late_microphone_permission_answer_does_not_reopen_closed_checks(cx: &mut Te
     assert!(window.sound.opened_inputs().is_empty());
     assert_eq!(window.camera.active(), 0);
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     assert!(!window.shows("device-test-playing"));
     assert!(window.state.read_with(
         &window.cx,
@@ -458,7 +458,7 @@ fn an_actual_account_replacement_releases_checks_and_ignores_late_permission(
     window.permission.set(MicrophoneAccess::NotAsked);
     window.permission.hold();
     window.click("app-settings");
-    window.click("settings-section-voice");
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("preview-camera");
     window.until("the old account previews its camera", |window| {
         window.camera.active() == 1 && window.shows("camera-preview-picture")
@@ -517,4 +517,158 @@ fn an_actual_account_replacement_releases_checks_and_ignores_late_permission(
     assert!(window.sound.opened_inputs().is_empty());
     assert_eq!(window.camera.active(), 0);
     assert!(!window.shows("camera-preview-picture"));
+}
+
+/// Two more microphones and one camera, so that the list of the microphones has a third choice and
+/// the list of the cameras has none.
+fn two_microphones_and_a_camera(window: &mut crate::harness::Window) {
+    window
+        .sound
+        .add_input("headset", "Headset", Tone::new(880.0));
+    window
+        .sound
+        .add_input("desk-microphone", "Desk microphone", Tone::new(440.0));
+    window.sound.add_output("headphones", "Headphones");
+    window.camera.set_devices(vec![CameraDevice {
+        id: "desk".into(),
+        name: "Desk camera".into(),
+    }]);
+}
+
+/// The calls of the window state this call of this device, without a media server.
+fn in_call(window: &mut crate::harness::Window, call: junto_media::calls::ActiveCall) {
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    calls.show_view_for_test(junto_media::calls::CallsView {
+        call: Some(call),
+        ..Default::default()
+    });
+    window.settle();
+}
+
+/// The lists of the devices of Settings → Voice open on a press while no check session runs,
+/// as after a change of the account or of the call ended the session. A press on the box of
+/// an open list closes it, and a press on the box of another list opens that list.
+#[gpui::test]
+fn the_device_lists_of_the_settings_open_without_a_check_session(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    two_microphones_and_a_camera(&mut window);
+    window.click("app-settings");
+    window.click("settings-section-voice-and-video");
+    window.until("the device choices are read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.audio_device_choices(true).len() == 4 && state.camera_choices().len() == 2
+        })
+    });
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_device_checks(false, cx)
+    });
+    window.settle();
+    assert!(window.shows("refresh-check-devices"));
+    window.click_in_settings("input-device");
+    assert!(
+        window.shows("check-device-menu") && window.shows("check-device-choice-2"),
+        "the list of the microphones opens without a check session"
+    );
+    // The press on the box of the open list closes it, and the click does not open it again.
+    window.click_in_settings("input-device");
+    window.settle();
+    assert!(!window.shows("check-device-menu"));
+    window.click_in_settings("input-device");
+    assert!(window.shows("check-device-choice-2"));
+    // A press on the box of another list closes the open list and opens the other one.
+    window.click_in_settings("camera-device");
+    assert!(
+        window.shows("check-device-menu")
+            && window.shows("check-device-choice-1")
+            && !window.shows("check-device-choice-2"),
+        "the list of the cameras is open"
+    );
+}
+
+/// In a call, the settings button of the call opens the settings of the application at
+/// "Voice and video", and the panel of the call has no Settings tab. The three device lists
+/// open there, a press on the box of another list opens that list, and a choice is stored
+/// as the device of the person, which the call uses (ADR 0735). The tests and the preview of
+/// a check are not offered, because they would open a second capture of a device that the
+/// call holds.
+#[gpui::test]
+fn in_a_call_the_device_lists_of_the_settings_open_and_choose_the_devices(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    crate::calls::voice_channel(&world, &admin, &mut window, "Daily");
+    two_microphones_and_a_camera(&mut window);
+    window.click_channel("Daily");
+    let call = crate::calls::connected_call(&mut window, "Daily");
+    in_call(&mut window, call);
+    window.until("the panel of the call", |window| {
+        window.shows("call-tab-members")
+    });
+    assert!(!window.shows("call-tab-settings"));
+    window.click("open-call-settings");
+    assert!(window.shows("settings-page-settings-section-voice-and-video"));
+    window.until("the device choices are read", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.audio_device_choices(true).len() == 4 && state.camera_choices().len() == 2
+        })
+    });
+    assert!(window.shows("device-check-input-level") && window.shows("microphone-access"));
+    for test in ["test-microphone", "test-output", "preview-camera"] {
+        assert!(!window.shows(test), "{test} is offered in a call");
+    }
+    window.click_in_settings("input-device");
+    assert!(window.shows("check-device-menu") && window.shows("check-device-choice-2"));
+    // A press on the box of another list closes the open list and opens the other one.
+    window.click_in_settings("camera-device");
+    assert!(
+        window.shows("check-device-menu")
+            && window.shows("check-device-choice-1")
+            && !window.shows("check-device-choice-2"),
+        "the list of the cameras is open"
+    );
+    window.click_in_settings("camera-device");
+    window.settle();
+    assert!(!window.shows("check-device-menu"));
+    window.click_in_settings("input-device");
+    let chosen = window.state.read_with(&window.cx, |state, _| {
+        state.audio_device_choices(true)[2].id.clone()
+    });
+    window.click("check-device-item-2");
+    window.until("the microphone is the setting of the person", |window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.voice().input_device.clone())
+            == chosen
+    });
+}
+
+/// The settings of a share and of the view are in the settings of the application at "Voice
+/// and video", and are stored there (ADR 0735, ADR 0738).
+#[gpui::test]
+fn the_settings_of_a_share_and_of_the_view_are_in_voice_and_video(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Reader");
+    window.click("app-settings");
+    window.click("settings-section-voice-and-video");
+    window.click_in_settings("share-resolution-0");
+    window.click_in_settings("share-frame-rate-0");
+    window.click_in_settings("hide-without-video");
+    window.click_in_settings("hide-own-camera-setting");
+    window.until("the settings are taken", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            let voice = state.voice();
+            voice.share_resolution == junto_client_core::voice::ShareResolution::P720
+                && voice.share_frame_rate == 15
+                && voice.hide_people_without_video
+                && voice.hide_own_camera
+        })
+    });
 }

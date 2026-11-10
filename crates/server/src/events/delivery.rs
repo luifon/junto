@@ -289,8 +289,8 @@ fn told_in_background(event: Option<&Event>, account_id: AccountId) -> bool {
     match event {
         Some(Event::WorkspaceMemberAdded { member, .. }) => member.account_id == account_id,
         Some(Event::RecordingUpdated { recording }) => recording.started_by == account_id,
-        Some(Event::CallStarted { place, .. }) => {
-            matches!(place, junto_protocol::call::CallPlace::Channel { .. })
+        Some(Event::CallStarted { place, afk, .. }) => {
+            matches!(place, junto_protocol::call::CallPlace::Channel { .. }) && *afk != Some(true)
         }
         _ => true,
     }
@@ -1390,12 +1390,14 @@ mod tests {
                 transcript_lines: 1,
             }),
         };
-        let started = |place| Event::CallStarted {
+        let started_with = |place, afk| Event::CallStarted {
             hides_occupants: None,
             call_id: CallId::generate(),
             place,
             started_at: OffsetDateTime::UNIX_EPOCH,
+            afk,
         };
+        let started = |place| started_with(place, Some(false));
         let channel = CallPlace::Channel {
             workspace_id: WorkspaceId::generate(),
             channel_id: ChannelId::generate(),
@@ -1409,7 +1411,14 @@ mod tests {
         assert!(told_in_background(Some(&recording(own)), own));
         assert!(!told_in_background(Some(&recording(other)), own));
         assert!(told_in_background(Some(&started(channel)), own));
+        assert!(told_in_background(Some(&started_with(channel, None)), own));
         assert!(!told_in_background(Some(&started(direct)), own));
+        // The start of a call in the AFK channel is told to nobody (ADR 0523): a background
+        // connection does not even receive it.
+        let afk = started_with(channel, Some(true));
+        assert!(!told_in_background(Some(&afk), own));
+        assert_eq!(Class::of(&afk), Class::General);
+        assert_eq!(Class::of(&started(channel)), Class::Control);
         assert!(told_in_background(None, own));
     }
 

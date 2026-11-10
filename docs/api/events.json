@@ -630,6 +630,13 @@
     "call_started": {
       "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
       "properties": {
+        "afk": {
+          "description": "The call is in the AFK channel of its workspace (ADR 0523): a person who was\nmoved there or entered it is not the start of a call that anyone is told about.\nAbsent from a server before revision 22.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "call_id": {
           "$ref": "#/components/schemas/CallId"
         },
@@ -4066,6 +4073,13 @@
           {
             "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
             "properties": {
+              "afk": {
+                "description": "The call is in the AFK channel of its workspace (ADR 0523): a person who was\nmoved there or entered it is not the start of a call that anyone is told about.\nAbsent from a server before revision 22.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "call_id": {
                 "$ref": "#/components/schemas/CallId"
               },

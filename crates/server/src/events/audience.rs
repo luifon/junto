@@ -55,6 +55,11 @@ impl Class {
 
     pub const fn of(event: &Event) -> Self {
         match event {
+            // The start of a call in the AFK channel gives no system notification, so a
+            // background connection does not receive it (ADR 0523).
+            Event::CallStarted {
+                afk: Some(true), ..
+            } => Self::General,
             Event::WorkspaceAfkChanged { .. }
             | Event::DeviceAdded { .. }
             | Event::JoinRequestCreated { .. }

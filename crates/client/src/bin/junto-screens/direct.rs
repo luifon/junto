@@ -96,6 +96,17 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
     )?;
     studio.draw(
         Screen::call("direct-call-settings", with_ana()).servers(vec![acme_with_ana(true)]),
-        show_conversation(CallTab::Settings),
+        |shell, window, cx| {
+            show_conversation(CallTab::Chat)(shell, window, cx);
+            shell.open_voice_settings(window, cx);
+        },
+    )?;
+    // A direct-message call has no room (ADR 0501): the section "Call" states it.
+    studio.draw(
+        Screen::call("direct-call-room-settings", with_ana()).servers(vec![acme_with_ana(true)]),
+        |shell, window, cx| {
+            show_conversation(CallTab::Chat)(shell, window, cx);
+            shell.open(Open::RoomSettings, window, cx);
+        },
     )
 }

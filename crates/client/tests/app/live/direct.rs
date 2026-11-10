@@ -717,26 +717,28 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
     window.write("Yes, in the call");
     window.until_message("Yes, in the call");
 
-    // The microphone, the speaker and the camera.
-    window.click("call-tab-settings");
+    // The microphone, the speaker and the camera, in the settings of the application at
+    // "Voice and video".
+    window.click("open-call-settings");
     window.until("the devices are listed", |window| {
         direct_panel(window)
             .is_some_and(|panel| panel.audio.inputs.len() == 2 && panel.audio.outputs.len() == 2)
     });
-    window.click("input-device");
-    window.click("device-choice-1");
-    window.click("output-device");
-    window.click("device-choice-1");
+    window.click_in_settings("input-device");
+    window.click("check-device-item-1");
+    window.click_in_settings("output-device");
+    window.click("check-device-item-1");
     window.until("the microphone and the speaker are chosen", |window| {
         direct_panel(window)
             .is_some_and(|panel| panel.audio.inputs[1].selected && panel.audio.outputs[1].selected)
     });
-    window.click("camera-device");
-    window.click("device-choice-1");
+    window.click_in_settings("camera-device");
+    window.click("check-device-item-1");
     window.until("the choices are stored", |_| {
         std::fs::read_to_string(voice_file(directory.path()))
             .is_ok_and(|stored| stored.contains("\"camera_device\": \"generated-camera\""))
     });
+    window.press("escape");
     window.click("call-camera");
     window.until("the other person receives the camera", |_| {
         !caller.calls.camera_pictures().borrow().is_empty()
@@ -788,7 +790,8 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
         },
     );
     // The volume of the watched share, and the quality of the own share.
-    window.click("share-volume");
+    // The slider is on the line of the watched share (ADR 0738).
+    window.tab_to("share-volume");
     window.press(&["left"; 20].join(" "));
     window.until("the share is not played", |window| {
         direct_panel(window)
@@ -796,8 +799,10 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
             .is_some_and(|stage| stage.volume == 0)
             && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    window.click("share-resolution-0");
-    window.click("share-frame-rate-0");
+    window.click("open-call-settings");
+    window.click_in_settings("share-resolution-0");
+    window.click_in_settings("share-frame-rate-0");
+    window.press("escape");
     window.until("the settings of the share are stored", |_| {
         std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {
             stored.contains("\"share_resolution\": \"p720\"")

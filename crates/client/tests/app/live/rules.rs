@@ -439,8 +439,9 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         room_view(window).is_some_and(|room| !room.locked)
     });
 
-    // The settings of the room need "manage channel": without it the switches take no
-    // click, and a request is refused by the server and told.
+    // The settings of the room, in the settings of the application at "Call", need "manage
+    // channel": without it the switches take no click, and a request is refused by the server
+    // and told.
     let room = room_view(&mut scene.window).unwrap();
     assert!(room.allowed.lock && !room.allowed.manage);
     scene
@@ -464,9 +465,13 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .until("the refusal is told", |window| window.shows("call-refused"));
     let room = room_view(&mut scene.window).unwrap();
     assert_eq!((room.hides_occupants, room.user_limit), (false, None));
+    scene.window.press("escape");
     scene.window.click("dismiss-call-refused");
     assert!(!scene.window.shows("call-refused"));
     scene.allow_everyone(&[WorkspacePermission::ManageChannel]);
+    scene
+        .window
+        .in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
     scene
         .window
         .until("the person may manage the room", |window| {
@@ -495,6 +500,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
 
     // The person leaves. The call that runs still shows who is inside, and it is full: a
     // full room that shows who is inside tells it under its row.
+    scene.window.press("escape");
     scene.window.click("leave-call");
     scene
         .window

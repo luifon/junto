@@ -115,11 +115,76 @@ fn overlay_mask(side: u32) -> Vec<u8> {
     vec![0; (stride * side) as usize]
 }
 
+/// A count for the taskbar button of a window.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Overlay {
+    window: isize,
+    count: u64,
+    description: String,
+}
+
+/// Of the counts that wait, the newest of each window, in the order of their arrival: an
+/// older count of a window is not shown after a newer one.
+#[cfg(any(windows, test))]
+fn newest_per_window(waiting: Vec<Overlay>) -> Vec<Overlay> {
+    let mut newest: Vec<Overlay> = Vec::new();
+    for overlay in waiting {
+        newest.retain(|held| held.window != overlay.window);
+        newest.push(overlay);
+    }
+    newest
+}
+
+/// Shows a count on the taskbar button of a window, on a thread of its own in the order of the
+/// calls. The call of the taskbar goes through COM to the shell; on the thread of the window it
+/// would wait in the modal loop of COM, which takes the restore that the taskbar posts to a
+/// minimized window (ADR 0755).
+#[cfg(windows)]
+pub fn show_overlay(window: isize, count: u64, description: String) {
+    use std::sync::mpsc::{Sender, channel};
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    static WORKER: OnceLock<Option<Mutex<Sender<Overlay>>>> = OnceLock::new();
+    let worker = WORKER.get_or_init(|| {
+        let (sender, waiting) = channel::<Overlay>();
+        let started = crate::taskbar::on_apartment_thread("junto-taskbar-count", move || {
+            while let Ok(first) = waiting.recv() {
+                let mut all = vec![first];
+                all.extend(waiting.try_iter());
+                for overlay in newest_per_window(all) {
+                    if let Err(error) =
+                        set_overlay(overlay.window, overlay.count, &overlay.description)
+                    {
+                        tracing::warn!(%error, "the count of the taskbar button was not set");
+                    }
+                }
+            }
+        });
+        match started {
+            Ok(()) => Some(Mutex::new(sender)),
+            Err(error) => {
+                tracing::warn!(%error, "the thread of the taskbar count did not start");
+                None
+            }
+        }
+    });
+    if let Some(sender) = worker {
+        let _ = sender
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Overlay {
+                window,
+                count,
+                description,
+            });
+    }
+}
+
 /// Sets the overlay of the taskbar button of a window: the picture of the count, or none,
 /// with its description for a screen reader.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-pub fn set_overlay(window: isize, count: u64, description: &str) -> windows::core::Result<()> {
+fn set_overlay(window: isize, count: u64, description: &str) -> windows::core::Result<()> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -178,6 +243,20 @@ pub fn set_overlay(window: isize, count: u64, description: &str) -> windows::cor
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The worker of the taskbar shows the newest count of each window once, and a window
+    /// keeps the place of its newest count.
+    #[test]
+    fn only_the_newest_count_of_each_window_is_shown() {
+        let overlay = |window, count| Overlay {
+            window,
+            count,
+            description: format!("{count}"),
+        };
+        let shown = newest_per_window(vec![overlay(1, 3), overlay(2, 1), overlay(1, 4)]);
+        assert_eq!(shown, [overlay(2, 1), overlay(1, 4)]);
+        assert!(newest_per_window(Vec::new()).is_empty());
+    }
 
     fn alpha(pixels: &[u8], side: u32, x: u32, y: u32) -> u8 {
         pixels[((y * side + x) * 4 + 3) as usize]

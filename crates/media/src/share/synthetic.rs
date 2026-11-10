@@ -129,6 +129,10 @@ pub struct SyntheticCapture {
 
 /// The process identifier of the one application of [`SyntheticCapture::new`].
 pub const PLAYER: i32 = 4_001;
+/// The process identifier of the client itself in [`SyntheticCapture::list_the_client`].
+pub const CLIENT: i32 = 4_002;
+/// The window of the client itself in [`SyntheticCapture::list_the_client`].
+pub const CLIENT_WINDOW: u32 = 12;
 
 impl Default for SyntheticCapture {
     fn default() -> Self {
@@ -152,6 +156,7 @@ impl SyntheticCapture {
                     system_sound: true,
                     started_the_client: Vec::new(),
                     creators_unknown: false,
+                    clients: Vec::new(),
                     displays: vec![DisplaySource {
                         id: 1,
                         width: 1280,
@@ -206,6 +211,46 @@ impl SyntheticCapture {
             process_id: PLAYER,
             bundle_id: "example.player".to_owned(),
         }
+    }
+
+    /// The application of the client itself in [`SyntheticCapture::list_the_client`].
+    pub fn client() -> ApplicationId {
+        ApplicationId {
+            process_id: CLIENT,
+            bundle_id: "chat.junto.client".to_owned(),
+        }
+    }
+
+    /// Lists a window of the client itself, `CLIENT_WINDOW` of 1000 × 700 with the title
+    /// "Junto", and its application, as the systems list them (ADR 0736): for its picture,
+    /// and named among the clients, so that its sound is not offered.
+    pub fn list_the_client(&self) {
+        let mut state = self.lock();
+        let client = Self::client();
+        state.sources.windows.insert(
+            0,
+            WindowSource {
+                id: CLIENT_WINDOW,
+                title: "Junto".to_owned(),
+                application: client.clone(),
+                application_name: "Junto".to_owned(),
+                width: 1000,
+                height: 700,
+            },
+        );
+        // The list of applications has the order of their names.
+        state.sources.application_pictures.insert(
+            0,
+            ApplicationPicture {
+                application: client.clone(),
+                name: "Junto".to_owned(),
+                display: 1,
+                width: 1280,
+                height: 720,
+                windows: 1,
+            },
+        );
+        state.sources.clients.push(client);
     }
 
     pub fn set_access(&self, access: ScreenAccess) {
@@ -469,9 +514,16 @@ impl ScreenCapture for SyntheticCapture {
             let (width, height) = state
                 .size_of(request.picture)
                 .ok_or(CaptureError::SourceGone)?;
+            let shows_the_client = state.sources.shows_the_client(request.picture);
             let tones = match &request.sound {
                 SoundChoice::None => None,
                 SoundChoice::System => Some(state.system_tones),
+                // The sound of the client is never captured, as on the systems (ADR 0502).
+                SoundChoice::Application(application)
+                    if state.sources.clients.contains(application) =>
+                {
+                    return Err(CaptureError::SourceGone);
+                }
                 SoundChoice::Application(application) => Some(
                     *state
                         .application_tones
@@ -527,7 +579,9 @@ impl ScreenCapture for SyntheticCapture {
                     _workers: workers,
                 },
             );
-            Ok(stream.with_stop_result(result))
+            Ok(stream
+                .with_stop_result(result)
+                .showing_the_client(shows_the_client))
         })
     }
 }

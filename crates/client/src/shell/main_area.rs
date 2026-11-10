@@ -521,6 +521,8 @@ impl Shell {
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
+            // The settings of the application at "Voice and video", in every width.
+            after.push(self.render_call_settings_button(cx));
         } else {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));

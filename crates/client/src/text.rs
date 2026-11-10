@@ -242,8 +242,8 @@ pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
         ),
         SoundWarning::MicrophoneFailed => (
             "The microphone is not working.".to_owned(),
-            " Choose another input device in the Settings tab of the call, or connect a \
-             microphone and press Try again."
+            " Choose another input device in the app settings, under Voice and video, or \
+             connect a microphone and press Try again."
                 .to_owned(),
         ),
         SoundWarning::SoundHeld { by } => (
@@ -255,7 +255,7 @@ pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
         ),
         SoundWarning::OutputFailed => (
             "The sound output is not working.".to_owned(),
-            " Choose another output device in the Settings tab of the call.".to_owned(),
+            " Choose another output device in the app settings, under Voice and video.".to_owned(),
         ),
         SoundWarning::SpeakNotPermitted => (
             "You cannot speak in this channel.".to_owned(),
@@ -332,6 +332,8 @@ pub const NO_RAISED_HAND: &str = "No hand is raised.";
 pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not unmuted yet";
 pub const YOU_MAY_SPEAK: &str = "You may speak";
 pub const HIDE_OWN_CAMERA: &str = "Hide your camera tile";
+pub const HIDE_OWN_CAMERA_HELP: &str = "Leaves your own camera tile out of your view of a call. \
+     Your camera is still sent to the others.";
 pub const SHOW_OWN_CAMERA: &str = "Show your camera tile";
 pub const OWN_CAMERA_HIDDEN: &str = "Your camera is on; hidden from your view.";
 pub const OWN_CAMERA_VIEW_HIDDEN: &str = "Your camera tile is hidden from your view.";
@@ -358,7 +360,7 @@ pub fn microphone_closed(why: MicrophoneClosed) -> &'static str {
         MicrophoneClosed::DeviceChanged => {
             "The microphone of the call stopped, and the call now uses another microphone. \
              You are muted. Unmute to speak with that microphone, or choose another input \
-             device in the Settings tab of the call."
+             device in the app settings, under Voice and video."
         }
     }
 }
@@ -373,10 +375,19 @@ pub fn unused_action(unused: Unused) -> &'static str {
     }
 }
 
-/// "Room · Daily": the heading of the settings of the room of a call.
-pub fn room_section(channel: &str) -> String {
-    format!("Room · {channel}")
+/// The heading of the settings section "Call": the voice channel of the call.
+pub fn call_section_heading(channel: &str) -> String {
+    format!("The call in {channel}")
 }
+
+pub const CALL_SECTION: &str = "Call";
+pub const CALL_SECTION_FOR_EVERYONE: &str = "These settings apply to everyone in the call.";
+pub const CALL_SECTION_NO_CALL: &str = "This section holds the settings of the call that you are \
+     in. You are in no call now.";
+pub const CALL_SECTION_NO_ROOM: &str = "This section holds the settings of the call that you are \
+     in. A direct call has no such settings.";
+pub const CALL_SECTION_NOT_READ: &str = "The settings of your call appear here once its voice \
+     channel is read.";
 
 /// " · Carla runs it", after the statement that meeting mode is on.
 pub fn runs_it(presenter: Option<&str>) -> String {
@@ -409,7 +420,7 @@ pub fn occupancy_help(inside: usize, limit: u32) -> String {
     format!(
         "{inside} {} in the call, user limit {limit}. Invited people, people moved in by a \
          moderator and people let in after they asked can join above the limit. Change the \
-         limit in the Settings tab of the call.",
+         limit in the app settings, under Call.",
         if inside == 1 { "person" } else { "people" }
     )
 }
@@ -598,8 +609,21 @@ pub const SHARE_TABS: &str = "What kind of thing to share";
 pub const SHARE_TAB_SCREEN: &str = "Screen";
 pub const SHARE_TAB_WINDOW: &str = "Window";
 pub const SHARE_TAB_APPLICATION: &str = "Application";
-pub const NO_WINDOWS: &str = "No window of another application is open.";
-pub const NO_APPLICATION_WINDOWS: &str = "No other application has a window on a screen.";
+pub const NO_WINDOWS: &str = "No window is open on a screen.";
+pub const NO_APPLICATION_WINDOWS: &str = "No application has a window on a screen.";
+/// The line under a window or the application of Junto itself in the dialog of a share: its
+/// picture is shared without its sound (ADR 0502).
+pub fn without_the_sound_of_junto(detail: &str) -> String {
+    format!("{detail} · without its sound")
+}
+/// The sound of a share of a window or of the application of Junto itself (ADR 0502).
+pub const SOUND_OF_JUNTO_NOT_SHARED: &str = "Junto does not share its own sound, because \
+     that sound holds this call. Choose all system sound or no sound.";
+/// In the place of the picture of an own share of a window or of the application of Junto
+/// itself (ADR 0738).
+pub const SHARE_SHOWS_JUNTO: &str = "This share shows Junto. Its picture is not shown here, \
+     so that a window that shows the call does not show its own picture again inside itself. \
+     The people in the call see the picture.";
 /// The line under an application in the dialog of a share: its windows and the screen whose
 /// area is shared.
 pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
@@ -876,7 +900,6 @@ pub const SHARE_MUTED: &str = "Muted";
 pub const SHARE_SOUND_TITLE: &str = "Share sound";
 pub const SHARE_VOLUME_ONE: &str = "Share volume";
 pub const SHARE_VOLUME: &str = "Volume of the share you are watching";
-pub const SHARE_VOLUME_HELP: &str = "At 0 % you see the share without its sound.";
 
 pub fn share_resolution(resolution: ShareResolution) -> &'static str {
     match resolution {
@@ -1102,15 +1125,12 @@ pub fn closed_by(reason: BlockReason, by: Option<&str>) -> String {
     }
 }
 
-// The sound settings of a call.
-pub const YOUR_AUDIO: &str = "Sound devices";
+// The devices of the settings and of the device check.
 pub const INPUT_DEVICE: &str = "Input device";
 pub const OUTPUT_DEVICE: &str = "Output device";
 pub const INPUT_LEVEL: &str = "Input level";
 pub const SYSTEM_DEFAULT: &str = "System default";
 pub const DEVICE_NOT_CONNECTED: &str = "The chosen device is not connected";
-pub const MORE_SOUND_SETTINGS: &str = "Echo cancellation, noise suppression, automatic gain, \
-     voice activation sensitivity and push to talk are in the app settings, under Voice.";
 
 /// The default device of the system in a list of devices.
 pub fn system_default(name: &str) -> String {
@@ -1136,8 +1156,9 @@ pub fn microphone_access(access: MicrophoneAccess) -> &'static str {
     }
 }
 
-// The sound settings of the application.
-pub const VOICE: &str = "Voice";
+// The voice and video settings of the application.
+pub const VOICE_AND_VIDEO: &str = "Voice and video";
+pub const VOICE_AND_VIDEO_SETTINGS: &str = "Voice and video settings";
 pub const INPUT_MODE: &str = "Input mode";
 pub const VOICE_ACTIVATION: &str = "Voice activation";
 pub const PUSH_TO_TALK: &str = "Push to talk";
@@ -1399,7 +1420,8 @@ pub const KEEP_VOICE_ACTIVATION: &str = "Keep voice activation";
 pub fn push_to_talk_mark(keys: &junto_client_core::global_keys::KeyCombo) -> String {
     format!("Push to talk: hold {} to speak", key_combo(keys))
 }
-pub const PUSH_TO_TALK_MARK_HELP: &str = "Change the input mode in the app settings, under Voice.";
+pub const PUSH_TO_TALK_MARK_HELP: &str =
+    "Change the input mode in the app settings, under Voice and video.";
 
 pub fn talk_key(key: TalkKey) -> &'static str {
     match key {
@@ -3386,12 +3408,12 @@ pub const FOCUS_SPEAKER: &str = "Show the person speaking in a large tile";
 pub const CAMERA_REFUSED: &str =
     "Allow camera access in the system settings, then turn on the camera again.";
 pub const CAMERA_GONE: &str = "The chosen camera is disconnected. Choose another camera in the \
-     Settings tab of the call.";
+     app settings, under Voice and video.";
 pub const CAMERA_BLOCKED: &str = "The call does not allow you to send video.";
 pub const CAMERA_UNSUPPORTED: &str = "The camera cannot be used on this system.";
 pub const CAMERA_INTERRUPTED: &str = "The camera was interrupted. Turn it on again to continue.";
 pub const CAMERA_FAILED: &str = "The camera stopped working. Choose another camera in the \
-     Settings tab of the call, or turn it on again.";
+     app settings, under Voice and video, or turn it on again.";
 pub const CAMERA_NOT_CONNECTED: &str = "Wait for the call to connect, then turn on the camera.";
 
 pub const DIRECT_CALL_ENDED: &str = "Call ended";
@@ -3935,6 +3957,7 @@ mod tests {
             frame_rate: Some(30),
             watched: true,
             viewers: Vec::new(),
+            shows_the_client: false,
         };
         assert_eq!(share_title(&share, false), "Carla's screen");
         assert_eq!(share_title(&share, true), "Your screen");

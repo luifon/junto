@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
 use super::rules::{self, Creators, FRAME_HOST, ListedProcess, ListedWindow};
-use crate::share::listing::{Bounds, Own, application_pictures};
+use crate::share::listing::{Bounds, Own, application_pictures, clients};
 use crate::share::{ApplicationId, DisplaySource, ShareSources, WindowSource};
 
 fn wide(text: &str) -> Vec<u16> {
@@ -315,8 +315,8 @@ fn top_level_windows() -> Vec<HWND> {
 }
 
 /// The windows that a person can share now.
-pub(super) fn windows(own: &Own) -> Vec<WindowSource> {
-    placed_windows(own)
+pub(super) fn windows() -> Vec<WindowSource> {
+    placed_windows()
         .into_iter()
         .map(|(window, _)| window)
         .collect()
@@ -324,12 +324,12 @@ pub(super) fn windows(own: &Own) -> Vec<WindowSource> {
 
 /// The windows that a person can share now, each with its frame, from the front to the
 /// back.
-pub(super) fn placed_windows(own: &Own) -> Vec<(WindowSource, Bounds)> {
+pub(super) fn placed_windows() -> Vec<(WindowSource, Bounds)> {
     let listed = top_level_windows()
         .into_iter()
         .map(|window| with_application(read_window(window)))
         .collect();
-    rules::placed_windows(listed, own)
+    rules::placed_windows(listed)
 }
 
 /// The processes of a share of an application that draw the frames of applications of the
@@ -468,7 +468,7 @@ pub(super) fn displays() -> Vec<Display> {
 /// What a person can share now. Process loopback, which carries both choices of sound,
 /// exists on every version of Windows 11 (ADR 0705, ADR 0706).
 pub(super) fn sources(own: &Own) -> ShareSources {
-    let placed = placed_windows(own);
+    let placed = placed_windows();
     let displays: Vec<(DisplaySource, Bounds)> = displays()
         .into_iter()
         .map(|display| (display.source, display.bounds))
@@ -477,7 +477,9 @@ pub(super) fn sources(own: &Own) -> ShareSources {
     let windows: Vec<WindowSource> = placed.into_iter().map(|(window, _)| window).collect();
     let creators = ancestors(own);
     let (applications, started_the_client) = rules::sound_choices(&windows, own, &creators);
+    let clients = clients(&windows, own);
     ShareSources {
+        clients,
         displays: displays.into_iter().map(|(display, _)| display).collect(),
         windows,
         application_capture: true,
