@@ -7,6 +7,8 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AppContext, Context, IntoElement, Render, Styled, TestAppContext, Window, WindowOptions, div,
@@ -49,9 +51,16 @@ fn helper_opens_a_window_of_this_program() {
             ..Default::default()
         };
         cx.open_window(options, |_, cx| cx.new(|_| Ground)).unwrap();
-        println!("ready");
+        // The test harness writes the name of the test before it, on the same line.
+        println!("\n{READY}");
     });
 }
+
+/// The line with which the helper states that its window is open.
+const READY: &str = "junto-own-window-open";
+/// How long the second start has to open its window: a debug build draws its first frame
+/// slowly on the machine of the Windows job.
+const OPEN_LIMIT: Duration = Duration::from_secs(120);
 
 /// The second start of this program; it ends when the value is dropped.
 struct SecondStart {
@@ -78,19 +87,37 @@ impl SecondStart {
             .spawn()
             .unwrap();
         let adopted = crate::limit::adopt(child.id());
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        while !line.starts_with("ready") {
-            line.clear();
-            assert!(
-                output.read_line(&mut line).unwrap() > 0,
-                "the second start ended before its window opened"
-            );
-        }
-        Self {
+        let output = BufReader::new(child.stdout.take().unwrap());
+        // The lines are read on a thread of their own, so that the wait has a bound.
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in output.lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        let started = Instant::now();
+        let mut written = Vec::new();
+        let mut start = Self {
             child,
             _adopted: adopted,
             title,
+        };
+        loop {
+            let left = OPEN_LIMIT.saturating_sub(started.elapsed());
+            match lines.recv_timeout(left) {
+                Ok(line) if line.trim() == READY => return start,
+                Ok(line) => written.push(line),
+                Err(RecvTimeoutError::Timeout) => panic!(
+                    "the second start opened no window within {OPEN_LIMIT:?}; it wrote {written:?}"
+                ),
+                Err(RecvTimeoutError::Disconnected) => panic!(
+                    "the second start ended with {:?} before its window opened; it wrote \
+                     {written:?}",
+                    start.child.wait()
+                ),
+            }
         }
     }
 }
