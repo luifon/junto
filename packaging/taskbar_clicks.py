@@ -6,12 +6,16 @@ press after a minimize does not restore the window, and names which explanation 
 Run it in the desktop session of a person (a scheduled task, as the unelevated CI steps do), with the
 program of an installed client:
 
-    python packaging/taskbar_clicks.py "<folder>\\junto.exe"
+    python packaging/taskbar_clicks.py "<folder>\\junto.exe" [presses]
+
+With a count of presses (6 for three cycles) it states whether each press toggled the window,
+and ends with 1 when one did not.
 
 It starts the program with an empty data directory of its own and ends it afterwards. The decision
 (`verdict`) is a plain function with tests on every system (`test_taskbar_clicks.py`)."""
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,6 +25,8 @@ from pathlib import Path
 # The time after a press in which the window has to reach its new state.
 SETTLE_SECONDS = 1.5
 SAMPLE_SECONDS = 0.05
+# The presses of one record.
+PRESSES = 3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,6 +41,14 @@ class Observation:
     buttons: int
     # The main window was minimized at some sample during the settle time.
     minimized_meanwhile: bool = False
+
+
+def alternates(observations):
+    """Whether each press toggled the window as a person expects: the odd presses minimize it and
+    the even presses restore it, and the taskbar shows one running button of Junto each time."""
+    return bool(observations) and all(
+        observation.minimized == (index % 2 == 0) and observation.buttons == 1
+        for index, observation in enumerate(observations))
 
 
 def verdict(observations):
@@ -53,20 +67,15 @@ def verdict(observations):
     findings = ["reproduced: the second press left the window minimized"]
     if third.minimized:
         findings.append("the third press did not restore the window either")
-    two_buttons = any(observation.buttons > 1 for observation in observations)
-    if two_buttons:
-        findings.append("possible cause: Junto has more than one taskbar button, so the presses and "
-                        "the active state can belong to two buttons (the window properties of ADR "
-                        "0755 are set after the window is shown)")
-    if first.client_in_front:
-        findings.append("possible cause: after the minimize the main window stayed the foreground "
-                        "window, so the taskbar can have taken the second press as a press on the "
-                        "active button" if first.main_in_front else
-                        "possible cause: after the minimize another window of the client became the "
-                        "foreground window")
-    elif not two_buttons:
-        findings.append("after the minimize the foreground window belonged to another program")
-    findings.append("the messages that the window received decide the cause")
+    if second.main_in_front:
+        findings.append("the second press made the minimized window the foreground window without "
+                        "restoring it, which is consistent with a restore that the taskbar posts "
+                        "after the activation and that the window does not receive (ADR 0755); a "
+                        "log of the messages of the window shows whether it was received")
+    elif first.client_in_front:
+        findings.append("after the minimize a window of the client stayed the foreground window")
+    if any(observation.buttons > 1 for observation in observations):
+        findings.append("Junto has more than one taskbar button")
     return "; ".join(findings)
 
 
@@ -116,7 +125,7 @@ foreach ($element in $bar.FindAll([System.Windows.Automation.TreeScope]::Descend
 ConvertTo-Json -Compress -InputObject @($found)
 """
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                            capture_output=True, text=True, timeout=60)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(f"the taskbar buttons could not be read: {result.stderr}")
     text = result.stdout.strip()
@@ -166,7 +175,7 @@ def wintypes_rect():
     return wintypes.RECT()
 
 
-def run(program):
+def run(program, presses=PRESSES):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import ctypes
     import window_frame
@@ -179,18 +188,42 @@ def run(program):
                            "running button of Junto is the button of this check")
     # The client writes the identity of its notifications with the picture of its data
     # directory; the check leaves the key as it was (ADR 0915).
-    with window_frame.kept_identity(), tempfile.TemporaryDirectory() as data:
-        process = subprocess.Popen([str(program), "--data-dir", data, "--no-activate"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # The client refuses a data directory that other accounts can read, and makes a missing one
+    # readable by the account alone, as packaging/check_windows.py lets it.
+    with window_frame.kept_identity(), tempfile.TemporaryDirectory() as folder:
+        data = str(Path(folder) / "data")
+        output = Path(folder) / "client.out"
+        written = output.open("w")
+        # How the main window becomes the foreground window before the presses: "strip", a
+        # press on the strip of the window; "client", a press in the middle of the list of
+        # messages; "start", the start of the program itself.
+        activation = os.environ.get("JUNTO_TASKBAR_ACTIVATION", "strip")
+        arguments = [str(program), "--data-dir", data]
+        if activation != "start":
+            arguments.append("--no-activate")
+        process = subprocess.Popen(arguments,
+                                   stdin=subprocess.DEVNULL, stdout=written, stderr=written)
         try:
-            main = window_frame.until("the main window opens",
-                                      lambda: next(iter(window_frame.windows_of(process.pid)), None))
+            def opened():
+                if process.poll() is not None:
+                    written.flush()
+                    raise RuntimeError(f"the program ended with {process.returncode}: "
+                                       f"{output.read_text(errors='replace')[-2000:]}")
+                return next(iter(window_frame.windows_of(process.pid)), None)
+
+            # A debug build takes minutes to its first frame (packaging/check_windows.py).
+            main = window_frame.until("the main window opens", opened, seconds=300)
             # A program of a scheduled task may not take the foreground itself: a press on the
             # strip of the window, at the name of the application, makes it the foreground
             # window as a person does.
             frame = wintypes_rect()
             user32.GetWindowRect(main, ctypes.byref(frame))
-            _press((frame.left + 60, frame.top + 16))
+            if activation == "strip":
+                _press((frame.left + 60, frame.top + 16))
+            elif activation == "client":
+                _press((frame.left + (frame.right - frame.left) * 7 // 10,
+                        (frame.top + frame.bottom) // 2))
+            print(f"    activation by {activation}", flush=True)
             window_frame.until("the main window is the foreground window",
                                lambda: user32.GetForegroundWindow() == main, seconds=30)
             buttons = window_frame.until("the taskbar shows the running button of Junto",
@@ -199,7 +232,11 @@ def run(program):
                 raise RuntimeError(f"the taskbar shows {len(buttons)} running buttons of Junto")
             point = (buttons[0]["x"], buttons[0]["y"])
             observations = []
-            for _ in range(3):
+            print(f"    main window {main:#x}", flush=True)
+            for number in range(1, presses + 1):
+                # The time in milliseconds since 1970, to read the press beside a log of the
+                # messages of the window.
+                print(f"    press {number} at {int(time.time() * 1000)}", flush=True)
                 _press(point)
                 observations.append(_observe(user32, main, process.pid))
                 print(f"    {observations[-1]}", flush=True)
@@ -207,15 +244,21 @@ def run(program):
         finally:
             process.kill()
             process.communicate(timeout=60)
+            written.close()
+            output.unlink(missing_ok=True)
 
 
 def main():
-    if len(sys.argv) != 2 or sys.platform != "win32":
+    if len(sys.argv) not in (2, 3) or sys.platform != "win32":
         print(__doc__)
         return 2
-    observations = run(Path(sys.argv[1]))
-    print(verdict(observations))
-    return 0
+    presses = int(sys.argv[2]) if len(sys.argv) == 3 else PRESSES
+    observations = run(Path(sys.argv[1]), presses)
+    if presses == PRESSES:
+        print(verdict(observations))
+    toggled = alternates(observations)
+    print("each press toggled the window" if toggled else "a press did not toggle the window")
+    return 0 if toggled else 1
 
 
 if __name__ == "__main__":
