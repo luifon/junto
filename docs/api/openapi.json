@@ -13833,6 +13833,155 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
+        "operationId": "get_member_permissions",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true
+      },
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
+        "operationId": "set_member_permissions",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true
+      },
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Retired: a workspace has no permission rule for one member any more. Every request is\nrefused with `retired`.",
+        "description": "Workspace permission rules for one member were removed in Junto 0.3.0: each one became a role of that member. Use a role, or a rule of a channel or a category.",
+        "operationId": "change_member_permission",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "410": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal": {
       "post": {
         "tags": [

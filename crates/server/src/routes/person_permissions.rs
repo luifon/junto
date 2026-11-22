@@ -42,6 +42,13 @@ pub const MEMBER_RULES_RETIRED: &str = "Workspace permission rules for one membe
 
 /// Retired: a workspace has no permission rule for one member any more. Every request is
 /// refused with `retired`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
+    responses(ApiError)
+)]
 pub async fn get_member_permissions(
     _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {
@@ -50,6 +57,13 @@ pub async fn get_member_permissions(
 
 /// Retired: a workspace has no permission rule for one member any more. Every request is
 /// refused with `retired`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
+    responses(ApiError)
+)]
 pub async fn set_member_permissions(
     _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {
@@ -58,6 +72,13 @@ pub async fn set_member_permissions(
 
 /// Retired: a workspace has no permission rule for one member any more. Every request is
 /// refused with `retired`.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
+    responses(ApiError)
+)]
 pub async fn change_member_permission(
     _member: ApiPath<(WorkspaceId, AccountId)>,
 ) -> ApiResult<Json<PersonPermissions>> {

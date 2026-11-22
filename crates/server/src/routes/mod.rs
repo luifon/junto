@@ -416,6 +416,13 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         )
     });
     add(&mut router, || {
+        routes!(
+            person_permissions::get_member_permissions,
+            person_permissions::set_member_permissions,
+            person_permissions::change_member_permission
+        )
+    });
+    add(&mut router, || {
         routes!(person_permissions::get_member_access)
     });
     add(&mut router, || {
@@ -545,6 +552,27 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
             }
         }
     }
+    // A retired route stays in version 1, marked deprecated with the message of its
+    // refusal (ADR 0201).
+    if let Some(item) = document
+        .paths
+        .paths
+        .get_mut("/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions")
+    {
+        for operation in [&mut item.get, &mut item.put, &mut item.patch]
+            .into_iter()
+            .flatten()
+        {
+            operation.deprecated = Some(utoipa::openapi::Deprecated::True);
+            operation.description = Some(person_permissions::MEMBER_RULES_RETIRED.to_owned());
+            if let Some(error) = operation.responses.responses.get("default").cloned() {
+                operation
+                    .responses
+                    .responses
+                    .insert("410".to_owned(), error);
+            }
+        }
+    }
     document
 }
 
@@ -556,13 +584,6 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(internal::media_notification),
         )
         .route("/join", axum::routing::get(invite_page::page))
-        // Retired routes answer `retired` and are not in the API document (ADR 0201).
-        .route(
-            person_permissions::MEMBER_RULES_PATH,
-            axum::routing::get(person_permissions::get_member_permissions)
-                .put(person_permissions::set_member_permissions)
-                .patch(person_permissions::change_member_permission),
-        )
         .route(layout::INDEX, axum::routing::get(layout::index))
         .route(layout::FILE, axum::routing::get(layout::file))
         .fallback(unknown_path)
