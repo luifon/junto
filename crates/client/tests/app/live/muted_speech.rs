@@ -35,7 +35,10 @@ fn local_speech_while_muted_offers_unmute_without_bypassing_held_keys(cx: &mut T
         |window| window.shows("muted-speech") && heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS,
     );
     let waited = window.cx.executor().now().duration_since(muted_at);
-    assert!(waited >= junto_client::state::muted_speech::ONSET, "{waited:?}");
+    assert!(
+        waited >= junto_client::state::muted_speech::ONSET,
+        "{waited:?}"
+    );
 
     // Unchecked, the notice says so; checked again within its time, it stays as it was.
     let notice_on = |window: &Window| {

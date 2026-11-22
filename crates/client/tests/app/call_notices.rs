@@ -821,7 +821,10 @@ fn local_input_while_muted_shows_a_notice_in_both_windows(cx: &mut TestAppContex
         window.shows("muted-speech")
     });
     let waited = window.cx.executor().now().duration_since(measured);
-    assert!(waited >= junto_client::state::muted_speech::ONSET, "{waited:?}");
+    assert!(
+        waited >= junto_client::state::muted_speech::ONSET,
+        "{waited:?}"
+    );
     calls.show_levels_for_test(junto_media::engine::Levels {
         input: 1.0,
         people: [(

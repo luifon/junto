@@ -188,37 +188,38 @@ impl Shell {
             .child(join)
             .child(arrow)
             .children(open.then(|| {
-                div()
-                    .absolute()
-                    .right_0()
-                    .top(u(32.0))
-                    .child(deferred(
-                        anchored().snap_to_window().child(
-                            Menu::new("join-check-menu", words::JOIN_AFTER_CHECK, self.layer_focus())
-                                .width(240.0)
-                                .selector("join-check-menu")
-                                .on_close(Self::handler(cx, |this, window, cx| {
-                                    this.join_menu_closed_by_press =
-                                        !window.last_input_was_keyboard();
-                                    this.close_layer(window, cx);
-                                }))
+                div().absolute().right_0().top(u(32.0)).child(deferred(
+                    anchored().snap_to_window().child(
+                        Menu::new(
+                            "join-check-menu",
+                            words::JOIN_AFTER_CHECK,
+                            self.layer_focus(),
+                        )
+                        .width(240.0)
+                        .selector("join-check-menu")
+                        .on_close(Self::handler(cx, |this, window, cx| {
+                            this.join_menu_closed_by_press = !window.last_input_was_keyboard();
+                            this.close_layer(window, cx);
+                        }))
+                        .child(
+                            div()
+                                .debug_selector(|| "join-after-check".to_owned())
                                 .child(
-                                    div().debug_selector(|| "join-after-check".to_owned()).child(
-                                        MenuItem::new("join-after-check", words::JOIN_AFTER_CHECK)
-                                            .icon(Icon::Phones)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.close_layer(window, cx);
-                                                this.open_prejoin(
-                                                    check.target,
-                                                    check.invitation,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    ),
+                                    MenuItem::new("join-after-check", words::JOIN_AFTER_CHECK)
+                                        .icon(Icon::Phones)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.close_layer(window, cx);
+                                            this.open_prejoin(
+                                                check.target,
+                                                check.invitation,
+                                                window,
+                                                cx,
+                                            );
+                                        })),
                                 ),
                         ),
-                    ))
+                    ),
+                ))
             }))
             .into_any_element()
     }

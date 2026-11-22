@@ -539,4 +539,3 @@ async fn an_own_call_answer_without_a_position_is_used_as_before_the_positions()
     assert_eq!(call.participant(unblocked.account_id), Some(&unblocked));
     assert_eq!(model.call_cursor(&place), model.cursor);
 }
-

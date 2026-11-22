@@ -39,9 +39,7 @@ fn left_of(window: &mut Window, selector: &'static str) -> f32 {
 /// row keeps microphone, sound, camera, share and Leave, and its "⋮" holds the others in the
 /// order of the row.
 #[gpui::test]
-fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(
-    cx: &mut TestAppContext,
-) {
+fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
@@ -59,7 +57,10 @@ fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(
     assert!(!window.shows("own-more") && !window.shows("open-call-settings"));
     let stage = window.cx.debug_bounds("call-stage").unwrap();
     let row = window.cx.debug_bounds("own-controls").unwrap();
-    assert!(row.top() >= stage.bottom() - gpui::px(1.0), "{row:?} under {stage:?}");
+    assert!(
+        row.top() >= stage.bottom() - gpui::px(1.0),
+        "{row:?} under {stage:?}"
+    );
     let order: Vec<f32> = WIDE_ROW[..8]
         .iter()
         .map(|control| left_of(&mut window, control))
@@ -72,18 +73,14 @@ fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(
     assert!(window.view().call.is_some());
     window.click("view-hide-without-video");
     assert!(!window.shows("view-menu"));
-    assert!(
-        window
-            .state
-            .read_with(&window.cx, |state, _| state.voice().hide_people_without_video)
-    );
+    assert!(window.state.read_with(&window.cx, |state, _| {
+        state.voice().hide_people_without_video
+    }));
     window.click("own-view");
     window.click("view-hide-without-video");
-    assert!(
-        !window
-            .state
-            .read_with(&window.cx, |state, _| state.voice().hide_people_without_video)
-    );
+    assert!(!window.state.read_with(&window.cx, |state, _| {
+        state.voice().hide_people_without_video
+    }));
     // The camera is off: "Hide my tile" is shown and disabled.
     window.click("own-view");
     window.click("view-hide-my-tile");
@@ -105,7 +102,13 @@ fn the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu(
     window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0))));
     window.settle();
     window.settle();
-    for control in ["own-microphone", "own-sound", "own-camera", "own-share", "own-leave"] {
+    for control in [
+        "own-microphone",
+        "own-sound",
+        "own-camera",
+        "own-share",
+        "own-leave",
+    ] {
         assert!(window.shows(control), "{control} on a narrow stage");
     }
     for control in ["own-view", "own-devices", "own-detach"] {

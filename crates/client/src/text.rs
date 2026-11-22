@@ -18,9 +18,7 @@ use junto_media::calls::{EndReason, MicrophoneClosed, Unused};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 
-use crate::state::view::{
-    CallNotice, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
-};
+use crate::state::view::{CallNotice, RecordingFault, RecordingProblem, ShareCard, SoundWarning};
 
 pub mod account;
 pub mod admin;
@@ -352,7 +350,8 @@ pub const MUTED_SPEECH_HOLD: &str = "Release push-to-mute to unmute.";
 pub const MUTED_SPEECH_SETTING: &str = "Tell me when I talk while muted";
 pub const MUTED_SPEECH_SETTING_HELP: &str =
     "After a few seconds of speech while muted, a notice above the call bar offers Unmute.";
-pub const MUTED_SPEECH_TURNED_OFF: &str = "Turned off. Settings, Voice and video turns it on again.";
+pub const MUTED_SPEECH_TURNED_OFF: &str =
+    "Turned off. Settings, Voice and video turns it on again.";
 pub const UNMUTE: &str = "Unmute";
 pub const UNMUTE_HELP: &str = "Unmute your microphone. Junto does not unmute it for you.";
 pub const MICROPHONE_OPEN_AGAIN: &str = "Your microphone is no longer blocked. It is on, and \
@@ -605,7 +604,8 @@ pub const SOUND_OF_JUNTO_NOT_SHARED: &str = "Junto does not share its own sound,
      that sound holds this call. Choose all system sound or no sound.";
 /// In the place of the picture of an own share of a window or of the application of Junto
 /// itself (ADR 0738).
-pub const SHARE_SHOWS_JUNTO: &str = "Your share shows Junto, so it is not drawn here. Others see it.";
+pub const SHARE_SHOWS_JUNTO: &str =
+    "Your share shows Junto, so it is not drawn here. Others see it.";
 /// The line under an application in the dialog of a share: its windows and the screen whose
 /// area is shared.
 pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {

@@ -5,8 +5,8 @@
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
-    ReportCallState, ReportScreenShare, SetVoiceChannelStatus, ShareAudio,
-    ShareShows, UpdateCallSettings,
+    ReportCallState, ReportScreenShare, SetVoiceChannelStatus, ShareAudio, ShareShows,
+    UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};

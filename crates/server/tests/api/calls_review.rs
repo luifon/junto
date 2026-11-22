@@ -3,11 +3,11 @@
 
 use std::time::{Duration as Wait, Instant};
 
+use junto_protocol::WorkspacePermission as W;
 use junto_protocol::call::{CallInvitation, CallJoin, CallMove, LeaveReason};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::AccountId;
-use junto_protocol::WorkspacePermission as W;
 use junto_server::calls::admission::Outcome;
 use junto_server::config::RateLimit;
 use junto_server::media::ParticipantKind;

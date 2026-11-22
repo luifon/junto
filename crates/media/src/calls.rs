@@ -4726,18 +4726,12 @@ mod tests {
         assert_eq!(reporter.step(&true, start), Step::Idle);
         reporter.done(true, REPORT_RETRY, start);
         assert_eq!(reporter.step(&false, start), Step::Idle);
-        assert_eq!(
-            reporter.step(&true, start),
-            Step::Wait(start + spacing)
-        );
+        assert_eq!(reporter.step(&true, start), Step::Wait(start + spacing));
         let later = start + spacing;
         assert_eq!(reporter.step(&true, later), Step::Send);
         reporter.sending(true, later);
         reporter.done(true, REPORT_RETRY, later);
-        assert_eq!(
-            reporter.step(&true, later + spacing * 10),
-            Step::Idle
-        );
+        assert_eq!(reporter.step(&true, later + spacing * 10), Step::Idle);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4752,10 +4746,7 @@ mod tests {
             reporter.step(&true, start),
             Step::Wait(start + REPORT_RETRY)
         );
-        assert_eq!(
-            reporter.step(&true, start + REPORT_RETRY),
-            Step::Send
-        );
+        assert_eq!(reporter.step(&true, start + REPORT_RETRY), Step::Send);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4790,10 +4781,7 @@ mod tests {
         assert_eq!(reporter.step(&Some(1), start + spacing), Step::Send);
         reporter.sending(Some(1), start + spacing);
         reporter.done(true, REPORT_RETRY, start + spacing);
-        assert_eq!(
-            reporter.step(&Some(1), start + spacing * 2),
-            Step::Idle
-        );
+        assert_eq!(reporter.step(&Some(1), start + spacing * 2), Step::Idle);
     }
 
     #[test]

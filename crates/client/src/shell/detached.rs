@@ -219,7 +219,12 @@ impl Shell {
                         .map(|channel| {
                             let mut shared =
                                 self.render_recording_control(&channel.recording, &theme, true, cx);
-                            shared.extend(self.render_room_controls(&channel.room, &theme, true, cx));
+                            shared.extend(self.render_room_controls(
+                                &channel.room,
+                                &theme,
+                                true,
+                                cx,
+                            ));
                             shared
                         })
                         .into_iter()

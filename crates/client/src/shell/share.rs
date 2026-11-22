@@ -196,10 +196,12 @@ impl SharePicker {
     /// nothing else of the tab of the screens.
     pub(crate) fn take_listed(&mut self, listed: Listed) {
         self.listed = listed;
-        let only = self.sources().and_then(|sources| match sources.displays.as_slice() {
-            [display] if sources.portal.is_empty() => Some(display.id),
-            _ => None,
-        });
+        let only = self
+            .sources()
+            .and_then(|sources| match sources.displays.as_slice() {
+                [display] if sources.portal.is_empty() => Some(display.id),
+                _ => None,
+            });
         if let (Some(id), None, ShareTab::Screen) = (only, self.picture, self.tab) {
             self.pick_picture(PictureSource::Display(id));
         }
@@ -2008,16 +2010,19 @@ impl Shell {
                         )
                         // The sound of a share that is not watched is set in its menu; the
                         // card shows only that it is muted (ADR 0738).
-                        .when(id.person != Person::Own && share.sound_setting.muted, |card| {
-                            card.child(
-                                div()
-                                    .id("share-muted-mark")
-                                    .debug_selector(|| "share-muted-mark".to_owned())
-                                    .flex_none()
-                                    .tooltip(tooltip(text::SHARE_MUTED))
-                                    .child(icon(Icon::PhonesOff, 14.0, colors.bone_2)),
-                            )
-                        })
+                        .when(
+                            id.person != Person::Own && share.sound_setting.muted,
+                            |card| {
+                                card.child(
+                                    div()
+                                        .id("share-muted-mark")
+                                        .debug_selector(|| "share-muted-mark".to_owned())
+                                        .flex_none()
+                                        .tooltip(tooltip(text::SHARE_MUTED))
+                                        .child(icon(Icon::PhonesOff, 14.0, colors.bone_2)),
+                                )
+                            },
+                        )
                         .map(|frame| self.call_share_frame(frame, share, false, cx))
                 });
                 div()
@@ -2639,7 +2644,10 @@ mod tests {
     fn a_share_needs_a_picture_and_starts_without_sound() {
         let mut picker = picker();
         // "No sound" is chosen at the start, and the picture is chosen by the person.
-        assert_eq!((picker.sound, picker.sound_chosen), (SoundKind::None, false));
+        assert_eq!(
+            (picker.sound, picker.sound_chosen),
+            (SoundKind::None, false)
+        );
         assert_eq!(picker.chosen(), None);
         picker.tab = ShareTab::of(PictureSource::Display(1));
         picker.picture = Some(PictureSource::Display(1));

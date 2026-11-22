@@ -193,7 +193,11 @@ mod tests {
         }
         // Speech with pauses shorter than the limit shows it after the onset.
         at = speak(&mut state, at, Duration::from_millis(800));
-        at = speak(&mut state, at + Duration::from_millis(600), Duration::from_millis(800));
+        at = speak(
+            &mut state,
+            at + Duration::from_millis(600),
+            Duration::from_millis(800),
+        );
         assert!(!state.shown());
         speak(&mut state, at + TICK, Duration::from_millis(400));
         assert!(state.shown());

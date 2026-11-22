@@ -11,8 +11,7 @@ use junto_protocol::call::{
     DirectMute, EndScreenShareQuery, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall,
     LeaveCallQuery, LeaveReason, MAX_SHARES, MeetingEnd, MoveOutcome, MoveParticipant,
     MuteDirectConversation, OwnCallState, OwnCallView, ReportCallState, ReportScreenShare,
-    ReportWatching, SetVoiceChannelStatus, ShareAudio, ShareShows,
-    UpdateCallSettings, ViewerQuery,
+    ReportWatching, SetVoiceChannelStatus, ShareAudio, ShareShows, UpdateCallSettings, ViewerQuery,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, Event};

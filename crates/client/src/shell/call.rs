@@ -8,9 +8,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
-    Styled, StyledText, Subscription, Window, div, prelude::FluentBuilder, px,
+    AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Role, SharedString,
+    StatefulInteractiveElement, Styled, StyledText, Subscription, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::ids::{AccountId, ServerId, WorkspaceId};
@@ -1852,7 +1853,8 @@ impl Shell {
             })
             .selector("own-sound")
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.state.update(cx, |state, _| state.set_sound_off(!sound_off));
+                this.state
+                    .update(cx, |state, _| state.set_sound_off(!sound_off));
             }));
         let camera_call = self.state.read(cx).media_calls().call;
         let camera = camera_call.as_ref().map(CameraAction::drawn_for);
@@ -1892,12 +1894,18 @@ impl Shell {
         let share_refused = strip.withheld.share && strip.share == OwnShare::Off;
         let share = (!share_refused).then(|| {
             let (kind, shown, label) = match (strip.can_share, strip.share) {
-                (false, _) => (ButtonKind::Call, Icon::Screen, text::SHARE_NOT_ON_THIS_SYSTEM),
+                (false, _) => (
+                    ButtonKind::Call,
+                    Icon::Screen,
+                    text::SHARE_NOT_ON_THIS_SYSTEM,
+                ),
                 (true, OwnShare::Off) => (ButtonKind::Call, Icon::Screen, text::SHARE_SCREEN),
                 (true, OwnShare::Starting) => {
                     (ButtonKind::CallOn, Icon::ScreenOff, text::SHARE_STARTING)
                 }
-                (true, OwnShare::Running) => (ButtonKind::CallOn, Icon::ScreenOff, text::SHARE_RUNS),
+                (true, OwnShare::Running) => {
+                    (ButtonKind::CallOn, Icon::ScreenOff, text::SHARE_RUNS)
+                }
             };
             let menu = (matches!(self.layer, Layer::ShareMenu) && self.share_menu_in_row)
                 .then(|| self.render_share_menu(&strip.own_shares, strip.share_limit, cx));
@@ -2265,7 +2273,14 @@ impl Shell {
                     this.close_layer(window, cx);
                     this.toggle_call_on_top(top, window, cx);
                 }));
-            items.push(if top { item.end_icon(Icon::Check) } else { item }.into_any_element());
+            items.push(
+                if top {
+                    item.end_icon(Icon::Check)
+                } else {
+                    item
+                }
+                .into_any_element(),
+            );
         }
         items.push(
             crate::ui::MenuItem::new("more-fullscreen", text::FULLSCREEN)
