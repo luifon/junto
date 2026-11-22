@@ -317,7 +317,7 @@ impl Shell {
                 }
                 BookPart::Group(group) => {
                     let row = &view.groups[*group];
-                    servers.push(self.render_group_head(*group, row, view, theme, cx));
+                    servers.push(self.render_group_head(*group, row, view, theme, window, cx));
                     if !row.collapsed {
                         let members: Vec<AnyElement> = row
                             .servers

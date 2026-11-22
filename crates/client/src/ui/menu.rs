@@ -441,6 +441,7 @@ pub struct MenuItem {
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
     shortcut: Option<junto_client_core::keybinds::KeyAction>,
+    keys: Option<SharedString>,
     disabled: bool,
     selector: Option<SharedString>,
     on_click: Option<ClickHandler>,
@@ -458,6 +459,7 @@ impl MenuItem {
             end_icon: None,
             trailing: None,
             shortcut: None,
+            keys: None,
             disabled: false,
             selector: None,
             on_click: None,
@@ -521,6 +523,13 @@ impl MenuItem {
         self
     }
 
+    /// Keys of the system that the item names, such as the keys of Copy, which no binding of
+    /// the person changes.
+    pub fn keys(mut self, keys: impl Into<SharedString>) -> Self {
+        self.keys = Some(keys.into());
+        self
+    }
+
     pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
         self.selector = Some(selector.into());
         self
@@ -561,7 +570,10 @@ impl RenderOnce for MenuItem {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-        let keys = self.shortcut.and_then(|action| shown_keys(action, cx));
+        let keys = self
+            .shortcut
+            .and_then(|action| shown_keys(action, cx))
+            .or(self.keys.clone());
         let keys_selector = self.selector.clone();
         div()
             .id(self.id)

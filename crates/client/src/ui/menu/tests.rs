@@ -608,3 +608,40 @@ fn a_stable_menu_that_would_end_inside_the_margin_opens_higher_and_shows_its_las
     let last = cx.debug_bounds("margin-last").unwrap();
     assert!(last.bottom() <= menu.bottom(), "{last:?} {menu:?}");
 }
+
+struct EditHost {
+    focus: FocusHandle,
+}
+
+impl Render for EditHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(400.0)).child(
+            Menu::new("edit-menu", "Edit", &self.focus).child(
+                MenuItem::new("copy", "Copy")
+                    .selector("copy")
+                    .keys(crate::text::editing_keys('C'))
+                    .on_click(|_, _, _| {}),
+            ),
+        )
+    }
+}
+
+/// An item of an edit of text shows the keys of the system for it (ADR 0777).
+#[gpui::test]
+fn an_edit_item_shows_the_keys_of_the_system(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (_host, cx) = cx.add_window_view(|_, cx| EditHost {
+        focus: cx.focus_handle(),
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("copy-keys").is_some());
+    let expected = if cfg!(target_os = "macos") {
+        "Command+C"
+    } else {
+        "Control+C"
+    };
+    assert_eq!(crate::text::editing_keys('C'), expected);
+}

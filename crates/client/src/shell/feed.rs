@@ -2793,6 +2793,7 @@ impl Shell {
         feed: &Feed,
         row: &MessageRow,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let message = &row.message;
@@ -2885,9 +2886,16 @@ impl Shell {
                         chip.aria_description(reason).cursor_not_allowed()
                     })
                     .when(acts, |chip| {
+                        // A press on the chip is its own: it starts no text selection of the
+                        // message (ADR 0731).
+                        let focus = crate::ui::row_focus(
+                            SharedString::from(format!("reaction-focus:{message_id}:{index}")),
+                            window,
+                            cx,
+                        );
                         chip.cursor_pointer()
-                            .focusable()
-                            .tab_stop(true)
+                            .own_press_focusing(&focus)
+                            .track_focus(&focus)
                             .focus_visible(move |style| style.shadow(ring))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let emoji = sent.clone();
@@ -4005,9 +4013,15 @@ impl Shell {
                         // A thread whose replies the person may not read shows its count
                         // without an act (ADR 0790).
                         .when(row.can_thread && row.thread_refused.is_none(), |chip| {
+                            // A press on the chip is its own (ADR 0731).
+                            let focus = crate::ui::row_focus(
+                                SharedString::from(format!("thread-chip-focus:{message_id}")),
+                                window,
+                                cx,
+                            );
                             chip.cursor_pointer()
-                                .focusable()
-                                .tab_stop(true)
+                                .own_press_focusing(&focus)
+                                .track_focus(&focus)
                                 .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                                 .focus_visible(move |style| {
                                     style.shadow(focus_ring_inside(
@@ -4212,7 +4226,7 @@ impl Shell {
                         .into_any_element(),
                 );
             }
-            body.extend(self.reactions(feed, row, &theme, cx));
+            body.extend(self.reactions(feed, row, &theme, window, cx));
             if !bare {
                 body.extend(self.thread_chip(feed, row, &theme, window, cx));
             }
@@ -4297,11 +4311,19 @@ impl Shell {
         // A message without an action has no bar and no menu: a permanent one still has the
         // bar, which states that it cannot be changed.
         let offers = row.has_actions() || row.message.permanent;
+        // The bar, with its menu button, is drawn while the pointer is over the message and
+        // while the message holds the keyboard focus (ADR 0731).
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("message-focus:{}:{message_id}", pane.id("feed"))),
+            window,
+            cx,
+        );
+        let focused = focus.is_focused(window);
         let actions = (offers
             && !message.deleted
             && !bare
-            && self.hovered_message == Some((pane, message_id)))
-        .then(|| self.action_bar(feed, row, &theme, cx));
+            && (self.hovered_message == Some((pane, message_id)) || focused))
+            .then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
             "{}, {}: {}",
             row.author,
@@ -4341,8 +4363,7 @@ impl Shell {
             .when(!message.deleted, |frame| {
                 let has_actions = row.has_actions();
                 frame
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&focus)
                     .focus_visible(move |style| style.shadow(ring))
                     .when(!bare, |frame| {
                         frame.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -5341,8 +5362,15 @@ impl Shell {
                     this.close_layer(window, cx)
                 }))
                 .children(actions.into_iter().map(|(id, label, action, enabled)| {
+                    let letter = match id {
+                        "composer-cut" => 'X',
+                        "composer-copy" => 'C',
+                        "composer-paste" => 'V',
+                        _ => 'A',
+                    };
                     MenuItem::new(id, label)
                         .selector(id)
+                        .keys(text::editing_keys(letter))
                         .disabled(!enabled)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let current = this

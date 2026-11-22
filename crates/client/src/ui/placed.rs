@@ -16,6 +16,7 @@ pub(crate) fn placed(
     name: SharedString,
     label: Option<SharedString>,
     selected: Option<bool>,
+    disabled: bool,
 ) -> impl gpui::IntoElement {
     use gpui::Styled;
     gpui::canvas(
@@ -26,6 +27,7 @@ pub(crate) fn placed(
                 name,
                 label,
                 selected,
+                disabled,
                 bounds,
                 clip,
             });
@@ -44,6 +46,8 @@ pub struct Placed {
     pub label: Option<SharedString>,
     /// Whether the control is the selected one of a set, such as an open tab.
     pub selected: Option<bool>,
+    /// The control takes no press now.
+    pub disabled: bool,
     /// The bounds of the control, or of the outermost scrolling strip that holds it.
     pub bounds: Bounds<Pixels>,
     /// The part of the window in which those bounds can be seen.
@@ -210,6 +214,7 @@ mod tests {
             name: "control".into(),
             label: None,
             selected: None,
+            disabled: false,
             bounds: Bounds::new(point(px(x), px(10.0)), size(px(width), px(30.0))),
             clip: Bounds::new(point(px(clip.0), px(0.0)), size(px(clip.1), px(600.0))),
         }

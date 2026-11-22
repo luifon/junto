@@ -72,6 +72,12 @@ pub use menu::{
     set_bound_keys,
 };
 pub(crate) use menu::{has_focused_menu, over_focused_menu};
+
+/// True while a menu of the window holds the keyboard focus (for the window tests).
+#[cfg(feature = "test-support")]
+pub fn window_has_focused_menu(window: &gpui::Window, cx: &gpui::App) -> bool {
+    has_focused_menu(window, cx)
+}
 pub use menu_button::{MENU_ROW, MenuButton, OwnPress};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;

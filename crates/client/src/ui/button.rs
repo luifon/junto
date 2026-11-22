@@ -436,6 +436,7 @@ impl RenderOnce for Button {
             },
             label.clone(),
             self.selected,
+            disabled,
         );
         let mut frame = div()
             .id(self.id)

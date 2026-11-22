@@ -484,6 +484,7 @@ impl RenderOnce for Tab {
             },
             Some(label.clone()),
             Some(self.on),
+            false,
         );
         let tab = div();
         #[cfg(feature = "test-support")]

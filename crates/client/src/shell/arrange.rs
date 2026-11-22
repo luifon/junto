@@ -305,11 +305,17 @@ impl Shell {
         group: &GroupRow,
         view: &ShellView,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
         let (id, collapsed) = (group.id, group.collapsed);
         let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("group-focus:{}", id.as_uuid())),
+            window,
+            cx,
+        );
         let label: SharedString = group_label(group).into();
         let name: SharedString = group.shown_name.clone().into();
         let menu_open = matches!(self.layer, Layer::GroupMenu(open) if open == id);
@@ -326,8 +332,7 @@ impl Shell {
             .pr(u(8.0))
             .pl(u(10.0))
             .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .tooltip(tooltip(label))
             .when(collapsed && group.selected, |head| {
                 head.bg(Hsla::from(colors.basalt_3))
@@ -418,7 +423,7 @@ impl Shell {
                 crate::ui::MenuButton::new("group-more")
                     .selector(format!("menu-button:group-{index}"))
                     .dark()
-                    .shown(menu_open)
+                    .shown(menu_open || focus.is_focused(window))
                     .on_open(Self::handler(cx, move |this, window, cx| {
                         this.open_group_menu(id, window, cx);
                     })),

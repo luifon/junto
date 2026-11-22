@@ -1349,6 +1349,16 @@ pub fn keys_portal_failed(reason: &str) -> String {
     )
 }
 
+/// The keys of the system for an edit of text, such as Copy: Command with the letter on
+/// macOS, Control with it elsewhere.
+pub fn editing_keys(letter: char) -> String {
+    if cfg!(target_os = "macos") {
+        format!("Command+{letter}")
+    } else {
+        format!("Control+{letter}")
+    }
+}
+
 /// The keys of a binding as the settings name them.
 pub fn key_combo(combo: &junto_client_core::global_keys::KeyCombo) -> String {
     use junto_client_core::global_keys::Key;

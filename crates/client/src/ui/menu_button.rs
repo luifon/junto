@@ -126,6 +126,7 @@ impl RenderOnce for MenuButton {
                 .unwrap_or_else(|| format!("{}", self.id).into()),
             Some(label.clone()),
             None,
+            false,
         );
         let frame = div()
             .id(self.id)

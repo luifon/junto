@@ -128,6 +128,8 @@ pub struct RowMenu {
     pub dark: bool,
     /// The name of the button for the tests; `menu-button:<identifier>` by default.
     pub selector: Option<SharedString>,
+    /// The distance of an overlaid button from the top of the row, in design pixels.
+    pub top: f32,
 }
 
 impl RowMenu {
@@ -137,6 +139,7 @@ impl RowMenu {
             focused,
             dark: false,
             selector: None,
+            top: 6.0,
         }
     }
 
@@ -154,6 +157,11 @@ impl RowMenu {
 
     pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
         self.selector = Some(selector.into());
+        self
+    }
+
+    pub fn top(mut self, top: f32) -> Self {
+        self.top = top;
         self
     }
 }
@@ -237,7 +245,7 @@ fn with_row_button(
         RowMenuPlace::Overlay => frame.relative().child(
             div()
                 .absolute()
-                .top(crate::theme::u(6.0))
+                .top(crate::theme::u(row.top))
                 .right(crate::theme::u(6.0))
                 .child(button.ground(colors.limestone_hover)),
         ),

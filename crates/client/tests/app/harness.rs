@@ -940,19 +940,28 @@ impl Window {
         self.click(selector);
     }
 
-    /// True when the shown call offers "Record": its control is drawn for every person, and
-    /// is disabled without "record calls" (ADR 0790).
+    /// The accessible label of the drawn control with this name.
+    pub fn control_label(&mut self, name: &str) -> Option<String> {
+        self.settle();
+        junto_client::ui::record_controls();
+        self.in_shell(|_, window, _| window.refresh());
+        self.settle();
+        junto_client::ui::take_controls()
+            .into_iter()
+            .find(|control| control.name.as_ref() == name)
+            .and_then(|control| control.label.map(|label| label.to_string()))
+    }
+
+    /// True when the drawn "Record" takes a press: its control is drawn for every person,
+    /// and is disabled without "record calls" (ADR 0790). It reads the drawn control.
     pub fn may_record(&mut self) -> bool {
-        self.view()
-            .lists()
-            .and_then(|lists| lists.call.as_ref())
-            .is_some_and(|call| {
-                matches!(
-                    &call.place,
-                    junto_client::state::view::PanelPlace::Channel(channel)
-                        if channel.recording.may_record
-                )
-            })
+        self.settle();
+        junto_client::ui::record_controls();
+        self.in_shell(|_, window, _| window.refresh());
+        self.settle();
+        junto_client::ui::take_controls()
+            .into_iter()
+            .any(|control| control.name.as_ref() == "start-recording" && !control.disabled)
     }
 
     /// Presses a control placed on a row or on another clickable element, as a person does
@@ -996,6 +1005,23 @@ impl Window {
             selected.is_empty(),
             "a press on {control} selected text: {selected:?}"
         );
+        // The keyboard focus is on the control or in the menu that it opened, not on the row:
+        // a focusable control reports where it is drawn while it holds the focus.
+        if let (Some(focused), Some(pressed)) = (
+            self.cx.debug_bounds("focus-report"),
+            self.cx.debug_bounds(control),
+        ) {
+            assert!(
+                pressed.contains(&focused.center()) || self.has_focused_menu(),
+                "a press on {control} moved the focus to {focused:?}"
+            );
+        }
+    }
+
+    /// True while a menu of the window holds the keyboard focus.
+    pub fn has_focused_menu(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| junto_client::ui::window_has_focused_menu(window, cx))
     }
 
     /// Clicks the element with this name when it is drawn now. A test uses it for an

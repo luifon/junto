@@ -3,6 +3,7 @@ use gpui::{
     prelude::FluentBuilder,
 };
 use gpui_base::slider::SliderEvent;
+use junto_client_core::keybinds::KeyAction;
 
 use super::{
     Layer, Shell,
@@ -432,8 +433,18 @@ impl Shell {
             .into_iter()
             .map(|control| {
                 let context = open.clone();
+                // The key binding of the same action, shown at the end of the item (ADR 0777).
+                let shortcut = match &control.action {
+                    CallMenuAction::Microphone(_) => Some(KeyAction::ToggleMute),
+                    CallMenuAction::Sound(_) => Some(KeyAction::ToggleSoundOff),
+                    CallMenuAction::Camera(_) => Some(KeyAction::ToggleCamera),
+                    CallMenuAction::Leave => Some(KeyAction::LeaveCall),
+                    CallMenuAction::StopWatching(_) => Some(KeyAction::StopWatching),
+                    _ => None,
+                };
                 crate::ui::MenuItem::new(control.id, control.label)
                     .selector(control.id)
+                    .when_some(shortcut, |item, action| item.shortcut(action))
                     .disabled(control.disabled)
                     .when(
                         matches!(
