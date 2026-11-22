@@ -307,6 +307,14 @@ fn draw_followed(studio: &mut Studio) -> Result<(), String> {
             follow(state, false, None),
         )?;
     }
+    // The side panel "Threads" of the workspace, before its list arrives.
+    studio.draw(
+        Screen::new("threads-followed-panel", servers.clone()),
+        |shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.toggle_followed_threads(cx);
+        },
+    )?;
     // A change on its way, and a change that the server refused.
     studio.draw(
         Screen::new("follow-sending", servers.clone()),

@@ -50,7 +50,9 @@ fn channel_references_are_tokens_that_open_the_channel(cx: &mut TestAppContext) 
     window.in_shell(|shell, window, cx| shell.edit_message(Pane::Main, id, window, cx));
     assert!(
         window
-            .in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx))
+            .in_shell(
+                |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+            )
             .contains("#general")
     );
     window.press("escape");

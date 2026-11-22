@@ -15,7 +15,14 @@ fn the_bar_and_the_menu_of_a_message_offer_one_set_of_actions(cx: &mut TestAppCo
 
     // The bar: icons with a tooltip for the frequent actions, and the menu button.
     window.hover_message(message);
-    for name in ["react", "reply", "thread", "forward", "copy-message", "edit"] {
+    for name in [
+        "react",
+        "reply",
+        "thread",
+        "forward",
+        "copy-message",
+        "edit",
+    ] {
         assert!(window.shows_named(format!("{name}:{message}")), "{name}");
     }
     for name in ["pin", "delete", "mark-unread", "copy-link"] {
@@ -56,4 +63,50 @@ fn the_bar_and_the_menu_of_a_message_offer_one_set_of_actions(cx: &mut TestAppCo
     }
     window.click("message-delete");
     assert!(window.shows("confirm-delete-message"));
+}
+
+/// An edit happens in the row of the message, and the composer keeps its new message
+/// (ADR 0740).
+#[gpui::test]
+fn a_message_is_edited_in_its_row_while_the_composer_keeps_its_text(cx: &mut TestAppContext) {
+    use junto_client::shell::{Pane, Pen};
+
+    let world = World::new();
+    let server = world.server("Example Studio");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    window.write("A first plan");
+    let message = window.until_message("A first plan").message.id;
+    window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "a new note", window, cx));
+
+    window.hover_message(message);
+    window.click_named(format!("edit:{message}"));
+    assert!(window.shows_named(format!("message-editor:{message}")));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pen::Edit(Pane::Main), cx)),
+        "A first plan"
+    );
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "a new note"
+    );
+    // Escape cancels the edit and leaves the message as it was.
+    window.press("escape");
+    assert!(!window.shows_named(format!("message-editor:{message}")));
+
+    window.hover_message(message);
+    window.click_named(format!("edit:{message}"));
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pen::Edit(Pane::Main), "A changed plan", window, cx);
+        shell.focus_composer(Pen::Edit(Pane::Main), window, cx);
+    });
+    window.press("enter");
+    let edited = window.until_message("A changed plan");
+    assert_eq!(edited.message.id, message);
+    window.until("the editor of the row closes", |window| {
+        !window.shows_named(format!("message-editor:{message}"))
+    });
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        "a new note"
+    );
 }

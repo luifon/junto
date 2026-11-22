@@ -57,6 +57,9 @@ pub(crate) struct SavedFiles {
 pub(crate) struct Snapshot {
     pub texts: Vec<SavedDraft>,
     pub files: Vec<SavedFiles>,
+    /// The edits of messages in their rows, apart from the new messages (ADR 0740).
+    #[serde(default)]
+    pub edits: Vec<SavedDraft>,
 }
 
 #[cfg(test)]

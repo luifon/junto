@@ -809,6 +809,25 @@ impl AppState {
         receive
     }
 
+    /// Sends a new comment of a forward with its stored forwarded content, which the server
+    /// keeps as it is (ADR 0408).
+    pub(crate) fn confirm_comment_edit(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        stored: Document,
+        comment: Document,
+        cx: &mut Context<Self>,
+    ) -> futures_channel::oneshot::Receiver<bool> {
+        let (answer, receive) = futures_channel::oneshot::channel();
+        self.ask_messages(server_id, cx, move |api| async move {
+            let result = api.edit_comment(message_id, stored, comment).await;
+            let _ = answer.send(result.is_ok());
+            result
+        });
+        receive
+    }
+
     pub fn delete_message(
         &mut self,
         server_id: ServerId,
@@ -965,7 +984,12 @@ impl AppState {
 
     /// Marks a channel or a conversation unread from its newest message: the mark unread of a
     /// message, applied to the newest message of the place that is not deleted (ADR 0740).
-    pub fn mark_place_unread(&mut self, server_id: ServerId, place: PlaceId, cx: &mut Context<Self>) {
+    pub fn mark_place_unread(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        cx: &mut Context<Self>,
+    ) {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
@@ -1371,7 +1395,6 @@ impl AppState {
         }
     }
 }
-
 
 /// The messages of the newest page of a place that a "Mark as unread" of the place reads.
 pub(super) const NEWEST_PAGE: u32 = 50;

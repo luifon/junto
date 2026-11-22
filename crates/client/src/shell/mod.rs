@@ -27,7 +27,6 @@ mod direct;
 pub(crate) mod draft_storage;
 mod edges;
 mod feed;
-mod message_actions;
 mod file_links;
 mod files;
 mod forwarding;
@@ -42,6 +41,7 @@ pub mod linking;
 mod links;
 mod main_area;
 mod member_search;
+mod message_actions;
 mod message_links;
 mod moving;
 mod reaction_people;
@@ -252,12 +252,12 @@ impl Layer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmojiTarget {
     React(junto_client_core::protocol::ids::MessageId),
-    Compose(Pane),
+    Compose(Pen),
 }
 
 /// A list of messages with its composer: the one of the main area, or the thread of the
 /// side panel (ADR 0741).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pane {
     Main,
     Thread,
@@ -297,6 +297,87 @@ impl Pane {
             (Self::Thread, "read-only-bar") => "thread-read-only-bar",
             (Self::Thread, part) => part,
         }
+    }
+}
+
+/// One editor of messages of a pane: the composer at the bottom, which writes new messages,
+/// or the editor that changes a message in its row (ADR 0740).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pen {
+    Compose(Pane),
+    Edit(Pane),
+}
+
+impl Pen {
+    pub fn pane(self) -> Pane {
+        match self {
+            Self::Compose(pane) | Self::Edit(pane) => pane,
+        }
+    }
+
+    /// The editor changes a message in its row.
+    pub fn edits(self) -> bool {
+        matches!(self, Self::Edit(_))
+    }
+
+    /// The identifier of a part of the editor; the editor of a row has names of its own, so
+    /// that it and the composer of its pane can be drawn at once.
+    pub(crate) fn id(self, part: &'static str) -> &'static str {
+        match self {
+            Self::Compose(pane) => pane.id(part),
+            Self::Edit(Pane::Main) => match part {
+                "composer" => "edit-composer",
+                "composer-input" => "edit-composer-input",
+                "composer-view" => "edit-composer-view",
+                "composer-preview" => "edit-composer-preview",
+                "emoji-completion" => "edit-emoji-completion",
+                "emoji-candidate" => "edit-emoji-candidate",
+                "send-message" => "edit-send-message",
+                "attach-file" => "edit-attach-file",
+                "insert-emoji" => "edit-insert-emoji",
+                "format-bold" => "edit-format-bold",
+                "format-italic" => "edit-format-italic",
+                "format-strike" => "edit-format-strike",
+                "format-code" => "edit-format-code",
+                "format-code-block" => "edit-format-code-block",
+                "format-heading" => "edit-format-heading",
+                "format-small" => "edit-format-small",
+                "format-spoiler" => "edit-format-spoiler",
+                "format-link" => "edit-format-link",
+                "format-list" => "edit-format-list",
+                "format-quote" => "edit-format-quote",
+                _ => part,
+            },
+            Self::Edit(Pane::Thread) => match part {
+                "composer" => "thread-edit-composer",
+                "composer-input" => "thread-edit-composer-input",
+                "composer-view" => "thread-edit-composer-view",
+                "composer-preview" => "thread-edit-composer-preview",
+                "emoji-completion" => "thread-edit-emoji-completion",
+                "emoji-candidate" => "thread-edit-emoji-candidate",
+                "send-message" => "thread-edit-send-message",
+                "attach-file" => "thread-edit-attach-file",
+                "insert-emoji" => "thread-edit-insert-emoji",
+                "format-bold" => "thread-edit-format-bold",
+                "format-italic" => "thread-edit-format-italic",
+                "format-strike" => "thread-edit-format-strike",
+                "format-code" => "thread-edit-format-code",
+                "format-code-block" => "thread-edit-format-code-block",
+                "format-heading" => "thread-edit-format-heading",
+                "format-small" => "thread-edit-format-small",
+                "format-spoiler" => "thread-edit-format-spoiler",
+                "format-link" => "thread-edit-format-link",
+                "format-list" => "thread-edit-format-list",
+                "format-quote" => "thread-edit-format-quote",
+                _ => part,
+            },
+        }
+    }
+}
+
+impl From<Pane> for Pen {
+    fn from(pane: Pane) -> Self {
+        Self::Compose(pane)
     }
 }
 
@@ -523,6 +604,9 @@ pub struct Shell {
     /// The list and the composer of the thread of the side panel.
     pub(crate) thread_feed: feed::FeedList,
     pub(crate) thread_composer: composer::Composer,
+    /// The editors of a message in its row, of the main area and of the thread (ADR 0740).
+    pub(crate) edit_composer: composer::Composer,
+    pub(crate) thread_edit_composer: composer::Composer,
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
@@ -646,6 +730,8 @@ impl Shell {
         let member_search = member_search::MemberSearch::new(window, cx);
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
+        let edit_composer = composer::Composer::new(window, cx);
+        let thread_edit_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
         let switcher = switcher::Switcher::new(window, cx);
         let groups = groups::Groups::new(window, cx);
@@ -701,10 +787,34 @@ impl Shell {
                 });
             }),
             switcher.observe(window, cx),
-            Self::observe_composer(Pane::Main, &composer.input, window, cx),
-            Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
-            Self::observe_formatting(Pane::Main, &composer.input, window, cx),
-            Self::observe_formatting(Pane::Thread, &thread_composer.input, window, cx),
+            Self::observe_composer(Pen::Compose(Pane::Main), &composer.input, window, cx),
+            Self::observe_composer(
+                Pen::Compose(Pane::Thread),
+                &thread_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_formatting(Pen::Compose(Pane::Main), &composer.input, window, cx),
+            Self::observe_formatting(
+                Pen::Compose(Pane::Thread),
+                &thread_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_composer(Pen::Edit(Pane::Main), &edit_composer.input, window, cx),
+            Self::observe_composer(
+                Pen::Edit(Pane::Thread),
+                &thread_edit_composer.input,
+                window,
+                cx,
+            ),
+            Self::observe_formatting(Pen::Edit(Pane::Main), &edit_composer.input, window, cx),
+            Self::observe_formatting(
+                Pen::Edit(Pane::Thread),
+                &thread_edit_composer.input,
+                window,
+                cx,
+            ),
             cx.observe_global_in::<crate::theme::ActiveTheme>(window, |this, _, cx| {
                 this.show_formatting(Pane::Main, cx);
                 this.show_formatting(Pane::Thread, cx);
@@ -1027,6 +1137,8 @@ impl Shell {
             composer,
             thread_feed,
             thread_composer,
+            edit_composer,
+            thread_edit_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
             contact_part,
@@ -1112,17 +1224,21 @@ impl Shell {
         shell
     }
 
-    pub(crate) fn pen(&self, pane: Pane) -> &composer::Composer {
-        match pane {
-            Pane::Main => &self.composer,
-            Pane::Thread => &self.thread_composer,
+    pub(crate) fn pen(&self, pen: impl Into<Pen>) -> &composer::Composer {
+        match pen.into() {
+            Pen::Compose(Pane::Main) => &self.composer,
+            Pen::Compose(Pane::Thread) => &self.thread_composer,
+            Pen::Edit(Pane::Main) => &self.edit_composer,
+            Pen::Edit(Pane::Thread) => &self.thread_edit_composer,
         }
     }
 
-    pub(crate) fn pen_mut(&mut self, pane: Pane) -> &mut composer::Composer {
-        match pane {
-            Pane::Main => &mut self.composer,
-            Pane::Thread => &mut self.thread_composer,
+    pub(crate) fn pen_mut(&mut self, pen: impl Into<Pen>) -> &mut composer::Composer {
+        match pen.into() {
+            Pen::Compose(Pane::Main) => &mut self.composer,
+            Pen::Compose(Pane::Thread) => &mut self.thread_composer,
+            Pen::Edit(Pane::Main) => &mut self.edit_composer,
+            Pen::Edit(Pane::Thread) => &mut self.thread_edit_composer,
         }
     }
 
@@ -2281,7 +2397,10 @@ impl Shell {
             // The export of a conversation that the server no longer shows is not asked for.
             Layer::ConfirmExport(server_id, conversation_id) => {
                 gone(server_id)
-                    || view.selected.as_ref().is_none_or(|server| server.id != *server_id)
+                    || view
+                        .selected
+                        .as_ref()
+                        .is_none_or(|server| server.id != *server_id)
                     || view.lists().is_none_or(|lists| {
                         !lists.directs.iter().any(|row| row.id == *conversation_id)
                     })
@@ -2320,11 +2439,15 @@ impl Shell {
                     && thread.is_none_or(|thread| thread.root_id != *message_id)
             }
             // The main area shows no channel and no conversation.
-            Layer::Emoji(EmojiTarget::Compose(Pane::Main)) => view.shown().place().is_none(),
+            Layer::Emoji(EmojiTarget::Compose(pen)) if pen.pane() == Pane::Main => {
+                view.shown().place().is_none() || (pen.edits() && self.pen(*pen).editing.is_none())
+            }
             // The thread of the side panel was closed.
-            Layer::Emoji(EmojiTarget::Compose(Pane::Thread)) => view
-                .workspace()
-                .is_none_or(|workspace| workspace.thread.is_none()),
+            Layer::Emoji(EmojiTarget::Compose(pen)) => {
+                view.workspace()
+                    .is_none_or(|workspace| workspace.thread.is_none())
+                    || (pen.edits() && self.pen(*pen).editing.is_none())
+            }
             // The thread was closed, or the server made the channel.
             Layer::Fork(dialog) => {
                 view.workspace()

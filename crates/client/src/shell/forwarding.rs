@@ -118,6 +118,19 @@ fn uri(origin: &Origin, message_id: MessageId) -> Option<String> {
 }
 
 impl Shell {
+    /// Opens the forward dialog of a message of the selected server, as Forward of the
+    /// message does.
+    pub fn open_forward_of(
+        &mut self,
+        message: MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) {
+            self.open_forward(server_id, message, window, cx);
+        }
+    }
+
     pub(super) fn open_forward(
         &mut self,
         server_id: ServerId,

@@ -22,7 +22,12 @@ fn a_refused_edit_keeps_its_text_and_edit_target_after_restart(cx: &mut TestAppC
     window.right_click_message(id);
     window.click("message-edit");
     window.in_shell(|shell, window, cx| {
-        shell.type_message(Pane::Main, "precious refused edit 日本語", window, cx)
+        shell.type_message(
+            junto_client::shell::Pen::Edit(Pane::Main),
+            "precious refused edit 日本語",
+            window,
+            cx,
+        )
     });
     proxy.fail(&format!("/api/v1/messages/{id}"), [Fault::Refused]);
     window.press("enter");
@@ -35,24 +40,34 @@ fn a_refused_edit_keeps_its_text_and_edit_target_after_restart(cx: &mut TestAppC
     let mut window = open(cx, directory.path());
     window.until_ready();
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         "precious refused edit 日本語"
     );
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Main).1),
         Some(id)
     );
-    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    window.in_shell(|shell, window, cx| {
+        shell.focus_composer(junto_client::shell::Pen::Edit(Pane::Main), window, cx)
+    });
     window.press("enter");
     window.until_message("precious refused edit 日本語");
-    window.until("the accepted edit clears its composer", |window| {
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx).is_empty())
+    window.until("the accepted edit clears its editor", |window| {
+        window.in_shell(|shell, _, cx| {
+            shell
+                .composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+                .is_empty()
+        })
     });
     quit(window);
     let mut window = open(cx, directory.path());
     window.until_ready();
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         ""
     );
 }
@@ -69,13 +84,24 @@ fn an_edit_acceptance_does_not_clear_a_newer_edit_draft(cx: &mut TestAppContext)
     let id = window.until_message("original message").message.id;
     window.right_click_message(id);
     window.click("message-edit");
-    window
-        .in_shell(|shell, window, cx| shell.type_message(Pane::Main, "submitted edit", window, cx));
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(
+            junto_client::shell::Pen::Edit(Pane::Main),
+            "submitted edit",
+            window,
+            cx,
+        )
+    });
     proxy.hold_answer_ending("PUT", &format!("/messages/{id}"));
     window.press("enter");
     window.until_message("submitted edit");
     window.in_shell(|shell, window, cx| {
-        shell.type_message(Pane::Main, "newer edit 日本語", window, cx)
+        shell.type_message(
+            junto_client::shell::Pen::Edit(Pane::Main),
+            "newer edit 日本語",
+            window,
+            cx,
+        )
     });
     proxy.release_answers();
     window.until("the edit answer arrives", |window| {
@@ -91,7 +117,9 @@ fn an_edit_acceptance_does_not_clear_a_newer_edit_draft(cx: &mut TestAppContext)
     let mut window = open(cx, directory.path());
     window.until_ready();
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         "newer edit 日本語"
     );
     assert_eq!(
@@ -287,15 +315,31 @@ fn replies_edits_and_selected_files_recover_after_restart(cx: &mut TestAppContex
     assert_eq!(reply.message.attachments.len(), 2);
     window.right_click_message(reply.message.id);
     window.click("message-edit");
-    window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "kept edit", window, cx));
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(
+            junto_client::shell::Pen::Edit(Pane::Main),
+            "kept edit",
+            window,
+            cx,
+        )
+    });
     quit(window);
     let mut window = open(cx, directory.path());
     window.until_ready();
+    // The edit of the row comes back after the restart, apart from the composer.
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         "kept edit"
     );
-    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        ""
+    );
+    window.in_shell(|shell, window, cx| {
+        shell.focus_composer(junto_client::shell::Pen::Edit(Pane::Main), window, cx)
+    });
     window.press("enter");
     window.until_message("kept edit");
     assert!(

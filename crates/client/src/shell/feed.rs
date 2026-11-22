@@ -1639,6 +1639,19 @@ impl Shell {
         self.feed_seen(pane, Some(&feed), following, window, cx);
     }
 
+    /// Scrolls the list of a pane as little as needed to show the row of a message: the
+    /// editor of a row is drawn in that row (ADR 0740).
+    pub(crate) fn reveal_feed_message(&self, pane: Pane, message_id: MessageId) {
+        let list = self.list(pane);
+        let index = list
+            .rows
+            .iter()
+            .position(|row| matches!(row, FeedRow::Message(row) if row.message.id == message_id));
+        if let Some(index) = index {
+            list.list.scroll_to_reveal_item(index);
+        }
+    }
+
     /// Moves the list of a pane to one of its rows. The tool that measures the time of a
     /// frame uses it.
     #[cfg(feature = "test-support")]
@@ -3879,6 +3892,7 @@ impl Shell {
         let colors = theme.colors;
         let message = &row.message;
         let message_id = message.id;
+        let pane = Pane::of(feed.place);
         let side = if compact { 14.0 } else { 16.0 };
         let seed = message
             .author_id
@@ -3898,6 +3912,39 @@ impl Shell {
                     name: row.author.clone(),
                     departed: feed.names.departed.contains_key(&account_id),
                 });
+        // The message that the person edits shows the editor of its row in place of its
+        // text (ADR 0740).
+        let edited = !bare
+            && self
+                .pen(super::Pen::Edit(pane))
+                .editing
+                .as_ref()
+                .is_some_and(|editing| editing.message_id == message_id);
+        // The editor stands where the edited text is: in place of the comment of a forward,
+        // whose forwarded content stays under it (ADR 0408), and in place of the text of
+        // another message, whose files and reactions stay.
+        let forward = message
+            .document
+            .as_ref()
+            .is_some_and(|document| document.forward_origins() > 0);
+        let mut editor = edited.then(|| {
+            div()
+                .debug_selector(move || format!("message-editor:{message_id}"))
+                .mt(u(2.0))
+                .mb(u(4.0))
+                .child(self.render_composer(
+                    super::Pen::Edit(pane),
+                    &[],
+                    super::composer::Mode {
+                        compact: true,
+                        permanent: false,
+                        writing: Writing::OPEN,
+                    },
+                    window,
+                    cx,
+                ))
+                .into_any_element()
+        });
         let body: Vec<AnyElement> = if message.deleted {
             vec![
                 div()
@@ -3908,26 +3955,33 @@ impl Shell {
         } else {
             // The comment of a forward stands above the forwarded content, in the same row
             // (ADR 0408).
-            let mut body: Vec<AnyElement> = message
-                .comment
-                .as_ref()
-                .map(|comment| {
-                    div()
-                        .debug_selector(move || format!("forward-comment:{message_id}"))
-                        .mb(u(4.0))
-                        .children(self.document(
-                            (Some(feed.server_id), None),
-                            comment,
-                            Some((feed, message, false)),
-                            &feed.names,
-                            &theme,
-                            cx,
-                        ))
-                        .into_any_element()
-                })
-                .into_iter()
-                .collect();
-            if let Some(document) = &message.document {
+            let mut body: Vec<AnyElement> = Vec::new();
+            if forward {
+                body.extend(editor.take());
+            }
+            body.extend(
+                message
+                    .comment
+                    .as_ref()
+                    .filter(|_| !(edited && forward))
+                    .map(|comment| {
+                        div()
+                            .debug_selector(move || format!("forward-comment:{message_id}"))
+                            .mb(u(4.0))
+                            .children(self.document(
+                                (Some(feed.server_id), None),
+                                comment,
+                                Some((feed, message, false)),
+                                &feed.names,
+                                &theme,
+                                cx,
+                            ))
+                            .into_any_element()
+                    }),
+            );
+            if let Some(editor) = editor.take() {
+                body.push(editor);
+            } else if let Some(document) = &message.document {
                 body.extend(self.document(
                     (Some(feed.server_id), None),
                     document,
@@ -4051,6 +4105,7 @@ impl Shell {
         let actions = (offers
             && !message.deleted
             && !bare
+            && !edited
             && self.hovered_message == Some((pane, message_id)))
         .then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
@@ -4503,6 +4558,17 @@ impl Shell {
 
     /// The pointer entered or left the row of a message: the bar of actions moves to the
     /// row under the pointer.
+    /// Shows the actions of a message as the pointer over it does, for the screen tool.
+    #[cfg(feature = "test-support")]
+    pub fn hover_message_fixture(
+        &mut self,
+        pane: Pane,
+        message_id: MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_hovered(pane, message_id, true, cx);
+    }
+
     fn message_hovered(
         &mut self,
         pane: Pane,

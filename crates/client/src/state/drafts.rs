@@ -18,6 +18,8 @@ struct Source {
 
 pub(super) struct Drafts {
     texts: HashMap<Desk, SavedDraft>,
+    /// The edits of messages in their rows, one per place (ADR 0740).
+    edits: HashMap<Desk, SavedDraft>,
     entries: HashMap<junto_client_core::protocol::ids::ServerId, u64>,
     files: HashMap<Desk, Vec<FileSource>>,
     restoring: HashSet<Desk>,
@@ -61,6 +63,12 @@ impl Drafts {
         Self {
             texts: snapshot
                 .texts
+                .into_iter()
+                .filter(|draft| entries.get(&draft.desk.0) == Some(&draft.entry_generation))
+                .map(|draft| (draft.desk, draft))
+                .collect(),
+            edits: snapshot
+                .edits
                 .into_iter()
                 .filter(|draft| entries.get(&draft.desk.0) == Some(&draft.entry_generation))
                 .map(|draft| (draft.desk, draft))
@@ -114,6 +122,9 @@ impl AppState {
         if !changed.is_empty() {
             self.drafts
                 .texts
+                .retain(|desk, _| !changed.contains(&desk.0));
+            self.drafts
+                .edits
                 .retain(|desk, _| !changed.contains(&desk.0));
             self.drafts
                 .files
@@ -209,6 +220,31 @@ impl AppState {
             .texts
             .get(&desk)
             .filter(|draft| self.draft_entry_generation(desk.0) == Some(draft.entry_generation))
+    }
+    /// The edit of a message in its row that the person left in a place (ADR 0740).
+    pub(crate) fn saved_edit(&self, desk: Desk) -> Option<&SavedDraft> {
+        self.drafts
+            .edits
+            .get(&desk)
+            .filter(|draft| self.draft_entry_generation(desk.0) == Some(draft.entry_generation))
+    }
+    pub(crate) fn keep_edit(&mut self, draft: SavedDraft, cx: &mut Context<Self>) {
+        let desk = draft.desk;
+        if self.draft_entry_generation(desk.0) != Some(draft.entry_generation) {
+            return;
+        }
+        if draft.editing.is_none() {
+            if self.drafts.edits.remove(&desk).is_none() {
+                return;
+            }
+        } else {
+            if self.drafts.edits.get(&desk) == Some(&draft) {
+                return;
+            }
+            self.drafts.edits.insert(desk, draft);
+        }
+        self.schedule_drafts(cx);
+        cx.notify();
     }
     pub(crate) fn has_draft(&self, desk: Desk) -> bool {
         self.drafts
@@ -312,6 +348,7 @@ impl AppState {
         }
         self.drafts.debounce = None;
         let texts = self.drafts.texts.values().cloned().collect();
+        let edits = self.drafts.edits.values().cloned().collect();
         let entries = self.drafts.entries.clone();
         let mut files = self.drafts.files.clone();
         let mut sources = self.drafts.sources.clone();
@@ -353,6 +390,7 @@ impl AppState {
                 }
                 let snapshot = Snapshot {
                     texts,
+                    edits,
                     files: files
                         .into_iter()
                         .filter_map(|(desk, sources)| {
@@ -513,6 +551,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.drafts.texts.retain(|desk, _| desk.0 != server);
+        self.drafts.edits.retain(|desk, _| desk.0 != server);
         self.drafts.files.retain(|desk, _| desk.0 != server);
         self.drafts.sources.retain(|desk, _| desk.0 != server);
         self.schedule_drafts(cx);

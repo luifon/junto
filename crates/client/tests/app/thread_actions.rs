@@ -404,15 +404,22 @@ fn a_person_edits_reacts_to_and_attaches_a_file_to_a_reply_in_a_thread(cx: &mut 
         })
     });
 
-    // The bar of the reply edits it in the composer of the thread.
+    // The bar of the reply edits it in its row of the thread (ADR 0740).
     window.act_on(reply, "edit");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Thread)),
         (None, Some(reply))
     );
+    assert!(window.shows_named(format!("message-editor:{reply}")));
+    assert_eq!(
+        window.in_shell(|shell, _, cx| {
+            shell.composer_text(junto_client::shell::Pen::Edit(Pane::Thread), cx)
+        }),
+        "One per speaker"
+    );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Thread, cx)),
-        "One per speaker"
+        ""
     );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),

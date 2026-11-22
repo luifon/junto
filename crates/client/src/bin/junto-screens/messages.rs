@@ -538,7 +538,11 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
                         state.remember_emoji(emoji, cx);
                     }
                 });
-                shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+                shell.open_emoji_picker(
+                    EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+                    window,
+                    cx,
+                );
             },
         )?;
     }
@@ -999,6 +1003,23 @@ The answer is ||a **spoiler** with `code` and [a guide](https://example.test)||.
         move |shell, window, cx| {
             prepare(shell, none(), cx);
             shell.edit_message(Pane::Main, own, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("messages-hover-bar", with_timeline(general().timeline())),
+        move |shell, _, cx| {
+            prepare(shell, none(), cx);
+            shell.hover_message_fixture(Pane::Main, own, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new(
+            "messages-forward-dialog",
+            with_timeline(general().timeline()),
+        ),
+        move |shell, window, cx| {
+            prepare(shell, none(), cx);
+            shell.open_forward_of(own, window, cx);
         },
     )?;
 

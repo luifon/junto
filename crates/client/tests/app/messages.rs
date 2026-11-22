@@ -109,10 +109,17 @@ impl Window {
     }
 
     /// Types a text into the composer and sends it with Enter.
+    /// Types a text into the editor of the main area that has the keyboard and sends it with
+    /// Enter: the editor of a row while a message is edited, the composer otherwise.
     pub fn write(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
-            shell.type_message(Pane::Main, text, window, cx);
-            shell.focus_composer(Pane::Main, window, cx);
+            let pen = if shell.compose_state(Pane::Main).1.is_some() {
+                junto_client::shell::Pen::Edit(Pane::Main)
+            } else {
+                junto_client::shell::Pen::Compose(Pane::Main)
+            };
+            shell.type_message(pen, text, window, cx);
+            shell.focus_composer(pen, window, cx);
         });
         self.press("enter");
     }
@@ -289,17 +296,24 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
         (None, None)
     );
 
-    // The arrow up in an empty composer edits the last own message; the composer holds
-    // its text with the marks, and Enter saves.
+    // The arrow up in an empty composer edits the last own message in its row; the editor
+    // of the row holds its text with the marks, and Enter saves (ADR 0740).
     window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
     window.press("up");
     assert_eq!(
         window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
         (None, Some(reply.message.id))
     );
+    assert!(window.shows_named(format!("message-editor:{}", reply.message.id)));
+    assert_eq!(
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
+        "Thank you"
+    );
     assert_eq!(
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
-        "Thank you"
+        ""
     );
     window.press("escape");
     assert_eq!(
@@ -309,7 +323,9 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     window
         .in_shell(|shell, window, cx| shell.edit_message(Pane::Main, hello.message.id, window, cx));
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        window.in_shell(
+            |shell, _, cx| shell.composer_text(junto_client::shell::Pen::Edit(Pane::Main), cx)
+        ),
         "Hello **world**, see `main.rs`"
     );
     window.write("Hello *everyone*");
@@ -2184,7 +2200,11 @@ fn the_tabs_of_the_emoji_picker_do_not_cover_each_other(cx: &mut TestAppContext)
     for (width, height) in [(1440.0, 900.0), (720.0, 480.0)] {
         window.simulate(|cx| cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height))));
         window.in_shell(|shell, window, cx| {
-            shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+            shell.open_emoji_picker(
+                EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+                window,
+                cx,
+            );
         });
         assert!(window.shows("emoji-picker"));
         // The picker paints the name of its open group once, above the grid, and each tab
@@ -2321,7 +2341,11 @@ fn an_emoji_that_the_fonts_do_not_draw_is_shown_by_its_short_code(cx: &mut TestA
     );
 
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
         shell.open_emoji_group(8, cx);
     });
     assert!(window.shows("emoji-group-flags"));
@@ -2348,7 +2372,11 @@ fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppCon
     let grinning = "\u{1f600}";
     let cell = format!("emoji:{grinning}");
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
     });
     assert!(window.shows_named(cell.clone()));
     window.in_shell(|_, _, cx| {
@@ -2364,7 +2392,11 @@ fn an_open_picker_keeps_its_emoji_when_a_measurement_arrives(cx: &mut TestAppCon
     );
     window.press("escape");
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(EmojiTarget::Compose(Pane::Main), window, cx);
+        shell.open_emoji_picker(
+            EmojiTarget::Compose(junto_client::shell::Pen::Compose(Pane::Main)),
+            window,
+            cx,
+        );
     });
     assert!(window.shows("emoji-picker"));
     assert!(

@@ -24,7 +24,7 @@ use junto_client_core::protocol::message::{Document, Message};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{UploadSource, UploadStage};
 
-use super::{EmojiTarget, Layer, Pane, Shell};
+use super::{EmojiTarget, Layer, Pane, Pen, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
 use crate::emoji::{Drawing, Drawings};
@@ -540,8 +540,9 @@ impl Shell {
 
 impl Shell {
     /// The place that the composer writes to.
-    fn composer_place(&self, pane: Pane) -> Option<(ServerId, PlaceId)> {
-        self.pen(pane)
+    fn composer_place(&self, pen: impl Into<Pen>) -> Option<(ServerId, PlaceId)> {
+        let pen: Pen = pen.into();
+        self.pen(pen)
             .place
             .map(|(server_id, _, place)| (server_id, place))
     }
@@ -596,6 +597,21 @@ impl Shell {
             window,
             cx,
         );
+        // The editors of a row follow the places of their panes.
+        self.pen_follows(
+            Pen::Edit(Pane::Main),
+            desk(shown.place()),
+            SharedString::default(),
+            window,
+            cx,
+        );
+        self.pen_follows(
+            Pen::Edit(Pane::Thread),
+            thread,
+            SharedString::default(),
+            window,
+            cx,
+        );
         for pane in [Pane::Main, Pane::Thread] {
             if self.pane_writing(pane).refused.is_some() || self.shown_archived().is_some() {
                 self.typing_activity(pane, false, cx);
@@ -603,9 +619,9 @@ impl Shell {
         }
         // The search field names where a new search starts (ADR 0743).
         let searched: SharedString = match (conversation, channel, view.selected.as_ref()) {
-            (Some(conversation), _, _) => text::search_in(
-                conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
-            ),
+            (Some(conversation), _, _) => {
+                text::search_in(conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON))
+            }
             (None, Some(channel), _) => text::search_in(&format!("#{}", channel.name)),
             (None, None, Some(server)) => text::search_in(&server.name),
             (None, None, None) => text::SEARCH_FIELD.to_owned(),
@@ -620,19 +636,29 @@ impl Shell {
 
     fn pen_follows(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         shown: Option<Desk>,
         placeholder: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if shown != self.pen(pane).place {
-            self.typing_activity(pane, false, cx);
+        let key: Pen = pen.into();
+        if shown != self.pen(key).place {
+            self.typing_activity(key, false, cx);
         }
-        self.save_composer(pane, cx);
-        let restored = shown.and_then(|desk| self.state.read(cx).saved_draft(desk).cloned());
+        self.save_composer(key, cx);
+        // The composer takes the new message of the place, the editor of a row its edit
+        // (ADR 0740).
+        let restored = shown.and_then(|desk| {
+            let state = self.state.read(cx);
+            if key.edits() {
+                state.saved_edit(desk).cloned()
+            } else {
+                state.saved_draft(desk).cloned()
+            }
+        });
         let generation = shown.and_then(|desk| self.state.read(cx).draft_entry_generation(desk.0));
-        let pen = self.pen_mut(pane);
+        let pen = self.pen_mut(key);
         if shown == pen.place
             && pen
                 .saved
@@ -655,12 +681,12 @@ impl Shell {
         let held = restored.map(|draft| Draft {
             content: draft.content(),
             reply_to: draft.reply,
-            editing: draft
-                .editing
-                .map(|(message_id, document, written)| Editing {
+            editing: draft.editing.filter(|_| key.edits()).map(
+                |(message_id, document, written)| Editing {
                     message_id,
                     original: Arc::new((document, written)),
-                }),
+                },
+            ),
         });
         let (content, reply_to, editing) = match held {
             Some(draft) => (draft.content, draft.reply_to, draft.editing),
@@ -687,16 +713,25 @@ impl Shell {
             pen.mention = None;
             pen.emoji_completion = None;
         }
-        self.save_composer(pane, cx);
+        self.save_composer(key, cx);
     }
 
-    pub(super) fn typing_activity(&mut self, pane: Pane, active: bool, cx: &mut gpui::App) {
+    pub(super) fn typing_activity(
+        &mut self,
+        pen: impl Into<Pen>,
+        active: bool,
+        cx: &mut gpui::App,
+    ) {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        // An edit tells nobody that the person types.
         let active = active
-            && !self.pen(pane).preview
-            && !self.pen(pane).input.read(cx).value().trim().is_empty();
+            && !pen.edits()
+            && !self.pen(pen).preview
+            && !self.pen(pen).input.read(cx).value().trim().is_empty();
         let wanted = active
             .then(|| {
-                self.pen(pane).place.and_then(|(server, account, place)| {
+                self.pen(pen).place.and_then(|(server, account, place)| {
                     self.state
                         .read(cx)
                         .owner(server)
@@ -705,10 +740,10 @@ impl Shell {
                 })
             })
             .flatten();
-        let previous = self.pen_mut(pane).typing.take();
-        let source = (self.pen(pane).typing_source, pane == Pane::Thread);
+        let previous = self.pen_mut(pen).typing.take();
+        let source = (self.pen(pen).typing_source, pane == Pane::Thread);
         let stopped = previous.filter(|held| Some(*held) != wanted);
-        self.pen_mut(pane).typing = wanted;
+        self.pen_mut(pen).typing = wanted;
         if stopped.is_some() || wanted.is_some() {
             let state = self.state.clone();
             // A call-window handover can run inside an update of the application state.
@@ -727,12 +762,13 @@ impl Shell {
 
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
-    pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
-        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
-        self.typing_activity(pane, true, cx);
-        self.save_composer(pane, cx);
+    pub(crate) fn composer_changed(&mut self, pen: impl Into<Pen>, cx: &mut Context<Self>) {
+        let pen: Pen = pen.into();
+        self.pen_mut(pen).edit_generation = self.pen(pen).edit_generation.wrapping_add(1);
+        self.typing_activity(pen, true, cx);
+        self.save_composer(pen, cx);
         let drawings = Drawings::current(cx);
-        let pen = self.pen_mut(pane);
+        let pen = self.pen_mut(pen);
         pen.problem = None;
         let (value, cursor) = {
             let input = pen.input.read(cx);
@@ -776,8 +812,9 @@ impl Shell {
         cx.notify();
     }
 
-    fn emoji_candidates(&self, pane: Pane, cx: &gpui::App) -> Vec<&'static emojis::Emoji> {
-        self.pen(pane)
+    fn emoji_candidates(&self, pen: impl Into<Pen>, cx: &gpui::App) -> Vec<&'static emojis::Emoji> {
+        let pen: Pen = pen.into();
+        self.pen(pen)
             .emoji_completion
             .as_ref()
             .map_or_else(Vec::new, |open| {
@@ -791,22 +828,23 @@ impl Shell {
 
     fn take_emoji_completion(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         emoji: &'static emojis::Emoji,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(open) = self.pen_mut(pane).emoji_completion.take() else {
+        let pen: Pen = pen.into();
+        let Some(open) = self.pen_mut(pen).emoji_completion.take() else {
             return;
         };
-        let input = self.pen(pane).input.read(cx);
+        let input = self.pen(pen).input.read(cx);
         if crate::emoji::completion::query(&input.value(), input.cursor()).as_ref()
             != Some(&open.query)
         {
-            self.composer_changed(pane, cx);
+            self.composer_changed(pen, cx);
             return;
         }
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             let end = input.cursor();
             input.set_selected_range(open.query.start..end, cx);
             input.replace(
@@ -820,13 +858,20 @@ impl Shell {
             );
             input.focus(window, cx);
         });
-        self.composer_changed(pane, cx);
+        self.composer_changed(pen, cx);
         self.state
             .update(cx, |state, cx| state.remember_emoji(emoji.as_str(), cx));
         cx.notify();
     }
 
-    fn complete_closed_emoji(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+    fn complete_closed_emoji(
+        &mut self,
+        pen: impl Into<Pen>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
         let emoji = self
             .pen(pane)
             .emoji_completion
@@ -834,25 +879,28 @@ impl Shell {
             .filter(|open| open.closed_ready)
             .and_then(|open| crate::emoji::completion::exact(&open.query.text));
         if let Some(emoji) = emoji {
-            self.take_emoji_completion(pane, emoji, window, cx);
+            self.take_emoji_completion(pen, emoji, window, cx);
         }
     }
 
     /// The entries of the mention picker of a pane. A message of a channel mentions the
     /// members and the roles of its workspace; a message of a direct conversation mentions
     /// only its participants (ADR 0408).
-    fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
+    fn mention_candidates(&self, pen: impl Into<Pen>) -> Vec<Candidate> {
+        let pen: Pen = pen.into();
         self.view
             .as_ref()
-            .map_or_else(Vec::new, |view| self.mention_candidates_in(pane, view))
+            .map_or_else(Vec::new, |view| self.mention_candidates_in(pen, view))
     }
 
     fn mention_candidates_in(
         &self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         view: &crate::state::view::ShellView,
     ) -> Vec<Candidate> {
-        let Some(open) = &self.pen(pane).mention else {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        let Some(open) = &self.pen(pen).mention else {
             return Vec::new();
         };
         if open.channel {
@@ -883,7 +931,7 @@ impl Shell {
                 .map(|(_, candidate)| candidate)
                 .collect();
         }
-        match self.composer_place(pane).map(|(_, place)| place) {
+        match self.composer_place(pen).map(|(_, place)| place) {
             Some(PlaceId::Direct(conversation_id)) => view
                 .lists()
                 .and_then(|lists| {
@@ -930,12 +978,13 @@ impl Shell {
     /// Puts a mention into the text in place of the typed `@` and its query.
     fn take_candidate(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         candidate: &Candidate,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(open) = self.pen_mut(pane).mention.take() else {
+        let pen: Pen = pen.into();
+        let Some(open) = self.pen_mut(pen).mention.take() else {
             return;
         };
         let prefix = if matches!(candidate.target, MentionTarget::Channel(_)) {
@@ -947,7 +996,7 @@ impl Shell {
             token_id(candidate.target),
             format!("{prefix}{}", candidate.name),
         );
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             let end = input.cursor();
             if input
                 .replace_range_with_token(open.start..end, token, window, cx)
@@ -965,14 +1014,16 @@ impl Shell {
     /// arrow up; Escape ends a reply or an edit. True when the key was taken.
     fn composer_step(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         step: Step,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.pen(pane).emoji_completion.is_some() {
-            let found = self.emoji_candidates(pane, cx);
-            if let Some(open) = &mut self.pen_mut(pane).emoji_completion {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        if self.pen(pen).emoji_completion.is_some() {
+            let found = self.emoji_candidates(pen, cx);
+            if let Some(open) = &mut self.pen_mut(pen).emoji_completion {
                 match step {
                     Step::Down if !found.is_empty() => {
                         open.chosen = (open.chosen + 1) % found.len()
@@ -982,19 +1033,19 @@ impl Shell {
                     }
                     Step::Tab if !found.is_empty() => {
                         let emoji = found[open.chosen.min(found.len() - 1)];
-                        self.take_emoji_completion(pane, emoji, window, cx);
+                        self.take_emoji_completion(pen, emoji, window, cx);
                     }
-                    Step::Escape => self.pen_mut(pane).emoji_completion = None,
+                    Step::Escape => self.pen_mut(pen).emoji_completion = None,
                     _ => return false,
                 }
                 cx.notify();
                 return true;
             }
         }
-        if self.pen_mut(pane).mention.is_some() {
-            let found = self.mention_candidates(pane);
+        if self.pen_mut(pen).mention.is_some() {
+            let found = self.mention_candidates(pen);
             if !found.is_empty() {
-                let Some(open) = &mut self.pen_mut(pane).mention else {
+                let Some(open) = &mut self.pen_mut(pen).mention else {
                     return false;
                 };
                 match step {
@@ -1002,26 +1053,24 @@ impl Shell {
                     Step::Up => open.chosen = (open.chosen + found.len() - 1) % found.len(),
                     Step::Tab => {
                         let chosen = found[open.chosen.min(found.len() - 1)].clone();
-                        self.take_candidate(pane, &chosen, window, cx);
+                        self.take_candidate(pen, &chosen, window, cx);
                     }
-                    Step::Escape => self.pen_mut(pane).mention = None,
+                    Step::Escape => self.pen_mut(pen).mention = None,
                 }
                 cx.notify();
                 return true;
             }
         }
-        let empty = self.pen_mut(pane).input.read(cx).value().is_empty();
+        let empty = self.pen_mut(pen).input.read(cx).value().is_empty();
         match step {
             Step::Escape
-                if self.pen_mut(pane).editing.is_some()
-                    || self.pen_mut(pane).reply_to.is_some() =>
+                if self.pen_mut(pen).editing.is_some() || self.pen_mut(pen).reply_to.is_some() =>
             {
-                self.cancel_compose_state(pane, window, cx);
+                self.cancel_compose_state(pen, window, cx);
                 true
             }
-            Step::Up if empty && self.pen_mut(pane).editing.is_none() => {
-                self.edit_last_own_message(pane, window, cx)
-            }
+            // Up in an empty composer edits the newest own message in its row (ADR 0740).
+            Step::Up if empty && !pen.edits() => self.edit_last_own_message(pane, window, cx),
             _ => false,
         }
     }
@@ -1029,18 +1078,19 @@ impl Shell {
     /// A key that the text area has no action for: the keys of bold and italic.
     fn composer_key(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let pen: Pen = pen.into();
         let modifiers = event.keystroke.modifiers;
         if !modifiers.secondary() || modifiers.shift {
             return false;
         }
         match event.keystroke.key.as_str() {
-            "b" => self.wrap_selection(pane, "**", "**", window, cx),
-            "i" => self.wrap_selection(pane, "*", "*", window, cx),
+            "b" => self.wrap_selection(pen, "**", "**", window, cx),
+            "i" => self.wrap_selection(pen, "*", "*", window, cx),
             _ => return false,
         }
         true
@@ -1048,7 +1098,9 @@ impl Shell {
 
     /// A picture in the clipboard becomes a file of the message. False when the clipboard
     /// holds no picture: the text area pastes its text.
-    fn paste_picture(&mut self, pane: Pane, cx: &mut Context<Self>) -> bool {
+    fn paste_picture(&mut self, pen: impl Into<Pen>, cx: &mut Context<Self>) -> bool {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
         let Some(item) = cx.read_from_clipboard() else {
             return false;
         };
@@ -1232,14 +1284,15 @@ impl Shell {
     /// Puts marks around the selected text, or around the place of the cursor.
     fn wrap_selection(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         before: &str,
         after: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pen: Pen = pen.into();
         let (before, after) = (before.to_owned(), after.to_owned());
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             let range = input.selected_range();
             let selected = input.value()[range.clone()].to_owned();
             input.replace(format!("{before}{selected}{after}"), window, cx);
@@ -1248,19 +1301,20 @@ impl Shell {
             input.set_selected_range(start..start + selected.len(), cx);
             input.focus(window, cx);
         });
-        self.composer_changed(pane, cx);
+        self.composer_changed(pen, cx);
     }
 
     /// Puts a mark at the start of the line of the cursor, or of each selected line.
     fn prefix_lines(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         prefix: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pen: Pen = pen.into();
         let prefix = prefix.to_owned();
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             let value = input.value().to_string();
             let range = input.selected_range();
             let start = value[..range.start].rfind('\n').map_or(0, |at| at + 1);
@@ -1276,7 +1330,7 @@ impl Shell {
             input.set_selected_range(cursor..cursor, cx);
             input.focus(window, cx);
         });
-        self.composer_changed(pane, cx);
+        self.composer_changed(pen, cx);
     }
 
     /// Starts a reply to a message of the shown place.
@@ -1290,7 +1344,6 @@ impl Shell {
         self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
         self.pen_mut(pane).preview = false;
         self.pen_mut(pane).reply_to = Some(message_id);
-        self.pen_mut(pane).editing = None;
         self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
@@ -1331,7 +1384,9 @@ impl Shell {
         }
     }
 
-    /// Puts the text of an own message into the composer, to change it.
+    /// Opens the editor of an own message in its row with the text of the message (ADR 0740).
+    /// The editor of a forward changes its comment: the forwarded content stays as the server
+    /// stored it (ADR 0408).
     pub fn edit_message(
         &mut self,
         pane: Pane,
@@ -1342,9 +1397,19 @@ impl Shell {
         let Some(message) = self.held_message(pane, message_id) else {
             return;
         };
-        let Some(document) = &message.document else {
+        let Some(stored) = &message.document else {
             return;
         };
+        let empty = Document { blocks: Vec::new() };
+        let document = if stored.forward_origins() > 0 {
+            message.comment.as_ref().unwrap_or(&empty)
+        } else {
+            stored
+        };
+        let pen = Pen::Edit(pane);
+        // The editor of the row writes to the place of the composer of its pane.
+        let desk = self.pen(pane).place;
+        self.pen_mut(pen).place = desk;
         let names = self
             .composer_feed(pane)
             .map(|feed| feed.names.clone())
@@ -1368,7 +1433,7 @@ impl Shell {
             MentionTarget::Everyone => text::EVERYONE.to_owned(),
         };
         let shown = compose::written(document, &name);
-        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
+        self.pen_mut(pen).edit_generation = self.pen(pen).edit_generation.wrapping_add(1);
         let mut content = InputContent::new(shown.text.clone());
         for mention in &shown.mentions {
             let token = InlineToken::new(
@@ -1379,40 +1444,54 @@ impl Shell {
                 content = with;
             }
         }
-        self.pen_mut(pane).preview = false;
-        self.pen_mut(pane).editing = Some(Editing {
+        self.pen_mut(pen).preview = false;
+        self.pen_mut(pen).editing = Some(Editing {
             message_id,
             original: Arc::new((document.clone(), shown)),
         });
-        self.pen_mut(pane).reply_to = None;
-        self.pen_mut(pane).problem = None;
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).problem = None;
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             input.set_value(content, window, cx);
             let end = input.value().len();
             input.set_selected_range(end..end, cx);
             input.focus(window, cx);
         });
-        self.save_composer(pane, cx);
+        self.reveal_feed_message(pane, message_id);
+        self.save_composer(pen, cx);
         cx.notify();
     }
 
     /// Ends a reply or an edit without sending.
-    fn cancel_compose_state(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        self.pen_mut(pane).edit_generation = self.pen(pane).edit_generation.wrapping_add(1);
-        if self.pen_mut(pane).editing.take().is_some() {
-            self.pen_mut(pane)
+    fn cancel_compose_state(
+        &mut self,
+        pen: impl Into<Pen>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        self.pen_mut(pen).edit_generation = self.pen(pen).edit_generation.wrapping_add(1);
+        if self.pen_mut(pen).editing.take().is_some() {
+            self.pen_mut(pen)
                 .input
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
-        self.pen_mut(pane).reply_to = None;
-        self.pen_mut(pane).problem = None;
-        self.save_composer(pane, cx);
+        self.pen_mut(pen).reply_to = None;
+        self.pen_mut(pen).problem = None;
+        self.save_composer(pen, cx);
+        // Escape in the editor of a row returns the keyboard to the composer of the pane.
+        if pen.edits() {
+            self.pen(pane)
+                .input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
         cx.notify();
     }
 
-    fn composer_document(&self, pane: Pane, cx: &App) -> Document {
-        let content = self.pen(pane).input.read(cx).content();
-        match &self.pen(pane).editing {
+    fn composer_document(&self, pen: impl Into<Pen>, cx: &App) -> Document {
+        let pen: Pen = pen.into();
+        let content = self.pen(pen).input.read(cx).content();
+        match &self.pen(pen).editing {
             Some(editing) => {
                 let (original, shown) = editing.original.as_ref();
                 compose::parse_edit(
@@ -1426,23 +1505,29 @@ impl Shell {
         }
     }
 
-    pub(super) fn composer_preview_document(&self, pane: Pane, cx: &App) -> Option<Document> {
-        self.pen(pane)
+    pub(super) fn composer_preview_document(
+        &self,
+        pen: impl Into<Pen>,
+        cx: &App,
+    ) -> Option<Document> {
+        let pen: Pen = pen.into();
+        self.pen(pen)
             .preview
-            .then(|| self.composer_document(pane, cx))
+            .then(|| self.composer_document(pen, cx))
     }
 
     pub fn show_composer_preview(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         preview: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pen: Pen = pen.into();
         if preview {
-            self.typing_activity(pane, false, cx);
+            self.typing_activity(pen, false, cx);
         }
-        let pen = self.pen_mut(pane);
+        let pen = self.pen_mut(pen);
         pen.preview = preview;
         pen.mention = None;
         pen.emoji_completion = None;
@@ -1456,28 +1541,35 @@ impl Shell {
 
     /// Sends what the composer holds: a new message, or the new text of the message that
     /// is edited. A text that the server would refuse is not sent, and the reason is told.
-    pub fn submit_message(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(open) = &self.pen(pane).emoji_completion {
-            let found = self.emoji_candidates(pane, cx);
+    pub fn submit_message(
+        &mut self,
+        pen: impl Into<Pen>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        if let Some(open) = &self.pen(pen).emoji_completion {
+            let found = self.emoji_candidates(pen, cx);
             if let Some(emoji) = found.get(open.chosen.min(found.len().saturating_sub(1))) {
-                self.take_emoji_completion(pane, emoji, window, cx);
+                self.take_emoji_completion(pen, emoji, window, cx);
                 return;
             }
         }
-        if self.pen_mut(pane).mention.is_some() {
-            let found = self.mention_candidates(pane);
-            if let Some(open) = &self.pen_mut(pane).mention
+        if self.pen_mut(pen).mention.is_some() {
+            let found = self.mention_candidates(pen);
+            if let Some(open) = &self.pen_mut(pen).mention
                 && let Some(chosen) = found.get(open.chosen.min(found.len().saturating_sub(1)))
             {
                 let chosen = chosen.clone();
-                self.take_candidate(pane, &chosen, window, cx);
+                self.take_candidate(pen, &chosen, window, cx);
                 return;
             }
         }
-        let Some((server_id, place)) = self.composer_place(pane) else {
+        let Some((server_id, place)) = self.composer_place(pen) else {
             return;
         };
-        let document = self.composer_document(pane, cx);
+        let document = self.composer_document(pen, cx);
         let required = document.required_revision();
         if required > 0
             && self
@@ -1487,17 +1579,18 @@ impl Shell {
                 .and_then(|server| server.live().view().server_events)
                 .is_some_and(|revision| revision < required)
         {
-            self.pen_mut(pane).problem = Some(text::SERVER_MESSAGE_UPDATE.into());
+            self.pen_mut(pen).problem = Some(text::SERVER_MESSAGE_UPDATE.into());
             cx.notify();
             return;
         }
         let editing = self
-            .pen(pane)
+            .pen(pen)
             .editing
             .as_ref()
-            .map(|editing| editing.message_id);
+            .map(|editing| editing.message_id)
+            .filter(|_| pen.edits());
         if editing.is_none() && self.attaching_here(pane, cx) {
-            self.pen_mut(pane).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
+            self.pen_mut(pen).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
             cx.notify();
             return;
         }
@@ -1511,7 +1604,7 @@ impl Shell {
             .unwrap_or_default();
         // Files attached before the permission was taken are not sent.
         if editing.is_none() && !draft.is_empty() && !self.pane_writing(pane).attach {
-            self.pen_mut(pane).problem =
+            self.pen_mut(pen).problem =
                 Some(text::not_permitted(WorkspacePermission::AttachFiles).to_owned());
             cx.notify();
             return;
@@ -1520,52 +1613,67 @@ impl Shell {
             .iter()
             .any(|file| matches!(file.progress.stage, UploadStage::Failed(_)))
         {
-            self.pen_mut(pane).problem = Some(text::REMOVE_FAILED_FILE.to_owned());
+            self.pen_mut(pen).problem = Some(text::REMOVE_FAILED_FILE.to_owned());
             cx.notify();
             return;
         }
+        // The edit of a forward changes its comment and keeps the forwarded content
+        // (ADR 0408); an empty comment is removed.
+        let forward = editing
+            .and_then(|message_id| self.held_message(pane, message_id))
+            .and_then(|message| message.document.clone())
+            .filter(|stored| stored.forward_origins() > 0);
         let has_files = match editing {
             Some(message_id) => self
                 .held_message(pane, message_id)
                 .is_some_and(|message| !message.attachments.is_empty()),
             None => !draft.is_empty(),
         };
-        if let Err(problem) = compose::check(&document, has_files) {
-            self.pen_mut(pane).problem = Some(text::compose_problem(problem));
+        let checked = match &forward {
+            Some(_) if !compose::has_content(&document) => Ok(()),
+            Some(_) => compose::check(&document, false),
+            None => compose::check(&document, has_files),
+        };
+        if let Err(problem) = checked {
+            self.pen_mut(pen).problem = Some(text::compose_problem(problem));
             cx.notify();
             return;
         }
         let used_emoji = crate::emoji::completion::used(&document);
-        let reply_to = self.pen_mut(pane).reply_to;
+        let reply_to = self.pen_mut(pen).reply_to;
         if let Some(message_id) = editing {
-            self.typing_activity(pane, false, cx);
-            self.save_composer(pane, cx);
+            let pen_key = pen;
+            self.save_composer(pen, cx);
             self.state.update(cx, |state, cx| state.flush_drafts(cx));
-            let pen = self.pen_mut(pane);
+            let pen = self.pen_mut(pen);
             pen.edit_generation = pen.edit_generation.wrapping_add(1);
             let generation = pen.edit_generation;
             let desk = pen.place;
             let saved = pen.saved.borrow().clone();
             let owner = self.state.read(cx).owner(server_id);
-            let receive = self.state.update(cx, |state, cx| {
-                state.confirm_edit(server_id, message_id, document, cx)
+            let edited = pen_key;
+            let receive = self.state.update(cx, |state, cx| match forward {
+                Some(stored) => {
+                    state.confirm_comment_edit(server_id, message_id, stored, document, cx)
+                }
+                None => state.confirm_edit(server_id, message_id, document, cx),
             });
             cx.spawn_in(window, async move |this, cx| {
                 let accepted = receive.await.unwrap_or(false);
                 let _ = this.update_in(cx, |this, window, cx| {
-                    let pen = this.pen(pane);
+                    let held = this.pen(edited);
                     if !accepted
                         || this.state.read(cx).owner(server_id) != owner
-                        || pen.place != desk
-                        || pen.edit_generation != generation
-                        || pen.saved.borrow().as_ref() != saved.as_ref()
+                        || held.place != desk
+                        || held.edit_generation != generation
+                        || held.saved.borrow().as_ref() != saved.as_ref()
                         || desk.is_none_or(|desk| {
-                            this.state.read(cx).saved_draft(desk) != saved.as_ref()
+                            this.state.read(cx).saved_edit(desk) != saved.as_ref()
                         })
                     {
                         return;
                     }
-                    this.clear_submitted_composer(pane, window, cx);
+                    this.clear_submitted_composer(edited, window, cx);
                     this.state.update(cx, |state, cx| {
                         state
                             .remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
@@ -1580,38 +1688,46 @@ impl Shell {
             state.send_message(server_id, place, document, reply_to, cx)
         });
         if !sent {
-            self.pen_mut(pane).problem = Some(text::NOT_SENT.to_owned());
+            self.pen_mut(pen).problem = Some(text::NOT_SENT.to_owned());
             cx.notify();
             return;
         }
         self.state.update(cx, |state, cx| {
             state.remember_emoji_choices(used_emoji.iter().rev().map(String::as_str), cx)
         });
-        self.clear_submitted_composer(pane, window, cx);
+        self.clear_submitted_composer(pen, window, cx);
         self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
         cx.notify();
     }
 
     fn clear_submitted_composer(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.typing_activity(pane, false, cx);
-        let was_preview = self.pen(pane).preview;
-        self.pen_mut(pane).preview = false;
-        self.pen_mut(pane).editing = None;
-        self.pen_mut(pane).reply_to = None;
-        self.pen_mut(pane).problem = None;
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
+        self.typing_activity(pen, false, cx);
+        let was_preview = self.pen(pen).preview;
+        self.pen_mut(pen).preview = false;
+        self.pen_mut(pen).editing = None;
+        self.pen_mut(pen).reply_to = None;
+        self.pen_mut(pen).problem = None;
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             input.set_value("", window, cx);
             if was_preview {
                 input.focus(window, cx);
             }
         });
-        self.save_composer(pane, cx);
+        self.save_composer(pen, cx);
         self.state.update(cx, |state, cx| state.flush_drafts(cx));
+        // After an edit the keyboard returns to the composer of the pane.
+        if pen.edits() {
+            self.pen(pane)
+                .input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
     }
 
     /// Opens the emoji picker: for a reaction to a message, or for the text of a composer.
@@ -1648,14 +1764,14 @@ impl Shell {
                 });
             }
             (EmojiTarget::React(_), None) => {}
-            (EmojiTarget::Compose(pane), _) => {
+            (EmojiTarget::Compose(pen), _) => {
                 self.state
                     .update(cx, |state, cx| state.remember_emoji(emoji, cx));
-                self.pen_mut(pane).input.update(cx, |input, cx| {
+                self.pen_mut(pen).input.update(cx, |input, cx| {
                     input.insert(emoji, window, cx);
                     input.focus(window, cx);
                 });
-                self.composer_changed(pane, cx);
+                self.composer_changed(pen, cx);
             }
         }
     }
@@ -1875,25 +1991,27 @@ impl Shell {
     /// `permanent` states that a sent message of the place cannot be edited.
     pub(crate) fn render_composer(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         draft: &[DraftFile],
         mode: Mode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let pen: Pen = pen.into();
+        let pane = pen.pane();
         let Mode {
             compact,
             permanent,
             writing,
         } = mode;
-        let preview = self.pen(pane).preview;
+        let preview = self.pen(pen).preview;
         let theme = theme(cx);
         let faces = self.shown_faces();
         let colors = theme.colors;
         let side = if compact { 12.0 } else { 16.0 };
         let ring_width = theme.metrics.focus_ring;
         let radius_small = theme.metrics.radius_small;
-        self.pen_mut(pane).input.update(cx, |input, _| {
+        self.pen_mut(pen).input.update(cx, |input, _| {
             input.set_editor_style(InputEditorStyle {
                 foreground: colors.ink.into(),
                 muted_foreground: colors.ink_3.into(),
@@ -1906,10 +2024,10 @@ impl Shell {
         });
         let tool = |id: &'static str, label: &'static str, mark: AnyElement| {
             div()
-                .id(pane.id(id))
+                .id(pen.id(id))
                 .role(Role::Button)
                 .aria_label(label)
-                .debug_selector(move || pane.id(id).to_owned())
+                .debug_selector(move || pen.id(id).to_owned())
                 .flex()
                 .flex_none()
                 .items_center()
@@ -1963,7 +2081,7 @@ impl Shell {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.wrap_selection(pane, "**", "**", window, cx)
+                                this.wrap_selection(pen, "**", "**", window, cx)
                             },
                         )),
                     )
@@ -1979,7 +2097,7 @@ impl Shell {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.wrap_selection(pane, "*", "*", window, cx)
+                                this.wrap_selection(pen, "*", "*", window, cx)
                             },
                         )),
                     )
@@ -1991,7 +2109,7 @@ impl Shell {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.wrap_selection(pane, "~~", "~~", window, cx)
+                                this.wrap_selection(pen, "~~", "~~", window, cx)
                             },
                         )),
                     )
@@ -1999,7 +2117,7 @@ impl Shell {
                     .child(
                         tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(
                             cx.listener(move |this, _, window, cx| {
-                                this.wrap_selection(pane, "`", "`", window, cx)
+                                this.wrap_selection(pen, "`", "`", window, cx)
                             }),
                         ),
                     )
@@ -2011,25 +2129,25 @@ impl Shell {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.wrap_selection(pane, "```\n", "\n```", window, cx);
+                                this.wrap_selection(pen, "```\n", "\n```", window, cx);
                             },
                         )),
                     )
                     .child(divider())
                     .child(tool("format-link", text::LINK, shown(Icon::Link)).on_click(
                         cx.listener(move |this, _, window, cx| {
-                            this.wrap_selection(pane, "[", "](https://)", window, cx);
+                            this.wrap_selection(pen, "[", "](https://)", window, cx);
                         }),
                     ))
                     .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
                         cx.listener(move |this, _, window, cx| {
-                            this.prefix_lines(pane, "- ", window, cx)
+                            this.prefix_lines(pen, "- ", window, cx)
                         }),
                     ))
                     .child(
                         tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(
                             cx.listener(move |this, _, window, cx| {
-                                this.prefix_lines(pane, "> ", window, cx)
+                                this.prefix_lines(pen, "> ", window, cx)
                             }),
                         ),
                     )
@@ -2040,7 +2158,7 @@ impl Shell {
                             letter("H", FontWeight::BOLD),
                         )
                         .on_click(cx.listener(
-                            move |this, _, window, cx| this.prefix_lines(pane, "# ", window, cx),
+                            move |this, _, window, cx| this.prefix_lines(pen, "# ", window, cx),
                         )),
                     )
                     .child(
@@ -2050,7 +2168,7 @@ impl Shell {
                             letter("t", FontWeight::NORMAL),
                         )
                         .on_click(cx.listener(
-                            move |this, _, window, cx| this.prefix_lines(pane, "-# ", window, cx),
+                            move |this, _, window, cx| this.prefix_lines(pen, "-# ", window, cx),
                         )),
                     )
                     .child(
@@ -2061,12 +2179,13 @@ impl Shell {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.wrap_selection(pane, "||", "||", window, cx)
+                                this.wrap_selection(pen, "||", "||", window, cx)
                             },
                         )),
                     )
                     .child(divider())
-                    .when(writing.attach, |tools| {
+                    // An edit changes the text of a message and adds no file.
+                    .when(writing.attach && !pen.edits(), |tools| {
                         tools.child(
                             tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip)).on_click(
                                 cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)),
@@ -2076,7 +2195,7 @@ impl Shell {
                     .child(
                         tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(
                             cx.listener(move |this, _, window, cx| {
-                                this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
+                                this.open_emoji_picker(EmojiTarget::Compose(pen), window, cx)
                             }),
                         ),
                     )
@@ -2084,15 +2203,15 @@ impl Shell {
             .child(
                 div().flex_none().ml_auto().w(u(150.0)).child(
                     Segmented::new(
-                        pane.id("composer-view"),
+                        pen.id("composer-view"),
                         text::COMPOSER_VIEW,
                         [text::WRITE.into(), text::PREVIEW.into()],
                     )
-                    .selector(pane.id("composer-view"))
+                    .selector(pen.id("composer-view"))
                     .selected(Some(usize::from(preview)))
                     .on_select({
                         let select = cx.listener(move |this, selected: &usize, window, cx| {
-                            this.show_composer_preview(pane, *selected == 1, window, cx)
+                            this.show_composer_preview(pen, *selected == 1, window, cx)
                         });
                         move |index, window, cx| select(&index, window, cx)
                     }),
@@ -2101,8 +2220,9 @@ impl Shell {
 
         // The state above the box: a reply or an edit, with the control that ends it.
         let drawings = Drawings::of(cx);
-        let banner = match (self.pen(pane).editing.is_some(), self.pen(pane).reply_to) {
-            (true, _) => Some((Icon::Edit, SharedString::from(text::EDITING_MESSAGE), None)),
+        // The editor of a row stands in the row of its message and needs no banner.
+        let banner = match (pen.edits(), self.pen(pen).reply_to) {
+            (true, _) => None,
             (false, Some(message_id)) => {
                 let quoted = self.held_message(pane, message_id);
                 let names = self
@@ -2121,7 +2241,11 @@ impl Shell {
                             .shown(&plain_text(document, &names, 80))
                             .styled(colors.ink_3.into())
                     });
-                Some((Icon::Reply, text::replying_to(&author).into(), excerpt))
+                Some((
+                    Icon::Reply,
+                    SharedString::from(text::replying_to(&author)),
+                    excerpt,
+                ))
             }
             (false, None) => None,
         }
@@ -2153,13 +2277,13 @@ impl Shell {
                         .tooltip(text::CANCEL)
                         .selector("cancel-compose-state")
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.cancel_compose_state(pane, window, cx);
+                            this.cancel_compose_state(pen, window, cx);
                         })),
                 )
         });
 
         // The files of the next message, each with the state of its upload.
-        let place = self.composer_place(pane);
+        let place = self.composer_place(pen);
         let attaching = self.attaching_here(pane, cx);
         let files = (!draft.is_empty() || attaching).then(|| {
             div()
@@ -2272,10 +2396,10 @@ impl Shell {
                 }))
         });
 
-        let preview_document = preview.then(|| self.composer_document(pane, cx));
+        let preview_document = preview.then(|| self.composer_document(pen, cx));
         let preview_problem = preview_document.as_ref().and_then(|document| {
             let has_files = !draft.is_empty()
-                || self.pen(pane).editing.as_ref().is_some_and(|edit| {
+                || self.pen(pen).editing.as_ref().is_some_and(|edit| {
                     self.held_message(pane, edit.message_id)
                         .is_some_and(|message| !message.attachments.is_empty())
                 });
@@ -2355,7 +2479,9 @@ impl Shell {
                     .text_size(u(12.5))
                     .ink(colors.ink_3)
                     // A narrow composer states the permanence in a line above its box.
-                    .child(if permanent && !compact {
+                    .child(if pen.edits() {
+                        text::EDIT_HINT
+                    } else if permanent && !compact {
                         text::PERMANENT_COMPOSER
                     } else {
                         text::SEND_HINT
@@ -2363,14 +2489,14 @@ impl Shell {
             }));
 
         // The mention picker, above the box.
-        let found = self.mention_candidates(pane);
+        let found = self.mention_candidates(pen);
         let chosen = self
             .pen(pane)
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
         let picker =
-            (!preview && self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
+            (!preview && self.pen(pen).mention.is_some() && !found.is_empty()).then(|| {
                 div()
                     .id("mention-picker")
                     .role(Role::ListBox)
@@ -2411,7 +2537,7 @@ impl Shell {
                             })
                             .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.take_candidate(pane, &taken, window, cx);
+                                this.take_candidate(pen, &taken, window, cx);
                             }))
                             .child(match person {
                                 Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
@@ -2449,7 +2575,7 @@ impl Shell {
                                     .ink(colors.ink_3)
                                     .child(candidate.detail),
                             );
-                        let owner = self.composer_place(pane).and_then(|(server, place)| {
+                        let owner = self.composer_place(pen).and_then(|(server, place)| {
                             self.state
                                 .read(cx)
                                 .server(server)?
@@ -2499,17 +2625,17 @@ impl Shell {
                     }))
             });
 
-        let emoji_found = self.emoji_candidates(pane, cx);
-        let emoji_chosen = self.pen(pane).emoji_completion.as_ref().map_or(0, |open| {
+        let emoji_found = self.emoji_candidates(pen, cx);
+        let emoji_chosen = self.pen(pen).emoji_completion.as_ref().map_or(0, |open| {
             open.chosen.min(emoji_found.len().saturating_sub(1))
         });
         let emoji_picker = (!preview
-            && self.pen(pane).emoji_completion.is_some()
+            && self.pen(pen).emoji_completion.is_some()
             && !emoji_found.is_empty())
         .then(|| {
             div()
-                .id(pane.id("emoji-completion"))
-                .debug_selector(move || pane.id("emoji-completion").to_owned())
+                .id(pen.id("emoji-completion"))
+                .debug_selector(move || pen.id("emoji-completion").to_owned())
                 .role(Role::ListBox)
                 .aria_label(text::EMOJI_COMPLETION)
                 .absolute()
@@ -2532,7 +2658,7 @@ impl Shell {
                         .role(Role::ListBoxOption)
                         .aria_label(SharedString::from(emoji.name()))
                         .aria_selected(index == emoji_chosen)
-                        .debug_selector(move || format!("{}:{index}", pane.id("emoji-candidate")))
+                        .debug_selector(move || format!("{}:{index}", pen.id("emoji-candidate")))
                         .flex()
                         .items_center()
                         .gap(u(8.0))
@@ -2542,7 +2668,7 @@ impl Shell {
                         .when(index == emoji_chosen, |row| row.bg(colors.limestone_lo))
                         .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.take_emoji_completion(pane, emoji, window, cx)
+                            this.take_emoji_completion(pen, emoji, window, cx)
                         }))
                         .child(
                             div()
@@ -2576,10 +2702,10 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(text::PERMANENT_COMPOSER)
         });
-        let editing = self.pen(pane).editing.is_some();
+        let editing = self.pen(pen).editing.is_some();
         let token_wash = colors.terracotta_wash;
         let token_ink = colors.terracotta_deep;
-        let input = Textarea::new(&self.pen(pane).input).token(move |context, _, _| {
+        let input = Textarea::new(&self.pen(pen).input).token(move |context, _, _| {
             div()
                 .px(u(3.0))
                 .rounded(u(2.0))
@@ -2626,14 +2752,14 @@ impl Shell {
                 .min_w_0()
                 .child(
                     div()
-                        .id(pane.id("composer-preview"))
-                        .debug_selector(move || pane.id("composer-preview").to_owned())
+                        .id(pen.id("composer-preview"))
+                        .debug_selector(move || pen.id("composer-preview").to_owned())
                         .role(Role::Group)
                         .aria_label(text::PREVIEW)
                         .text_size(u(14.5))
                         .line_height(u(21.0))
                         .ink(colors.ink)
-                        .track_focus(&self.pen(pane).preview_focus)
+                        .track_focus(&self.pen(pen).preview_focus)
                         .min_w_0()
                         .min_h(u(32.0))
                         .max_h(
@@ -2642,12 +2768,12 @@ impl Shell {
                                 .min(window.viewport_size().height * 0.3),
                         )
                         .overflow_y_scroll()
-                        .track_scroll(&self.pen(pane).preview_scroll)
+                        .track_scroll(&self.pen(pen).preview_scroll)
                         .pr(u(12.0))
                         .children(blocks),
                 )
                 .child(crate::ui::scroll_bar(
-                    &self.pen(pane).preview_scroll,
+                    &self.pen(pen).preview_scroll,
                     false,
                     cx,
                 ))
@@ -2673,13 +2799,13 @@ impl Shell {
                     .child(match preview_body {
                         Some(body) => body,
                         None => div()
-                            .id(pane.id("composer-input"))
+                            .id(pen.id("composer-input"))
                             .role(Role::TextInput)
                             .aria_label(match pane {
                                 Pane::Main => text::MESSAGES,
                                 Pane::Thread => text::REPLY_IN_THREAD,
                             })
-                            .debug_selector(move || pane.id("composer-input").to_owned())
+                            .debug_selector(move || pen.id("composer-input").to_owned())
                             .flex_1()
                             .min_w_0()
                             .text_size(u(14.5))
@@ -2695,10 +2821,10 @@ impl Shell {
                     })
                     .child(
                         div()
-                            .id(pane.id("send-message"))
+                            .id(pen.id("send-message"))
                             .role(Role::Button)
                             .aria_label(if editing { text::SAVE_EDIT } else { text::SEND })
-                            .debug_selector(move || pane.id("send-message").to_owned())
+                            .debug_selector(move || pen.id("send-message").to_owned())
                             .flex()
                             .flex_none()
                             .items_center()
@@ -2719,7 +2845,7 @@ impl Shell {
                             })
                             .tooltip(tooltip(if editing { text::SAVE_EDIT } else { text::SEND }))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.submit_message(pane, window, cx);
+                                this.submit_message(pen, window, cx);
                             }))
                             .child(icon(
                                 if editing { Icon::Check } else { Icon::Send },
@@ -2732,43 +2858,43 @@ impl Shell {
             .children(emoji_picker);
 
         div()
-            .id(pane.id("composer"))
-            .debug_selector(move || pane.id("composer").to_owned())
+            .id(pen.id("composer"))
+            .debug_selector(move || pen.id("composer").to_owned())
             .flex_none()
             .pt(u(2.0))
             .px(u(side))
             .pb(u(10.0))
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                if this.composer_key(pane, event, window, cx) {
+                if this.composer_key(pen, event, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             // The text area binds these keys to its actions, and an action is dispatched
             // before a key: the composer takes the action first.
             .capture_action(cx.listener(move |this, _: &input::MoveUp, window, cx| {
-                if this.composer_step(pane, Step::Up, window, cx) {
+                if this.composer_step(pen, Step::Up, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(move |this, _: &input::MoveDown, window, cx| {
-                if this.composer_step(pane, Step::Down, window, cx) {
+                if this.composer_step(pen, Step::Down, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(
                 cx.listener(move |this, _: &input::IndentInline, window, cx| {
-                    if this.composer_step(pane, Step::Tab, window, cx) {
+                    if this.composer_step(pen, Step::Tab, window, cx) {
                         cx.stop_propagation();
                     }
                 }),
             )
             .capture_action(cx.listener(move |this, _: &input::Escape, window, cx| {
-                if this.composer_step(pane, Step::Escape, window, cx) {
+                if this.composer_step(pen, Step::Escape, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(move |this, _: &input::Paste, _, cx| {
-                if this.paste_picture(pane, cx) {
+                if this.paste_picture(pen, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -2785,12 +2911,14 @@ impl Shell {
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 style.bg(Hsla::from(colors.terracotta_wash))
             })
-            .child(
-                div()
-                    .h(u(20.0))
-                    .min_w_0()
-                    .children(self.render_typing_people(pane, cx)),
-            )
+            .when(!pen.edits(), |composer| {
+                composer.child(
+                    div()
+                        .h(u(20.0))
+                        .min_w_0()
+                        .children(self.render_typing_people(pane, cx)),
+                )
+            })
             .children(permanence)
             .children(banner)
             .children(files)
@@ -2896,7 +3024,7 @@ impl Shell {
 
     /// Follows the text area of the composer: a change of the text, and Enter.
     pub(crate) fn observe_composer(
-        pane: Pane,
+        pen: Pen,
         input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2906,14 +3034,12 @@ impl Shell {
             window,
             move |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
-                    this.composer_changed(pane, cx);
-                    this.complete_closed_emoji(pane, window, cx);
+                    this.composer_changed(pen, cx);
+                    this.complete_closed_emoji(pen, window, cx);
                 }
-                InputEvent::PressEnter { shift: false, .. } => {
-                    this.submit_message(pane, window, cx)
-                }
+                InputEvent::PressEnter { shift: false, .. } => this.submit_message(pen, window, cx),
                 InputEvent::Blur => {
-                    this.typing_activity(pane, false, cx);
+                    this.typing_activity(pen, false, cx);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } | InputEvent::Focus => {
@@ -2926,21 +3052,22 @@ impl Shell {
     /// Follows every change of the text area of the composer, of its text and of its
     /// selection, to show the formatting of the text (ADR 0740).
     pub(crate) fn observe_formatting(
-        pane: Pane,
+        pen: Pen,
         input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Subscription {
         cx.observe_in(input, window, move |this, _, _, cx| {
-            this.show_formatting(pane, cx);
+            this.show_formatting(pen, cx);
         })
     }
 
     /// Shows the formatting of the text of a composer: the parts are read again after a
     /// change of the text, and their marks are dimmed or not after a move of the selection.
-    pub(crate) fn show_formatting(&mut self, pane: Pane, cx: &mut Context<Self>) {
+    pub(crate) fn show_formatting(&mut self, pen: impl Into<Pen>, cx: &mut Context<Self>) {
+        let pen: Pen = pen.into();
         let colors = theme(cx).colors;
-        let pen = self.pen_mut(pane);
+        let pen = self.pen_mut(pen);
         let input = pen.input.read(cx);
         // The tokens without a copy of the text: the input also notifies at each blink of
         // its caret.
@@ -2954,8 +3081,14 @@ impl Shell {
     }
 
     /// Moves the keyboard focus into the composer.
-    pub fn focus_composer(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        self.pen_mut(pane)
+    pub fn focus_composer(
+        &mut self,
+        pen: impl Into<Pen>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen: Pen = pen.into();
+        self.pen_mut(pen)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
     }
@@ -2980,33 +3113,36 @@ impl Shell {
     /// Puts text into the composer, as typing does.
     pub fn type_message(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         text: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pen: Pen = pen.into();
         let text = text.to_owned();
-        self.pen_mut(pane).input.update(cx, |input, cx| {
+        self.pen_mut(pen).input.update(cx, |input, cx| {
             let end = text.len();
             input.set_value(text, window, cx);
             input.set_selected_range(end..end, cx);
         });
-        self.composer_changed(pane, cx);
+        self.composer_changed(pen, cx);
     }
 
     /// The text that the composer holds.
-    pub fn composer_text(&self, pane: Pane, cx: &gpui::App) -> String {
-        self.pen(pane).input.read(cx).value().to_string()
+    pub fn composer_text(&self, pen: impl Into<Pen>, cx: &gpui::App) -> String {
+        let pen: Pen = pen.into();
+        self.pen(pen).input.read(cx).value().to_string()
     }
 
     /// The style that the text area of the composer gives each byte range of its text, as
     /// the formatting of the text sets it (ADR 0740).
     pub fn composer_formatting(
         &self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         cx: &gpui::App,
     ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
-        self.pen(pane)
+        let pen: Pen = pen.into();
+        self.pen(pen)
             .input
             .read(cx)
             .text_decorations()
@@ -3016,15 +3152,18 @@ impl Shell {
     }
 
     /// Why the composer did not send its text.
-    pub fn composer_problem(&self, pane: Pane) -> Option<&str> {
-        self.pen(pane).problem.as_deref()
+    pub fn composer_problem(&self, pen: impl Into<Pen>) -> Option<&str> {
+        let pen: Pen = pen.into();
+        self.pen(pen).problem.as_deref()
     }
 
     /// The message that the composer answers, and the message that it changes.
+    /// The reply that the composer of a pane holds, and the message that the editor of its
+    /// rows changes (ADR 0740).
     pub fn compose_state(&self, pane: Pane) -> (Option<MessageId>, Option<MessageId>) {
         (
             self.pen(pane).reply_to,
-            self.pen(pane)
+            self.pen(Pen::Edit(pane))
                 .editing
                 .as_ref()
                 .map(|editing| editing.message_id),
@@ -3032,8 +3171,9 @@ impl Shell {
     }
 
     /// The names of the entries that the mention picker of a pane shows, in their order.
-    pub fn mention_names(&self, pane: Pane) -> Vec<String> {
-        self.mention_candidates(pane)
+    pub fn mention_names(&self, pen: impl Into<Pen>) -> Vec<String> {
+        let pen: Pen = pen.into();
+        self.mention_candidates(pen)
             .into_iter()
             .map(|candidate| candidate.name)
             .collect()
@@ -3042,16 +3182,17 @@ impl Shell {
     /// Takes the entry of the mention picker with this name.
     pub fn pick_mention(
         &mut self,
-        pane: Pane,
+        pen: impl Into<Pen>,
         name: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let found = self.mention_candidates(pane);
+        let pen: Pen = pen.into();
+        let found = self.mention_candidates(pen);
         match found.iter().find(|candidate| candidate.name == name) {
             Some(candidate) => {
                 let candidate = candidate.clone();
-                self.take_candidate(pane, &candidate, window, cx);
+                self.take_candidate(pen, &candidate, window, cx);
                 true
             }
             None => false,

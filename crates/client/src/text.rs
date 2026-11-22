@@ -2044,7 +2044,7 @@ pub const DISCARD: &str = "Discard";
 pub const SEND: &str = "Send";
 pub const SEND_HINT: &str = "Enter sends · Shift + Enter adds a line";
 pub const SAVE_EDIT: &str = "Save";
-pub const EDITING_MESSAGE: &str = "Editing your message";
+pub const EDIT_HINT: &str = "Enter saves · Escape cancels · Shift + Enter adds a line";
 pub const BOLD: &str = "Bold";
 pub const ITALIC: &str = "Italic";
 pub const STRIKETHROUGH: &str = "Strikethrough";
@@ -2106,8 +2106,7 @@ pub const THREAD: &str = "Thread";
 pub const THREADS: &str = "Threads";
 pub const CLOSE_THREADS: &str = "Close the followed threads";
 pub const NO_FOLLOWED_THREADS_TITLE: &str = "No followed threads";
-pub const NO_FOLLOWED_THREADS: &str =
-    "The threads that you follow in the channels of this workspace are listed here, unread ones first.";
+pub const NO_FOLLOWED_THREADS: &str = "The threads that you follow in the channels of this workspace are listed here, unread ones first.";
 pub const FOLLOWED_THREADS_READING: &str = "Reading the followed threads…";
 /// The accessible name of the row of the side panel "Threads".
 pub fn followed_thread_label(title: &str, channel: &str, unread: u64) -> String {
@@ -3025,7 +3024,8 @@ pub const FILTER_FROM_DATE: &str = "From date";
 pub const FILTER_THROUGH_DATE: &str = "Through date";
 pub const FILTER_APPLY_DATES: &str = "Apply dates";
 pub const FILTER_DATES_INVALID: &str = "Enter dates as YYYY-MM-DD, with From on or before Through.";
-pub const FILTERS_NEED_TEXT: &str = "Enter text: this server does not support filter-only searches.";
+pub const FILTERS_NEED_TEXT: &str =
+    "Enter text: this server does not support filter-only searches.";
 pub const FILTERS_UNSUPPORTED: &str = "This server does not support these search filters.";
 pub const FILTERS_UNCONFIRMED: &str = "Server search support has not been confirmed.";
 /// The placeholder of the search field: the place where a search starts (ADR 0743).
@@ -3513,16 +3513,15 @@ pub fn forwarded_from(source: &str) -> String {
 }
 pub const FORWARD_VERIFIED_ABOUT: &str =
     "This server made the copy from the original message, which has not changed it since.";
-pub const FORWARD_EDITED_ABOUT: &str =
-    "The copy was edited after it was forwarded, so this server does not confirm that it matches the original message.";
-pub const FORWARD_REMOTE_ABOUT: &str =
-    "The copy comes from another server, which this server does not ask: it does not confirm that the copy matches the original message.";
+pub const FORWARD_EDITED_ABOUT: &str = "The copy was edited after it was forwarded, so this server does not confirm that it matches the original message.";
+pub const FORWARD_REMOTE_ABOUT: &str = "The copy comes from another server, which this server does not ask: it does not confirm that the copy matches the original message.";
 pub const FORWARD_COMMENT: &str = "Comment (optional)";
 pub const FORWARD_MESSAGE: &str = "Forward message";
 pub const FORWARD_SEND: &str = "Forward";
 pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
 pub const FORWARD_LOADING: &str = "Loading original message…";
-pub const FORWARD_FIND: &str = "Find a channel, a conversation or a thread, or paste a message link";
+pub const FORWARD_FIND: &str =
+    "Find a channel, a conversation or a thread, or paste a message link";
 pub const FORWARD_NONE: &str = "No writable destinations match.";
 
 pub const VIEW_ORIGINAL: &str = "Go to message";

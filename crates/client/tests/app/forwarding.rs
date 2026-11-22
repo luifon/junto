@@ -542,36 +542,17 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         author.to_string()
     );
     let copied = window.messages().into_iter().find(|row| row.message.document.as_ref().is_some_and(|document| document.blocks.iter().any(|block| matches!(block, junto_client_core::protocol::message::Block::Forward { message_id, .. } if *message_id == source.id)))).unwrap().message.id;
+    // The edit of a forward changes its comment: the forwarded content stays under the
+    // editor of the row with its verified author, also in the preview (ADR 0408).
     window.right_click_message(copied);
     window.click("message-edit");
-    window.click("composer-view-1");
-    window.until(
-        "an unchanged edit preview retains verified attribution",
-        |window| window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
-    );
-    window.click_named(format!("forward-preview-author-profile:{}", source.id));
-    window.until("the preview author opens the same profile", |window| {
-        window
-            .state
-            .read_with(&window.cx, |state, _| {
-                state.profile_view(window.shell.entity_id())
-            })
-            .is_some_and(|view| {
-                view.account == author && matches!(view.read, ProfileRead::Shown(_))
-            })
-    });
+    assert!(window.shows_named(format!("message-editor:{copied}")));
+    window.type_into("edit-composer-input", "about the plan");
+    window.click("edit-composer-view-1");
+    assert!(window.shows_named(format!("forward-author-profile:{}", source.id)));
+    window.click("edit-composer-view-0");
     window.press("escape");
-    window.press("menu");
-    assert!(window.shows_named(format!("account-copy-id:{author}")));
-    window.press("escape");
-    window.click("composer-view-0");
-    window.type_into("composer-input", " revised");
-    window.click("composer-view-1");
-    window.until(
-        "an edited unverified preview loses its author target",
-        |window| !window.shows_named(format!("forward-preview-author-profile:{}", source.id)),
-    );
-    window.click("cancel-compose-state");
+    assert!(!window.shows_named(format!("message-editor:{copied}")));
     window.right_click_named(format!("forward-author-profile:{}", source.id));
     assert!(window.shows("account-menu"));
     world
@@ -622,11 +603,17 @@ fn a_forward_carries_a_comment_above_the_forwarded_content(cx: &mut TestAppConte
     );
     let comment = window
         .cx
-        .debug_bounds(crate::harness::selector(format!("forward-comment:{}", copy.id)))
+        .debug_bounds(crate::harness::selector(format!(
+            "forward-comment:{}",
+            copy.id
+        )))
         .unwrap();
     let caption = window
         .cx
-        .debug_bounds(crate::harness::selector(format!("forward-message:{}", source.id)))
+        .debug_bounds(crate::harness::selector(format!(
+            "forward-message:{}",
+            source.id
+        )))
         .unwrap();
     assert!(comment.bottom() <= caption.top());
     let shown = drawn(&mut window);
