@@ -27,6 +27,7 @@ mod category_timing;
 mod category_visibility;
 mod change_positions;
 mod channel_topics;
+mod channel_viewers;
 mod channel_use;
 mod concurrency;
 mod contacts;

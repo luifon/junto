@@ -611,7 +611,8 @@ impl Shell {
             (None, None, None) => text::SEARCH_FIELD.to_owned(),
         }
         .into();
-        if *self.search_field.read(cx).placeholder() != searched {
+        if self.search_placeholder != searched {
+            self.search_placeholder = searched.clone();
             self.search_field
                 .update(cx, |field, cx| field.set_placeholder(searched, window, cx));
         }

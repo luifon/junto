@@ -355,7 +355,7 @@ impl Shell {
             (
                 CallTab::Members,
                 Icon::People,
-                text::MEMBERS,
+                text::IN_THE_CALL,
                 "open-call-members",
             ),
         ]
@@ -974,7 +974,7 @@ impl Shell {
                     .child(tab(
                         CallTab::Members,
                         Icon::People,
-                        text::MEMBERS,
+                        text::IN_THE_CALL,
                         "call-tab-members",
                         cx,
                     )),

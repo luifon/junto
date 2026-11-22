@@ -389,6 +389,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(exports::get_export_file));
     add(&mut router, || routes!(channels::get_channel_permissions));
+    add(&mut router, || routes!(channels::get_channel_viewers));
     add(&mut router, || routes!(rules::get_channel_rules));
     add(&mut router, || {
         routes!(

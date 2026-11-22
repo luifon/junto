@@ -1559,6 +1559,31 @@ impl Shell {
                 if members.iter().any(|member| member.account_id == account_id && self.member_search.matches(member)))
     }
 
+    /// The member list of a shown channel asks for the people who can see the channel, which
+    /// only the server knows (ADR 0790).
+    pub(crate) fn members_follow(&mut self, view: &ShellView, cx: &mut Context<Self>) {
+        if !self.members_open || view.lists().is_some_and(|lists| lists.conversation.is_some()) {
+            return;
+        }
+        let Some(server_id) = view.selected.as_ref().map(|server| server.id) else {
+            return;
+        };
+        let Some(workspace) = view.workspace() else {
+            return;
+        };
+        let Some(channel_id) = workspace.channel.as_ref().map(|channel| channel.id) else {
+            return;
+        };
+        if workspace.viewers.is_none() {
+            let state = self.state.clone();
+            cx.defer(move |cx| {
+                state.update(cx, |state, cx| {
+                    state.read_channel_viewers(server_id, channel_id, cx)
+                });
+            });
+        }
+    }
+
     /// The members of the shown workspace in the side panel. Without a workspace the panel
     /// states that there is none, so that the main area keeps its width (ADR 0730).
     fn render_members(
@@ -1569,7 +1594,21 @@ impl Shell {
     ) -> AnyElement {
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
-        let header = SideHeader::new(text::MEMBERS)
+        // In a channel the list holds the people who can see the channel (ADR 0790).
+        let channel = workspace
+            .filter(|_| lists.conversation.is_none())
+            .and_then(|workspace| workspace.channel.as_ref());
+        // Until the server listed them, the list of a channel is being read.
+        let viewers = channel.map(|_| {
+            workspace
+                .and_then(|workspace| workspace.viewers.clone())
+                .unwrap_or(crate::state::view::Viewers::Reading)
+        });
+        let title: SharedString = match channel {
+            Some(channel) => text::members_of(&channel.name).into(),
+            None => text::MEMBERS.into(),
+        };
+        let header = SideHeader::new(title)
             .title_bar()
             .icon(Icon::People)
             .note(
@@ -1606,9 +1645,41 @@ impl Shell {
                 cx,
             );
         };
-        let body: AnyElement = match members {
-            Members::NotLoaded | Members::Loading => note(text::MEMBERS_LOADING).into_any_element(),
-            Members::Failed => div()
+        let body: AnyElement = match (members, viewers.as_ref()) {
+            (_, Some(crate::state::view::Viewers::Failed)) => div()
+                .flex()
+                .flex_col()
+                .gap(u(8.0))
+                .px(u(14.0))
+                .pt(u(12.0))
+                .child(Notice::error(text::VIEWERS_FAILED).selector("viewers-failed"))
+                .child(
+                    div().flex().child(
+                        Button::new("reload-viewers")
+                            .label(text::TRY_AGAIN)
+                            .icon(Icon::Retry)
+                            .selector("reload-viewers")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let view = this.state.read(cx).view();
+                                let target = view.selected.as_ref().map(|server| server.id).zip(
+                                    view.workspace()
+                                        .and_then(|workspace| workspace.channel.as_ref())
+                                        .map(|channel| channel.id),
+                                );
+                                if let Some((server_id, channel_id)) = target {
+                                    this.state.update(cx, |state, cx| {
+                                        state.read_channel_viewers(server_id, channel_id, cx)
+                                    });
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            (Members::NotLoaded | Members::Loading, _)
+            | (_, Some(crate::state::view::Viewers::Reading)) => {
+                note(text::MEMBERS_LOADING).into_any_element()
+            }
+            (Members::Failed, _) => div()
                 .flex()
                 .flex_col()
                 .gap(u(8.0))
@@ -1627,10 +1698,19 @@ impl Shell {
                     ),
                 )
                 .into_any_element(),
-            Members::Loaded(members) => {
+            (Members::Loaded(members), seeing) => {
+                let seeing = match seeing {
+                    Some(crate::state::view::Viewers::Read(seeing)) => Some(seeing.clone()),
+                    _ => None,
+                };
                 let shown: Rc<Vec<_>> = Rc::new(
                     members
                         .iter()
+                        .filter(|member| {
+                            seeing
+                                .as_ref()
+                                .is_none_or(|seeing| seeing.contains(&member.account_id))
+                        })
                         .filter(|member| self.member_search.matches(member))
                         .cloned()
                         .collect(),

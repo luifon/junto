@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::ServerId;
 
@@ -56,8 +56,8 @@ impl Shell {
     }
 
     /// The placeholder of the search field, which names where a new search starts.
-    pub fn search_placeholder(&self, cx: &gpui::App) -> String {
-        self.search_field.read(cx).placeholder().to_string()
+    pub fn search_placeholder(&self, _: &gpui::App) -> String {
+        self.search_placeholder.to_string()
     }
 
     /// Searches the shown server for the text of the field.
@@ -448,7 +448,8 @@ impl Shell {
             (
                 FilterKind::Date,
                 text::FILTER_DATE,
-                (filters.date != DateFilter::default()).then(|| text::date_filter(panel.date)),
+                (filters.date != DateFilter::default())
+                    .then(|| text::date_filter(panel.date).to_owned()),
                 "search-date",
             ),
             (

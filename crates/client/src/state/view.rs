@@ -190,6 +190,8 @@ pub struct Known {
     pub people: People,
     pub presence: super::presence::KnownPresence,
     pub members_failed: Vec<(ServerId, WorkspaceId)>,
+    /// The members who can see a channel, as the server listed them (ADR 0790).
+    pub viewers: HashMap<(ServerId, ChannelId), Viewers>,
     /// The name of the profile preset.
     pub preset_name: String,
     /// The picture of the profile preset, as an image of the window.
@@ -1449,6 +1451,8 @@ pub struct WorkspaceView {
     pub transcript: Option<TranscriptPanel>,
     /// The followed threads of the workspace that the side panel shows (ADR 0741).
     pub followed: Option<FollowedPanel>,
+    /// The members who can see the shown channel, while they were asked for.
+    pub viewers: Option<Viewers>,
     /// Present when the shown channel is archived (ADR 0762): it is read and takes no
     /// message.
     pub archived: Option<ArchivedState>,
@@ -2433,6 +2437,14 @@ fn channel_row(
         allowed: allowed(workspace.permissions_in(channel.channel.id)),
         holds_messages: unreads.holds_messages(PlaceId::Channel(channel.channel.id)),
     }
+}
+
+/// The members of a workspace who can see a channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Viewers {
+    Reading,
+    Read(Arc<std::collections::HashSet<AccountId>>),
+    Failed,
 }
 
 /// The followed threads of a workspace as the server listed them, with the names of their
@@ -3439,6 +3451,8 @@ fn workspace_view(
     let notices_wanted = selection.notices == Some(server_id);
     let in_call = call.is_some() || conversation.is_some_and(|shown| shown.in_call);
     let (no_thread, no_pins) = (thread.is_none(), pins.is_none());
+    let channel_viewers = shown
+        .and_then(|channel_id| known.viewers.get(&(server_id, channel_id)).cloned());
     let followed = (selection.threads == Some((server_id, workspace.workspace.id))
         && no_thread
         && no_pins
@@ -3475,6 +3489,7 @@ fn workspace_view(
         }),
         transcript,
         followed,
+        viewers: channel_viewers,
         archived: archived
             .filter(|held| workspace.channel(held.channel.id).is_none())
             .map(|held| ArchivedState {

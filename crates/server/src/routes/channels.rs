@@ -767,6 +767,60 @@ pub async fn get_channel_permissions(
     .map(Json)
 }
 
+/// The members of the workspace of a channel who can see the channel. The caller sees the
+/// channel. Each member is checked by the permission function, as a request of that member
+/// would be.
+#[utoipa::path(
+    get,
+    path = "/api/v1/channels/{channel_id}/viewers",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = junto_protocol::structure::ChannelViewers), ApiError)
+)]
+pub async fn get_channel_viewers(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+) -> ApiResult<Json<junto_protocol::structure::ChannelViewers>> {
+    let now = app.now();
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (record, scope) = access.channel(connection, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ViewChannel,
+        })?;
+        super::search::read_rate(&app, &access, &mut counted)?;
+        let members: Vec<junto_protocol::ids::AccountId> = sqlx::query_scalar(
+            "select m.account_id from workspace_members m join accounts a on a.id = m.account_id
+             where m.workspace_id = $1 and a.status = 'active' order by m.account_id",
+        )
+        .bind(record.channel.workspace_id)
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut account_ids = Vec::new();
+        for account_id in members {
+            let person = Access::standing_of(connection, account_id).await?;
+            let Ok((_, person_scope)) = person.channel(connection, channel_id).await else {
+                continue;
+            };
+            if person.allows(Request::Channel {
+                scope: &person_scope,
+                permission: WorkspacePermission::ViewChannel,
+            }) {
+                account_ids.push(account_id);
+            }
+        }
+        Ok(junto_protocol::structure::ChannelViewers {
+            channel_id,
+            account_ids,
+        })
+    })
+    .map(Json)
+}
+
 /// Creates a text channel or a voice channel in a workspace.
 #[utoipa::path(
     post,

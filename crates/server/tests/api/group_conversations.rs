@@ -1259,3 +1259,31 @@ async fn an_inactive_member_returns_only_after_contact_is_restored() {
         );
     }
 }
+
+/// A group may have no name; a later rename gives it one or removes it, and a name longer
+/// than 80 characters is refused (ADR 0302).
+#[tokio::test]
+async fn a_group_may_have_no_name() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let writer = server.join(&owner, "Writer").await;
+    let reader = server.join(&owner, "Reader").await;
+    let third = server.join(&owner, "Third").await;
+    let (id, group) = create(&server, &writer, &[&reader, &third], "  ").await;
+    assert_eq!(group["name"], "");
+    let route = format!("{GROUPS}/{id}");
+    let renamed: Value = server
+        .patch(&reader, &route, &json!({"name":"Planning"}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(renamed["name"], "Planning");
+    let unnamed: Value = server
+        .patch(&reader, &route, &json!({"name":""}))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(unnamed["name"], "");
+    server
+        .patch(&reader, &route, &json!({"name":"n".repeat(81)}))
+        .await
+        .error(ErrorCode::InvalidRequest);
+}

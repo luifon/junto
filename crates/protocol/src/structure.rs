@@ -260,6 +260,15 @@ pub struct ChannelPermissions {
     pub permissions: Vec<WorkspacePermission>,
 }
 
+/// The members of the workspace of a channel who can see it: the permission function
+/// allows them "view channel" there (ADR 0790).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ChannelViewers {
+    pub channel_id: ChannelId,
+    pub account_ids: Vec<AccountId>,
+}
+
 /// Both sets of a rule. Two empty sets remove the rule.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

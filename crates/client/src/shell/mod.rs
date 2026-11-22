@@ -537,6 +537,8 @@ pub struct Shell {
     badge: Option<u64>,
     pub(crate) search_scroll: ScrollHandle,
     pub(crate) followed_scroll: ScrollHandle,
+    /// The placeholder that the search field shows: where a new search starts.
+    pub(crate) search_placeholder: gpui::SharedString,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
     pub(crate) transcript_edit: transcript_edit::TranscriptEdit,
@@ -1034,6 +1036,7 @@ impl Shell {
             badge: None,
             search_scroll: ScrollHandle::new(),
             followed_scroll: ScrollHandle::new(),
+            search_placeholder: gpui::SharedString::default(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
             recording_files_closed_by_press: false,

@@ -271,6 +271,9 @@ pub struct ResultRow {
     pub target: ResultTarget,
 }
 
+/// A workspace of the filter "In", with its channels whose history the person reads.
+pub type SearchWorkspace = (WorkspaceId, String, Vec<(ChannelId, String, ChannelKind)>);
+
 /// The search as the side panel shows it (view H of the design).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchPanel {
@@ -296,7 +299,7 @@ pub struct SearchPanel {
     pub authors: Vec<(AccountId, String)>,
     /// The places that the filter "In" offers: the channels whose history the person reads,
     /// grouped by their workspace, and the direct and group conversations (ADR 0743).
-    pub workspaces: Vec<(WorkspaceId, String, Vec<(ChannelId, String, ChannelKind)>)>,
+    pub workspaces: Vec<SearchWorkspace>,
     pub conversations: Vec<(junto_client_core::protocol::ids::ConversationId, String)>,
     /// The place that the filter "In" names, as its chip shows it. Absent: the whole
     /// server.
@@ -684,7 +687,7 @@ fn panel(
                 .map(|group| (group.id, crate::text::label(&group.name))),
         )
         .collect();
-    conversations.sort_by(|one, other| one.1.to_lowercase().cmp(&other.1.to_lowercase()));
+    conversations.sort_by_key(|(_, name)| name.to_lowercase());
     let scope = match (search.filters.channel, search.filters.conversation) {
         (Some(channel_id), _) => model
             .channel(channel_id)

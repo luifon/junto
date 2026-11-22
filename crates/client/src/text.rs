@@ -1506,7 +1506,12 @@ pub fn call_notice(notice: &CallNotice) -> String {
 
 // The main area.
 pub const MEMBERS: &str = "Members";
-pub const SHOW_MEMBERS: &str = "Show the members of the workspace";
+pub const SHOW_MEMBERS: &str = "Show the members";
+/// The title of the member list of a channel: the people who can see it (ADR 0790).
+pub fn members_of(channel: &str) -> String {
+    format!("Members of #{channel}")
+}
+pub const VIEWERS_FAILED: &str = "The people who can see this channel could not be read.";
 pub const CLOSE_MEMBERS: &str = "Close the member list";
 pub const MEMBERS_LOADING: &str = "Reading the members…";
 pub const MEMBERS_FAILED: &str = "The members could not be read.";

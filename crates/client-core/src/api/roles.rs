@@ -81,6 +81,24 @@ impl ServerApi {
         self.change(Method::Patch, path, Some(&change)).await
     }
 
+    /// The members of the workspace of a channel who can see the channel (ADR 0790). An
+    /// answer that names another channel is refused (ADR 0714).
+    pub async fn channel_viewers(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<Vec<junto_protocol::ids::AccountId>, ApiError> {
+        let viewers: junto_protocol::structure::ChannelViewers = self
+            .get(format!("/channels/{channel_id}/viewers"))
+            .await?;
+        if viewers.channel_id != channel_id {
+            return Err(ApiError::InvalidResponse {
+                status: 200,
+                reason: "the answer names another channel",
+            });
+        }
+        Ok(viewers.account_ids)
+    }
+
     /// The workspace permissions that the caller holds in one channel that it can see. An
     /// archived channel is in no snapshot, and its list is read here. An answer that
     /// names another channel is refused (ADR 0714).

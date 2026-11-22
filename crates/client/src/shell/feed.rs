@@ -1486,6 +1486,7 @@ impl Shell {
             self.thread_feed.drawn = false;
         }
         self.composer_follows(view, window, cx);
+        self.members_follow(view, cx);
         self.keep_pictures_of_present_owners(cx);
         let at_end = self.feed.at_end();
         self.feed_seen(Pane::Main, main, at_end, window, cx);

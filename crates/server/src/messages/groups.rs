@@ -37,11 +37,14 @@ pub async fn negotiate(
     with_support(on, next.run(request)).await
 }
 
+/// The name of a group conversation: at most 80 characters without controls. An empty
+/// name is a group without a name, which the client shows by the names of its members
+/// (ADR 0302).
 pub fn name(value: &str) -> ApiResult<String> {
     let value = value.trim();
-    if value.is_empty() || value.chars().count() > 80 || value.chars().any(char::is_control) {
+    if value.chars().count() > 80 || value.chars().any(char::is_control) {
         return Err(ApiError::invalid(
-            "use a conversation name of 1 to 80 characters without controls",
+            "use a conversation name of at most 80 characters without controls",
         ));
     }
     Ok(value.to_owned())

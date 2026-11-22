@@ -588,7 +588,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("search-filter-menu", acme(|_| {})),
         |shell, window, cx| {
             searching(shell, retention(), window, cx);
-            shell.open(Open::SearchFilter(FilterKind::Channel), window, cx);
+            shell.open(Open::SearchFilter(FilterKind::In), window, cx);
         },
     )?;
     studio.draw(
