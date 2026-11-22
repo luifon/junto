@@ -765,6 +765,8 @@ pub struct VolumeSlider {
     selector: Option<SharedString>,
     /// The percentage is drawn after the track.
     value_shown: bool,
+    /// Up and Down move between the items of the menu that holds the control.
+    in_menu: bool,
 }
 
 impl VolumeSlider {
@@ -782,7 +784,15 @@ impl VolumeSlider {
             label: label.into(),
             selector: None,
             value_shown: true,
+            in_menu: false,
         }
+    }
+
+    /// A control in a menu: Left and Right change it, and Up and Down reach the other items
+    /// of the menu.
+    pub fn in_menu(mut self) -> Self {
+        self.in_menu = true;
+        self
     }
 
     /// A control without the percentage after its track, for a place where a control beside
@@ -815,6 +825,7 @@ impl RenderOnce for VolumeSlider {
         let share = (value - VOLUME_RANGE.0) / (VOLUME_RANGE.1 - VOLUME_RANGE.0);
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         let state = self.state.clone();
+        let in_menu = self.in_menu;
         div()
             .id(self.id)
             .aria_label(self.label)
@@ -832,8 +843,10 @@ impl RenderOnce for VolumeSlider {
             .focus_visible(move |style| style.shadow(ring))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let step = match event.keystroke.key.as_str() {
-                    "right" | "up" => VOLUME_STEP,
-                    "left" | "down" => -VOLUME_STEP,
+                    "right" => VOLUME_STEP,
+                    "left" => -VOLUME_STEP,
+                    "up" if !in_menu => VOLUME_STEP,
+                    "down" if !in_menu => -VOLUME_STEP,
                     _ => return,
                 };
                 state.update(cx, |state, cx| {

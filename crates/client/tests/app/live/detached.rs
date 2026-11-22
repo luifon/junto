@@ -598,8 +598,11 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
 
     // The volume of Ada.
     call.click("call-tab-members");
-    let slider = crate::harness::selector(format!("volume:{ada}"));
-    call.until("the volume control is drawn", |call| call.shows(slider));
+    call.until("Ada is listed", |call| {
+        call.shows_named(format!("call-member:{ada}"))
+    });
+    call.right_click_named(format!("call-member:{ada}"));
+    let slider = "call-menu-volume";
     call.click(slider);
     call.press(&["left"; 20].join(" "));
     call.until("Ada is not played", |call| {
@@ -608,12 +611,20 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .any(|person| person.account_id == ada && person.volume == 0)
             && heard(&call.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
+    call.press("escape");
 
     // The devices: the call window has no settings and no Settings tab. Its settings
     // button opens the settings of the application at "Voice and video" in the main window,
     // which comes to the front (ADR 0772); a device chosen there is used by the call.
     assert!(!call.shows("call-tab-settings"));
-    call.click("own-devices");
+    // In the narrow call window the panel lies over the call and its row of controls. The
+    // panel closes with its button, which is inside the window.
+    let close = call.cx.debug_bounds("close-call-panel").unwrap();
+    let width = call.cx.update(|window, _| window.viewport_size().width);
+    assert!(close.right() <= width, "{close:?} beyond {width:?}");
+    call.click("close-call-panel");
+    assert!(!call.shows("call-panel"));
+    call.open_call_devices();
     window.until("the main window shows the devices", |window| {
         window.shows("settings-page-settings-section-voice-and-video")
             && window.shows("input-device")
@@ -628,13 +639,6 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .is_some_and(|panel| panel.audio.inputs[1].selected)
     });
     window.press("escape");
-
-    // The panel closes with its button, which is inside the window.
-    let close = call.cx.debug_bounds("close-call-panel").unwrap();
-    let width = call.cx.update(|window, _| window.viewport_size().width);
-    assert!(close.right() <= width, "{close:?} beyond {width:?}");
-    call.click("close-call-panel");
-    assert!(!call.shows("call-panel"));
 
     // Text that the composer of the call window holds is in the composer of the main
     // window after the call window closed.
@@ -840,8 +844,8 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
     call.write("From the call window");
     call.until_message("From the call window");
     call.click("call-tab-members");
-    call.until("the volume of the other person is drawn", |call| {
-        call.shows_named(format!("volume:{other}"))
+    call.until("the other person is listed", |call| {
+        call.shows_named(format!("call-member:{other}"))
     });
     call.click("leave-call");
     window.until("the call has ended", |window| window.view().call.is_none());

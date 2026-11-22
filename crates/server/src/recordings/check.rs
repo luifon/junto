@@ -22,8 +22,9 @@ const BLANK_SHARE: f64 = 0.05;
 /// The length of the media may differ from the length that the recorder reported by this
 /// much, plus one thousandth of the reported length.
 const LENGTH_TOLERANCE: Duration = Duration::seconds(3);
-/// The composite may lack this much of the sound of one microphone file.
-const MISSING_SOUND: Duration = Duration::seconds(1);
+/// One continuous stretch longer than this, in which a microphone file has sound and the
+/// composite has none, is sound that the composite lacks.
+const MISSING_STRETCH: Duration = Duration::seconds(2);
 
 /// An audio file is this much later than the start time that the recorder reports
 /// (ADR 0602). The value belongs to the tested recorder version.
@@ -229,28 +230,105 @@ impl Heard {
     }
 }
 
-fn overlap(a: (OffsetDateTime, OffsetDateTime), b: (OffsetDateTime, OffsetDateTime)) -> Duration {
-    (a.1.min(b.1) - a.0.max(b.0)).max(Duration::ZERO)
+/// How far a microphone file lies from where the timeline places it in the composite, at
+/// moments along the recording: the two files drift apart by tens of parts per million, so
+/// one offset for the whole recording leaves them a fraction of a second apart at the edge
+/// of each pause (ADR 0606).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Drift {
+    /// Moments of the timeline, in order, each with the time by which the sound of the
+    /// microphone file is later in the composite than the timeline states.
+    points: Vec<(OffsetDateTime, Duration)>,
 }
 
-/// True when the composite is silent, for more than the allowed time, in ranges in which
-/// the microphone file `reference` has sound.
-pub fn lacks_sound_of(composite: &Heard, reference: &Heard) -> bool {
-    let span = (reference.from, reference.until);
-    let mut missing = Duration::ZERO;
+impl Drift {
+    pub fn of(mut points: Vec<(OffsetDateTime, Duration)>) -> Self {
+        points.sort_by_key(|(at, _)| *at);
+        Self { points }
+    }
+
+    /// The shift at a moment: between two points on the line through them, before the first
+    /// and after the last the shift of that point.
+    pub fn at(&self, at: OffsetDateTime) -> Duration {
+        let Some(first) = self.points.first() else {
+            return Duration::ZERO;
+        };
+        if at <= first.0 {
+            return first.1;
+        }
+        for pair in self.points.windows(2) {
+            let ((from, early), (until, late)) = (pair[0], pair[1]);
+            if at <= until {
+                let span = (until - from).as_seconds_f64();
+                if span <= f64::EPSILON {
+                    return late;
+                }
+                let part = (at - from).as_seconds_f64() / span;
+                return early + (late - early) * part;
+            }
+        }
+        self.points
+            .last()
+            .map_or(Duration::ZERO, |(_, shift)| *shift)
+    }
+}
+
+impl Heard {
+    /// The same sound where the composite holds it: each moment moved by the drift there.
+    pub fn drifted(&self, drift: &Drift) -> Self {
+        let moved = |at: OffsetDateTime| at + drift.at(at);
+        Self {
+            from: moved(self.from),
+            until: moved(self.until),
+            silences: self
+                .silences
+                .iter()
+                .map(|(start, end)| (moved(*start), moved(*end)))
+                .collect(),
+        }
+    }
+}
+
+/// The longest continuous stretch in which the composite is silent and the microphone file
+/// `reference` has sound, when it is longer than [`MISSING_STRETCH`]. Short pieces at the
+/// edges of pauses, which follow from small differences of timing, are not added up.
+pub fn missing_stretch(
+    composite: &Heard,
+    reference: &Heard,
+) -> Option<(OffsetDateTime, OffsetDateTime)> {
+    let mut longest: Option<(OffsetDateTime, OffsetDateTime)> = None;
     for silence in &composite.silences {
-        let inside = overlap(*silence, span);
-        if inside.is_zero() {
+        let from = silence.0.max(reference.from);
+        let until = silence.1.min(reference.until);
+        if until <= from {
             continue;
         }
-        let clamped = (silence.0.max(span.0), silence.1.min(span.1));
-        let covered = reference
+        // The parts of the silence of the composite in which the microphone is not silent.
+        let mut quiet: Vec<(OffsetDateTime, OffsetDateTime)> = reference
             .silences
             .iter()
-            .fold(Duration::ZERO, |sum, quiet| sum + overlap(clamped, *quiet));
-        missing += (inside - covered).max(Duration::ZERO);
+            .filter(|(start, end)| *end > from && *start < until)
+            .map(|(start, end)| ((*start).max(from), (*end).min(until)))
+            .collect();
+        quiet.sort_by_key(|(start, _)| *start);
+        let mut cursor = from;
+        let mut pieces = Vec::new();
+        for (start, end) in quiet {
+            if start > cursor {
+                pieces.push((cursor, start));
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < until {
+            pieces.push((cursor, until));
+        }
+        for piece in pieces {
+            if longest.is_none_or(|held| piece.1 - piece.0 > held.1 - held.0) {
+                longest = Some(piece);
+            }
+        }
     }
-    missing > MISSING_SOUND
+    longest.filter(|(from, until)| *until - *from > MISSING_STRETCH)
 }
 
 /// The loudness of mono samples in steps of [`ENVELOPE_STEP`], smoothed over five steps,
@@ -507,26 +585,89 @@ mod tests {
     }
 
     #[test]
-    fn the_composite_lacks_sound_where_it_is_silent_and_a_microphone_is_not() {
+    fn the_composite_lacks_one_stretch_where_it_is_silent_and_a_microphone_is_not() {
         let composite = heard(0.0, 60.0, &[(10.0, 18.0)]);
-        assert!(lacks_sound_of(&composite, &heard(0.0, 60.0, &[])));
+        assert_eq!(
+            missing_stretch(&composite, &heard(0.0, 60.0, &[])),
+            Some((at(10.0), at(18.0)))
+        );
         // The microphone is silent in the same range, also when it is placed half a second
-        // off.
-        assert!(!lacks_sound_of(
-            &composite,
-            &heard(0.0, 60.0, &[(9.5, 17.5)])
-        ));
+        // off: the pieces at the edges are shorter than the limit.
+        assert_eq!(
+            missing_stretch(&composite, &heard(0.0, 60.0, &[(9.5, 17.5)])),
+            None
+        );
         // Only the part inside the span of the microphone file counts.
-        assert!(!lacks_sound_of(&composite, &heard(17.5, 60.0, &[])));
-        assert!(!lacks_sound_of(&composite, &heard(0.0, 10.9, &[])));
-        assert!(lacks_sound_of(&composite, &heard(0.0, 11.5, &[])));
-        // Several short ranges add up.
-        let patchy = heard(0.0, 60.0, &[(5.0, 5.6), (20.0, 20.6)]);
-        assert!(lacks_sound_of(&patchy, &heard(0.0, 60.0, &[])));
-        assert!(!lacks_sound_of(
-            &heard(0.0, 60.0, &[]),
-            &heard(0.0, 60.0, &[])
-        ));
+        assert_eq!(missing_stretch(&composite, &heard(17.5, 60.0, &[])), None);
+        assert_eq!(missing_stretch(&composite, &heard(0.0, 11.9, &[])), None);
+        assert_eq!(
+            missing_stretch(&composite, &heard(0.0, 12.5, &[])),
+            Some((at(10.0), at(12.5)))
+        );
+        // Many short pieces do not add up.
+        let patchy: Vec<(f64, f64)> = (0..40)
+            .map(|index| (f64::from(index) * 1.5, f64::from(index) * 1.5 + 0.3))
+            .collect();
+        assert_eq!(
+            missing_stretch(&heard(0.0, 60.0, &patchy), &heard(0.0, 60.0, &[])),
+            None
+        );
+    }
+
+    /// A recording of an hour whose microphone file drifts by 90 parts per million and has
+    /// a pause every 20 seconds: placed with one offset the edges of the pauses disagree,
+    /// and followed along the drift nothing is missing; a removed stretch of 3 seconds is
+    /// found with its place.
+    #[test]
+    fn a_drift_between_the_files_is_followed_and_a_removed_stretch_is_found() {
+        let length = 3600.0;
+        let drift_rate = 0.000_09;
+        // The microphone pauses for 2 seconds every 20 seconds; the composite holds the
+        // same pauses later by the drift of that moment, and 1 second late at the start.
+        let pauses: Vec<(f64, f64)> = (1..180)
+            .map(|index| f64::from(index) * 20.0)
+            .map(|start| (start, start + 2.0))
+            .collect();
+        let shift = |time: f64| 1.0 - drift_rate * time;
+        let microphone = heard(0.0, length, &pauses);
+        let in_composite: Vec<(f64, f64)> = pauses
+            .iter()
+            .map(|(start, end)| (start + shift(*start), end + shift(*end)))
+            .collect();
+        let composite = heard(0.0, length + 1.0, &in_composite);
+        // With the offset of the start only, the pauses at the end are 0.3 seconds off: no
+        // stretch is longer than the limit, but the pieces are many.
+        let fixed = Drift::of(vec![(at(0.0), seconds(1.0))]);
+        assert_eq!(
+            missing_stretch(&composite, &microphone.drifted(&fixed)),
+            None
+        );
+        // Followed every 5 minutes: nothing is missing.
+        let points: Vec<(OffsetDateTime, Duration)> = (0..=12)
+            .map(|index| f64::from(index) * 300.0)
+            .map(|time| (at(time), seconds(shift(time))))
+            .collect();
+        let drift = Drift::of(points);
+        assert_eq!(
+            missing_stretch(&composite, &microphone.drifted(&drift)),
+            None
+        );
+        // A stretch of 3 seconds of speech that the composite lost at 30 minutes is found
+        // where the composite holds it.
+        let mut lost = in_composite.clone();
+        let place = 1805.0 + shift(1805.0);
+        lost.push((place, place + 3.0));
+        lost.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let found = missing_stretch(
+            &heard(0.0, length + 1.0, &lost),
+            &microphone.drifted(&drift),
+        )
+        .unwrap();
+        assert!(
+            (found.0 - at(place)).abs() < Duration::milliseconds(50),
+            "{found:?}"
+        );
+        assert!((found.1 - found.0 - seconds(3.0)).abs() < Duration::milliseconds(50));
     }
 
     #[test]

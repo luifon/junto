@@ -3,9 +3,9 @@
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, prelude::FluentBuilder,
 };
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ChannelId, ServerId};
 
 use super::notices::{Excerpt, place_icon, side_panel};
 use super::{Layer, Shell};
@@ -17,7 +17,7 @@ use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, ScrollArea, SelectBox,
-    SideHeader, StatePanel, StyleExt, Toggle,
+    SideHeader, StatePanel, StyleExt, Toggle, icon,
 };
 
 /// One of the three filters of a search.
@@ -713,6 +713,55 @@ impl Shell {
                     .selector("close-search")
                     .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
             );
+        // The Files panel of a voice channel has the tabs Files and Recordings (ADR 0784).
+        let voice_channel = panel
+            .channel
+            .as_ref()
+            .filter(|_| files)
+            .and_then(|(channel_id, _)| {
+                panel
+                    .channels
+                    .iter()
+                    .find(|(id, ..)| id == channel_id)
+                    .filter(|(.., kind)| {
+                        *kind == junto_client_core::protocol::structure::ChannelKind::Voice
+                    })
+                    .map(|(id, ..)| *id)
+            })
+            .zip(
+                self.view
+                    .as_ref()
+                    .and_then(|view| view.workspace())
+                    .map(|w| w.id),
+            );
+        let recordings_tab = voice_channel.is_some() && self.files_recordings;
+        let tabs = voice_channel.map(|(channel_id, workspace_id)| {
+            let server_id = panel.server_id;
+            let files_tab =
+                crate::ui::Tab::new("files-tab-files", Icon::FolderOpen, text::FILES_TAB)
+                    .on(!recordings_tab)
+                    .selector("files-tab-files")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.files_recordings = false;
+                        cx.notify();
+                    }));
+            let recordings =
+                crate::ui::Tab::new("files-tab-recordings", Icon::Record, text::RECORDINGS_TAB)
+                    .on(recordings_tab)
+                    .selector("files-tab-recordings")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.files_recordings = true;
+                        this.search_scroll.set_offset(gpui::Point::default());
+                        this.state.update(cx, |state, cx| {
+                            state.show_channel_recordings(server_id, workspace_id, channel_id, cx)
+                        });
+                    }));
+            div().flex_none().px(u(10.0)).child(crate::ui::TabRow::new(
+                "files-tabs",
+                text::FILES_TABS,
+                [files_tab, recordings],
+            ))
+        });
         let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
         let unsupported = panel.capabilities.filter(|supported| !files && !supported.filters).map(|_| {
             Notice::new("This server does not support content, mention or direct-message filters. Text search and its channel, author and date filters remain available.")
@@ -759,133 +808,155 @@ impl Shell {
                     ),
             )
         });
-        let body: AnyElement = match &panel.state {
-            SearchShown::Searching if found == 0 => div()
-                .id("search-running")
-                .debug_selector(|| "search-running".to_owned())
-                .px(u(14.0))
-                .pt(u(12.0))
-                .typeface(theme.types.small, &theme)
-                .ink(colors.ink_2)
-                .child(text::SEARCHING)
-                .into_any_element(),
-            SearchShown::Nothing => {
-                let empty = StatePanel::new(
-                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose search filters"
-                    } else if files && panel.previous_files {
-                        "No older files"
-                    } else if files {
-                        "No files"
+        let recordings =
+            voice_channel
+                .filter(|_| recordings_tab)
+                .map(|(channel_id, workspace_id)| {
+                    self.render_channel_recordings(
+                        panel.server_id,
+                        workspace_id,
+                        channel_id,
+                        &theme,
+                        cx,
+                    )
+                });
+        let body: AnyElement = match (&panel.state, recordings) {
+            (_, Some(recordings)) => recordings,
+            (state, None) => match state {
+                SearchShown::Searching if found == 0 => div()
+                    .id("search-running")
+                    .debug_selector(|| "search-running".to_owned())
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink_2)
+                    .child(text::SEARCHING)
+                    .into_any_element(),
+                SearchShown::Nothing => {
+                    let empty = StatePanel::new(
+                        if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                            "Choose search filters"
+                        } else if files && panel.previous_files {
+                            "No older files"
+                        } else if files {
+                            "No files"
+                        } else {
+                            text::SEARCH_NOTHING_TITLE
+                        },
+                        if !files && panel.text.is_empty() && panel.filters == Filters::default() {
+                            "Choose a filter or enter text to search."
+                        } else if files && panel.previous_files {
+                            "No older files are available. You can return to newer files."
+                        } else if files {
+                            "Files shared here will appear in this list."
+                        } else {
+                            text::SEARCH_NOTHING
+                        },
+                    )
+                    .selector("search-nothing");
+                    if files && panel.previous_files {
+                        empty
+                            .action(
+                                Button::new("previous-files")
+                                    .label("Newer files")
+                                    .selector("previous-files")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.search_scroll.set_offset(gpui::Point::default());
+                                        this.state.update(cx, |state, cx| state.previous_files(cx));
+                                    })),
+                            )
+                            .into_any_element()
                     } else {
-                        text::SEARCH_NOTHING_TITLE
-                    },
-                    if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose a filter or enter text to search."
-                    } else if files && panel.previous_files {
-                        "No older files are available. You can return to newer files."
-                    } else if files {
-                        "Files shared here will appear in this list."
-                    } else {
-                        text::SEARCH_NOTHING
-                    },
-                )
-                .selector("search-nothing");
-                if files && panel.previous_files {
-                    empty
-                        .action(
+                        empty.into_any_element()
+                    }
+                }
+                SearchShown::Refused(reason) => {
+                    StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
+                        .icon(Icon::Warning)
+                        .selector("search-refused")
+                        .into_any_element()
+                }
+                SearchShown::Failed(reason) => {
+                    StatePanel::new(text::SEARCH_FAILED_TITLE, reason.clone())
+                        .icon(Icon::Warning)
+                        .selector("search-failed")
+                        .action(again(cx))
+                        .into_any_element()
+                }
+                SearchShown::Searching | SearchShown::Results => {
+                    // One list in the order of the server: the rows of a later page join it
+                    // after the rows before, and no listed row moves (ADR 0730, ADR 0743).
+                    let mut rows: Vec<AnyElement> = Vec::with_capacity(panel.results.len());
+                    let mut transcripts = 0;
+                    for (index, row) in panel.results.iter().enumerate() {
+                        let number = match row.target {
+                            ResultTarget::Message(_) => index,
+                            ResultTarget::Transcript { .. } => {
+                                transcripts += 1;
+                                transcripts - 1
+                            }
+                        };
+                        rows.push(self.render_result(
+                            (index, number),
+                            row,
+                            panel,
+                            &theme,
+                            window,
+                            cx,
+                        ));
+                        rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
+                    }
+                    // "Show more results" stands under the list, at a place of its own while
+                    // results are listed: a page that arrives does not move it.
+                    let more = div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
+                        Button::new("more-results")
+                            .label(if panel.reading_more {
+                                text::READING_MORE_RESULTS
+                            } else {
+                                if files {
+                                    "Older files"
+                                } else {
+                                    text::SHOW_MORE_RESULTS
+                                }
+                            })
+                            .disabled(panel.reading_more || !panel.can_read_more)
+                            .selector("more-results")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if files {
+                                    this.search_scroll.set_offset(gpui::Point::default());
+                                }
+                                this.state
+                                    .update(cx, |state, cx| state.read_more_results(cx));
+                            })),
+                    );
+                    let previous = files.then(|| {
+                        div().flex().flex_none().px(u(14.0)).child(
                             Button::new("previous-files")
                                 .label("Newer files")
                                 .selector("previous-files")
+                                .disabled(!panel.previous_files || panel.reading_more)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.search_scroll.set_offset(gpui::Point::default());
                                     this.state.update(cx, |state, cx| state.previous_files(cx));
                                 })),
                         )
+                    });
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .children(previous)
+                        .child(
+                            ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
+                                .selector("search-results")
+                                .children(rows)
+                                .child(div().flex_none().h(u(6.0))),
+                        )
+                        .child(more)
                         .into_any_element()
-                } else {
-                    empty.into_any_element()
                 }
-            }
-            SearchShown::Refused(reason) => {
-                StatePanel::new(text::SEARCH_REFUSED_TITLE, reason.clone())
-                    .icon(Icon::Warning)
-                    .selector("search-refused")
-                    .into_any_element()
-            }
-            SearchShown::Failed(reason) => {
-                StatePanel::new(text::SEARCH_FAILED_TITLE, reason.clone())
-                    .icon(Icon::Warning)
-                    .selector("search-failed")
-                    .action(again(cx))
-                    .into_any_element()
-            }
-            SearchShown::Searching | SearchShown::Results => {
-                // One list in the order of the server: the rows of a later page join it
-                // after the rows before, and no listed row moves (ADR 0730, ADR 0743).
-                let mut rows: Vec<AnyElement> = Vec::with_capacity(panel.results.len());
-                let mut transcripts = 0;
-                for (index, row) in panel.results.iter().enumerate() {
-                    let number = match row.target {
-                        ResultTarget::Message(_) => index,
-                        ResultTarget::Transcript { .. } => {
-                            transcripts += 1;
-                            transcripts - 1
-                        }
-                    };
-                    rows.push(self.render_result((index, number), row, panel, &theme, window, cx));
-                    rows.extend(self.listed_files(panel.server_id, row, &theme, window, cx));
-                }
-                // "Show more results" stands under the list, at a place of its own while
-                // results are listed: a page that arrives does not move it.
-                let more = div().flex().flex_none().px(u(14.0)).py(u(8.0)).child(
-                    Button::new("more-results")
-                        .label(if panel.reading_more {
-                            text::READING_MORE_RESULTS
-                        } else {
-                            if files {
-                                "Older files"
-                            } else {
-                                text::SHOW_MORE_RESULTS
-                            }
-                        })
-                        .disabled(panel.reading_more || !panel.can_read_more)
-                        .selector("more-results")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if files {
-                                this.search_scroll.set_offset(gpui::Point::default());
-                            }
-                            this.state
-                                .update(cx, |state, cx| state.read_more_results(cx));
-                        })),
-                );
-                let previous = files.then(|| {
-                    div().flex().flex_none().px(u(14.0)).child(
-                        Button::new("previous-files")
-                            .label("Newer files")
-                            .selector("previous-files")
-                            .disabled(!panel.previous_files || panel.reading_more)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.search_scroll.set_offset(gpui::Point::default());
-                                this.state.update(cx, |state, cx| state.previous_files(cx));
-                            })),
-                    )
-                });
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .children(previous)
-                    .child(
-                        ScrollArea::new("search-results", &self.search_scroll, text::SEARCH)
-                            .selector("search-results")
-                            .children(rows)
-                            .child(div().flex_none().h(u(6.0))),
-                    )
-                    .child(more)
-                    .into_any_element()
-            }
+            },
         };
         side_panel(
             &theme,
@@ -902,6 +973,7 @@ impl Shell {
             ),
         )
         .child(header)
+        .children(tabs)
         .children(filters)
         .children(unsupported)
         .child(
@@ -910,6 +982,190 @@ impl Shell {
                 .children(archive_failed),
         )
         .child(body)
+        .into_any_element()
+    }
+
+    /// The tab "Recordings" of the Files panel of a voice channel (ADR 0784): its
+    /// recordings, newest first, each with its transcript, its card in the chat and its
+    /// files.
+    fn render_channel_recordings(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: junto_client_core::protocol::ids::WorkspaceId,
+        channel_id: ChannelId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let state = self.state.read(cx);
+        let list = state.channel_recordings().clone();
+        if list
+            .key
+            .is_none_or(|(server, _, _, channel)| (server, channel) != (server_id, channel_id))
+        {
+            return div().into_any_element();
+        }
+        let address = state.server(server_id).map(|server| server.entry().address);
+        let rows: Vec<AnyElement> = list
+            .recordings
+            .iter()
+            .enumerate()
+            .map(|(index, recording)| {
+                let id = recording.id;
+                let when = self.state.read(cx).recording_time(recording);
+                let length = recording
+                    .recording_since
+                    .zip(recording.ended_at)
+                    .and_then(|(since, ended)| std::time::Duration::try_from(ended - since).ok())
+                    .map(text::admin::recordings::length);
+                let detail = [Some(text::recording_state_word(recording.state).to_owned()), length]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let address = address.clone();
+                div()
+                    .id(("channel-recording", index))
+                    .role(Role::ListItem)
+                    .aria_label(format!("{}, {when}", text::RECORDING))
+                    .debug_selector(move || format!("channel-recording:{id}"))
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap(u(4.0))
+                    .px(u(14.0))
+                    .py(u(8.0))
+                    .border_t_1()
+                    .border_color(Hsla::from(colors.rule_soft))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(u(7.0))
+                            .typeface(theme.types.control_strong, theme)
+                            .child(icon(Icon::Record, 14.0, colors.cinnabar))
+                            .child(div().min_w_0().truncate().child(when)),
+                    )
+                    .child(
+                        div()
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.ink_2)
+                            .child(detail),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(u(6.0))
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("channel-recording-card:{id}"))
+                                    .child(
+                                        Button::new(("channel-recording-card", index))
+                                            .kind(ButtonKind::Ghost)
+                                            .label(text::OPEN_RECORDING_CARD)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(address) = &address {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.open_recording_link(address, id, cx);
+                                                    });
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .when(
+                                recording.transcript
+                                    != junto_client_core::protocol::transcript::TranscriptState::None,
+                                |actions| {
+                                    actions.child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("channel-recording-transcript:{id}")
+                                            })
+                                            .child(
+                                                Button::new(("channel-recording-transcript", index))
+                                                    .kind(ButtonKind::Ghost)
+                                                    .label(text::TRANSCRIPT)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.state.update(cx, |state, cx| {
+                                                            state.open_transcript(
+                                                                server_id,
+                                                                workspace_id,
+                                                                channel_id,
+                                                                id,
+                                                                None,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    })),
+                                            ),
+                                    )
+                                },
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let end: AnyElement = if list.reading {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .typeface(theme.types.small, theme)
+                .ink(colors.ink_2)
+                .debug_selector(|| "channel-recordings-reading".to_owned())
+                .child(text::READING_RECORDINGS)
+                .into_any_element()
+        } else if let Some(failed) = list.failed.clone() {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .child(
+                    Notice::error(failed)
+                        .selector("channel-recordings-failed")
+                        .action(
+                            Button::new("channel-recordings-retry")
+                                .label(text::TRY_AGAIN)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.show_channel_recordings(
+                                            server_id,
+                                            workspace_id,
+                                            channel_id,
+                                            cx,
+                                        );
+                                    });
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else if list.recordings.is_empty() && list.older.is_none() {
+            StatePanel::new(text::NO_RECORDINGS_TITLE, text::NO_RECORDINGS)
+                .selector("channel-recordings-empty")
+                .into_any_element()
+        } else if list.older.is_some() {
+            div()
+                .px(u(14.0))
+                .py(u(8.0))
+                .child(
+                    Button::new("channel-recordings-older")
+                        .label(text::OLDER_RECORDINGS)
+                        .selector("channel-recordings-older")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.read_older_channel_recordings(cx));
+                        })),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        ScrollArea::new(
+            "channel-recordings",
+            &self.search_scroll,
+            text::RECORDINGS_TAB,
+        )
+        .selector("channel-recordings")
+        .children(rows)
+        .child(end)
         .into_any_element()
     }
 }

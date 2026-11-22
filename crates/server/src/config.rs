@@ -209,6 +209,9 @@ pub struct RecordingLimits {
     pub report_time_limit: Duration,
     /// A job that is older than this and has no participant in the room is lost.
     pub lost_after: Duration,
+    /// The same for the job of the composite, whose browser page joins the room only after
+    /// it has started and signals its start up to 10 seconds after it joined (ADR 0604).
+    pub composite_lost_after: Duration,
     /// The time that a job has to report its end after its stop was delivered.
     pub ending_grace: Duration,
     /// The requests to start the job of one track, or the composite, that fail in a row
@@ -265,6 +268,7 @@ impl Default for RecordingLimits {
             request_timeout: Duration::seconds(5),
             report_time_limit: Duration::seconds(5),
             lost_after: Duration::seconds(10),
+            composite_lost_after: Duration::seconds(45),
             ending_grace: Duration::seconds(20),
             start_attempts: 3,
             most_segments: 2000,

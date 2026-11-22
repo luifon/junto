@@ -247,6 +247,7 @@ fn new_segment(
         job_started_at: None,
         stop_delivered_at: None,
         stop_owed: false,
+        job_joined: false,
         started_at: None,
         ended_at: None,
         duration_ms: None,
@@ -362,6 +363,9 @@ async fn decide(
                 continue;
             };
             let is_present = present.contains(job_id.as_str());
+            if is_present && !segment.job_joined {
+                store::job_joined(&mut *connection, segment).await?;
+            }
             let is_closed = matches!(segment.state, SegmentState::Ended | SegmentState::Failed);
             if is_closed && is_present && !segment.stop_owed {
                 // The record has closed the segment and its job is still in the room: a job
@@ -384,9 +388,18 @@ async fn decide(
                     (changed, failed) = (true, true);
                 }
                 (SegmentState::Recording, Some(JobStatus::Running) | None) => {
+                    // The page of a composite job needs longer to start than a track job
+                    // (ADR 0604): a cold start is not a lost job. A job that was in the room
+                    // and left keeps the limit of every job.
+                    let lost_after =
+                        if segment.source == SegmentSource::Composite && !segment.job_joined {
+                            limits.composite_lost_after
+                        } else {
+                            limits.lost_after
+                        };
                     let old = segment
                         .job_started_at
-                        .is_some_and(|at| observed.at - at > limits.lost_after);
+                        .is_some_and(|at| observed.at - at > lost_after);
                     let ending = segment
                         .stop_delivered_at
                         .is_some_and(|at| observed.at - at <= limits.ending_grace);

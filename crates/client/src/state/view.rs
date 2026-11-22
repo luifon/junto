@@ -474,8 +474,8 @@ pub struct ThreadEntry {
     pub mentions: u64,
     /// The side panel shows this thread.
     pub open: bool,
-    /// False for a thread of the voice channel of the call of this device: the view of
-    /// that channel is the call, which shows no thread (ADR 0741).
+    /// The thread can be opened: false for the thread of a message whose thread the person
+    /// may not use.
     pub available: bool,
 }
 
@@ -3049,14 +3049,6 @@ fn workspace_view(
         // The followed threads are listed under the shown channel only.
         let followed = (Some(row.id) == shown).then_some((server_id, &known.followed));
         (row.threads, row.more_followed) = thread_entries(row.id, model, &names, open, followed);
-        // The view of the voice channel of the call of this device is the call.
-        let in_call = row
-            .voice
-            .as_ref()
-            .is_some_and(|voice| voice.relation == Relation::Inside);
-        for entry in &mut row.threads {
-            entry.available = !in_call;
-        }
         if Some(row.id) == shown {
             row.selected = true;
             channel = Some(row.clone());
@@ -3126,7 +3118,7 @@ fn workspace_view(
         administrator: model.is_administrator(),
         open_thread: open_thread.map(|(_, root_id)| root_id),
         target: target_of_jump(server_id, timeline, known),
-        threads: call.is_none(),
+        threads: true,
         writes: feed::Writes {
             send: allowed.send,
             send_in_threads: allowed.send_in_threads,
@@ -3178,10 +3170,9 @@ fn workspace_view(
             .cloned()
             .unwrap_or_default()
     };
-    // The side panel of the call of this device is the panel of the call: its chat
-    // shows no thread and no pin list.
+    // During the call of this device a thread and the pin list open in the right column of
+    // the call, over its chat (ADR 0741).
     let thread = open_thread
-        .filter(|_| call.is_none())
         .zip(channel.as_ref())
         .map(|((channel_id, root_id), row)| {
             let place = PlaceId::Thread {
@@ -3244,7 +3235,7 @@ fn workspace_view(
     let pins = selection
         .pins
         .filter(|(server, channel_id)| *server == server_id && Some(*channel_id) == shown)
-        .filter(|_| thread.is_none() && call.is_none())
+        .filter(|_| thread.is_none())
         .zip(channel.as_ref())
         .map(|((_, channel_id), row)| {
             let list = model.pin_list(channel_id);

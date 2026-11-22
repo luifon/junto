@@ -383,12 +383,17 @@ struct SliderMenu {
 impl Render for SliderMenu {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Menu::new("slider-menu", "Person actions", &self.menu)
-            .child(div().flex().w_full().child(crate::ui::VolumeSlider::new(
-                "slider-menu-volume",
-                &self.state,
-                &self.slider,
-                "Volume for Rin",
-            )))
+            .child(
+                div().flex().w_full().child(
+                    crate::ui::VolumeSlider::new(
+                        "slider-menu-volume",
+                        &self.state,
+                        &self.slider,
+                        "Volume for Rin",
+                    )
+                    .in_menu(),
+                ),
+            )
             .child(MenuItem::new("slider-menu-copy", "Copy name"))
     }
 }
@@ -415,6 +420,11 @@ fn menu_arrows_reach_an_explicit_volume_focus_handle(cx: &mut TestAppContext) {
     assert!(cx.update(|window, _| slider.is_focused(window)));
     cx.simulate_keystrokes("left");
     settle(cx);
+    assert_eq!(state.read_with(cx, |state, _| state.value().end()), 90.0);
+    // Down leaves the control for the next item and keeps the volume.
+    cx.simulate_keystrokes("down");
+    settle(cx);
+    assert!(!cx.update(|window, _| slider.is_focused(window)));
     assert_eq!(state.read_with(cx, |state, _| state.value().end()), 90.0);
 }
 

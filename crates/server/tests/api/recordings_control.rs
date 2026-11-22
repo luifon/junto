@@ -222,10 +222,26 @@ async fn a_lost_composite_gets_a_new_job_only_while_a_member_of_the_call_is_in_t
     assert_eq!(composites(&server.recorder().jobs()).len(), 1);
 }
 
-/// The participant of a new job enters the room some seconds after the request. A job
-/// without a participant is lost only when it is older than 10 seconds.
+/// The lost jobs of a recording: of the composite, and of the tracks.
+fn lost(detail: &junto_protocol::recording::RecordingDetail) -> (usize, usize) {
+    let count = |composite: bool| {
+        detail
+            .segments
+            .iter()
+            .filter(|segment| {
+                (segment.source == SegmentSource::Composite) == composite
+                    && segment.failure == Some(SegmentFailure::RecorderLost)
+            })
+            .count()
+    };
+    (count(true), count(false))
+}
+
+/// The participant of a new job enters the room some seconds after the request. A job of a
+/// track without a participant is lost only when it is older than 10 seconds, and the job of
+/// the composite, whose page starts more slowly, only when it is older than 45 seconds.
 #[tokio::test]
-async fn a_job_without_a_participant_is_lost_only_after_ten_seconds() {
+async fn a_job_without_a_participant_is_lost_only_after_its_start_limit() {
     let studio = Studio::open().await;
     let scene = &studio.scene;
     let (server, owner) = (&scene.server, &scene.owner);
@@ -243,10 +259,16 @@ async fn a_job_without_a_participant_is_lost_only_after_ten_seconds() {
     server.clock.advance(Duration::seconds(1));
     server.tend().await;
     let detail = server.recording(owner, started.id).await;
-    assert_eq!(
-        states(&detail),
-        [LOST, LOST, LOST, RUNNING, RUNNING, RUNNING]
-    );
+    assert_eq!(lost(&detail), (0, 2));
+
+    server.clock.advance(Duration::seconds(34));
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(lost(&detail).0, 0);
+    server.clock.advance(Duration::seconds(1));
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(lost(&detail).0, 1);
 }
 
 /// ADR 0601: a stop request that answers with a timeout was not delivered. The server
@@ -812,14 +834,14 @@ async fn reports_that_do_not_arrive_do_not_keep_a_pass_from_deciding() {
     server.recorder().start_without_participant(false);
 
     server.recorder().delay_reports(Some(Wait::from_secs(3600)));
+    let asked = server.recorder().reports();
     let pass = tokio::time::timeout(Wait::from_secs(60), server.tend());
     assert!(pass.await.is_ok(), "the pass waited for the reports");
-    assert_eq!(server.recorder().reports(), 3);
+    // The recorder is asked about each absent job; the tracks are lost, and the composite,
+    // which was never in the room, has 45 seconds.
+    assert_eq!(server.recorder().reports() - asked, 3);
     let detail = server.recording(owner, started.id).await;
-    assert_eq!(
-        states(&detail),
-        [LOST, LOST, LOST, RUNNING, RUNNING, RUNNING]
-    );
+    assert_eq!(lost(&detail), (0, 2));
 }
 
 /// Review 2, finding 2: before a recording ends, the recorder is asked about every job that
@@ -881,7 +903,7 @@ async fn the_age_of_a_job_counts_at_the_moment_the_room_was_read() {
     server.recorder().delay_reports(None);
     server.tend().await;
     let detail = server.recording(owner, started.id).await;
-    assert_eq!(states(&detail)[..3], [LOST; 3]);
+    assert_eq!(lost(&detail), (0, 2));
 }
 
 /// An identifier of a job that the record cannot store: the start counts as refused. When

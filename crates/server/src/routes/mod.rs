@@ -484,6 +484,12 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     });
     add(&mut router, || routes!(recordings::list_recordings));
     add(&mut router, || {
+        routes!(
+            recordings::get_recording_settings,
+            recordings::set_recording_settings
+        )
+    });
+    add(&mut router, || {
         routes!(recordings::get_recording, recordings::remove_recording)
     });
     add(&mut router, || routes!(recordings::get_segment_file));

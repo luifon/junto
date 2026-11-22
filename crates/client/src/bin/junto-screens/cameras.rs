@@ -79,6 +79,26 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
             );
         })?;
     }
+    // The menus and the window of the controls of a call, and the row of own controls of a
+    // narrow window with its "⋮" (ADR 0735, 0739).
+    for (name, layer, size) in [
+        ("call-view-menu", "view", None),
+        ("call-room-settings", "room-settings", None),
+        ("call-record-language", "record-language", None),
+        ("call-own-controls-narrow", "more", Some((900.0, 640.0))),
+        ("call-detached-more", "more", Some((680.0, 470.0))),
+    ] {
+        let mut screen = Screen::call(name, in_call(Phase::Connected));
+        if let Some(size) = size {
+            screen.size = size;
+        }
+        let detached = name == "call-detached-more";
+        studio.draw(screen, move |shell, window, cx| {
+            show_daily(shell, window, cx);
+            shell.show_cameras_fixture(pictures(), false, detached, cx);
+            shell.open_call_layer_fixture(layer, window, cx);
+        })?;
+    }
     let carla = ShareId::of(person("Carla"), 0);
     let mut media = with_call(in_call(Phase::Connected), |call| {
         call.shares = vec![seen("Carla", ShareKind::Screen, (1920, 1200))];

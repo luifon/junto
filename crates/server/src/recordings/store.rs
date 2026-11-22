@@ -9,6 +9,7 @@ use junto_protocol::ids::{
 use junto_protocol::recording::{
     FileCheck, FileProblem, Recording, RecordingFailure, RecordingSegment, RecordingState,
     RecordingStop, RecordingStopReason, SegmentFailure, SegmentFile, SegmentSource, SegmentState,
+    SoundGap,
 };
 use junto_protocol::transcript::TranscriptState;
 use sqlx::{AssertSqlSafe, PgConnection};
@@ -779,6 +780,8 @@ pub struct SegmentRow {
     /// The job was declared lost before the recorder took a stop for it, and no stop that
     /// followed the declaration has had an end yet (ADR 0604).
     pub stop_owed: bool,
+    /// The participant of the job has been seen in the room of the call (ADR 0604).
+    pub job_joined: bool,
     pub started_at: Option<OffsetDateTime>,
     pub ended_at: Option<OffsetDateTime>,
     pub duration_ms: Option<i64>,
@@ -797,6 +800,8 @@ pub struct FileRow {
     pub problems: Vec<FileProblem>,
     pub silent: bool,
     pub recovered: bool,
+    /// The longest continuous stretch of sound that a composite lacks (ADR 0606).
+    pub missing_sound: Option<(OffsetDateTime, OffsetDateTime)>,
 }
 
 impl FileRow {
@@ -820,6 +825,9 @@ impl FileRow {
             problems: self.problems.clone(),
             silent: self.silent,
             recovered: self.recovered,
+            missing_sound: self
+                .missing_sound
+                .map(|(from, until)| SoundGap { from, until }),
         }
     }
 }
@@ -862,6 +870,7 @@ struct SegmentRecord {
     job_started_at: Option<OffsetDateTime>,
     stop_delivered_at: Option<OffsetDateTime>,
     stop_owed: bool,
+    job_joined: bool,
     started_at: Option<OffsetDateTime>,
     ended_at: Option<OffsetDateTime>,
     duration_ms: Option<i64>,
@@ -873,6 +882,8 @@ struct SegmentRecord {
     file_problems: Vec<String>,
     file_silent: bool,
     file_recovered: bool,
+    missing_sound_from: Option<OffsetDateTime>,
+    missing_sound_until: Option<OffsetDateTime>,
 }
 
 fn file_row(record: &SegmentRecord) -> ApiResult<Option<FileRow>> {
@@ -892,6 +903,7 @@ fn file_row(record: &SegmentRecord) -> ApiResult<Option<FileRow>> {
             .collect::<ApiResult<_>>()?,
         silent: record.file_silent,
         recovered: record.file_recovered,
+        missing_sound: record.missing_sound_from.zip(record.missing_sound_until),
     }))
 }
 
@@ -902,9 +914,10 @@ pub async fn segments(
 ) -> ApiResult<Vec<SegmentRow>> {
     let records: Vec<SegmentRecord> = sqlx::query_as(
         "select id, source, account_id, track_id, state, failure, job_id, requested_path,
-                requested_at, job_started_at, stop_delivered_at, stop_owed, started_at, ended_at,
+                requested_at, job_started_at, stop_delivered_at, stop_owed, job_joined, started_at,
+                ended_at,
                 duration_ms, file_bytes, media_ms, file_starts_at, width, height, file_problems,
-                file_silent, file_recovered
+                file_silent, file_recovered, missing_sound_from, missing_sound_until
          from recording_segments where recording_id = $1 order by id",
     )
     .bind(recording_id)
@@ -931,6 +944,7 @@ pub async fn segments(
                 job_started_at: record.job_started_at,
                 stop_delivered_at: record.stop_delivered_at,
                 stop_owed: record.stop_owed,
+                job_joined: record.job_joined,
                 started_at: record.started_at,
                 ended_at: record.ended_at,
                 duration_ms: record.duration_ms,
@@ -1067,6 +1081,16 @@ pub async fn owe_stop(connection: &mut PgConnection, segment: &mut SegmentRow) -
         .execute(connection)
         .await?;
     segment.stop_owed = true;
+    Ok(())
+}
+
+/// The participant of the job of a segment was seen in the room of the call.
+pub async fn job_joined(connection: &mut PgConnection, segment: &mut SegmentRow) -> ApiResult<()> {
+    sqlx::query("update recording_segments set job_joined = true where id = $1")
+        .bind(segment.id)
+        .execute(connection)
+        .await?;
+    segment.job_joined = true;
     Ok(())
 }
 
@@ -1297,7 +1321,8 @@ pub async fn store_file(
     sqlx::query(
         "update recording_segments
          set file_bytes = $2, media_ms = $3, file_starts_at = $4, width = $5, height = $6,
-             file_check = $7, file_problems = $8, file_silent = $9, file_recovered = $10
+             file_check = $7, file_problems = $8, file_silent = $9, file_recovered = $10,
+             missing_sound_from = $11, missing_sound_until = $12
          where id = $1",
     )
     .bind(segment_id)
@@ -1316,6 +1341,14 @@ pub async fn store_file(
     .bind(problems.unwrap_or_default())
     .bind(file.is_some_and(|file| file.silent))
     .bind(file.is_some_and(|file| file.recovered))
+    .bind(
+        file.and_then(|file| file.missing_sound)
+            .map(|(from, _)| from),
+    )
+    .bind(
+        file.and_then(|file| file.missing_sound)
+            .map(|(_, until)| until),
+    )
     .execute(connection)
     .await?;
     Ok(())

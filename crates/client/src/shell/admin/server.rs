@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Role,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, PathPromptOptions,
+    Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
 use junto_client_core::model::AdminPart;
@@ -23,7 +23,7 @@ use crate::state::admin::{AdminOpen, AdminPage, AskKind};
 use crate::text;
 use crate::text::admin::server as txt;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Avatar, Button};
+use crate::ui::{Avatar, Button, Notice};
 
 /// The side of the logo on the page, in design pixels.
 const LOGO_SIZE: f32 = 56.0;
@@ -230,6 +230,145 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The spoken language of a recording that names none (ADR 0604): English until an
+    /// administrator chooses another; "Record" in a call uses it.
+    fn render_recording_language(
+        &mut self,
+        server_id: junto_client_core::protocol::ids::ServerId,
+        may_change: bool,
+        theme: &crate::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let state = self.state.read(cx);
+        let languages = state.recording_languages().clone();
+        if !languages.language.contains_key(&server_id)
+            && !languages.failed.contains_key(&server_id)
+            && self.admin_language_asked != Some(server_id)
+        {
+            self.admin_language_asked = Some(server_id);
+            self.state
+                .update(cx, |state, cx| state.read_recording_language(server_id, cx));
+        }
+        let current = languages
+            .sending
+            .get(&server_id)
+            .or(languages.language.get(&server_id))
+            .cloned();
+        let name = current
+            .as_deref()
+            .map(text::transcripts::recording_language_name);
+        let open = self.admin_language_open && may_change;
+        let wanted = self
+            .record_language_find
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let choices: Vec<AnyElement> = open
+            .then(|| {
+                std::iter::once(("auto", text::transcripts::DETECT))
+                    .chain(text::transcripts::LANGUAGES.iter().copied())
+                    .filter(|(_, name)| wanted.is_empty() || name.to_lowercase().contains(&wanted))
+                    .map(|(code, name)| {
+                        let chosen = current.as_deref() == Some(code);
+                        crate::ui::MenuItem::new(
+                            SharedString::from(format!("server-language:{code}")),
+                            name,
+                        )
+                        .selector(format!("server-language:{code}"))
+                        .map(|item| {
+                            if chosen {
+                                item.end_icon(crate::assets::Icon::Check)
+                            } else {
+                                item
+                            }
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.admin_language_open = false;
+                            this.state.update(cx, |state, cx| {
+                                state.set_recording_language(server_id, code.to_owned(), cx)
+                            });
+                        }))
+                        .into_any_element()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        div()
+            .flex()
+            .flex_col()
+            .child(group_label(txt::RECORDINGS, theme))
+            .child(sentence(txt::RECORDING_LANGUAGE_HELP, theme).mb(u(4.0)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(10.0))
+                    .child(
+                        div()
+                            .debug_selector(|| "server-language-current".to_owned())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(SharedString::from(
+                                name.unwrap_or_else(|| txt::LANGUAGE_NOT_READ.to_owned()),
+                            )),
+                    )
+                    .when(may_change, |row| {
+                        row.child(
+                            Button::new("server-language-change")
+                                .label(txt::CHANGE_LANGUAGE)
+                                .selector("server-language-change")
+                                .disabled(languages.sending.contains_key(&server_id))
+                                .h(u(30.0))
+                                .px(u(12.0))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.admin_language_open = !this.admin_language_open;
+                                    if this.admin_language_open {
+                                        let find = this.record_language_find.clone();
+                                        find.update(cx, |find, cx| find.set_value("", window, cx));
+                                        this.focus_field(&find, window, cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .when(open, |group| {
+                group.child(
+                    div()
+                        .mt(u(6.0))
+                        .p(u(6.0))
+                        .rounded(u(theme.metrics.radius))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .child(
+                            crate::ui::Field::new(
+                                &self.record_language_find,
+                                text::transcripts::FIND_LANGUAGE,
+                            )
+                            .kind(crate::ui::FieldKind::Find)
+                            .selector("server-language-find"),
+                        )
+                        .child(
+                            div()
+                                .id("server-languages")
+                                .debug_selector(|| "server-languages".to_owned())
+                                .mt(u(4.0))
+                                .max_h(u(240.0))
+                                .overflow_y_scroll()
+                                .children(choices),
+                        ),
+                )
+            })
+            .children(
+                languages
+                    .failed
+                    .get(&server_id)
+                    .map(|reason| Notice::error(reason.clone()).selector("server-language-failed")),
+            )
+            .into_any_element()
+    }
+
     pub(crate) fn render_server_settings_page(
         &mut self,
         view: &AdminView,
@@ -359,6 +498,7 @@ impl Shell {
                 )
             })
             .children(refusal(refused, "logo-refused"))
+            .child(self.render_recording_language(server_id, page.may_change, &theme, cx))
             .child(group_label(txt::ATTACHMENTS, &theme))
             .child(sentence(txt::ATTACHMENTS_HELP, &theme).mb(u(4.0)))
             .child(match &page.limits {

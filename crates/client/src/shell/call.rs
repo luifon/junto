@@ -92,6 +92,9 @@ pub(crate) struct OutsideRow {
     account_id: AccountId,
     name: SharedString,
     state: Option<(Icon, SharedString)>,
+    /// The person may be invited into the call of a voice channel, with the invitation of
+    /// this device that waits.
+    invite: Option<Option<junto_client_core::protocol::ids::CallInvitationId>>,
 }
 
 /// Below this width of the stage, in design pixels, the row of own controls moves its less
@@ -138,7 +141,8 @@ pub(crate) fn tile_marks(occupant: &Occupant) -> (Vec<TileMark>, String) {
     (marks, words.join(", "))
 }
 
-/// The lines of the state of a person in the member list of a call.
+/// The line of the state of a person in the member list of a call: only the states that
+/// the marks at the end of the row do not show (ADR 0735).
 fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
     let mut states: Vec<(Icon, SharedString)> = Vec::new();
     match occupant.presence {
@@ -146,23 +150,11 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
         Presence::Reconnecting => states.push((Icon::Retry, text::CALL_RECONNECTING.into())),
         Presence::Here => {}
     }
-    if occupant.sharing {
-        states.push((Icon::Screen, text::SHARING_SCREEN.into()));
-    }
-    states.push(match occupant.microphone {
-        Microphone::Held(reason) => (
-            Icon::MicrophoneHeld,
-            text::closed_by(reason, occupant.held_by.as_deref()).into(),
-        ),
-        Microphone::Closed => (Icon::MicrophoneOff, text::MUTED.into()),
-        Microphone::Open { speaking: true } => (Icon::Microphone, text::SPEAKING.into()),
-        Microphone::Open { speaking: false } => (Icon::Microphone, text::MICROPHONE_ON.into()),
-    });
-    if occupant.sound_off {
-        states.push((Icon::PhonesOff, text::SOUND_IS_OFF.into()));
-    }
     if occupant.hand_raised {
         states.push((Icon::Hand, text::HAND_RAISED.into()));
+    }
+    if occupant.sharing {
+        states.push((Icon::Screen, text::SHARING_SCREEN.into()));
     }
     states
 }
@@ -348,7 +340,7 @@ impl Shell {
             (
                 CallTab::Members,
                 Icon::People,
-                text::MEMBERS,
+                text::IN_THE_CALL,
                 "open-call-members",
             ),
         ]
@@ -449,9 +441,6 @@ impl Shell {
     pub(crate) fn show_call_tab(&mut self, tab: CallTab, cx: &mut Context<Self>) {
         self.close_call_notices(cx);
         self.call_tab = tab;
-        if tab != CallTab::Members {
-            self.invite_open = false;
-        }
         cx.notify();
     }
 
@@ -962,11 +951,12 @@ impl Shell {
                     .child(tab(
                         CallTab::Members,
                         Icon::People,
-                        text::MEMBERS,
+                        text::IN_THE_CALL,
                         "call-tab-members",
                         cx,
                     )),
             )
+            .children(self.render_call_column_icons(view, panel, cx))
             // The panel closes in every window, as the server book does; the stage then
             // takes its width (round 2 item 16).
             .child(
@@ -982,11 +972,31 @@ impl Shell {
                         })),
                 ),
             );
-        let pane = match (&notices, self.call_tab) {
-            (Some((shown, server_id)), _) => self.render_notices_panel(*server_id, shown, true, cx),
-            (None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
-            (None, CallTab::Members) => self.render_call_members(view, panel, theme, window, cx),
+        // A thread, the pin list or the transcript of a recording of the channel of the
+        // call opens over its chat, with a way back to the chat (ADR 0741).
+        let over = self.render_call_column_view(view, panel, theme, window, cx);
+        let pane = match (&notices, over, self.call_tab) {
+            (Some((shown, server_id)), ..) => {
+                self.render_notices_panel(*server_id, shown, true, cx)
+            }
+            (None, Some(over), _) => over,
+            (None, None, CallTab::Chat) => self.render_call_chat(view, panel, theme, window, cx),
+            (None, None, CallTab::Members) => {
+                self.render_call_members(view, panel, theme, window, cx)
+            }
         };
+        let search = self
+            .call_search_open
+            .then(|| self.render_search_field(true, cx))
+            .map(|field| {
+                div()
+                    .flex_none()
+                    .px(u(10.0))
+                    .py(u(6.0))
+                    .border_b_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .child(field)
+            });
         div()
             .id("call-panel")
             .role(Role::Complementary)
@@ -1004,8 +1014,145 @@ impl Shell {
             .border_l_1()
             .border_color(Hsla::from(colors.rule))
             .child(tabs)
+            .children(search)
             .child(pane)
             .into_any_element()
+    }
+
+    /// The channel of the call of a voice channel, when the window shows that channel: its
+    /// thread, pins and transcripts belong to the right column of the call.
+    fn call_channel_shown<'a>(
+        view: &'a ShellView,
+        panel: &CallPanel,
+    ) -> Option<&'a crate::state::view::WorkspaceView> {
+        let channel_id = view.call.as_ref()?.channel_id?;
+        panel.channel()?;
+        view.workspace()
+            .filter(|workspace| workspace.channel.as_ref().map(|row| row.id) == Some(channel_id))
+    }
+
+    /// Pins and Search of the channel of the call, as two icons beside the tabs of the
+    /// right column (ADR 0741).
+    fn render_call_column_icons(
+        &mut self,
+        view: &ShellView,
+        panel: &CallPanel,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let workspace = Self::call_channel_shown(view, panel)?;
+        let channel = workspace.channel.as_ref()?;
+        let server_id = view.selected.as_ref()?.id;
+        let channel_id = channel.id;
+        let pins_open = workspace.pins.is_some();
+        let searching = self.call_search_open;
+        // The pinned messages are read from the history (ADR 0790).
+        let pins = channel.allowed.read_history.then(|| {
+            Button::new("call-pins")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::Pin)
+                .tooltip(if pins_open {
+                    text::CLOSE_PINS
+                } else {
+                    text::SHOW_PINS
+                })
+                .accessible_label(text::PINS)
+                .selected(pins_open)
+                .selector("call-pins")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if pins_open {
+                        this.state.update(cx, |state, cx| state.close_pins(cx));
+                    } else {
+                        this.open_pins(server_id, channel_id, cx);
+                    }
+                }))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(2.0))
+                .children(pins)
+                .child(
+                    Button::new("call-search")
+                        .kind(ButtonKind::Ghost)
+                        .icon(Icon::Search)
+                        .tooltip(text::SEARCH)
+                        .accessible_label(text::SEARCH)
+                        .selected(searching)
+                        .selector("call-search")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.call_search_open = !searching;
+                            if this.call_search_open {
+                                let field = this.search_field.clone();
+                                this.focus_field(&field, window, cx);
+                            }
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// A thread, the pin list or the transcript of a recording of the channel of the call,
+    /// over the chat of the right column, under a row that goes back to the chat.
+    fn render_call_column_view(
+        &mut self,
+        view: &ShellView,
+        panel: &CallPanel,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let workspace = Self::call_channel_shown(view, panel)?;
+        let server_id = view.selected.as_ref()?.id;
+        let feed = view.lists().and_then(|lists| lists.feed.as_ref());
+        let body = if let Some(thread) = &workspace.thread {
+            self.render_thread_panel(thread, window, cx)
+        } else if let Some(pins) = &workspace.pins {
+            self.render_pins_panel(pins, feed, window, cx)
+        } else if let Some(transcript) = &workspace.transcript {
+            self.render_transcript_panel(server_id, transcript, window, cx)
+        } else {
+            return None;
+        };
+        let colors = theme.colors;
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .px(u(6.0))
+                        .py(u(4.0))
+                        .border_b_1()
+                        .border_color(Hsla::from(colors.rule_soft))
+                        .child(
+                            Button::new("call-back-to-chat")
+                                .kind(ButtonKind::Ghost)
+                                .icon(Icon::ChevronLeft)
+                                .label(text::CHAT)
+                                .tooltip(text::BACK_TO_CHAT)
+                                .accessible_label(text::BACK_TO_CHAT)
+                                .selector("call-back-to-chat")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.close_thread(cx);
+                                        state.close_pins(cx);
+                                        state.close_transcript(cx);
+                                    });
+                                    this.show_call_tab(CallTab::Chat, cx);
+                                })),
+                        ),
+                )
+                .child(div().flex().flex_col().flex_1().min_h_0().child(body))
+                .into_any_element(),
+        )
     }
 
     /// The notices of the server of the call in the place of the panel of the call, while
@@ -1107,10 +1254,21 @@ impl Shell {
         let people: Rc<Vec<Occupant>> = Rc::new(panel.people.clone());
         // Outside the call: the members of the workspace, or the other person of a
         // direct-message call while it rings.
+        // The field at the top of the list finds people by their name.
+        let wanted = self.invite_find.read(cx).value().trim().to_lowercase();
+        let found = |name: &str| wanted.is_empty() || name.to_lowercase().contains(&wanted);
+        let people: Rc<Vec<Occupant>> = Rc::new(
+            people
+                .iter()
+                .filter(|person| found(&occupant_name(person)))
+                .cloned()
+                .collect(),
+        );
         let outside: Rc<Vec<OutsideRow>> = Rc::new(match &panel.place {
             PanelPlace::Channel(channel) => channel
                 .outside
                 .iter()
+                .filter(|member| found(&member.name))
                 .map(|member| OutsideRow {
                     account_id: member.account_id,
                     name: member.name.clone().into(),
@@ -1118,6 +1276,7 @@ impl Shell {
                         .place
                         .as_ref()
                         .map(|place| (Icon::Speaker, text::in_channel(place).into())),
+                    invite: channel.room.ready.then_some(member.invitation),
                 })
                 .collect(),
             PanelPlace::Direct(direct) if !direct.joined => direct
@@ -1127,6 +1286,7 @@ impl Shell {
                         account_id: other,
                         name: panel.place_name().to_owned().into(),
                         state: Some((Icon::PhoneOutgoing, text::CALLING.into())),
+                        invite: None,
                     }]
                 })
                 .unwrap_or_default(),
@@ -1183,17 +1343,17 @@ impl Shell {
             list.rows = Some(shape);
         }
         let state = list.state.clone();
-        let render = cx.processor(move |this: &mut Self, index: usize, window, cx| {
+        let render = cx.processor(move |this: &mut Self, index: usize, _, cx| {
             div()
                 .w_full()
-                .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
+                .child(this.call_member_item(index, &people, &outside, cx))
                 .into_any_element()
         });
         let list = div()
             .id("call-members")
             .debug_selector(|| "call-members".to_owned())
             .role(Role::List)
-            .aria_label(text::MEMBERS)
+            .aria_label(text::IN_THE_CALL)
             .relative()
             .flex()
             .flex_col()
@@ -1226,12 +1386,14 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(list)
-            .children(
-                panel
-                    .channel()
-                    .map(|channel| self.render_invite_area(channel, theme, cx)),
+            .child(
+                div().flex_none().px(u(12.0)).pt(u(10.0)).pb(u(4.0)).child(
+                    crate::ui::Field::new(&self.invite_find, text::FIND_A_MEMBER)
+                        .kind(crate::ui::FieldKind::Find)
+                        .selector("call-members-find"),
+                ),
             )
+            .child(list)
             .into_any_element()
     }
 
@@ -1243,8 +1405,6 @@ impl Shell {
         index: usize,
         people: &[Occupant],
         outside: &[OutsideRow],
-        server_id: Option<ServerId>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -1361,40 +1521,10 @@ impl Shell {
                     Meter::new(occupant.level.unwrap_or(0)).into_any_element()
                 }
             };
-            let volume = match (occupant.is_self, server_id) {
-                (false, Some(server_id)) => {
-                    let (state, focus) = self.volume_control(
-                        server_id,
-                        occupant.account_id,
-                        occupant.volume,
-                        window,
-                        cx,
-                    );
-                    Some(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(u(8.0))
-                            .mt(u(3.0))
-                            .typeface(theme.types.small, &theme)
-                            .ink(colors.ink_2)
-                            .child(text::VOLUME)
-                            .child(
-                                VolumeSlider::new(
-                                    ("volume", index),
-                                    &state,
-                                    &focus,
-                                    text::volume_for(&name),
-                                )
-                                .selector(format!("volume:{}", occupant.account_id)),
-                            ),
-                    )
-                }
-                _ => None,
-            };
             let camera = self
                 .camera_request(occupant, cx)
                 .map(|_| occupant.account_id);
+            let states = member_states(occupant);
             let item = row(index, occupant.account_id, label.into())
                 .child(
                     div()
@@ -1403,10 +1533,25 @@ impl Shell {
                         .child(
                             name_line(name, occupant.account_id, occupant.is_self, camera)
                                 .child(div().flex_1())
-                                .child(div().flex().flex_none().items_center().child(mark)),
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .gap(u(6.0))
+                                        .when(occupant.sound_off, |marks| {
+                                            marks.child(icon(
+                                                Icon::PhonesOff,
+                                                14.0,
+                                                colors.terracotta_deep,
+                                            ))
+                                        })
+                                        .child(mark),
+                                ),
                         )
-                        .child(state_line(member_states(occupant)))
-                        .children(volume),
+                        .when(!states.is_empty(), |column| {
+                            column.child(state_line(states))
+                        }),
                 )
                 .into_any_element();
             return self.call_member_target(
@@ -1431,24 +1576,90 @@ impl Shell {
                 account_id,
                 name,
                 state,
-            }) => self.call_member_target(
-                *account_id,
-                name.to_string(),
-                false,
-                row(people.len() + rest - 1, *account_id, name.clone())
+                invite,
+            }) => {
+                let action =
+                    invite.map(|invitation| self.invite_action(*account_id, invitation, cx));
+                self.call_member_target(
+                    *account_id,
+                    name.to_string(),
+                    false,
+                    row(people.len() + rest - 1, *account_id, name.clone())
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(name_line(name.clone(), *account_id, false, None))
+                                .when_some(state.clone(), |column, state| {
+                                    column.child(state_line(vec![state]))
+                                }),
+                        )
+                        .children(action)
+                        .into_any_element(),
+                    cx,
+                )
+            }
+            None => div().h(u(4.0)).into_any_element(),
+        }
+    }
+
+    /// "Invite" on the row of a person outside the call, or "Invited" with the button that
+    /// cancels the invitation (ADR 0739). The press acts alone: the row is not selected and
+    /// its menu does not open.
+    fn invite_action(
+        &self,
+        account_id: AccountId,
+        invitation: Option<junto_client_core::protocol::ids::CallInvitationId>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match invitation {
+            Some(invitation_id) => {
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(u(2.0))
+                    .child(
+                        Button::new(SharedString::from(format!("invited:{account_id}")))
+                            .label(text::INVITED)
+                            .disabled(true)
+                            .h(u(26.0)),
+                    )
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(name_line(name.clone(), *account_id, false, None))
-                            .when_some(state.clone(), |column, state| {
-                                column.child(state_line(vec![state]))
-                            }),
+                            .debug_selector(move || format!("withdraw-invitation:{account_id}"))
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "withdraw-invitation:{account_id}"
+                                )))
+                                .kind(ButtonKind::Ghost)
+                                .icon(Icon::X)
+                                .tooltip(text::WITHDRAW_INVITATION)
+                                .accessible_label(text::WITHDRAW_INVITATION)
+                                .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.withdraw_invitation(invitation_id, cx);
+                                    });
+                                })),
+                            ),
                     )
-                    .into_any_element(),
-                cx,
-            ),
-            None => div().h(u(4.0)).into_any_element(),
+                    .into_any_element()
+            }
+            None => div()
+                .flex_none()
+                .debug_selector(move || format!("invite:{account_id}"))
+                .child(
+                    Button::new(SharedString::from(format!("invite:{account_id}")))
+                        .label(text::INVITE)
+                        .tooltip(text::INVITE_HELP)
+                        .h(u(26.0))
+                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.invite(account_id, cx));
+                        })),
+                )
+                .into_any_element(),
         }
     }
 

@@ -1552,7 +1552,7 @@ pub(super) mod calls {
     }
 
     #[test]
-    fn the_chat_of_the_call_of_this_device_has_no_thread_and_its_threads_cannot_be_opened() {
+    fn the_thread_and_the_pins_of_the_channel_of_the_call_are_shown_in_the_call() {
         use junto_client_core::model::Named;
         use junto_client_core::protocol::message::{MessagePlace, ThreadState};
 
@@ -1592,30 +1592,22 @@ pub(super) mod calls {
             row.threads[0].clone()
         };
 
-        // Outside the call the thread of the voice channel is shown and can be opened.
+        // Outside the call the thread of the voice channel is shown.
         let outside = derive(servers, &selection, &Known::default());
         assert!(outside.workspace().unwrap().thread.is_some());
-        assert!(entry(&outside).available);
+        assert!(entry(&outside).open);
 
-        // In the call the side panel is the panel of the call: no thread and no pin list
-        // is shown, and the row of the thread says that it cannot be opened.
+        // In the call the thread and the pin list of its channel are shown too: they open
+        // in the right column of the call, over its chat (ADR 0741).
         let known = in_call(active(target(&server, &scene, daily)));
         let inside = derive(servers, &selection, &known);
         assert!(inside.lists().unwrap().call.is_some());
-        let workspace = inside.workspace().unwrap();
-        assert!(workspace.thread.is_none() && workspace.pins.is_none());
-        assert_eq!(inside.shown().thread, None);
-        assert!(!entry(&inside).available);
+        assert!(inside.workspace().unwrap().thread.is_some());
+        assert!(entry(&inside).open && entry(&inside).available);
         selection.thread = None;
         selection.pins = Some((server.id, daily));
         let inside = derive(servers, &selection, &known);
-        assert!(inside.workspace().unwrap().pins.is_none());
-
-        // Another channel is shown: a selection of the voice channel shows the call, so
-        // its thread still cannot be opened.
-        let general = scene.general;
-        let elsewhere = derive(servers, &selected(&server, &scene, general), &known);
-        assert!(!entry(&elsewhere).available);
+        assert!(inside.workspace().unwrap().pins.is_some());
     }
 
     #[test]

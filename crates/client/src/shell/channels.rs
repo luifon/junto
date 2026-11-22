@@ -859,7 +859,6 @@ impl Shell {
                         )
                         .selected(entry.open)
                         .unread(sign)
-                        .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
                         .open(matches!(&self.layer, Layer::ThreadMenu(open) if open.followed() && open.root_id == root_id))
                         .when_some(account_owner, |row, owner| row.on_menu(Self::handler(cx, move |this, window, cx| {
                             this.open_thread_menu(owner, workspace_id, channel_id, root_id, window, cx);

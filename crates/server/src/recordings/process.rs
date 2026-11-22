@@ -13,7 +13,9 @@ use std::io;
 use std::path::Path;
 
 use junto_protocol::ids::RecordingId;
-use junto_protocol::recording::{FileProblem, RecordingState, SegmentSource, SegmentState};
+use junto_protocol::recording::{
+    FileProblem, RecordingState, SegmentFailure, SegmentSource, SegmentState,
+};
 use time::{Duration, OffsetDateTime};
 
 use crate::error::{ApiError, ApiResult};
@@ -35,6 +37,9 @@ const PLACED_BY: Duration = Duration::seconds(60);
 const SEARCHED: Duration = Duration::seconds(6);
 /// Less common sound than this places nothing.
 const LEAST_COMMON_SOUND: Duration = Duration::seconds(4);
+/// The distance between two windows in which the drift between the composite and a
+/// microphone file is measured (ADR 0606).
+const DRIFT_EVERY: Duration = Duration::minutes(5);
 
 /// A step that did not run to its end: a program did not start or reached its time limit,
 /// or the file system refused. The attempt is repeated.
@@ -125,6 +130,7 @@ async fn measure(
             problems: Vec::new(),
             silent: false,
             recovered: segment.state == SegmentState::Failed,
+            missing_sound: None,
         },
         timed: None,
         sound: None,
@@ -291,6 +297,51 @@ async fn shift_by_sound(
     }
 }
 
+/// How far the sound of a microphone file lies in the composite from where the timeline
+/// places it, measured in a window every [`DRIFT_EVERY`] along the time that both files
+/// cover (ADR 0606). A window whose two envelopes do not agree clearly gives no point.
+async fn drift_by_sound(
+    tools: &Tools,
+    composite: (&Source<'_>, OffsetDateTime, i64),
+    reference: (&Source<'_>, OffsetDateTime, i64),
+) -> Result<check::Drift, Unfinished> {
+    let (video, video_start, video_ms) = composite;
+    let (track, track_start, track_ms) = reference;
+    let from = video_start.max(track_start);
+    let until = (video_start + Duration::milliseconds(video_ms))
+        .min(track_start + Duration::milliseconds(track_ms));
+    let mut points = Vec::new();
+    let mut at = from;
+    while at + LEAST_COMMON_SOUND <= until {
+        let length = PLACED_BY.min(until - at);
+        let loudness = |source: &Source<'_>, file, start: OffsetDateTime| {
+            let offset = (at - start).as_seconds_f64();
+            tools.loudness(file, source.container, offset, length.as_seconds_f64())
+        };
+        let (video_file, track_file) = (video.open().await?, track.open().await?);
+        let (of_video, of_track) = tokio::join!(
+            loudness(video, video_file, video_start),
+            loudness(track, track_file, track_start)
+        );
+        match (of_video, of_track) {
+            (Ok(of_video), Ok(of_track)) => {
+                if let Some(shift) = check::best_shift(&of_video, &of_track, SEARCHED) {
+                    points.push((at + length / 2, shift));
+                }
+            }
+            (Err(ToolError::Failed(reason)), _) | (_, Err(ToolError::Failed(reason))) => {
+                return Err(unfinished(
+                    "the loudness of a file could not be read",
+                    &reason,
+                ));
+            }
+            _ => {}
+        }
+        at += DRIFT_EVERY;
+    }
+    Ok(check::Drift::of(points))
+}
+
 /// What one attempt found of the files of a recording, one entry for each segment.
 struct Examined {
     files: Vec<Option<FileRow>>,
@@ -393,17 +444,47 @@ async fn examine(backend: &Backend, recording: &RecordingRow, segments: &[Segmen
                 }
             }
         }
+        // The sound of each microphone file is followed along its drift, and the longest
+        // continuous stretch that the composite lacks is kept with its place (ADR 0606).
         let heard = measured[position].as_ref().and_then(Measured::heard);
-        let lacks = heard.is_some_and(|composite| {
-            microphones.iter().any(|microphone| {
-                measured[*microphone]
+        let mut missing: Option<(OffsetDateTime, OffsetDateTime)> = None;
+        if let Some(composite) = &heard {
+            let video = Source::of(root, recording.id, segment);
+            let video_ms = measured[position]
+                .as_ref()
+                .map_or(0, |file| file.row.media_ms);
+            for microphone in &microphones {
+                let Some(reference) = measured[*microphone].as_ref().and_then(Measured::heard)
+                else {
+                    continue;
+                };
+                let track = Source::of(root, recording.id, &segments[*microphone]);
+                let track_ms = measured[*microphone]
                     .as_ref()
-                    .and_then(Measured::heard)
-                    .is_some_and(|reference| check::lacks_sound_of(&composite, &reference))
-            })
-        });
-        if let (true, Some(file)) = (lacks, &mut measured[position]) {
+                    .map_or(0, |file| file.row.media_ms);
+                let drift = drift_by_sound(
+                    tools,
+                    (&video, composite.from, video_ms),
+                    (&track, reference.from, track_ms),
+                )
+                .await;
+                let drift = match drift {
+                    Ok(drift) => drift,
+                    Err(Unfinished) => {
+                        incomplete = true;
+                        continue;
+                    }
+                };
+                if let Some(stretch) = check::missing_stretch(composite, &reference.drifted(&drift))
+                    && missing.is_none_or(|held| stretch.1 - stretch.0 > held.1 - held.0)
+                {
+                    missing = Some(stretch);
+                }
+            }
+        }
+        if let (Some(stretch), Some(file)) = (missing, &mut measured[position]) {
             file.add(FileProblem::SoundMissing);
+            file.row.missing_sound = Some(stretch);
         }
     }
 
@@ -444,6 +525,7 @@ async fn unchecked(
                 problems: vec![FileProblem::NotChecked],
                 silent: false,
                 recovered: segment.state == SegmentState::Failed,
+                missing_sound: None,
             });
         }
     }
@@ -451,12 +533,34 @@ async fn unchecked(
 
 /// The state that follows from the files of a recording: `ready` when every segment ended
 /// and has a file that passed its check, `failed` without any file, and `partly_failed`
-/// otherwise.
+/// otherwise. A start attempt that the recorder lost and a later job of the same source
+/// replaced is not a failure: the later segment holds the file of that source (ADR 0606).
 fn final_state(segments: &[SegmentRow], files: &[Option<FileRow>]) -> RecordingState {
-    let whole = segments.iter().zip(files).all(|(segment, file)| {
-        segment.state == SegmentState::Ended
-            && file.as_ref().is_some_and(|file| file.problems.is_empty())
-    });
+    let replaced = |index: usize, segment: &SegmentRow| {
+        segment.state == SegmentState::Failed
+            && segment.failure == Some(SegmentFailure::RecorderLost)
+            && segments
+                .iter()
+                .zip(files)
+                .enumerate()
+                .any(|(other, (later, file))| {
+                    other != index
+                        && later.source == segment.source
+                        && later.account_id == segment.account_id
+                        && later.requested_at > segment.requested_at
+                        && later.state == SegmentState::Ended
+                        && file.as_ref().is_some_and(|file| file.problems.is_empty())
+                })
+    };
+    let whole = segments
+        .iter()
+        .zip(files)
+        .enumerate()
+        .all(|(index, (segment, file))| {
+            replaced(index, segment)
+                || (segment.state == SegmentState::Ended
+                    && file.as_ref().is_some_and(|file| file.problems.is_empty()))
+        });
     if files.iter().all(Option::is_none) {
         RecordingState::Failed
     } else if whole {
@@ -761,6 +865,7 @@ mod tests {
             job_started_at: None,
             stop_delivered_at: None,
             stop_owed: false,
+            job_joined: false,
             started_at: None,
             ended_at: None,
             duration_ms: None,
@@ -777,6 +882,7 @@ mod tests {
             problems: problems.to_vec(),
             silent: false,
             recovered: false,
+            missing_sound: None,
         })
     }
 
@@ -816,5 +922,46 @@ mod tests {
             RecordingState::Failed
         );
         assert_eq!(state(&[], &[]), RecordingState::Failed);
+    }
+
+    /// A composite job that the recorder lost and a later job replaced leaves the recording
+    /// ready when the later job ended with a good file; without it the loss counts.
+    #[test]
+    fn a_replaced_start_attempt_is_not_a_failure() {
+        let mut lost = segment(SegmentState::Failed);
+        lost.source = SegmentSource::Composite;
+        lost.failure = Some(SegmentFailure::RecorderLost);
+        let mut later = segment(SegmentState::Ended);
+        later.source = SegmentSource::Composite;
+        later.requested_at = lost.requested_at + Duration::seconds(30);
+        let track = segment(SegmentState::Ended);
+        let good = file(&[]);
+        let segments = [lost.clone(), later.clone(), track.clone()];
+        assert_eq!(
+            final_state(&segments, &[None, good.clone(), good.clone()]),
+            RecordingState::Ready
+        );
+        // The later job failed its check: the recording is saved in part.
+        assert_eq!(
+            final_state(
+                &segments,
+                &[None, file(&[FileProblem::SoundMissing]), good.clone()]
+            ),
+            RecordingState::PartlyFailed
+        );
+        // A loss for another reason, and a loss without a later job, count.
+        let mut errored = lost.clone();
+        errored.failure = Some(SegmentFailure::RecorderError);
+        assert_eq!(
+            final_state(
+                &[errored, later.clone(), track.clone()],
+                &[None, good.clone(), good.clone()]
+            ),
+            RecordingState::PartlyFailed
+        );
+        assert_eq!(
+            final_state(&[lost, track], &[None, good]),
+            RecordingState::PartlyFailed
+        );
     }
 }

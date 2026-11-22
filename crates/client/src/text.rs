@@ -452,36 +452,17 @@ pub fn entry_prompt(name: Option<&str>, channel: &str) -> String {
 }
 
 // Invitations.
-pub const INVITE_A_MEMBER: &str = "Invite";
 pub const FIND_A_MEMBER: &str = "Find a member";
 pub const CLEAR_MEMBER_SEARCH: &str = "Clear member search";
 pub const INVITE: &str = "Invite";
 pub const INVITED: &str = "Invited";
+pub const INVITE_HELP: &str = "An invited person can join a locked or full call.";
 pub const WITHDRAW_INVITATION: &str = "Cancel invitation";
-pub const NO_MEMBER_TO_INVITE: &str = "Every member of the workspace is in the call.";
 pub const NO_MEMBER_FOUND: &str = "No member has this name.";
 pub const JOIN: &str = "Join call";
 pub const DECLINE: &str = "Decline";
 pub const INVITATION_DECLINED: &str = "Your invitation was declined.";
 pub const INVITATION_EXPIRED: &str = "Your invitation ended after one minute without an answer.";
-
-pub fn invite_to(channel: &str) -> String {
-    format!("Invite to {channel}")
-}
-
-pub fn invite_help(channel: &str) -> String {
-    format!(
-        "The member gets an invitation to join {channel}. If they accept, they join, even when \
-         the call is locked or full."
-    )
-}
-
-pub fn invite_footer(channel: &str) -> String {
-    format!(
-        "Members of the workspace who are not in the call. A member without access to \
-         {channel} cannot be invited."
-    )
-}
 
 pub const FEWER_INVITATIONS: &str = "Show fewer invitations";
 
@@ -518,7 +499,6 @@ pub fn invitation(by: Option<&str>, channel: Option<&str>) -> String {
 // The menu of a person in a voice channel.
 pub const INVITE_TO_MY_ROOM: &str = "Invite";
 pub const MOVE_TO: &str = "Move to…";
-pub const MODERATION: &str = "Moderation";
 pub const MUTE_FOR_EVERYONE: &str = "Block microphone";
 pub const REMOVE_MICROPHONE_BLOCK: &str = "Unblock microphone";
 pub const BLOCK_SOUND: &str = "Block call sound";
@@ -526,10 +506,6 @@ pub const REMOVE_SOUND_BLOCK: &str = "Unblock call sound";
 pub const DISCONNECT: &str = "Disconnect";
 pub const BACK: &str = "Back";
 pub const OPEN_PERSON_MENU: &str = "Right click or Shift + F10: the menu of this person";
-
-pub fn invite_prompt(name: &str, channel: &str) -> String {
-    format!("{name} gets an invitation to join {channel}")
-}
 
 pub fn your_volume_for(name: &str) -> String {
     format!("Your volume for {name}")
@@ -1066,6 +1042,7 @@ pub const VOICE_CHANNEL_CHAT: &str = "voice channel chat";
 pub const DIRECT_CALL_CHAT: &str = "direct messages";
 pub const CLOSE_PANEL: &str = "Close the panel";
 pub const IN_THE_CALL: &str = "In the call";
+pub const BACK_TO_CHAT: &str = "Back to the chat of the call";
 pub const NOT_IN_THE_CALL: &str = "Not in the call";
 pub const VOLUME: &str = "Volume";
 pub const MICROPHONE_ON: &str = "Microphone on";
@@ -2080,7 +2057,6 @@ pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is 
 pub const THREAD_FAILED: &str = "The thread could not be read.";
 pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
 pub const THREADS_OF_CHANNEL: &str = "Threads with something new";
-pub const THREAD_IN_CALL: &str = "This thread opens after you leave the call of its channel.";
 pub const FORK_THREAD: &str = "Fork thread into…";
 pub const FORK_COPIES: &str = "replies are copied to it";
 pub const FORK_TEXT: &str = "Text channel";
@@ -3031,6 +3007,29 @@ pub const RECORDING_REMOVING: &str = "Removing…";
 pub const REMOVE_RECORDING_TITLE: &str = "Remove this recording?";
 pub const REMOVE_RECORDING_CONFIRM: &str = "The server deletes the video, the audio files and the transcript for everyone. This cannot be undone.";
 pub const TRANSCRIPT: &str = "Transcript";
+pub const FILES_TABS: &str = "Files of this channel";
+pub const FILES_TAB: &str = "Files";
+pub const RECORDINGS_TAB: &str = "Recordings";
+pub const OPEN_RECORDING_CARD: &str = "Go to recording";
+pub const READING_RECORDINGS: &str = "Reading recordings…";
+pub const NO_RECORDINGS_TITLE: &str = "No recordings";
+pub const NO_RECORDINGS: &str = "Recordings of calls in this channel will appear in this list.";
+pub const OLDER_RECORDINGS: &str = "Older recordings";
+
+/// The state of a recording in one word, in the list of the recordings of a channel.
+pub fn recording_state_word(
+    state: junto_client_core::protocol::recording::RecordingState,
+) -> &'static str {
+    use junto_client_core::protocol::recording::RecordingState;
+    match state {
+        RecordingState::Starting => "Starting",
+        RecordingState::Recording => "Recording now",
+        RecordingState::Processing => "Processing",
+        RecordingState::Ready => "Ready",
+        RecordingState::PartlyFailed => "Saved in part",
+        RecordingState::Failed => "Failed",
+    }
+}
 pub const CLOSE_TRANSCRIPT: &str = "Close the transcript";
 pub const TRANSCRIPT_READING: &str = "Reading the transcript…";
 pub const TRANSCRIPT_REFRESH_FAILED: &str = "The transcript could not be refreshed. Try again.";
@@ -3272,6 +3271,34 @@ pub fn recording_file(
         FileKind::Microphone => format!("{stamp} microphone {person}{number}"),
         FileKind::ShareSound => format!("{stamp} shared sound {person}{number}"),
     }
+}
+
+/// A place in a recording: "3:05", or "1:02:07" from an hour on.
+pub fn recording_offset(offset: std::time::Duration) -> String {
+    let seconds = offset.as_secs();
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// The stretch of sound that the video of a recording lacks (ADR 0606).
+pub fn sound_missing_at(from: std::time::Duration, until: std::time::Duration) -> String {
+    format!(
+        "The sound is missing from {} to {} of the recording.",
+        recording_offset(from),
+        recording_offset(until)
+    )
+}
+
+/// The video of a recording begins after the recording: its first start was replaced.
+pub fn video_begins_late(late: std::time::Duration) -> String {
+    format!(
+        "The video begins {} s after the recording started.",
+        late.as_secs()
+    )
 }
 
 /// What the check of the server found wrong with a file of a recording.

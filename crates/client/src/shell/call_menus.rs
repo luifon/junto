@@ -165,6 +165,7 @@ impl Shell {
                             &control.focus,
                             accessible,
                         )
+                        .in_menu()
                         .selector("call-menu-volume"),
                     ),
                 )
@@ -558,8 +559,7 @@ impl Shell {
         if matches!(
             &open.source,
             Some(AccountSource::CallOccupant {
-                surface: super::account_menus::CallSurface::Member { inside: false }
-                    | super::account_menus::CallSurface::InviteChoice,
+                surface: super::account_menus::CallSurface::Member { inside: false },
                 ..
             })
         ) {

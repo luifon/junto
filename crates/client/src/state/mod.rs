@@ -16,6 +16,7 @@ mod typing;
 pub use call_keys::KeybindChange;
 pub mod afk;
 mod call_sounds;
+pub mod channel_recordings;
 pub mod contacts;
 mod conversations;
 mod device_checks;
@@ -44,6 +45,7 @@ pub mod receipts;
 pub mod recorded;
 mod recorded_work;
 pub mod recording;
+pub mod recording_language;
 pub mod search;
 mod searching;
 pub mod startup;
@@ -475,6 +477,10 @@ pub struct AppState {
     muted_speech_wake: Option<Task<()>>,
     /// The windows whose notice has the pointer over it or the focus in its check box.
     muted_speech_holds: HashSet<gpui::EntityId>,
+    /// The recordings of the voice channel whose Files panel shows them (ADR 0784).
+    channel_recordings: channel_recordings::ChannelRecordings,
+    /// The default spoken language of the recordings of each server (ADR 0604).
+    recording_languages: recording_language::RecordingLanguages,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -1053,6 +1059,8 @@ impl AppState {
             muted_speech: muted_speech::MutedSpeech::default(),
             muted_speech_wake: None,
             muted_speech_holds: HashSet::new(),
+            channel_recordings: Default::default(),
+            recording_languages: Default::default(),
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,

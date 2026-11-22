@@ -26,7 +26,6 @@ pub(crate) struct AccountTarget {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CallSurface {
     Hidden,
-    InviteChoice,
     Presenter,
     RaisedHand,
     MeetingWaiting,
@@ -251,7 +250,6 @@ impl OpenAccountMenu {
                                         .any(|person| person.account_id == *account_id)
                             }
                             CallSurface::Hidden
-                            | CallSurface::InviteChoice
                             | CallSurface::Presenter
                             | CallSurface::RaisedHand
                             | CallSurface::MeetingWaiting => {

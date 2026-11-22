@@ -59,13 +59,13 @@ Prompts:
 
 Inviting:
 
-- The Members tab of a call has "Invite a member" under its list. It opens a list of the members of the workspace who are not in the call, with a field that searches it. "Invite" invites; an invited member shows "Invited" and a button that withdraws the invitation.
+- The tab "In the call" of a call has the field "Find a member" at its top, which finds people in the call and outside it by their name. Each row of a member outside the call of a voice channel has "Invite", whose tooltip states that an invited person can join a locked or full call; an invited member shows "Invited" and a button that cancels the invitation. The press on these buttons acts alone: the row is not selected and its menu does not open. Reason: inviting was in three places (a full-width button with a picker that listed the same people again, the menu of the row, and the menu of a person in the channel list), and two sentences explained it. Test: `live::rules::` (the invitation from the row, its refusal, its cancellation and its acceptance, without a picker).
 - The list holds every member of the workspace outside the call. The client does not know who has access to the voice channel; the server refuses a member without it.
 
 The menu of a person:
 
 - A row of a person in a voice channel of the channel list opens a menu: with a right click, and from the keyboard, while the row holds the focus, with the Menu key, Shift and F10, Enter or Space. The row of the person of this device has no menu.
-- The menu has "Invite to my call" while the device is in another call of the same workspace, "Move to…" with the other voice channels for a person with "move members", the volume of the person for this listener, and under "Moderation" the microphone block with "mute members", "Lower hand" with "mute members" or for the presenter of meeting mode inside that call, the sound block with "deafen members", and "Disconnect" with "disconnect members". A block that exists is offered for removal.
+- The menu follows the one order of the menu of a person in a call, on the row, the tile and the list (ADR 0735): the volume of the person for this listener; the moderation group without a label: the microphone block with "mute members", "Lower hand" with "mute members" or for the presenter of meeting mode inside that call, the sound block with "deafen members", "Move to…" with the other voice channels for a person with "move members", and "Disconnect" with "disconnect members"; then "Invite to my call" while the device is in another call of the same workspace; then the identity actions. A block that exists is offered for removal.
 - "Lower hand" lowers the hand of the person and changes no microphone block (ADR 0516). While the hand of the person is not raised, the item is drawn disabled and states that no hand is raised: a hand that is raised or lowered while the menu is open moves no item under the pointer.
 - The menu offers the sound block of ADR 0503.
 - A moderator acts on a person in any voice channel that the moderator can see, also from outside it (ADR 0514).

@@ -798,6 +798,7 @@ mod tests {
                 problems: Vec::new(),
                 silent: false,
                 recovered: false,
+                missing_sound: None,
             }),
         };
         let segments = vec![

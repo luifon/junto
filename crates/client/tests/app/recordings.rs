@@ -230,7 +230,9 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     );
     assert_eq!(lines.len(), SHOWN_LINES);
     assert_eq!(lines[2].text, "Can you hear me?");
-    assert!(window.shows_named(format!("transcript-line:{}", lines[2].line)));
+    // The card states the transcript in one line; the side panel shows its lines.
+    assert!(window.shows_named(format!("card-transcript:{recording_id}")));
+    assert!(!window.shows_named(format!("transcript-line:{}", lines[2].line)));
     // The roles of a member do not hold "manage recordings": the control says so.
     assert!(!window.card(recording_id).unwrap().may_remove);
 
@@ -453,13 +455,15 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
                 .card(recording_id)
                 .is_some_and(|card| card.may_remove)
                 && window.detail(recording_id).as_ref() == Some(&read)
-                && window.shows("remove-recording")
+                && window.shows("recording-more")
         },
     );
+    window.click("recording-more");
     window.click("remove-recording");
     assert!(window.shows("confirm-remove-recording"));
     window.click("cancel");
     assert!(window.card(recording_id).is_some());
+    window.click("recording-more");
     window.click("remove-recording");
     window.click("confirm");
     window.until("the card is gone", |window| {

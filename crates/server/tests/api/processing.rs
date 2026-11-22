@@ -197,21 +197,34 @@ async fn a_track_of_digital_silence_is_stated_and_is_no_failure() {
     }
 }
 
-/// ADR 0602: the composite is not silent in a range in which an audio file of the same time
-/// has sound. A layout page that plays no track gives such a composite, and the recorder
-/// reports it as complete.
+/// ADR 0602, ADR 0606: the composite is not silent for a continuous stretch of more than 2
+/// seconds in which an audio file of the same time has sound. A layout page that plays no
+/// track gives such a composite, and the recorder reports it as complete. The stretch is
+/// stored with its place; a silence of 2 seconds is no such stretch.
 #[tokio::test]
 async fn a_composite_that_is_silent_while_a_microphone_has_sound_fails_the_check() {
     let studio = Studio::open().await;
     let server = &studio.scene.server;
-    server.recorder().set_pieces(samples::mute_composite());
+    server.recorder().set_track(samples::long_track());
+    server.recorder().set_pieces(samples::long_mute_composite());
 
-    let done = studio.finished_after(length()).await;
+    let done = studio
+        .finished_after(Duration::seconds(i64::from(samples::LONG_SECONDS)))
+        .await;
     assert_eq!(done.recording.state, RecordingState::PartlyFailed);
     let (composite, tracks) = parts(&done);
     assert_eq!(problems(composite), [FileProblem::SoundMissing]);
-    assert!(composite.file.as_ref().unwrap().silent);
+    let file = composite.file.as_ref().unwrap();
+    assert!(file.silent);
+    let gap = file.missing_sound.as_ref().unwrap();
+    assert!(gap.until - gap.from > Duration::seconds(2), "{gap:?}");
     assert!(tracks.iter().all(|track| problems(track).is_empty()));
+
+    let studio = Studio::open().await;
+    let server = &studio.scene.server;
+    server.recorder().set_pieces(samples::mute_composite());
+    let done = studio.finished_after(length()).await;
+    assert_eq!(done.recording.state, RecordingState::Ready, "{done:?}");
 }
 
 #[tokio::test]

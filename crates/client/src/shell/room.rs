@@ -19,14 +19,14 @@ use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId};
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::view::{
-    ChannelCall, ChannelRow, Closed, EntryState, MeetingStart, MeetingView, OutsideMember,
-    PersonMenu, RoomView, ShellView, VoiceState,
+    ChannelRow, Closed, EntryState, MeetingStart, MeetingView, PersonMenu, RoomView, ShellView,
+    VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, SectionLabel, Stepper, StyleExt,
-    Toggle, VolumeSlider, float_shadow, icon, menu_label, menu_separator, tooltip,
+    Button, ButtonKind, Menu, MenuItem, Notice, SectionLabel, Stepper, StyleExt, Toggle,
+    VolumeSlider, icon, menu_label, menu_separator, tooltip,
 };
 
 /// The largest user limit of a voice channel (ADR 0514).
@@ -658,286 +658,6 @@ impl Shell {
         })
     }
 
-    pub(crate) fn toggle_member_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // A click on the button of the open list closes the list: the press closed it,
-        // and the click does not open it again.
-        if std::mem::take(&mut self.invite_closed_by_press) {
-            return;
-        }
-        self.invite_open = !self.invite_open;
-        if self.invite_open {
-            self.invite_find
-                .update(cx, |find, cx| find.set_value("", window, cx));
-            self.focus_field(&self.invite_find.clone(), window, cx);
-        }
-        cx.notify();
-    }
-
-    /// True while the list of the members who can be invited is open.
-    pub fn member_picker_is_open(&self) -> bool {
-        self.invite_open
-    }
-
-    /// The part under the member list of a call that invites a member (ADR 0514): the
-    /// button, what an invitation does, and the list of the members outside the call.
-    pub(crate) fn render_invite_area(
-        &mut self,
-        panel: &ChannelCall,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let picker = self
-            .invite_open
-            .then_some(panel.room.ready)
-            .filter(|ready| *ready)
-            .map(|_| self.render_member_picker(panel, theme, cx));
-        div()
-            .id("invite-area")
-            .relative()
-            .flex_none()
-            .pt(u(10.0))
-            .px(u(12.0))
-            .pb(u(12.0))
-            .border_t_1()
-            .border_color(Hsla::from(colors.rule))
-            .bg(Hsla::from(colors.limestone))
-            .children(picker)
-            .child(
-                Button::new("invite-open")
-                    .kind(ButtonKind::Primary)
-                    .icon(Icon::Invite)
-                    .label(text::INVITE_A_MEMBER)
-                    .selector("invite-open")
-                    .disabled(!panel.room.ready)
-                    .w_full()
-                    .h(u(32.0))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_member_picker(window, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .mt(u(7.0))
-                    .typeface(theme.types.small, theme)
-                    .line_height(u(17.0))
-                    .ink(colors.ink_2)
-                    .child(text::invite_help(&panel.room.name)),
-            )
-            .into_any_element()
-    }
-
-    fn render_member_picker(
-        &mut self,
-        panel: &ChannelCall,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme.colors;
-        let faces = self.shown_faces();
-        let wanted = self.invite_find.read(cx).value().trim().to_lowercase();
-        let listed: Vec<&OutsideMember> = panel
-            .outside
-            .iter()
-            .filter(|member| wanted.is_empty() || member.name.to_lowercase().contains(&wanted))
-            .collect();
-        let rows: Vec<AnyElement> = listed
-            .iter()
-            .enumerate()
-            .map(|(index, member)| {
-                let account_id = member.account_id;
-                let action: AnyElement = match member.invitation {
-                    Some(invitation_id) => div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(u(2.0))
-                        .child(
-                            Button::new(("invited", index))
-                                .label(text::INVITED)
-                                .disabled(true)
-                                .h(u(26.0)),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(move || format!("withdraw-invitation:{account_id}"))
-                                .child(
-                                    Button::new(("withdraw-invitation", index))
-                                        .kind(ButtonKind::Ghost)
-                                        .icon(Icon::X)
-                                        .tooltip(text::WITHDRAW_INVITATION)
-                                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                                            this.state.update(cx, |state, cx| {
-                                                state.withdraw_invitation(invitation_id, cx);
-                                            });
-                                        })),
-                                ),
-                        )
-                        .into_any_element(),
-                    None => div()
-                        .flex_none()
-                        .debug_selector(move || format!("invite:{account_id}"))
-                        .child(
-                            Button::new(("invite", index))
-                                .label(text::INVITE)
-                                .h(u(26.0))
-                                .on_click(self.call_listener(cx, move |this, _, _, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.invite(account_id, cx));
-                                })),
-                        )
-                        .into_any_element(),
-                };
-                let identity = div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .gap(u(9.0))
-                    .child(super::people::avatar(&faces, account_id, 26.0).radius(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .typeface(theme.types.control, theme)
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .line_height(u(18.0))
-                                    .ink(colors.ink)
-                                    .child(super::people::person_name(
-                                        &faces,
-                                        member.account_id,
-                                        member.name.clone(),
-                                        "invite-member-name",
-                                    )),
-                            )
-                            .when_some(member.place.as_ref(), |column, place| {
-                                column.child(
-                                    div()
-                                        .truncate()
-                                        .typeface(theme.types.small, theme)
-                                        .line_height(u(16.0))
-                                        .ink(colors.ink_2)
-                                        .child(text::in_channel(place)),
-                                )
-                            }),
-                    );
-                let identity = self.call_identity_target(
-                    format!("invite-person:{account_id}").into(),
-                    account_id,
-                    member.name.clone(),
-                    super::account_menus::CallSurface::InviteChoice,
-                    div()
-                        .debug_selector(move || format!("invite-choice:{account_id}"))
-                        .flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(identity),
-                    cx,
-                );
-                div()
-                    .id(("invite-row", account_id.as_uuid().as_u128() as u64))
-                    .role(Role::ListItem)
-                    .aria_label(member.name.clone())
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(u(9.0))
-                    .py(u(5.0))
-                    .px(u(10.0))
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(Hsla::from(colors.rule_soft))
-                    })
-                    .child(identity)
-                    .child(action)
-                    .into_any_element()
-            })
-            .collect();
-        let empty = rows.is_empty().then(|| {
-            div()
-                .px(u(10.0))
-                .pb(u(6.0))
-                .typeface(theme.types.small, theme)
-                .line_height(u(17.0))
-                .ink(colors.ink_2)
-                .child(if panel.outside.is_empty() {
-                    text::NO_MEMBER_TO_INVITE
-                } else {
-                    text::NO_MEMBER_FOUND
-                })
-        });
-        div()
-            .absolute()
-            .left(u(12.0))
-            .right(u(12.0))
-            .bottom(u(90.0))
-            .child(
-                div()
-                    .id("member-picker")
-                    .role(Role::Dialog)
-                    .aria_label(text::invite_to(&panel.room.name))
-                    .debug_selector(|| "member-picker".to_owned())
-                    .occlude()
-                    .pt(u(8.0))
-                    .pb(u(4.0))
-                    .rounded(u(theme.metrics.radius_menu))
-                    .border_1()
-                    .border_color(Hsla::from(colors.rule))
-                    .bg(Hsla::from(colors.travertine_hi))
-                    .shadow(float_shadow(colors.shadow, 8.0, 22.0))
-                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
-                        if matches!(&this.layer, super::Layer::AccountMenu(open) if matches!(open.source, Some(super::account_menus::AccountSource::CallOccupant { surface: super::account_menus::CallSurface::InviteChoice, .. }))) && crate::ui::over_focused_menu(event.position, window, cx) { return; }
-                        this.invite_open = false;
-                        this.invite_closed_by_press = true;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .px(u(10.0))
-                            .pb(u(7.0))
-                            .typeface(theme.types.control, theme)
-                            .text_size(u(13.5))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .ink(colors.ink)
-                            .child(text::invite_to(&panel.room.name)),
-                    )
-                    .child(
-                        div().mx(u(10.0)).mb(u(6.0)).child(
-                            Field::new(&self.invite_find, text::FIND_A_MEMBER)
-                                .kind(FieldKind::Find)
-                                .selector("invite-find"),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("member-picker-list")
-                            .role(Role::List)
-                            .aria_label(text::invite_to(&panel.room.name))
-                            .flex()
-                            .flex_col()
-                            .max_h(u(232.0))
-                            .overflow_y_scroll()
-                            .children(rows)
-                            .children(empty),
-                    )
-                    .child(
-                        div()
-                            .pt(u(6.0))
-                            .px(u(10.0))
-                            .pb(u(4.0))
-                            .border_t_1()
-                            .border_color(Hsla::from(colors.rule_soft))
-                            .typeface(theme.types.small, theme)
-                            .line_height(u(17.0))
-                            .ink(colors.ink_2)
-                            .child(text::invite_footer(&panel.room.name)),
-                    ),
-            )
-            .into_any_element()
-    }
-
     /// What the header of a voice channel that the person cannot enter without help
     /// shows in the place of "Join call" (ADR 0739): "Ask to join", and the state of the
     /// request where it was made.
@@ -1182,38 +902,32 @@ impl Shell {
                 );
             }
         } else {
-            if let Some(channel) = &menu.invite_to {
-                items.push(
-                    MenuItem::new("menu-invite", text::INVITE_TO_MY_ROOM)
-                        .icon(Icon::Invite)
-                        .detail(text::invite_prompt(&name, channel))
-                        .selector("menu-invite")
-                        .on_click(self.call_listener(cx, move |this, _, window, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.invite(account_id, cx));
-                            this.close_layer(window, cx);
-                        }))
-                        .into_any_element(),
-                );
-            }
-            if !menu.destinations.is_empty() {
-                items.push(
-                    MenuItem::new("menu-move", text::MOVE_TO)
-                        .icon(Icon::ArrowLeftRight)
-                        .end_icon(Icon::ChevronRight)
-                        .selector("menu-move")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Layer::PersonMenu(open) = &mut this.layer {
-                                open.moving = true;
-                            }
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                );
-            }
-            if !items.is_empty() {
-                items.push(menu_separator(cx).into_any_element());
-            }
+            // The order of the menu of a person in a call (ADR 0735): the volume, the
+            // moderation group, then the invitation and the identity actions.
+            let invite = menu.invite_to.as_ref().map(|_| {
+                MenuItem::new("menu-invite", text::INVITE_TO_MY_ROOM)
+                    .icon(Icon::Invite)
+                    .selector("menu-invite")
+                    .on_click(self.call_listener(cx, move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.invite(account_id, cx));
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element()
+            });
+            let move_to = (!menu.destinations.is_empty()).then(|| {
+                MenuItem::new("menu-move", text::MOVE_TO)
+                    .icon(Icon::ArrowLeftRight)
+                    .end_icon(Icon::ChevronRight)
+                    .selector("menu-move")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Layer::PersonMenu(open) = &mut this.layer {
+                            open.moving = true;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            });
             let (volume, focus) =
                 self.volume_control(menu.server_id, account_id, menu.volume, window, cx);
             items.push(
@@ -1249,6 +963,7 @@ impl Shell {
                     .ink(colors.ink_2)
                     .child(
                         VolumeSlider::new("menu-volume", &volume, &focus, text::volume_for(&name))
+                            .in_menu()
                             .selector("menu-volume"),
                     )
                     .into_any_element(),
@@ -1257,10 +972,10 @@ impl Shell {
                 || menu.microphone_blocked.is_some()
                 || menu.hand_raised.is_some()
                 || menu.sound_blocked.is_some()
-                || menu.disconnect;
+                || menu.disconnect
+                || move_to.is_some();
             if moderates {
                 items.push(menu_separator(cx).into_any_element());
-                items.push(menu_label(text::MODERATION, false, cx).into_any_element());
             }
             if menu.allow_to_speak {
                 items.push(
@@ -1343,6 +1058,7 @@ impl Shell {
                     .into_any_element(),
                 );
             }
+            items.extend(move_to);
             if menu.disconnect {
                 items.push(
                     MenuItem::new("menu-disconnect", text::DISCONNECT)
@@ -1355,6 +1071,10 @@ impl Shell {
                         }))
                         .into_any_element(),
                 );
+            }
+            if let Some(invite) = invite {
+                items.push(menu_separator(cx).into_any_element());
+                items.push(invite);
             }
         }
         if !moving {

@@ -162,7 +162,7 @@ pub(crate) enum Layer {
     /// The list of the files of a recording, at its card.
     RecordingFiles(junto_client_core::protocol::ids::RecordingId),
     /// The parts of a recording with their time ranges, at its card (ADR 0616).
-    RecordingParts(junto_client_core::protocol::ids::RecordingId),
+    RecordingMenu(junto_client_core::protocol::ids::RecordingId),
     /// The languages of the speech of a new recording, at the button that records
     /// (ADR 0616).
     RecordLanguage,
@@ -220,7 +220,7 @@ impl Layer {
             | Layer::DirectMenu(..)
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
-            | Layer::RecordingParts(..)
+            | Layer::RecordingMenu(..)
             | Layer::RecordLanguage
             | Layer::JoinMenu(..)
             | Layer::RoomSettings
@@ -329,8 +329,6 @@ pub enum Open {
     ShareMenu,
     /// What happened to the last recording of the call.
     RecordingDetails,
-    /// The list of the members who can be invited into the call.
-    MemberPicker,
     /// The settings of the room of the call, in the window attached to the call bar.
     RoomSettings,
     /// The list of the choices of a filter of the search.
@@ -485,13 +483,10 @@ pub struct Shell {
     /// The press of the pointer that closed the details was on their button: the click
     /// that follows does not open them again.
     pub(crate) recording_details_closed_by_press: bool,
-    /// The list of the members who can be invited into the call is open.
-    pub(crate) invite_open: bool,
-    /// The press of the pointer that closed that list was on its button: the click that
-    /// follows does not open it again.
-    pub(crate) invite_closed_by_press: bool,
-    /// The text that the list of the members is searched for.
+    /// The text that the list of the people of a call is searched for.
     pub(crate) invite_find: Entity<InputState>,
+    /// The text that the languages of a new recording are searched for (ADR 0616).
+    pub(crate) record_language_find: Entity<InputState>,
     /// What the state of the application gave last. It is derived again only after the
     /// state told a change: a picture of a share draws the window many times a second.
     view: Option<ShellView>,
@@ -558,7 +553,7 @@ pub struct Shell {
     /// The press that closed the parts of a recording, or the languages of a new
     /// recording, was on the button that opens them: the click that follows does not open
     /// them again.
-    pub(crate) recording_parts_closed_by_press: bool,
+    pub(crate) recording_menu_closed_by_press: bool,
     pub(crate) record_language_closed_by_press: bool,
     pub(crate) join_menu_closed_by_press: bool,
     pub(crate) room_settings_closed_by_press: bool,
@@ -566,6 +561,15 @@ pub struct Shell {
     /// The menu of the shares of this device was opened from the row of own controls, and
     /// is drawn there in place of the call bar.
     pub(crate) share_menu_in_row: bool,
+    /// The search field of the channel of the call is drawn under the tabs of its right
+    /// column (ADR 0741).
+    pub(crate) call_search_open: bool,
+    /// The Files panel of a voice channel shows its tab "Recordings" (ADR 0784).
+    pub(crate) files_recordings: bool,
+    /// The list of the languages of the recordings is open on the page of the server, and
+    /// the server whose default language was asked for (ADR 0604).
+    pub(crate) admin_language_open: bool,
+    pub(crate) admin_language_asked: Option<ServerId>,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
     voice_status_field: Entity<InputState>,
@@ -656,6 +660,7 @@ impl Shell {
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
         let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
+        let record_language_find = Field::state(text::transcripts::FIND_LANGUAGE, window, cx);
         let member_search = member_search::MemberSearch::new(window, cx);
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
@@ -917,6 +922,14 @@ impl Shell {
             ),
             // The list of the members follows the text that it is searched for.
             member_search.observe(window, cx),
+            Field::observe(
+                &record_language_find,
+                window,
+                cx,
+                |_: &mut Self, _, _, cx| {
+                    cx.notify();
+                },
+            ),
             Field::observe(&invite_find, window, cx, |_: &mut Self, _, _, cx| {
                 cx.notify();
             }),
@@ -1021,9 +1034,8 @@ impl Shell {
             picture_focus: cx.focus_handle(),
             recording_details_open: false,
             recording_details_closed_by_press: false,
-            invite_open: false,
-            invite_closed_by_press: false,
             invite_find,
+            record_language_find,
             view: None,
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
@@ -1060,12 +1072,16 @@ impl Shell {
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
             recording_files_closed_by_press: false,
-            recording_parts_closed_by_press: false,
+            recording_menu_closed_by_press: false,
             record_language_closed_by_press: false,
             join_menu_closed_by_press: false,
             room_settings_closed_by_press: false,
             own_menu_closed_by_press: false,
             share_menu_in_row: false,
+            call_search_open: false,
+            files_recordings: false,
+            admin_language_open: false,
+            admin_language_asked: None,
             search_field,
             voice_status_field,
             search_from,
@@ -1426,11 +1442,6 @@ impl Shell {
         };
         // A layer whose server is gone, or whose work is done, has nothing to show.
         self.drop_stale_layer(&view, window, cx);
-        // The list of the members who can be invited belongs to the call that the window
-        // shows.
-        if view.lists().is_none_or(|lists| lists.call.is_none()) {
-            self.invite_open = false;
-        }
         // A search that ended empties its field.
         let searched = self
             .view
@@ -1593,13 +1604,6 @@ impl Shell {
             }
             Open::SearchFilter(kind) => {
                 self.open_layer(Layer::SearchFilter(kind), window, cx);
-            }
-            Open::MemberPicker => {
-                self.open_call_panel(cx);
-                self.show_call_tab(CallTab::Members, cx);
-                if !self.invite_open {
-                    self.toggle_member_picker(window, cx);
-                }
             }
         }
     }
@@ -2271,16 +2275,12 @@ impl Shell {
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, _, _| this.presses_over()),
             )
-            // Escape closes the details of a recording and the list of the members who
-            // can be invited. Neither is a layer of the window.
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            // Escape closes the details of a recording, which are not a layer of the window.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key != "escape" {
                     return;
                 }
-                if this.invite_open {
-                    this.invite_open = false;
-                    this.focus.focus(window, cx);
-                } else if this.recording_details_open {
+                if this.recording_details_open {
                     this.recording_details_open = false;
                 } else {
                     return;
@@ -2295,10 +2295,9 @@ impl Shell {
         self.device_ui.closed_by_press = None;
         self.share_menu_closed_by_press = false;
         self.recording_details_closed_by_press = false;
-        self.invite_closed_by_press = false;
         self.filter_closed_by_press = false;
         self.recording_files_closed_by_press = false;
-        self.recording_parts_closed_by_press = false;
+        self.recording_menu_closed_by_press = false;
         self.record_language_closed_by_press = false;
         self.join_menu_closed_by_press = false;
         self.room_settings_closed_by_press = false;
@@ -2397,7 +2396,7 @@ impl Shell {
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 !view.may_remove_recording(*server_id, *recording_id)
             }
-            Layer::RecordingFiles(recording_id) | Layer::RecordingParts(recording_id) => !view
+            Layer::RecordingFiles(recording_id) | Layer::RecordingMenu(recording_id) => !view
                 .lists()
                 .and_then(|lists| lists.feed.as_ref())
                 .is_some_and(|feed| {
@@ -2515,7 +2514,7 @@ impl Shell {
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
-            | Layer::RecordingParts(_)
+            | Layer::RecordingMenu(_)
             | Layer::RecordLanguage
             | Layer::JoinMenu(_)
             | Layer::RoomSettings

@@ -10,6 +10,12 @@ A server keeps the recordings of calls of a workspace and lists them, the newest
 
 ## Decision
 
+The tab "Recordings" of a voice channel:
+
+- The Files panel of a voice channel (the button "Files" of its header) has the tabs "Files" and "Recordings"; the Files panel of a text channel and of a conversation has only its files. "Recordings" lists the recordings of that channel, the newest first (`state::channel_recordings::ChannelRecordings`): the client reads the pages of the workspace from the newest and keeps the recordings of the channel, up to six pages for one read, and "Older recordings" reads on from where it stopped. The list belongs to the server, the account and the channel of its read, and an answer to an earlier read is not used.
+- A row shows the start (the moment the recorder started, or the moment the recording was asked for), the state in a word and the length. "Go to recording" opens the card of the recording in the chat of the channel by its link (ADR 0744); "Transcript" opens the transcript in the side panel when the recording has one. The card holds the files and their downloads.
+- Reason: the only list of past recordings was the page of the administration, which only downloaded files and was three clicks away; a recording belongs to its channel, and the people of the channel find it there, as in the channel files of Slack and the Recordings tab of a Teams meeting. The page of the administration leaves the window in a later change; the retention of recordings stays in the settings of the server. Test: `files_recordings::the_files_panel_of_a_voice_channel_has_its_recordings_tab`.
+
 The page:
 
 - The administration has the page "Recordings" in the group of the shown workspace. Every member has it: the server answers with what the account may see.

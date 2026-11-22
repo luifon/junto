@@ -2227,14 +2227,6 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
             .servers(vec![inviting(), harbor()]),
         show_daily_tab(CallTab::Members),
     )?;
-    studio.draw(
-        Screen::call("call-members-invite-picker", in_call(Phase::Connected))
-            .servers(vec![inviting(), harbor()]),
-        |shell, window, cx| {
-            select_channel(shell, "Daily", cx);
-            shell.open(Open::MemberPicker, window, cx);
-        },
-    )?;
     // A person outside asks to enter the call of this device.
     let asked = || {
         let mut server = acme_with_rules(MEMBER, locked);

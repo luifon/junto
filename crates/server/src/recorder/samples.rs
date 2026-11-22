@@ -107,6 +107,27 @@ pub fn track() -> Arc<Vec<u8>> {
     once!(Arc<Vec<u8>>, track_of(TONE, &[]))
 }
 
+/// The length of [`long_track`] and [`long_mute_composite`], in seconds: longer than the
+/// stretch of missing sound that the check of a composite reports (ADR 0606).
+pub const LONG_SECONDS: u32 = 4;
+
+/// An audio track: four seconds of a tone.
+pub fn long_track() -> Arc<Vec<u8>> {
+    once!(Arc<Vec<u8>>, track_of("sine=frequency=440:duration=4", &[]))
+}
+
+/// A composite of four seconds whose sound is digital silence.
+pub fn long_mute_composite() -> Pieces {
+    once!(
+        Pieces,
+        pieces_of(
+            "testsrc2=size=320x180:rate=10:duration=4",
+            Some("anullsrc=r=48000:cl=stereo:d=4"),
+            "1"
+        )
+    )
+}
+
 /// An audio track of digital silence, as a muted microphone gives it.
 pub fn silent_track() -> Arc<Vec<u8>> {
     once!(

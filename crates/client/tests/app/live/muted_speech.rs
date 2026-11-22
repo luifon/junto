@@ -51,8 +51,14 @@ fn local_speech_while_muted_offers_unmute_without_bypassing_held_keys(cx: &mut T
     window.click("muted-speech-setting");
     assert!(window.shows("muted-speech") && !window.shows("muted-speech-turned-off"));
     assert!(notice_on(&window));
-    // Unchecked for good: the statement, then the notice goes and does not come back.
+    // Unchecked for good: the statement stays while the pointer is over the notice and
+    // its check box has the focus; then the notice goes and does not come back.
     window.click("muted-speech-setting");
+    window.pass(junto_client::state::muted_speech::TURNED_OFF * 2);
+    window.settle();
+    assert!(window.shows("muted-speech-turned-off"));
+    window.move_pointer(gpui::point(gpui::px(1.0), gpui::px(1.0)));
+    window.press("tab");
     window.until("the turned-off notice goes", |window| {
         !window.shows("muted-speech")
     });

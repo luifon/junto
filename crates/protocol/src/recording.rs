@@ -229,6 +229,20 @@ pub struct SegmentFile {
     /// The recorder did not end the file in order: the server took it from what a lost
     /// recorder left.
     pub recovered: bool,
+    /// The longest continuous stretch of sound that the composite lacks, on the timeline of
+    /// the recording, with the problem `sound_missing`. Absent from a server before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_sound: Option<SoundGap>,
+}
+
+/// A stretch of time on the timeline of a recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SoundGap {
+    #[serde(with = "time::serde::rfc3339")]
+    pub from: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub until: OffsetDateTime,
 }
 
 /// One file of a recording: the composite, or one audio track of one person.
@@ -272,9 +286,19 @@ pub struct RecordingDetail {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StartRecording {
     /// The language of the speech, as a Whisper language code of two or three lower-case
-    /// letters. Absent or `auto`: the language of each speech clip is detected (ADR 0603).
+    /// letters, or `auto`: the language of each speech clip is detected (ADR 0603). Absent:
+    /// the default language of the recordings of the server ([`RecordingSettings`]).
     #[serde(default)]
     pub language: Option<String>,
+}
+
+/// The settings of the recordings of a server (ADR 0604).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RecordingSettings {
+    /// The spoken language of a recording that names none: a language code of two or
+    /// three lower-case letters, or `auto`. English on a new server.
+    pub language: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

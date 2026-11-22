@@ -67,11 +67,11 @@ pub use held::{Held, MOVED_GUARD, MovedControls, Moves, WAIT_BOUND, held};
 pub use input_menu::InputMenu;
 pub use link_menu::{CopyToClipboard, LinkMenu, OpenLink};
 pub use marks::{Badge, Chip, CornerCount, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
+pub(crate) use menu::has_focused_menu;
 pub use menu::{
     BoundKeys, ContextMenuExt, Menu, MenuItem, MenuPlacement, menu_label, menu_separator,
     set_bound_keys,
 };
-pub(crate) use menu::{has_focused_menu, over_focused_menu};
 pub use menu_button::{MENU_ROW, MenuButton, OwnPress};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use notice::notice_slot;

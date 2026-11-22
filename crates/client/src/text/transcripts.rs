@@ -73,7 +73,8 @@ pub const PARTS: &str = "Parts";
 pub const PARTS_HELP: &str = "Every file of this recording with the time range that it holds";
 
 // The language of a new recording.
-pub const LANGUAGE_MENU: &str = "Choose the spoken language to start recording";
+pub const LANGUAGE_MENU: &str = "Language of this recording";
+pub const FIND_LANGUAGE: &str = "Find a language";
 pub const DETECT: &str = "Detect the language of each sentence";
 pub const DETECT_HELP: &str = "For speech in more than one language";
 pub const ONE_LANGUAGE: &str = "One language for the whole recording";
@@ -395,4 +396,15 @@ mod tests {
         assert_eq!(language_name("pt"), Some("Portuguese"));
         assert_eq!(language_name("xx"), None);
     }
+}
+
+pub const RECORD_IN_ANOTHER_LANGUAGE: &str = "Record in another language";
+
+/// The name of the spoken language of recordings by its code, "Detect the language of each
+/// sentence" for `auto`, or the code when this build does not know it.
+pub fn recording_language_name(code: &str) -> String {
+    if code == "auto" {
+        return DETECT.to_owned();
+    }
+    language_name(code).map_or_else(|| code.to_owned(), str::to_owned)
 }

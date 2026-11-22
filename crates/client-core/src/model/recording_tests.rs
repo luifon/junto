@@ -77,6 +77,7 @@ pub(crate) fn segment(source: SegmentSource, bytes: u64) -> RecordingSegment {
             problems: Vec::new(),
             silent: false,
             recovered: false,
+            missing_sound: None,
         }),
     }
 }

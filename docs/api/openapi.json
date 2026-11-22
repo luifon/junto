@@ -11512,6 +11512,100 @@
         ]
       }
     },
+    "/api/v1/server/recording-settings": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The settings of the recordings of the server: the spoken language of a recording that\nnames none. Every account of the server reads them.",
+        "operationId": "get_recording_settings",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Sets the spoken language of a recording that names none. The caller is an administrator\nof the server.",
+        "operationId": "set_recording_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordingSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/snapshot": {
       "get": {
         "tags": [
@@ -21626,6 +21720,19 @@
         "type": "string",
         "format": "uuid"
       },
+      "RecordingSettings": {
+        "type": "object",
+        "description": "The settings of the recordings of a server (ADR 0604).",
+        "required": [
+          "language"
+        ],
+        "properties": {
+          "language": {
+            "type": "string",
+            "description": "The spoken language of a recording that names none: a language code of two or\nthree lower-case letters, or `auto`. English on a new server."
+          }
+        }
+      },
       "RecordingState": {
         "type": "string",
         "description": "The state of a recording. The states follow each other in this order; the last three are\nfinal.",
@@ -22347,6 +22454,17 @@
             "type": "string",
             "description": "`video/mp4` for the composite and `audio/ogg` for an audio track."
           },
+          "missing_sound": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SoundGap",
+                "description": "The longest continuous stretch of sound that the composite lacks, on the timeline of\nthe recording, with the problem `sound_missing`. Absent from a server before it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "problems": {
             "type": "array",
             "items": {
@@ -23002,6 +23120,24 @@
           }
         }
       },
+      "SoundGap": {
+        "type": "object",
+        "description": "A stretch of time on the timeline of a recording.",
+        "required": [
+          "from",
+          "until"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "SpeakerSeparation": {
         "type": "string",
         "description": "Whether the lines of a segment of shared sound have speaker labels (ADR 0614).",
@@ -23033,7 +23169,7 @@
               "string",
               "null"
             ],
-            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters. Absent or `auto`: the language of each speech clip is detected (ADR 0603)."
+            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters, or `auto`: the language of each speech clip is detected (ADR 0603). Absent:\nthe default language of the recordings of the server ([`RecordingSettings`])."
           }
         }
       },

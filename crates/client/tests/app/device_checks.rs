@@ -624,7 +624,7 @@ fn in_a_call_the_device_lists_of_the_settings_open_and_choose_the_devices(cx: &m
         window.shows("call-tab-members")
     });
     assert!(!window.shows("call-tab-settings"));
-    window.click("own-devices");
+    window.open_call_devices();
     assert!(window.shows("settings-page-settings-section-voice-and-video"));
     window.until("the device choices are read", |window| {
         window.state.read_with(&window.cx, |state, _| {

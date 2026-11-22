@@ -213,7 +213,7 @@ impl Scene {
         assert!(!self.window.shows("profile-card"));
         self.window.press("shift-f10");
         assert!(self.window.shows("menu-invite"));
-        self.window.press("down enter");
+        choose_in_person_menu(&mut self.window, "menu-invite");
         assert!(
             !self.window.shows("profile-card"),
             "the menu must choose its invitation action"
@@ -906,16 +906,10 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
                 .any(|member| member.account_id == ada)
         })
     });
-    scene.window.click("invite-open");
-    assert!(
-        scene
-            .window
-            .in_shell(|shell, _, _| shell.member_picker_is_open())
-    );
-    assert!(scene.window.shows("member-picker"));
-    scene
-        .window
-        .right_click_named(format!("invite-choice:{ada}"));
+    // The row of a person outside the call has "Invite"; the list has no picker.
+    assert!(scene.window.shows_named(format!("invite:{ada}")));
+    assert!(!scene.window.shows("invite-open") && !scene.window.shows("member-picker"));
+    scene.window.right_click_named(format!("call-member:{ada}"));
     scene.window.click_named(format!("account-copy-id:{ada}"));
     assert_eq!(
         scene
@@ -927,7 +921,6 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
             .unwrap(),
         ada.to_string()
     );
-    assert!(scene.window.shows("member-picker"));
 
     scene.window.click_named(format!("invite:{ada}"));
     let invitation = scene.invitation_for_ada();
@@ -947,11 +940,8 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.until("the refusal is told", |window| {
         window.shows("call-told") && window.shows_named(format!("invite:{ada}"))
     });
-    // A press outside the list of the members closes it.
     scene.window.click("dismiss-call-told");
-    assert!(!scene.window.shows("member-picker"));
     // The person invites again and withdraws the invitation.
-    scene.window.click("invite-open");
     scene.window.click_named(format!("invite:{ada}"));
     scene.invitation_for_ada();
     // The invitation reaches Ada and the window of the person on two paths: the click
@@ -989,13 +979,6 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.until("Ada is in the call", |window| {
         ada_in(window, voice) && !window.shows_named(format!("invite:{ada}"))
     });
-    // Escape closes the list of the members.
-    scene.window.press("escape");
-    assert!(
-        !scene
-            .window
-            .in_shell(|shell, _, _| shell.member_picker_is_open())
-    );
 
     // A member without moderation gets volume and identity actions. The own row has
     // identity actions without the moderation menu.
@@ -1340,7 +1323,7 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
     assert!(!scene.window.shows("profile-card"));
     scene.window.press("shift-f10");
     assert!(scene.window.shows("menu-move"));
-    scene.window.press("down enter");
+    choose_in_person_menu(&mut scene.window, "menu-move");
     assert!(scene.window.shows("menu-back"));
     scene.window.press("down down enter");
     scene
@@ -2111,8 +2094,8 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         })
     };
 
-    // A locked room of the second server refuses the double click as it refuses the join
-    // button, and the call on the first server goes on.
+    // A locked room of the second server refuses the double click, and the call on the
+    // first server goes on.
     show_server(&mut scene.window, second);
     let closed = |window: &mut Window| {
         window
@@ -2126,17 +2109,14 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         closed(window) == Some(Closed::Locked)
     });
     scene.window.double_click_channel("Review");
-    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    refusal(&mut scene.window, "the refusal of the locked room");
     assert!(in_first(&mut scene.window));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
-    assert!(in_first(&mut scene.window));
+    // The header of the closed room asks to join in the place of "Join call".
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
 
-    // A full room of the second server refuses the double click as it refuses the join
-    // button, and the call on the first server goes on.
+    // A full room of the second server refuses the double click, and the call on the
+    // first server goes on.
     scene.world.run(bea_api.unlock_call(review)).unwrap();
     scene
         .world
@@ -2152,13 +2132,10 @@ fn a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there(
         closed(window) == Some(Closed::Full)
     });
     scene.window.double_click_channel("Review");
-    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    refusal(&mut scene.window, "the refusal of the full room");
     assert!(in_first(&mut scene.window));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
-    assert!(in_first(&mut scene.window));
+    // The header of the closed room asks to join in the place of "Join call".
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
 
     // The open room is entered: the device leaves the call of the first server.
@@ -3353,4 +3330,27 @@ fn an_early_entry_answer_still_notifies_after_the_request_response(cx: &mut Test
         )
         .unwrap();
     scene.world.run(scene.caller.calls.leave());
+}
+
+/// Chooses an item of the open menu of a person with the keyboard. The volume comes first,
+/// then the moderation items that the person may use, then "Move to" and the invitation
+/// (ADR 0735).
+fn choose_in_person_menu(window: &mut crate::harness::Window, item: &'static str) {
+    let order = [
+        "menu-volume",
+        "menu-allow-speak",
+        "menu-mute",
+        "menu-lower-hand",
+        "menu-block-sound",
+        "menu-move",
+        "menu-disconnect",
+        "menu-invite",
+    ];
+    let target = order.iter().position(|name| *name == item).unwrap();
+    let before = order[..target]
+        .iter()
+        .copied()
+        .filter(|name| window.shows(*name))
+        .count();
+    window.press(&format!("{}enter", "down ".repeat(before + 1)));
 }

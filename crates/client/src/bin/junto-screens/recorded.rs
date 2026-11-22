@@ -83,6 +83,7 @@ fn segment(
             problems: Vec::new(),
             silent: false,
             recovered: false,
+            missing_sound: None,
         }),
     }
 }
@@ -707,10 +708,10 @@ fn draw_changes(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
     studio.draw(
-        Screen::new("recording-parts", acme(Some(changed()), |_| {})),
+        Screen::new("recording-menu", acme(Some(changed()), may_remove)),
         |shell, window, cx| {
             show(shell, |_| {}, cx);
-            shell.open_recording_parts(recording_id(), window, cx);
+            shell.open_recording_menu(recording_id(), window, cx);
         },
     )?;
     let mut failed = open(RecordingState::Ready, TranscriptState::Failed);

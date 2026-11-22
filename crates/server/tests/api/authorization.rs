@@ -336,6 +336,20 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::GET,
+            "/api/v1/server/recording-settings",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/server/recording-settings",
+            &[],
+            json!({ "language": "de" }),
+            &forbidden,
+        ),
+        operation(
             Method::PUT,
             "/api/v1/workspaces/{workspace_id}/logo",
             &[&ws],

@@ -802,7 +802,8 @@ impl Shell {
         let labelled = |button: Button, label: &'static str| {
             if compact { button } else { button.label(label) }
         };
-        // "Record" opens the languages of the speech; a choice starts the recording
+        // "Record" starts at once in the spoken language that the server sets for its
+        // recordings; the arrow beside it opens the languages for this recording
         // (ADR 0616).
         let offers_record = control.may_record
             && matches!(
@@ -819,6 +820,7 @@ impl Shell {
                 .relative()
                 .flex()
                 .flex_none()
+                .gap(px(1.0))
                 .child(
                     labelled(Button::new("start-recording"), text::RECORD)
                         .icon(Icon::Record)
@@ -827,6 +829,19 @@ impl Shell {
                         .accessible_label(title)
                         .disabled(control.busy)
                         .selector("start-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.start_recording(None, cx));
+                        })),
+                )
+                .child(
+                    Button::new("record-language")
+                        .icon(Icon::ChevronDown)
+                        .tooltip(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .accessible_label(text::transcripts::RECORD_IN_ANOTHER_LANGUAGE)
+                        .disabled(control.busy)
+                        .selector("record-language")
+                        .px(u(6.0))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_record_languages(window, cx);
                         })),
@@ -2185,6 +2200,9 @@ impl Shell {
         }
         self.recording_details_open = false;
         self.open_layer(Layer::RecordLanguage, window, cx);
+        let find = self.record_language_find.clone();
+        find.update(cx, |find, cx| find.set_value("", window, cx));
+        self.focus_field(&find, window, cx);
     }
 
     /// The languages of the speech of a new recording (ADR 0603): the detection of the
@@ -2219,7 +2237,7 @@ impl Shell {
         items.push(choice(
             ("record-language", 0),
             text::transcripts::DETECT,
-            None,
+            Some("auto"),
             "record-language:auto".to_owned(),
             self,
             cx,
@@ -2227,8 +2245,32 @@ impl Shell {
         items.push(
             crate::ui::menu_label(text::transcripts::ONE_LANGUAGE, false, cx).into_any_element(),
         );
+        items.push(
+            div()
+                .flex_none()
+                .px(u(10.0))
+                .pb(u(6.0))
+                .child(
+                    crate::ui::Field::new(
+                        &self.record_language_find,
+                        text::transcripts::FIND_LANGUAGE,
+                    )
+                    .kind(crate::ui::FieldKind::Find)
+                    .selector("record-language-find"),
+                )
+                .into_any_element(),
+        );
+        let wanted = self
+            .record_language_find
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         let mut languages: Vec<AnyElement> = Vec::new();
         for (index, (code, name)) in text::transcripts::LANGUAGES.iter().enumerate() {
+            if !wanted.is_empty() && !name.to_lowercase().contains(&wanted) {
+                continue;
+            }
             languages.push(choice(
                 ("record-language", index + 1),
                 name,
