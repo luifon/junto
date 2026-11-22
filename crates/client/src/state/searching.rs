@@ -41,23 +41,39 @@ fn failure(error: &ApiError) -> Progress {
 }
 
 impl AppState {
-    /// Searches a server for a text, with the filters of the search of before. The side
-    /// panel shows the search in place of a thread, the pinned messages and the notices.
-    pub fn search(&mut self, server_id: ServerId, text: &str, cx: &mut Context<Self>) {
+    /// Searches a server for a text, with the filters of the open search. A new search
+    /// starts in `shown`, the channel or the conversation that the main area shows, as a
+    /// filter that the person can remove (ADR 0743). The side panel shows the search in
+    /// place of a thread, the pinned messages and the notices.
+    pub fn search(
+        &mut self,
+        server_id: ServerId,
+        text: &str,
+        shown: Option<PlaceId>,
+        cx: &mut Context<Self>,
+    ) {
         let text = text.trim().to_owned();
-        let filters = self
+        let open = self
             .known
             .search
             .as_ref()
-            .filter(|search| search.server_id == server_id)
-            .map(|search| {
-                if search.files {
-                    Filters::default()
-                } else {
-                    search.filters
+            .filter(|search| search.server_id == server_id && search.open && !search.files);
+        let filters = match open {
+            Some(search) => search.filters,
+            None => match shown {
+                Some(PlaceId::Channel(channel_id) | PlaceId::Thread { channel_id, .. }) => {
+                    Filters {
+                        channel: Some(channel_id),
+                        ..Filters::default()
+                    }
                 }
-            })
-            .unwrap_or_default();
+                Some(PlaceId::Direct(conversation_id)) => Filters {
+                    conversation: Some(conversation_id),
+                    ..Filters::default()
+                },
+                None => Filters::default(),
+            },
+        };
         self.start_search(server_id, text, filters, false, cx);
     }
 

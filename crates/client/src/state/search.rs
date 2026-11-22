@@ -294,6 +294,13 @@ pub struct SearchPanel {
     pub unreadable: Vec<ChannelId>,
     /// The people that the filter offers: the members of the shown workspace.
     pub authors: Vec<(AccountId, String)>,
+    /// The places that the filter "In" offers: the channels whose history the person reads,
+    /// grouped by their workspace, and the direct and group conversations (ADR 0743).
+    pub workspaces: Vec<(WorkspaceId, String, Vec<(ChannelId, String, ChannelKind)>)>,
+    pub conversations: Vec<(junto_client_core::protocol::ids::ConversationId, String)>,
+    /// The place that the filter "In" names, as its chip shows it. Absent: the whole
+    /// server.
+    pub scope: Option<String>,
     pub channel: Option<(ChannelId, String)>,
     pub author: Option<(AccountId, String)>,
     pub date: DateFilter,
@@ -635,8 +642,65 @@ fn panel(
             .cmp(&other.1.to_lowercase())
             .then(one.0.cmp(&other.0))
     });
+    let workspaces = model
+        .workspaces
+        .iter()
+        .map(|held| {
+            let readable = held
+                .channels
+                .iter()
+                .filter(|channel| {
+                    held.permissions_in(channel.channel.id).contains(
+                        &junto_client_core::protocol::WorkspacePermission::ReadMessageHistory,
+                    )
+                })
+                .map(|channel| {
+                    (
+                        channel.channel.id,
+                        channel.channel.name.clone(),
+                        channel.channel.kind,
+                    )
+                })
+                .collect();
+            (held.workspace.id, held.workspace.name.clone(), readable)
+        })
+        .collect();
+    let own = model.account.id;
+    let mut conversations: Vec<(junto_client_core::protocol::ids::ConversationId, String)> = model
+        .conversations
+        .iter()
+        .map(|conversation| {
+            let other = if conversation.low_account_id == own {
+                conversation.high_account_id
+            } else {
+                conversation.low_account_id
+            };
+            (conversation.id, name_of(other))
+        })
+        .chain(
+            model
+                .group_conversations
+                .iter()
+                .map(|group| (group.id, crate::text::label(&group.name))),
+        )
+        .collect();
+    conversations.sort_by(|one, other| one.1.to_lowercase().cmp(&other.1.to_lowercase()));
+    let scope = match (search.filters.channel, search.filters.conversation) {
+        (Some(channel_id), _) => model
+            .channel(channel_id)
+            .map(|channel| format!("#{}", channel.channel.name)),
+        (None, Some(conversation_id)) => conversations
+            .iter()
+            .find(|(id, _)| *id == conversation_id)
+            .map(|(_, name)| name.clone()),
+        (None, None) if search.filters.direct => Some(text::DIRECT_MESSAGES.to_owned()),
+        (None, None) => None,
+    };
     Some(SearchPanel {
         files: search.files,
+        workspaces,
+        conversations,
+        scope,
         capabilities: search.capabilities,
         server_id,
         text: search.text.clone(),

@@ -554,6 +554,8 @@ pub struct Shell {
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
+    /// "Custom range…" of the date filter of the search was chosen: its dates are shown.
+    pub(crate) search_custom_dates: bool,
     /// The press of the pointer that closed the list of a filter was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) filter_closed_by_press: bool,
@@ -1042,6 +1044,7 @@ impl Shell {
             search_from,
             search_through,
             search_date_invalid: false,
+            search_custom_dates: false,
             filter_closed_by_press: false,
             quiet_from,
             quiet_until,

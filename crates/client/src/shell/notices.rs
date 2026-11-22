@@ -31,9 +31,9 @@ use crate::state::view::{ServerLists, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Avatar, Button, ButtonKind, ChannelRow, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice,
-    Segmented, SideHeader, StatePanel, StyleExt, Toggle, UnreadSign, icon, menu_label,
-    menu_separator, scroll_bar, unread_dot,
+    Avatar, Button, ButtonKind, ContextMenuExt, Dialog, Field, Menu, MenuItem, Notice, Segmented,
+    SideHeader, StatePanel, StyleExt, Toggle, icon, menu_label, menu_separator, scroll_bar,
+    unread_dot,
 };
 
 /// The icon of the place of a message.

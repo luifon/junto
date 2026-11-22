@@ -77,6 +77,6 @@ fn without_read_message_history_a_channel_shows_only_the_messages_that_arrive(
     assert!(!window.shows("pins-button") && !window.shows("place-files"));
     window.search_for("message");
     window.until_searched();
-    window.click("search-channel");
-    assert!(!window.shows_named(format!("search-channel:{quiet}")));
+    window.click("search-in");
+    assert!(!window.shows_named(format!("search-in:channel:{quiet}")));
 }

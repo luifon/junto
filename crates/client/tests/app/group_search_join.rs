@@ -119,7 +119,7 @@ fn group_filter_controls_authors_files_and_jumps_keep_their_current_scope(cx: &m
             vec![messages[0].id, messages[1].id, messages[2].id, picture.id],
         ),
     ] {
-        window.click(selector);
+        window.toggle_search_filter(selector);
         let panel = window.until_searched();
         assert!(!panel.files);
         assert_eq!(panel.messages().len(), expected.len(), "{selector}");
@@ -135,7 +135,7 @@ fn group_filter_controls_authors_files_and_jumps_keep_their_current_scope(cx: &m
                 matches!(&row.place, Whereabouts::Direct { name: Some(name) } if name == "Planning")
             );
         }
-        window.click(selector);
+        window.toggle_search_filter(selector);
         window.until_searched();
     }
     window.search_for("quartz");

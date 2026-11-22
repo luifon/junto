@@ -3007,6 +3007,26 @@ pub const ARCHIVED_RESULTS_NOT_READ: &str =
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
 pub const FILTER_CHANNEL: &str = "Channel";
+pub const FILTER_IN: &str = "In";
+pub const FILTER_IN_REMOVE: &str = "Search the whole server";
+pub const FILTER_ANYWHERE: &str = "Anywhere on this server";
+pub const FILTER_HAS: &str = "Has";
+pub const FILTER_HAS_FILE: &str = "a file";
+pub const FILTER_HAS_LINK: &str = "a link";
+pub const FILTER_HAS_PICTURE: &str = "a picture";
+pub const FILTER_MENTIONS_ME: &str = "Mentions me";
+pub const FILTER_CUSTOM_RANGE: &str = "Custom range…";
+pub const FILTER_FROM_DATE: &str = "From date";
+pub const FILTER_THROUGH_DATE: &str = "Through date";
+pub const FILTER_APPLY_DATES: &str = "Apply dates";
+pub const FILTER_DATES_INVALID: &str = "Enter dates as YYYY-MM-DD, with From on or before Through.";
+pub const FILTERS_NEED_TEXT: &str = "Enter text: this server does not support filter-only searches.";
+pub const FILTERS_UNSUPPORTED: &str = "This server does not support these search filters.";
+pub const FILTERS_UNCONFIRMED: &str = "Server search support has not been confirmed.";
+/// The placeholder of the search field: the place where a search starts (ADR 0743).
+pub fn search_in(place: &str) -> String {
+    format!("Search {place}")
+}
 pub const FILTER_AUTHOR: &str = "Author";
 pub const FILTER_DATE: &str = "Date";
 pub const FILTER_ALL_CHANNELS: &str = "All";

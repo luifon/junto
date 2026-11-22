@@ -601,6 +601,20 @@ impl Shell {
                 self.typing_activity(pane, false, cx);
             }
         }
+        // The search field names where a new search starts (ADR 0743).
+        let searched: SharedString = match (conversation, channel, view.selected.as_ref()) {
+            (Some(conversation), _, _) => text::search_in(
+                conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+            ),
+            (None, Some(channel), _) => text::search_in(&format!("#{}", channel.name)),
+            (None, None, Some(server)) => text::search_in(&server.name),
+            (None, None, None) => text::SEARCH_FIELD.to_owned(),
+        }
+        .into();
+        if *self.search_field.read(cx).placeholder() != searched {
+            self.search_field
+                .update(cx, |field, cx| field.set_placeholder(searched, window, cx));
+        }
     }
 
     fn pen_follows(

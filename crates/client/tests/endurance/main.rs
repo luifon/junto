@@ -471,8 +471,8 @@ fn paragraph(text: &str) -> junto_client_core::protocol::message::SendMessage {
         },
         reply_to: None,
         attachments: Vec::new(),
-    },
-    comment: None,
+        comment: None,
+    }
 }
 
 /// A third person without a window: a device that joins with an invite of A, with the
