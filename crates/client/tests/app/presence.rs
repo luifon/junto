@@ -111,6 +111,29 @@ fn a_status_text_is_set_with_an_end_shown_to_others_and_cleared(cx: &mut TestApp
         text_of(window) == Some(("On holiday".to_owned(), true))
     });
     assert!(window.shows("own-status-line"));
+    let until = window.state.read_with(&window.cx, |state, _| {
+        state
+            .status_text(server_id, own)
+            .and_then(|status| status.until)
+    });
+
+    // A change of the text alone keeps the end that was saved.
+    window.click("profile-identity");
+    window.click("status-text-open");
+    assert!(window.shows("status-text-date"));
+    window.in_shell(|shell, window, cx| shell.type_status_text("On holidays", window, cx));
+    window.click("status-text-save");
+    window.until("the changed text is stored", |window| {
+        text_of(window) == Some(("On holidays".to_owned(), true))
+    });
+    assert_eq!(
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .status_text(server_id, own)
+                .and_then(|status| status.until)
+        }),
+        until
+    );
 
     // Other people read it with the status.
     let read = |world: &World| {
@@ -126,7 +149,7 @@ fn a_status_text_is_set_with_an_end_shown_to_others_and_cleared(cx: &mut TestApp
     };
     assert_eq!(
         read(&world).map(|status| status.text),
-        Some("On holiday".to_owned())
+        Some("On holidays".to_owned())
     );
 
     // The own menu shows it with "Clear status text".

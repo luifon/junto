@@ -195,13 +195,29 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let value = own.map(|own| own.text).unwrap_or_default();
+        let (value, until) = own.map(|own| (own.text, own.until)).unwrap_or_default();
         self.status_text_field
             .update(cx, |field, cx| field.set_value(value, window, cx));
-        self.status_text_end = StatusTextEnd::Never;
         self.status_text_refusal = None;
-        for field in [self.status_text_date.clone(), self.status_text_time.clone()] {
-            field.update(cx, |field, cx| field.set_value("", window, cx));
+        // A saved end stays when the person changes only the text: it is shown as a chosen
+        // date and time.
+        let (end, date, clock) = match until {
+            Some(until) => {
+                let (date, clock) = self.state.read(cx).status_text_end_fields(until);
+                self.status_text_kept = Some((until, date.clone(), clock.clone()));
+                (StatusTextEnd::Custom, date, clock)
+            }
+            None => {
+                self.status_text_kept = None;
+                (StatusTextEnd::Never, String::new(), String::new())
+            }
+        };
+        self.status_text_end = end;
+        for (field, value) in [
+            (self.status_text_date.clone(), date),
+            (self.status_text_time.clone(), clock),
+        ] {
+            field.update(cx, |field, cx| field.set_value(value, window, cx));
         }
         self.layer = Layer::StatusText(owner);
         self.layer_focus().clone().focus(window, cx);
@@ -260,7 +276,15 @@ impl Shell {
         let until = if self.status_text_end == StatusTextEnd::Custom {
             let date = self.status_text_date.read(cx).value().to_string();
             let clock = self.status_text_time.read(cx).value().to_string();
-            match self.state.read(cx).status_text_custom_until(&date, &clock) {
+            let kept = self
+                .status_text_kept
+                .as_ref()
+                .filter(|(_, kept_date, kept_clock)| *kept_date == date && *kept_clock == clock)
+                .map(|(until, ..)| *until);
+            match kept.map_or_else(
+                || self.state.read(cx).status_text_custom_until(&date, &clock),
+                Ok,
+            ) {
                 Ok(until) => Some(until),
                 Err(reason) => {
                     self.status_text_refusal = Some(reason);

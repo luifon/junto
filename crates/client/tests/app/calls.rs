@@ -1815,6 +1815,54 @@ fn a_portrait_avatar_is_drawn_in_its_square_in_a_tile(cx: &mut TestAppContext) {
     );
 }
 
+/// A person in a voice channel of the channel list shows a status text as a second line
+/// inside a row that is that much taller (ADR 0401).
+#[gpui::test]
+fn the_row_of_a_person_in_a_voice_channel_shows_the_status_text(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::presence::StatusText;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let own = window.view().person.account_id.unwrap();
+    let server_id = window.view().selected.unwrap().id;
+    let call = connected_call(&mut window, "Daily");
+    show_call_with_people(&mut window, &world, call, &[own]);
+    let row = crate::harness::selector(format!("occupant:{own}"));
+    window.until("the own row is drawn", |window| window.shows(row));
+    let plain = window.cx.debug_bounds(row).unwrap();
+
+    window.state.update(&mut window.cx, |state, cx| {
+        let status = StatusText {
+            text: "Out of office".to_owned(),
+            until: None,
+        };
+        state.set_status_text(server_id, Some(status), cx);
+    });
+    let line = crate::harness::selector(format!("occupant-status-text:{own}"));
+    window.until("the status text is under the name", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state.status_text(server_id, own).is_some()
+        }) && window.shows(line)
+    });
+    window.settle();
+    let (row, line) = (
+        window.cx.debug_bounds(row).unwrap(),
+        window.cx.debug_bounds(line).unwrap(),
+    );
+    assert!(
+        inside(line, row),
+        "the status line {line:?} passes the edge of its row {row:?}"
+    );
+    assert!(
+        row.size.height > plain.size.height,
+        "the row with a status text is not taller: {row:?}, {plain:?}"
+    );
+}
+
 /// The stage and the channel list of a call of 601 people build the tiles and the rows
 /// in view only, and a scroll of each brings the last people into view (ADR 0735). The window
 /// holds the profiles of the people, so it reads none: each answer of a read costs a frame,

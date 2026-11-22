@@ -561,6 +561,9 @@ pub struct Shell {
     pub(crate) status_text_refusal: Option<&'static str>,
     pub(crate) status_text_date: Entity<InputState>,
     pub(crate) status_text_time: Entity<InputState>,
+    /// The saved end of the own status text and the date and time that show it. While the
+    /// fields keep them, a save keeps the saved end to the second.
+    pub(crate) status_text_kept: Option<(time::OffsetDateTime, String, String)>,
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
@@ -1066,6 +1069,7 @@ impl Shell {
             status_text_refusal: None,
             status_text_date,
             status_text_time,
+            status_text_kept: None,
             search_from,
             search_through,
             search_date_invalid: false,

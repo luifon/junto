@@ -978,7 +978,18 @@ impl Shell {
                     let faces = faces.clone();
                     let open_menu = open_menu.clone();
                     let shell = cx.weak_entity();
-                    let heights = vec![theme.metrics.occupant_row_height; occupants.len()];
+                    // A person with a status text has a second line (ADR 0401).
+                    let heights = occupants
+                        .iter()
+                        .map(|occupant| {
+                            theme.metrics.occupant_row_height
+                                + if faces.status_text(occupant.account_id).is_some() {
+                                    crate::ui::OCCUPANT_STATUS_LINE
+                                } else {
+                                    0.0
+                                }
+                        })
+                        .collect();
                     rows.push(
                         crate::ui::in_view::in_view(
                             ("occupants", index),
@@ -1102,6 +1113,12 @@ impl Shell {
         )
         .picture(faces.image(account_id))
         .presence(faces.presence(account_id))
+        .status_text(
+            faces
+                .status_text(account_id)
+                .map(|status| text::label(status).into()),
+            format!("occupant-status-text:{account_id}"),
+        )
         .name_color(faces.color(account_id))
         .when_some(faces.server_id(), |row, server| {
             row.profile(crate::ui::OpenProfile {

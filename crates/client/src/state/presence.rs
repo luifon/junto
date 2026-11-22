@@ -52,10 +52,14 @@ impl StatusTextEnd {
         now: time::OffsetDateTime,
         zone: super::feed::Zone,
     ) -> Option<time::OffsetDateTime> {
+        // The date is counted on the clock of the person, and its midnight is found in the
+        // time zone, whose distance from UTC can differ on that date.
         let midnight_after = |days: i64| {
-            let local = zone.local(now);
-            let midnight = local.replace_time(time::Time::MIDNIGHT) + time::Duration::days(days);
-            crate::moment::in_utc(midnight)
+            let today = zone.local(now).date();
+            let date = today
+                .checked_add(time::Duration::days(days))
+                .unwrap_or(today);
+            crate::moment::in_utc(zone.start_of(date))
         };
         match self {
             Self::Never | Self::Custom => None,
@@ -277,6 +281,18 @@ impl AppState {
             return Err(text::presence::END_PASSED);
         }
         Ok(crate::moment::in_utc(until))
+    }
+
+    /// The date and the time of the clock of the person that show the end of a status
+    /// text in the fields of a chosen end.
+    pub fn status_text_end_fields(&self, until: time::OffsetDateTime) -> (String, String) {
+        let local = self.known.zone.local(until);
+        let date = time::macros::format_description!("[year]-[month]-[day]");
+        let clock = time::macros::format_description!("[hour]:[minute]");
+        (
+            local.format(date).unwrap_or_default(),
+            local.format(clock).unwrap_or_default(),
+        )
     }
 
     /// A status text in words, with its end on the clock of the person.
@@ -806,6 +822,35 @@ impl AppState {
 mod tests {
     use super::*;
     use junto_client_core::EntryKey;
+
+    #[test]
+    fn today_and_this_week_end_at_midnight_across_both_changes_of_the_clock() {
+        use time::macros::datetime;
+        let zone = super::super::feed::Zone::Named(chrono_tz::Europe::Berlin);
+        // The clock goes back on Sunday 2026-10-25: Monday starts at 23:00 UTC, not 22:00.
+        let autumn = datetime!(2026-10-21 12:00 UTC);
+        assert_eq!(
+            StatusTextEnd::ThisWeek.until(autumn, zone),
+            Some(datetime!(2026-10-25 23:00 UTC))
+        );
+        // 02:30 on the summer clock of that Sunday: its end is on the winter clock.
+        let night = datetime!(2026-10-25 00:30 UTC);
+        assert_eq!(
+            StatusTextEnd::Today.until(night, zone),
+            Some(datetime!(2026-10-25 23:00 UTC))
+        );
+        // The clock goes forward on Sunday 2026-03-29: Monday starts at 22:00 UTC.
+        let spring = datetime!(2026-03-25 12:00 UTC);
+        assert_eq!(
+            StatusTextEnd::ThisWeek.until(spring, zone),
+            Some(datetime!(2026-03-29 22:00 UTC))
+        );
+        let early = datetime!(2026-03-29 00:30 UTC);
+        assert_eq!(
+            StatusTextEnd::Today.until(early, zone),
+            Some(datetime!(2026-03-29 22:00 UTC))
+        );
+    }
 
     #[test]
     fn a_status_text_ends_at_its_time_on_the_clock_of_the_person() {

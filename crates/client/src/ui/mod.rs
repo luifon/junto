@@ -91,7 +91,8 @@ pub use placed::{record_controls, take_controls};
 pub use presence::PresenceMark;
 pub use profile::{OpenProfile, ProfileAccess, ProfileName};
 pub use rows::{
-    CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
+    CategoryHeader, ChannelRow, ChannelState, OCCUPANT_STATUS_LINE, OccupantMark, OccupantRow,
+    UnreadSign, WorkspaceRow,
 };
 pub use scroll::{ScrollArea, scroll_bar};
 pub use segmented::Segmented;
