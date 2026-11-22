@@ -27,6 +27,7 @@ mod direct;
 pub(crate) mod draft_storage;
 mod edges;
 mod feed;
+mod message_actions;
 mod file_links;
 mod files;
 mod forwarding;
@@ -353,6 +354,9 @@ pub struct Shell {
     /// Where the open menu of a message was drawn first: it stays there while the message
     /// grows, such as with its first reaction (ADR 0730).
     message_menu_placement: std::rc::Rc<crate::ui::MenuPlacement>,
+    /// Whether the open menu of a message offered "Who reacted" when it was first drawn: the
+    /// item keeps its place while the menu is open (ADR 0730).
+    pub(crate) message_menu_reacted: Option<bool>,
     pub(crate) layer: Layer,
     switcher: switcher::Switcher,
     profile: profile::ProfileUi,
@@ -916,6 +920,7 @@ impl Shell {
             layer_focus: cx.focus_handle(),
             thread_menu_placement: Default::default(),
             message_menu_placement: Default::default(),
+            message_menu_reacted: None,
             layer: Layer::None,
             switcher,
             profile: profile::ProfileUi::default(),
@@ -1564,6 +1569,7 @@ impl Shell {
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(layer, Layer::MessageMenu(_)) {
             self.message_menu_placement = Default::default();
+            self.message_menu_reacted = None;
         }
         let reaction = match &layer {
             Layer::ReactionPeople(dialog) => {

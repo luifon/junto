@@ -1539,7 +1539,8 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
         cx.simulate_mouse_move(bounds.center(), None::<MouseButton>, Modifiers::none())
     });
     window.settle();
-    window.click_named(format!("delete:{}", wrong.id));
+    window.right_click_message(wrong.id);
+    window.click("message-delete");
     assert!(window.shows("confirm-delete-message") && window.shows("confirm-delete-permanent"));
     window.click("delete-message");
     window.until(
@@ -1898,10 +1899,12 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
     });
     assert!(!row.own && !row.message.permanent && !row.can_edit);
 
-    // The bar of the message under the pointer has Delete; the question names no
-    // permanent message, and Delete removes the message.
+    // The menu of the message has Delete, the last item and not on the bar; the question
+    // names no permanent message, and Delete removes the message.
     window.hover_message(wrong.id);
-    window.click_named(format!("delete:{}", wrong.id));
+    assert!(!window.shows_named(format!("delete:{}", wrong.id)));
+    window.click_named(format!("message-more:{}", wrong.id));
+    window.click("message-delete");
     assert!(window.shows("confirm-delete-message"));
     assert!(!window.shows("confirm-delete-permanent"));
     window.click("delete-message");

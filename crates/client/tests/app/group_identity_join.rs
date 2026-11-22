@@ -63,10 +63,7 @@ fn group_reactors_keep_profiles_presence_and_menu_lifetime(cx: &mut TestAppConte
         .run(reader.handle().api().add_reaction(message.id, "👍"))
         .unwrap();
     reader.until_message("a group review");
-    reader.until("the group roster control is drawn", |window| {
-        window.shows_named(format!("reaction-people:{}", message.id))
-    });
-    reader.click_named(format!("reaction-people:{}", message.id));
+    reader.open_who_reacted(message.id);
     reader.until(
         "all three group reactors have identity controls",
         |window| {

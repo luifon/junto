@@ -3468,7 +3468,7 @@ fn head_unread(model: &ServerModel, unreads: &Unreads) -> Unread {
         return unreads.total();
     }
     let mut unread = Unread::default();
-    for (place, held) in &unreads.0 {
+    for (place, held) in &unreads.unread {
         if let PlaceId::Direct(_) = place {
             unread.add(*held);
         }

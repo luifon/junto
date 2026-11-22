@@ -91,6 +91,7 @@ icons! {
     Flag => "lucide/flag",
     FolderOpen => "lucide/folder-open",
     Fork => "lucide/git-fork",
+    Forward => "lucide/forward",
     FullScreen => "lucide/maximize",
     Gear => "lucide/settings",
     Grip => "lucide/grip-vertical",

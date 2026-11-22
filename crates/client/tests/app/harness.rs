@@ -1041,6 +1041,21 @@ impl Window {
         self.settle();
     }
 
+    /// Opens "Who reacted" of a message from the menu of the message, once the menu offers it:
+    /// the message holds a reaction that the window shows.
+    #[track_caller]
+    pub fn open_who_reacted(&mut self, message_id: MessageId) {
+        self.until("the menu of the message offers Who reacted", |window| {
+            window.right_click_message(message_id);
+            if window.shows("message-reaction-people") {
+                window.click("message-reaction-people");
+                return true;
+            }
+            window.press("escape");
+            false
+        });
+    }
+
     /// Opens the menu of a channel row and presses its "Channel settings" item when the menu
     /// offers it; otherwise closes the menu. Returns whether it pressed the item.
     #[track_caller]

@@ -64,6 +64,7 @@ mod gpui_panics;
 mod group_conversations;
 mod hidden_conversations;
 mod keybinds;
+mod message_actions;
 mod message_copy_actions;
 mod message_links;
 mod review_headers;

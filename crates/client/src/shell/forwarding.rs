@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Context, Entity, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
-    Styled, Subscription, Task, Window, div,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
 };
 use gpui_base::input::InputState;
 use junto_client_core::Owner;
