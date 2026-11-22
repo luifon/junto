@@ -339,6 +339,21 @@ mod renderer {
     pub fn premultiplied(size: u32) -> Result<Vec<u8>, Error> {
         Ok(pixmap(size)?.take())
     }
+
+    pub fn glyph(svg: &str, size: u32) -> Result<Picture, Error> {
+        if !(1..=LARGEST).contains(&size) {
+            return Err(Error::Size(size));
+        }
+        let tree = usvg::Tree::from_str(svg, &usvg::Options::default())?;
+        let mut pixmap = Pixmap::new(size, size).ok_or(Error::Size(size))?;
+        let scale = size as f32 / tree.size().width();
+        resvg::render(
+            &tree,
+            Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+        Ok(straight(&pixmap, size))
+    }
 }
 
 #[cfg(not(feature = "render"))]
@@ -374,6 +389,10 @@ mod renderer {
     pub fn premultiplied(_: u32) -> Result<Vec<u8>, Error> {
         Err(Error::NoRenderer)
     }
+
+    pub fn glyph(_: &str, _: u32) -> Result<Picture, Error> {
+        Err(Error::NoRenderer)
+    }
 }
 
 /// The icon rendered at `size` by `size` pixels.
@@ -405,6 +424,14 @@ pub fn tray_png(
     size: u32,
 ) -> Result<Vec<u8>, Error> {
     renderer::tray_png(state, mention, style, size)
+}
+
+/// A line icon of the window (a Lucide file, drawn with `currentColor`) in one colour, at
+/// `size` by `size` pixels: the buttons of the taskbar preview on Windows (ADR 0755).
+pub fn glyph(svg: &str, colour: [u8; 3], size: u32) -> Result<Picture, Error> {
+    let [red, green, blue] = colour;
+    let svg = svg.replace("currentColor", &format!("#{red:02x}{green:02x}{blue:02x}"));
+    renderer::glyph(&svg, size)
 }
 
 /// The macOS icon file: an entry for each line of [`ICNS`].

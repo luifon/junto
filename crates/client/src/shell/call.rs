@@ -2267,6 +2267,26 @@ impl Shell {
         )
     }
 
+    /// A press on a button of the taskbar preview of the main window (ADR 0755): it does what
+    /// the same control of the window does with the controls that the window drew last.
+    #[cfg(windows)]
+    pub(crate) fn thumb_press(
+        &mut self,
+        press: junto_client_core::taskbar::thumb::ThumbPress,
+        cx: &mut Context<Self>,
+    ) {
+        use junto_client_core::taskbar::thumb::ThumbPress;
+        let Some(view) = self.view.as_ref().filter(|view| view.call.is_some()) else {
+            return;
+        };
+        let controls = view.controls.clone();
+        self.state.update(cx, |state, cx| match press {
+            ThumbPress::Microphone => state.use_microphone(&controls.microphone_action),
+            ThumbPress::Sound => state.set_sound_off(!controls.sound_off),
+            ThumbPress::Leave => state.leave_call(cx),
+        });
+    }
+
     /// Opens a menu of the row of own controls; a press on the button of the open menu
     /// closes it and does not open it again.
     fn open_own_menu(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {

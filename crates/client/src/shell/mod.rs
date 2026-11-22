@@ -2057,6 +2057,10 @@ impl Render for Shell {
             window.set_window_title(&crate::app_badge::title(for_person));
             crate::app_badge::show(for_person, window);
         }
+        #[cfg(windows)]
+        if !self.detached {
+            crate::taskbar::show_buttons(window, &view);
+        }
         if !self.detached {
             let shown = self.shows_call_devices(cx);
             if self.state.read(cx).call_devices_shown() != shown {
