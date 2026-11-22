@@ -334,6 +334,8 @@ pub const DEVICES_SECTION_HELP: &str = "Another installation of Junto gets acces
      servers that you choose.";
 pub const START_OVER: &str = "Start over";
 pub const COPY: &str = "Copy";
+pub const COPY_LINK_CODE: &str = "Copy link code";
+pub const COPY_DEVICE_CODE: &str = "Copy device code";
 pub const COPIED: &str = "Copied";
 pub const THIS_DEVICE_NAME: &str = "Name of this device";
 pub const SERVERS: &str = "Servers";

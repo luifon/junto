@@ -737,6 +737,7 @@ impl Shell {
                             .mt(u(12.0))
                             .child(crate::shell::linking::link_wait_block(
                                 &wait,
+                                self.link_wait_copies(&wait, cx),
                                 false,
                                 &theme,
                                 self.state.read(cx).hour_cycle(),

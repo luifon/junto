@@ -130,24 +130,78 @@ fn mono_value(
         .child(value)
 }
 
+/// A value with the button that copies it (ADR 0731).
+fn with_copy(value: impl IntoElement, copy: AnyElement) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(u(6.0))
+        .child(value)
+        .child(copy)
+}
+
+/// The copy buttons of the code and of the key that a device that waits for its link shows.
+pub(crate) struct WaitCopies {
+    code: Option<AnyElement>,
+    fingerprint: AnyElement,
+}
+
+impl Shell {
+    pub(crate) fn link_wait_copies(&self, wait: &LinkWait, cx: &mut Context<Self>) -> WaitCopies {
+        let copy =
+            |selector: &'static str, label: &'static str, value: String, cx: &mut Context<Self>| {
+                div()
+                    .flex_none()
+                    .debug_selector(move || selector.to_owned())
+                    .child(Self::value_copy_button(selector, label, value, cx))
+                    .into_any_element()
+            };
+        WaitCopies {
+            code: wait.code.as_ref().map(|code| {
+                copy(
+                    "link-wait-code-copy",
+                    text::account::COPY_LINK_CODE,
+                    code.expose().to_owned(),
+                    cx,
+                )
+            }),
+            fingerprint: copy(
+                "link-wait-fingerprint-copy",
+                text::account::COPY_DEVICE_CODE,
+                wait.fingerprint.clone(),
+                cx,
+            ),
+        }
+    }
+}
+
 /// What a device that waits for its link shows: the code, the key of this device, the
 /// expiry, and what the person does with them.
 pub(crate) fn link_wait_block(
     wait: &LinkWait,
+    copies: WaitCopies,
     centered: bool,
     theme: &Theme,
     cycle: junto_client_core::clock::HourCycle,
 ) -> gpui::Div {
-    let code: AnyElement = match &wait.code {
-        Some(code) => mono_value(
-            code.expose().to_owned(),
-            text::account::LINK_CODE,
-            "link-wait-code",
-            true,
-            theme,
+    let WaitCopies {
+        code: code_copy,
+        fingerprint: fingerprint_copy,
+    } = copies;
+    let code: AnyElement = match (&wait.code, code_copy) {
+        (Some(code), Some(copy)) => with_copy(
+            mono_value(
+                code.expose().to_owned(),
+                text::account::LINK_CODE,
+                "link-wait-code",
+                true,
+                theme,
+            ),
+            copy,
         )
         .into_any_element(),
-        None => Notice::error(text::account::LINK_CODE_NOT_SHOWN)
+        _ => Notice::error(text::account::LINK_CODE_NOT_SHOWN)
             .selector("link-wait-no-code")
             .into_any_element(),
     };
@@ -160,12 +214,15 @@ pub(crate) fn link_wait_block(
         .child(value_label(text::account::LINK_CODE, theme))
         .child(code)
         .child(value_label(text::account::KEY_OF_THIS_DEVICE, theme).mt(u(10.0)))
-        .child(mono_value(
-            wait.fingerprint.clone(),
-            text::account::KEY_OF_THIS_DEVICE,
-            "link-wait-fingerprint",
-            false,
-            theme,
+        .child(with_copy(
+            mono_value(
+                wait.fingerprint.clone(),
+                text::account::KEY_OF_THIS_DEVICE,
+                "link-wait-fingerprint",
+                false,
+                theme,
+            ),
+            fingerprint_copy,
         ))
         .child(
             sentence(text::account::code_expires(wait.expires_at, cycle), theme)
@@ -582,12 +639,24 @@ impl Shell {
                 column = column
                     .child(sentence(text::account::COMPARE_KEY, theme))
                     .child(value_label(text::account::KEY_OF_NEW_DEVICE, theme).mt(u(8.0)))
-                    .child(mono_value(
-                        device_code.clone(),
-                        text::account::KEY_OF_NEW_DEVICE,
-                        "link-all-device-code",
-                        false,
-                        theme,
+                    .child(with_copy(
+                        mono_value(
+                            device_code.clone(),
+                            text::account::KEY_OF_NEW_DEVICE,
+                            "link-all-device-code",
+                            false,
+                            theme,
+                        ),
+                        div()
+                            .flex_none()
+                            .debug_selector(|| "link-all-device-code-copy".to_owned())
+                            .child(Self::value_copy_button(
+                                "link-all-device-code-copy",
+                                text::account::COPY_DEVICE_CODE,
+                                device_code.clone(),
+                                cx,
+                            ))
+                            .into_any_element(),
                     ))
                     // The name comes from the new device: it has a line of its own that is
                     // cut at the width of the page.
@@ -753,10 +822,10 @@ impl Shell {
                             .truncate()
                             .mb(u(8.0)),
                     )
-                    .children(
-                        wait.as_ref()
-                            .map(|wait| link_wait_block(wait, false, theme, cycle)),
-                    )
+                    .children(wait.as_ref().map(|wait| {
+                        let copies = self.link_wait_copies(wait, cx);
+                        link_wait_block(wait, copies, false, theme, cycle)
+                    }))
                     .children(failure(view.error.as_deref(), "link-all-error"))
                     .child(
                         div()
@@ -1016,7 +1085,14 @@ impl Shell {
         Some(
             StatePanel::with_detail(
                 text::WAITING_FOR_LINK_TITLE,
-                link_wait_block(&wait, true, &theme, self.state.read(cx).hour_cycle()).mt(u(12.0)),
+                link_wait_block(
+                    &wait,
+                    self.link_wait_copies(&wait, cx),
+                    true,
+                    &theme,
+                    self.state.read(cx).hour_cycle(),
+                )
+                .mt(u(12.0)),
             )
             .icon(Icon::Clock)
             .selector("waiting-for-link")

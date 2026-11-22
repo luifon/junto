@@ -16,6 +16,11 @@ use crate::harness::{Window, World, member, named, open};
 use crate::support::{Fault, FaultProxy};
 
 impl Window {
+    /// The text on the clipboard of the window.
+    fn clipboard_text(&mut self) -> Option<String> {
+        self.cx.read_from_clipboard().and_then(|item| item.text())
+    }
+
     /// What the selected server shows while this device waits for its link.
     fn link_wait(&mut self) -> Option<LinkWait> {
         let server_id = self.view().selected?.id;
@@ -297,6 +302,17 @@ fn a_second_installation_is_linked_on_two_servers_with_one_code(
         panic!("the device code is shown");
     };
     assert_eq!(shown, device_code);
+    // Both codes can be copied, with a confirmation.
+    first.click("link-all-device-code-copy");
+    assert_eq!(
+        first.clipboard_text().as_deref(),
+        Some(device_code.as_str())
+    );
+    assert!(first.shows("copied-confirmation"));
+    new.click("link-wait-code-copy");
+    assert_eq!(new.clipboard_text().as_deref(), Some(code.as_str()));
+    new.click("link-wait-fingerprint-copy");
+    assert_eq!(new.clipboard_text().as_deref(), Some(device_code.as_str()));
     let scroll = first.in_shell(|shell, _, _| shell.linking_scroll_handle());
     first.reveal(&scroll, "link-all-approve");
     first.click("link-all-approve");
