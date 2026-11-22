@@ -13,7 +13,7 @@ use junto_client_core::protocol::account::Departure;
 use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
-use junto_client_core::voice::{ShareResolution, TalkKey};
+use junto_client_core::voice::ShareResolution;
 use junto_media::calls::{EndReason, MicrophoneClosed, Unused};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
@@ -1179,54 +1179,111 @@ pub const ALL_SOUNDS_HELP: &str =
 pub const ALL_SOUNDS_ARE_OFF: &str = "All sounds are off.";
 
 /// The name and the sentence of the switch of a kind of sounds.
-pub fn sound_kind(kind: junto_client_core::voice::SoundKind) -> (&'static str, &'static str) {
+/// The title of a sound, and a sentence only where the title does not say when the sound
+/// plays.
+pub fn sound_kind(
+    kind: junto_client_core::voice::SoundKind,
+) -> (&'static str, Option<&'static str>) {
     use junto_client_core::voice::SoundKind;
     match kind {
         SoundKind::Messages => (
             "Messages",
-            "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+            Some(
+                "A new message in a place that you do not look at, when the place notifies you of all messages, and a reply in a thread that you follow.",
+            ),
         ),
         SoundKind::Mentions => (
             "Mentions and direct messages",
-            "A mention of you, a direct message, a call that you missed.",
+            Some("A mention of you, a direct message, a call that you missed."),
         ),
-        SoundKind::Ring => ("Incoming call", "The ring of a direct call to you."),
-        SoundKind::CallJoined => ("You join a call", "You enter a call."),
-        SoundKind::CallLeft => ("You leave a call", "You leave a call or it ends."),
-        SoundKind::Moved => ("You are moved", "A moderator moves you to another call."),
+        SoundKind::Ring => ("Incoming call", None),
+        SoundKind::CallJoined => ("You join a call", None),
+        SoundKind::CallLeft => ("You leave a call", Some("You leave a call or it ends.")),
+        SoundKind::Moved => (
+            "You are moved",
+            Some("A moderator moves you to another call."),
+        ),
         SoundKind::ConnectionLost => (
             "Call connection lost",
-            "The call reconnects after losing its connection.",
+            Some("The call reconnects after losing its connection."),
         ),
-        SoundKind::PersonJoined => ("Someone joins", "Another person joins your call."),
-        SoundKind::PersonLeft => ("Someone leaves", "Another person leaves your call."),
-        SoundKind::MicrophoneOff => ("Microphone off", "Your microphone closes."),
-        SoundKind::MicrophoneOn => ("Microphone on", "Your microphone opens."),
-        SoundKind::SoundOff => ("Sound off", "You turn the sound off."),
-        SoundKind::SoundOn => ("Sound on", "You turn the sound on."),
-        SoundKind::TalkStarts => ("Push to talk pressed", "You press the push to talk key."),
-        SoundKind::TalkEnds => ("Push to talk released", "You release the push to talk key."),
-        SoundKind::ShareStarted => ("Share starts", "A share starts in your call."),
-        SoundKind::ShareEnded => ("Share ends", "A share ends in your call."),
-        SoundKind::ViewerJoined => ("Viewer joins", "Someone starts watching your share."),
-        SoundKind::ViewerLeft => ("Viewer leaves", "Someone stops watching your share."),
-        SoundKind::Invitation => ("Call invitation", "Someone invites you into a call."),
+        SoundKind::PersonJoined => ("Someone joins your call", None),
+        SoundKind::PersonLeft => ("Someone leaves your call", None),
+        SoundKind::MicrophoneOff => ("Microphone off", None),
+        SoundKind::MicrophoneOn => ("Microphone on", None),
+        SoundKind::SoundOff => ("Sound off", None),
+        SoundKind::SoundOn => ("Sound on", None),
+        SoundKind::TalkStarts => ("Push to talk pressed", None),
+        SoundKind::TalkEnds => ("Push to talk released", None),
+        SoundKind::ShareStarted => ("Share starts", None),
+        SoundKind::ShareEnded => ("Share ends", None),
+        SoundKind::ViewerJoined => ("Someone watches your share", None),
+        SoundKind::ViewerLeft => ("Someone stops watching your share", None),
+        SoundKind::Invitation => ("Call invitation", None),
         SoundKind::Request => (
             "Entry or join request",
-            "Someone asks to enter your call or join your server.",
+            Some("Someone asks to enter your call or join your server."),
         ),
-        SoundKind::RecordingStarted => ("Recording starts", "Your call starts being recorded."),
-        SoundKind::RecordingStopped => ("Recording stops", "Your call stops being recorded."),
-        SoundKind::HandRaised => ("Hand raised", "Someone raises a hand that you may lower."),
+        SoundKind::RecordingStarted => ("Recording starts", None),
+        SoundKind::RecordingStopped => ("Recording stops", None),
+        SoundKind::HandRaised => (
+            "Hand raised",
+            Some("Someone raises a hand that you may lower."),
+        ),
     }
 }
 
+/// The groups of the Sounds section, in their order, with their sounds (ADR 0707).
+pub const SOUND_GROUPS: [(&str, &[junto_client_core::voice::SoundKind]); 5] = {
+    use junto_client_core::voice::SoundKind as K;
+    [
+        ("Messages", &[K::Messages, K::Mentions]),
+        (
+            "Calls",
+            &[
+                K::Ring,
+                K::Invitation,
+                K::CallJoined,
+                K::CallLeft,
+                K::PersonJoined,
+                K::PersonLeft,
+                K::Moved,
+                K::ConnectionLost,
+                K::HandRaised,
+            ],
+        ),
+        (
+            "Your microphone and sound",
+            &[
+                K::MicrophoneOff,
+                K::MicrophoneOn,
+                K::SoundOff,
+                K::SoundOn,
+                K::TalkStarts,
+                K::TalkEnds,
+            ],
+        ),
+        (
+            "Shares",
+            &[
+                K::ShareStarted,
+                K::ShareEnded,
+                K::ViewerJoined,
+                K::ViewerLeft,
+            ],
+        ),
+        (
+            "Requests and recordings",
+            &[K::Request, K::RecordingStarted, K::RecordingStopped],
+        ),
+    ]
+};
+
 /// The question before the switch to push to talk.
-pub fn push_to_talk_question(key: TalkKey) -> String {
+pub fn push_to_talk_question(keys: &str) -> String {
     format!(
-        "With push to talk, your microphone sends sound only while you hold {}. Switch to push \
-         to talk?",
-        talk_key(key)
+        "With push to talk, your microphone sends sound only while you hold {keys}. Switch to \
+         push to talk?"
     )
 }
 
@@ -1242,8 +1299,6 @@ pub const CHANGE_KEYS: &str = "Change";
 pub const REMOVE_KEYS: &str = "Remove";
 pub const RESET_KEYS: &str = "Reset";
 pub const KEYBIND_OUTSIDE: &str = "Also while another application is in front";
-pub const TALK_KEY_FROM_VOICE: &str =
-    "The key of the sound settings, until you set another one here.";
 pub const CALL_KEYS_IN_KEYBINDS: &str =
     "The mute key, push to mute and the other keys of a call are in Keybinds.";
 
@@ -1417,14 +1472,6 @@ pub fn push_to_talk_mark(keys: &junto_client_core::global_keys::KeyCombo) -> Str
 }
 pub const PUSH_TO_TALK_MARK_HELP: &str =
     "Change the input mode in the app settings, under Voice and video.";
-
-pub fn talk_key(key: TalkKey) -> &'static str {
-    match key {
-        TalkKey::Alt if cfg!(target_os = "macos") => "Option",
-        TalkKey::Alt => "Alt",
-        TalkKey::Control => "Control",
-    }
-}
 
 /// How the last join or call ended, when the person did not end it.
 pub fn call_notice(notice: &CallNotice) -> String {
@@ -1758,7 +1805,8 @@ pub const PROFILE_NAME_HELP: &str =
     "A new account on a server starts with this name. Accounts that exist keep their name.";
 pub const SAVE: &str = "Save";
 pub const SAVED: &str = "Saved";
-pub const INTERFACE: &str = "Interface";
+pub const APPEARANCE: &str = "Appearance";
+pub const START_AND_CLOSE: &str = "Start and close";
 pub const SCALE: &str = "Scale";
 pub const SCALE_HELP: &str = "The size of text and controls in this window.";
 pub const THEME: &str = "Theme";
@@ -3702,6 +3750,29 @@ mod tests {
             category: category(*code, code.http_status()),
         }));
         all
+    }
+
+    #[test]
+    fn every_sound_is_in_one_group_of_the_sounds_section() {
+        let mut grouped: Vec<junto_client_core::voice::SoundKind> = SOUND_GROUPS
+            .iter()
+            .flat_map(|(_, kinds)| kinds.iter().copied())
+            .collect();
+        assert_eq!(
+            grouped.len(),
+            junto_client_core::voice::SoundKind::ALL.len()
+        );
+        grouped.sort_by_key(|kind| format!("{kind:?}"));
+        grouped.dedup();
+        assert_eq!(
+            grouped.len(),
+            junto_client_core::voice::SoundKind::ALL.len()
+        );
+        // A sentence says more than its title.
+        for kind in junto_client_core::voice::SoundKind::ALL {
+            let (title, sentence) = sound_kind(kind);
+            assert!(sentence.is_none_or(|sentence| sentence != title));
+        }
     }
 
     #[test]

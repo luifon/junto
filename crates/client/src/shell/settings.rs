@@ -11,7 +11,7 @@ use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::settings::ThemeChoice;
 use junto_client_core::voice::{
-    InputMode, SHARE_FRAME_RATES, ShareResolution, THRESHOLD_DEFAULT, THRESHOLD_RANGE, TalkKey,
+    InputMode, SHARE_FRAME_RATES, ShareResolution, THRESHOLD_DEFAULT, THRESHOLD_RANGE,
 };
 
 use super::account::Surface;
@@ -35,13 +35,12 @@ pub enum SettingsSection {
     #[default]
     Profile,
     Picture,
-    Interface,
+    Appearance,
     VoiceAndVideo,
     /// The settings of the room of the call of this device (ADR 0739).
     Call,
     /// The key bindings (ADR 0777).
     Keybinds,
-    Quiet,
     Notifications,
     Sounds,
     Devices,
@@ -50,16 +49,15 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Profile,
         Self::Picture,
-        Self::Interface,
+        Self::Appearance,
         Self::VoiceAndVideo,
         Self::Call,
-        Self::Keybinds,
-        Self::Quiet,
-        Self::Notifications,
         Self::Sounds,
+        Self::Notifications,
+        Self::Keybinds,
         Self::Devices,
         Self::Permissions,
         Self::About,
@@ -69,11 +67,10 @@ impl SettingsSection {
         match self {
             Self::Profile => text::PROFILE,
             Self::Picture => text::PICTURE,
-            Self::Interface => text::INTERFACE,
+            Self::Appearance => text::APPEARANCE,
             Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
             Self::Call => text::CALL_SECTION,
             Self::Keybinds => text::KEYBINDS,
-            Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
             Self::Sounds => text::SOUNDS,
             Self::Devices => text::account::DEVICES_SECTION,
@@ -86,11 +83,10 @@ impl SettingsSection {
         match self {
             Self::Profile => Icon::Person,
             Self::Picture => Icon::Picture,
-            Self::Interface => Icon::AppWindow,
+            Self::Appearance => Icon::AppWindow,
             Self::VoiceAndVideo => Icon::Microphone,
             Self::Call => Icon::Phone,
             Self::Keybinds => Icon::Keyboard,
-            Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
             Self::Sounds => Icon::Speaker,
             Self::Devices => Icon::Devices,
@@ -104,11 +100,10 @@ impl SettingsSection {
         match self {
             Self::Profile => "settings-section-profile",
             Self::Picture => "settings-section-picture",
-            Self::Interface => "settings-section-interface",
+            Self::Appearance => "settings-section-appearance",
             Self::VoiceAndVideo => "settings-section-voice-and-video",
             Self::Call => "settings-section-call",
             Self::Keybinds => "settings-section-keybinds",
-            Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
             Self::Sounds => "settings-section-sounds",
             Self::Devices => "settings-section-devices",
@@ -170,6 +165,15 @@ pub(super) fn group_label(label: &'static str, theme: &Theme) -> impl IntoElemen
         .child(label)
 }
 
+/// The title of a switch above it.
+fn row_title(title: String, theme: &Theme) -> gpui::Div {
+    div()
+        .typeface(theme.types.control, theme)
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .ink(theme.colors.ink)
+        .child(title)
+}
+
 pub(super) fn help(sentence: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .mt(u(5.0))
@@ -194,8 +198,10 @@ impl Shell {
         self.name_error = None;
         self.name_saved = false;
         self.show_quiet_times(window, cx);
-        self.settings_section = SettingsSection::Profile;
+        // Settings opens at the section that was open last in this window (ADR 0703).
+        let section = self.settings_section;
         self.open_layer(Layer::Settings, window, cx);
+        self.open_settings_section(section, window, cx);
     }
 
     /// Stores the typed name as the name of the profile preset. The result arrives through
@@ -336,7 +342,7 @@ impl Shell {
         // The permissions are read again when a section shows them (ADR 0708).
         self.state.update(cx, |state, cx| {
             state.set_device_checks(section == SettingsSection::VoiceAndVideo, cx);
-            if section == SettingsSection::Interface {
+            if section == SettingsSection::Appearance {
                 state.refresh_startup(cx);
             }
             if matches!(
@@ -464,7 +470,7 @@ impl Shell {
                 parts.extend(self.render_preset_picture(&theme, cx));
                 parts
             }
-            SettingsSection::Interface => self.render_interface_section(&theme, cx),
+            SettingsSection::Appearance => self.render_appearance_section(&theme, cx),
             SettingsSection::VoiceAndVideo => {
                 let mut parts = vec![group_label(text::VOICE_AND_VIDEO, &theme).into_any_element()];
                 parts.push(self.render_device_checks(&theme, cx));
@@ -474,16 +480,6 @@ impl Shell {
             }
             SettingsSection::Call => self.render_call_section(&theme, cx),
             SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
-            SettingsSection::Quiet => {
-                let quiet = self
-                    .view
-                    .as_ref()
-                    .map(|view| view.quiet.clone())
-                    .unwrap_or_default();
-                let mut parts = vec![group_label(text::QUIET, &theme).into_any_element()];
-                parts.extend(self.render_quiet_settings(&quiet, &theme, cx));
-                parts
-            }
             SettingsSection::Notifications => self.render_notifications_section(&theme, cx),
             SettingsSection::Sounds => self.render_sounds_section(&theme, cx),
             SettingsSection::Devices => self.render_devices_settings(&theme, cx),
@@ -556,7 +552,7 @@ impl Shell {
     }
 
     /// The interface scale and the theme.
-    fn render_interface_section(
+    fn render_appearance_section(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -581,49 +577,7 @@ impl Shell {
             _ => None,
         };
         vec![
-            group_label(text::INTERFACE, theme).into_any_element(),
-            Toggle::new(
-                "start-at-login",
-                text::start_at_login(startup.profile.as_deref()),
-                startup
-                    .status
-                    .is_some_and(junto_client_core::startup::Status::requested),
-                (text::ON, text::OFF),
-            )
-            .selector("start-at-login")
-            .held(if startup.busy || startup.status.is_none() {
-                Some(text::LOGIN_CHECKING)
-            } else {
-                unavailable
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    let enabled = !state
-                        .startup()
-                        .status
-                        .is_some_and(junto_client_core::startup::Status::requested);
-                    state.set_start_at_login(enabled, cx);
-                });
-            }))
-            .into_any_element(),
-            help(unavailable.unwrap_or(text::START_AT_LOGIN_HELP), theme).into_any_element(),
-            Toggle::new(
-                "keep-running-after-close",
-                text::KEEP_RUNNING_AFTER_CLOSE,
-                self.state.read(cx).settings().keep_running_after_close,
-                (text::ON, text::OFF),
-            )
-            .selector("keep-running-after-close")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.set_keep_running_after_close(
-                        !state.settings().keep_running_after_close,
-                        cx,
-                    );
-                });
-            }))
-            .into_any_element(),
-            help(text::KEEP_RUNNING_AFTER_CLOSE_HELP, theme).into_any_element(),
+            group_label(text::APPEARANCE, theme).into_any_element(),
             div()
                 .flex()
                 .items_center()
@@ -711,6 +665,57 @@ impl Shell {
                 )
                 .into_any_element(),
             help(text::THEME_HELP, theme).into_any_element(),
+            // Start and close: the two switches at the end of the section (ADR 0703).
+            div()
+                .mt(u(16.0))
+                .child(group_label(text::START_AND_CLOSE, theme))
+                .into_any_element(),
+            row_title(text::start_at_login(startup.profile.as_deref()), theme).into_any_element(),
+            Toggle::new(
+                "start-at-login",
+                text::start_at_login(startup.profile.as_deref()),
+                startup
+                    .status
+                    .is_some_and(junto_client_core::startup::Status::requested),
+                (text::ON, text::OFF),
+            )
+            .selector("start-at-login")
+            .held(if startup.busy || startup.status.is_none() {
+                Some(text::LOGIN_CHECKING)
+            } else {
+                unavailable
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    let enabled = !state
+                        .startup()
+                        .status
+                        .is_some_and(junto_client_core::startup::Status::requested);
+                    state.set_start_at_login(enabled, cx);
+                });
+            }))
+            .into_any_element(),
+            help(unavailable.unwrap_or(text::START_AT_LOGIN_HELP), theme).into_any_element(),
+            row_title(text::KEEP_RUNNING_AFTER_CLOSE.to_owned(), theme)
+                .mt(u(10.0))
+                .into_any_element(),
+            Toggle::new(
+                "keep-running-after-close",
+                text::KEEP_RUNNING_AFTER_CLOSE,
+                self.state.read(cx).settings().keep_running_after_close,
+                (text::ON, text::OFF),
+            )
+            .selector("keep-running-after-close")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.set_keep_running_after_close(
+                        !state.settings().keep_running_after_close,
+                        cx,
+                    );
+                });
+            }))
+            .into_any_element(),
+            help(text::KEEP_RUNNING_AFTER_CLOSE_HELP, theme).into_any_element(),
             crate::ui::notice_slot("startup-result-slot")
                 .at_end()
                 .children(startup.error.map(|error| {
@@ -761,7 +766,7 @@ impl Shell {
         let colors = theme.colors;
         let switch = |selector: &'static str,
                       title: &'static str,
-                      sentence: &'static str,
+                      sentence: Option<&'static str>,
                       on: bool,
                       held: Option<&'static str>,
                       press: SwitchPress,
@@ -783,12 +788,12 @@ impl Shell {
                                 .ink(colors.ink)
                                 .child(title),
                         )
-                        .child(
+                        .children(sentence.map(|sentence| {
                             div()
                                 .typeface(theme.types.small, theme)
                                 .ink(colors.ink_2)
-                                .child(sentence),
-                        ),
+                                .child(sentence)
+                        })),
                 )
                 .child(
                     Toggle::new(selector, title, on, (text::ON, text::OFF))
@@ -803,7 +808,7 @@ impl Shell {
         parts.push(switch(
             "all-sounds",
             text::ALL_SOUNDS,
-            text::ALL_SOUNDS_HELP,
+            Some(text::ALL_SOUNDS_HELP),
             all,
             None,
             Box::new(move |this, cx| {
@@ -812,21 +817,29 @@ impl Shell {
             }),
             cx,
         ));
-        for kind in junto_client_core::voice::SoundKind::ALL {
-            let (title, sentence) = text::sound_kind(kind);
-            let on = sounds.kind_on(kind);
-            parts.push(switch(
-                sound_kind_selector(kind),
-                title,
-                sentence,
-                all && on,
-                (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
-                Box::new(move |this, cx| {
-                    this.state
-                        .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
-                }),
-                cx,
-            ));
+        for (group, kinds) in text::SOUND_GROUPS {
+            parts.push(
+                div()
+                    .mt(u(10.0))
+                    .child(group_label(group, theme))
+                    .into_any_element(),
+            );
+            for kind in kinds.iter().copied() {
+                let (title, sentence) = text::sound_kind(kind);
+                let on = sounds.kind_on(kind);
+                parts.push(switch(
+                    sound_kind_selector(kind),
+                    title,
+                    sentence,
+                    all && on,
+                    (!all).then_some(text::ALL_SOUNDS_ARE_OFF),
+                    Box::new(move |this, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_sound_kind(kind, !on, cx));
+                    }),
+                    cx,
+                ));
+            }
         }
         parts
     }
@@ -914,6 +927,14 @@ impl Shell {
                 cx,
             ));
         }
+        // The daily quiet time is part of this section (ADR 0742).
+        parts.push(
+            div()
+                .mt(u(14.0))
+                .child(group_label(text::QUIET, theme))
+                .into_any_element(),
+        );
+        parts.extend(self.render_quiet_settings(&quiet, theme, cx));
         parts
     }
 
@@ -1285,7 +1306,14 @@ impl Shell {
                 .child(label)
         };
         let modes = [InputMode::VoiceActivation, InputMode::PushToTalk];
-        let keys = [TalkKey::Alt, TalkKey::Control];
+        // The key of push to talk is set in Keyboard shortcuts; this section states it
+        // (ADR 0777).
+        let talk_keys: SharedString = self
+            .state
+            .read(cx)
+            .talk_keys()
+            .map_or_else(|| text::NO_KEYS.to_owned(), |keys| text::key_combo(&keys))
+            .into();
         let mut rows = vec![
             div()
                 .flex()
@@ -1330,7 +1358,7 @@ impl Shell {
                 div()
                     .id("push-to-talk-question")
                     .role(Role::Alert)
-                    .aria_label(text::push_to_talk_question(voice.talk_key))
+                    .aria_label(text::push_to_talk_question(&talk_keys))
                     .debug_selector(|| "push-to-talk-question".to_owned())
                     .flex()
                     .flex_col()
@@ -1344,7 +1372,7 @@ impl Shell {
                         div()
                             .typeface(theme.types.small, theme)
                             .ink(colors.ink)
-                            .child(text::push_to_talk_question(voice.talk_key)),
+                            .child(text::push_to_talk_question(&talk_keys)),
                     )
                     .child(
                         div()
@@ -1406,22 +1434,27 @@ impl Shell {
                     .mt(u(6.0))
                     .child(row_label(text::TALK_KEY))
                     .child(
-                        Segmented::new(
-                            "talk-key",
-                            text::TALK_KEY,
-                            keys.map(|key| SharedString::from(text::talk_key(key))),
-                        )
-                        .selected(keys.iter().position(|key| *key == voice.talk_key))
-                        .selector("talk-key")
-                        .on_select({
-                            let select = cx.listener(move |this, index: &usize, _, cx| {
-                                if let Some(key) = keys.get(*index).copied() {
-                                    this.state
-                                        .update(cx, |state, cx| state.set_talk_key(key, cx));
-                                }
-                            });
-                            move |index, window, cx| select(&index, window, cx)
-                        }),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .typeface(theme.types.mono_small, theme)
+                            .ink(colors.ink)
+                            .debug_selector(|| "talk-key".to_owned())
+                            .child(talk_keys),
+                    )
+                    .child(
+                        Button::new("talk-key-change")
+                            .label(text::CHANGE_KEYS)
+                            .selector("talk-key-change")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings_section(SettingsSection::Keybinds, window, cx);
+                                this.start_keybind_recording(
+                                    junto_client_core::keybinds::KeyAction::PushToTalk,
+                                    cx,
+                                );
+                            })),
                     )
                     .into_any_element(),
             );

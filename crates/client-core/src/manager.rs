@@ -192,6 +192,13 @@ impl Client {
         let arrangement = book.arrangement()?;
         let profile = ProfileStore::new(data_dir.clone());
         profile.load()?;
+        // A settings file that cannot be changed now keeps the key in the voice settings,
+        // which still gives it to push to talk; the next start tries again.
+        if let Err(error) = crate::settings::SettingsStore::new(data_dir.clone())
+            .adopt_talk_key(&crate::voice::VoiceStore::new(data_dir.clone()))
+        {
+            tracing::warn!(%error, "the key of push to talk stays in the voice settings");
+        }
         let transport = match options.transport {
             Some(transport) => transport,
             None => Arc::new(ReqwestTransport::new()?),

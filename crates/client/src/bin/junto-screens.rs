@@ -2874,11 +2874,10 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
     )?;
     for (name, section) in [
         ("settings-picture", SettingsSection::Picture),
-        ("settings-interface", SettingsSection::Interface),
+        ("settings-appearance", SettingsSection::Appearance),
         ("settings-voice", SettingsSection::VoiceAndVideo),
         // Outside a call the section states what it holds (ADR 0739).
         ("settings-call-without-a-call", SettingsSection::Call),
-        ("settings-quiet", SettingsSection::Quiet),
         ("settings-notifications", SettingsSection::Notifications),
         ("settings-devices", SettingsSection::Devices),
         ("settings-about", SettingsSection::About),

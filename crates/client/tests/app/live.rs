@@ -650,8 +650,10 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
     window.click("settings-section-voice-and-video");
     window.click_in_settings("input-mode-1");
     window.click_in_settings("confirm-push-to-talk");
-    window.until("the key is offered", |window| window.shows("talk-key-1"));
-    window.click_in_settings("talk-key-1");
+    window.until("the key is shown", |window| window.shows("talk-key"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_talk_keys(junto_client_core::voice::TalkKey::Control.combo(), cx);
+    });
     window.press("escape");
     window.click_channel(ROOM);
     window.click("join-call");

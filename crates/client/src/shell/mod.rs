@@ -343,6 +343,8 @@ pub struct Shell {
     /// The person chose push to talk in the settings, and the settings ask before the
     /// switch (ADR 0507).
     push_to_talk_question: bool,
+    /// The permissions of the settings whose steps are shown.
+    pub(crate) permission_steps: Vec<crate::permissions::Permission>,
     /// The keys that the window holds, and the binding whose keys the settings wait for
     /// (ADR 0777).
     pub(crate) keys: keybinds::WindowKeys,
@@ -986,6 +988,7 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             stage_area: std::rc::Rc::default(),
             push_to_talk_question: false,
+            permission_steps: Vec::new(),
             keys: keybinds::WindowKeys::default(),
             share_dialog_parent: None,
             pictures: share::ShownPictures::default(),

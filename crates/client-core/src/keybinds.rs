@@ -387,6 +387,24 @@ impl Keybinds {
         Ok(())
     }
 
+    /// Gives push to talk the key of the voice settings when it still takes that key, as
+    /// clients before 0.3 stored it (ADR 0777). True when the binding changed.
+    pub fn adopt_talk_key(&mut self, keys: KeyCombo) -> bool {
+        let binding = self.get(KeyAction::PushToTalk);
+        if !binding.inherited {
+            return false;
+        }
+        self.store(
+            KeyAction::PushToTalk,
+            Binding {
+                keys: Some(keys),
+                outside: binding.outside,
+                inherited: false,
+            },
+        );
+        true
+    }
+
     pub fn reset(&mut self, action: KeyAction) {
         self.changed.remove(&action);
     }

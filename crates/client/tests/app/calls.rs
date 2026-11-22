@@ -259,7 +259,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.click("settings-section-voice-and-video");
     assert!(window.shows("settings-dialog"));
     // Voice activation has no key to choose, and offers the sensitivity, off at first.
-    assert!(window.shows("input-mode-0") && !window.shows("talk-key-0"));
+    assert!(window.shows("input-mode-0") && !window.shows("talk-key"));
     assert!(!window.shows("voice-threshold-slider"));
     window.click_in_settings("voice-threshold");
     window.until("the sensitivity is on at its first level", |window| {
@@ -282,7 +282,7 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.until("the switch is asked", |window| {
         window.shows("push-to-talk-question")
     });
-    assert!(!window.shows("talk-key-1"));
+    assert!(!window.shows("talk-key"));
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
     window.click_in_settings("keep-voice-activation");
     window.until("the question closes", |window| {
@@ -291,10 +291,22 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     assert_eq!(voice(&mut window).input_mode, InputMode::VoiceActivation);
     window.click_in_settings("input-mode-1");
     window.click_in_settings("confirm-push-to-talk");
-    window.until("the key of push-to-talk is offered", |window| {
-        window.shows("talk-key-1")
+    window.until("the key of push-to-talk is shown", |window| {
+        window.shows("talk-key") && window.shows("talk-key-change")
     });
-    window.click_in_settings("talk-key-1");
+    // The key is set in Keyboard shortcuts: "Change" opens that section and records the
+    // keys of push to talk.
+    window.click_in_settings("talk-key-change");
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.recording_keybind())
+    );
+    window.press("escape");
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_talk_keys(TalkKey::Control.combo(), cx);
+    });
+    window.click("settings-section-voice-and-video");
     window.click_in_settings("noise-suppression");
     window.click_in_settings("echo-cancellation");
     window.click_in_settings("echo-cancellation");
@@ -307,7 +319,6 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
         let voice = voice(window);
         !voice.sound_off_mutes
             && voice.input_mode == InputMode::PushToTalk
-            && voice.talk_key == TalkKey::Control
             && !voice.noise_suppression
             && voice.echo_cancellation
             && voice.automatic_gain
@@ -326,14 +337,17 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     // The file holds what was chosen, and a new start reads it.
     let text = std::fs::read_to_string(voice_file(directory.path())).unwrap();
     assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
-    assert!(text.contains("\"talk_key\": \"control\""), "{text}");
     assert!(text.contains("\"voice_threshold\": -45"), "{text}");
     assert!(text.contains("\"sound_off_mutes\": false"), "{text}");
     let mut window = open(cx, directory.path());
     assert_eq!(voice(&mut window), chosen);
     window.click("app-settings");
     window.click("settings-section-voice-and-video");
-    assert!(window.shows("talk-key-1"));
+    assert!(window.shows("talk-key"));
+    let keys = window
+        .state
+        .read_with(&window.cx, |state, _| state.talk_keys());
+    assert_eq!(keys, Some(TalkKey::Control.combo()));
 }
 
 #[gpui::test]

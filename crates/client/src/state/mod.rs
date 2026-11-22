@@ -81,7 +81,7 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::settings::{InterfaceSettings, Panel, ThemeChoice};
 use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::updates::Version;
-use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
+use junto_client_core::voice::{InputMode, ShareResolution, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_client_core::{EntryKey, Owner};
 use junto_media::audio::{DeviceId, Processing, level};
@@ -2729,9 +2729,20 @@ impl AppState {
         }
     }
 
-    pub fn set_talk_key(&mut self, key: TalkKey, cx: &mut Context<Self>) {
+    /// Gives push to talk these keys. The key binding holds them (ADR 0777).
+    pub fn set_talk_keys(
+        &mut self,
+        keys: junto_client_core::global_keys::KeyCombo,
+        cx: &mut Context<Self>,
+    ) {
         self.calls.set_talking(false);
-        self.change_voice(cx, move |voice| voice.talk_key = key);
+        let _ = self.change_keybinds(
+            call_keys::KeybindChange::Set(
+                junto_client_core::keybinds::KeyAction::PushToTalk,
+                Some(keys),
+            ),
+            cx,
+        );
     }
 
     /// Changes a sound setting: the engine uses it at once, and the file is written on a

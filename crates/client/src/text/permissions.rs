@@ -92,7 +92,11 @@ fn where_to_change(system: System, permission: Permission) -> &'static str {
 const LISTED_BUT_NOT_ALLOWED: &str = "If Junto is already turned on there, select it, remove it with the minus button, and allow it again.";
 
 /// The state of a permission, and what the person does about it.
-pub fn state(system: System, permission: Permission, access: Access) -> String {
+pub const HOW: &str = "How";
+pub const HIDE_HOW: &str = "Hide";
+
+/// The state of a permission in one short line.
+pub fn state_line(system: System, permission: Permission, access: Access) -> String {
     match access {
         Access::Allowed => "Allowed.".to_owned(),
         Access::NotAsked => "Not asked yet. Junto asks when it first needs it.".to_owned(),
@@ -106,31 +110,49 @@ pub fn state(system: System, permission: Permission, access: Access) -> String {
             }
             _ => "Not read yet.".to_owned(),
         },
-        Access::Restricted if system == System::Linux => {
-            where_to_change(system, permission).to_owned()
-        }
+        Access::Restricted if system == System::Linux => "Not allowed.".to_owned(),
         Access::Restricted => {
             "Not allowed by a rule of this computer. The administrator of the computer changes it."
                 .to_owned()
         }
-        Access::Refused => {
-            let what = match permission {
-                Permission::Downloads => "Not allowed: a file was not saved.",
-                Permission::LocalNetwork => {
-                    "Not allowed: macOS did not let Junto connect to a server on your local network."
-                }
-                _ if system == System::Windows => "Off.",
-                _ => "Not allowed.",
-            };
-            let change = where_to_change(system, permission);
-            match (system, permission) {
-                (System::MacOs, Permission::Notifications | Permission::Downloads) => {
-                    format!("{what} {change}")
-                }
-                (System::MacOs, _) => format!("{what} {change} {LISTED_BUT_NOT_ALLOWED}"),
-                _ => format!("{what} {change}"),
+        Access::Refused => match permission {
+            Permission::Downloads => "Not allowed: a file was not saved.",
+            Permission::LocalNetwork => {
+                "Not allowed: macOS did not let Junto connect to a server on your local network."
             }
+            _ if system == System::Windows => "Off.",
+            _ => "Not allowed.",
         }
+        .to_owned(),
+    }
+}
+
+/// How the person changes a permission that is not allowed, when the person can.
+pub fn steps(system: System, permission: Permission, access: Access) -> Option<String> {
+    match access {
+        Access::Restricted if system == System::Linux => {
+            Some(where_to_change(system, permission).to_owned())
+        }
+        Access::Refused => {
+            let change = where_to_change(system, permission);
+            Some(match (system, permission) {
+                (System::MacOs, Permission::Notifications | Permission::Downloads) => {
+                    change.to_owned()
+                }
+                (System::MacOs, _) => format!("{change} {LISTED_BUT_NOT_ALLOWED}"),
+                _ => change.to_owned(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The state of a permission with the steps to change it.
+pub fn state(system: System, permission: Permission, access: Access) -> String {
+    let line = state_line(system, permission, access);
+    match steps(system, permission, access) {
+        Some(steps) => format!("{line} {steps}"),
+        None => line,
     }
 }
 
@@ -148,6 +170,23 @@ pub fn download_refused(system: System) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_permission_states_one_short_line_and_keeps_its_steps_apart() {
+        let line = state_line(System::MacOs, Permission::Camera, Access::Refused);
+        assert_eq!(line, "Not allowed.");
+        let steps = steps(System::MacOs, Permission::Camera, Access::Refused).unwrap();
+        assert!(steps.contains("Privacy & Security") || steps.contains("System Settings"));
+        assert_eq!(
+            state(System::MacOs, Permission::Camera, Access::Refused),
+            format!("{line} {steps}")
+        );
+        assert_eq!(steps_of_allowed(), None);
+    }
+
+    fn steps_of_allowed() -> Option<String> {
+        steps(System::MacOs, Permission::Camera, Access::Allowed)
+    }
 
     #[test]
     fn each_permission_of_each_system_has_a_name_a_purpose_and_a_sentence_for_each_state() {
