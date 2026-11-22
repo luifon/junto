@@ -250,24 +250,24 @@ pub const fn remove_device_question(this_device: bool) -> &'static str {
     }
 }
 
-// The link of a new device on one server, on the device that is logged in.
+// The link of a new device, on the device that approves it (ADR 0104).
 pub const LINK_NEW_DEVICE: &str = "Link a new device";
-pub const LINK_NEW_DEVICE_HELP: &str = "On the new device, add this server and choose “I already have an account: link this \
-     device”. It shows a link code. Type the code here.";
-pub const LINK_CODE_FIELD: &str = "Link code of the new device";
-pub const LOOK_UP: &str = "Look up";
+pub const LINK_NEW_DEVICE_HELP: &str = "On the new device, choose “I use Junto on another computer”, or Settings, Linked \
+     devices, “Link this device”, and type the address of one of the servers below. Type the \
+     code that it shows here.";
+pub const LINK_CODE_FIELD: &str = "Code of the new device";
+pub const LINK_CODE_PLACEHOLDER: &str = "ABCD-EFGH";
+pub const LOOK_UP: &str = "Find the device";
 pub const LOOKING_UP: &str = "Looking up…";
-pub const LINK_CODE_EMPTY: &str = "Type the link code that the new device shows.";
+pub const LINK_CODE_EMPTY: &str = "Type the code that the new device shows.";
 pub const LINK_CODE_TOO_LONG: &str = "A link code has 8 symbols.";
-pub const COMPARE_KEY: &str = "Compare this key with the key that the new device shows. Approve only when every \
+pub const COMPARE_KEY: &str = "Compare this device code with the one that the new device shows. Approve only when every \
      group is the same.";
 pub const KEY_OF_NEW_DEVICE: &str = "Device code";
+pub const LINK_STARTS_HERE: &str = "The link starts on this server.";
 pub const APPROVE: &str = "Approve";
 pub const APPROVING: &str = "Approving…";
-pub const DEVICE_LINKED: &str = "Device linked";
 pub const DONE: &str = "Done";
-pub const OUTCOME_UNKNOWN: &str = "The approval was sent, and no answer of the server arrived. The device may be linked. \
-     “Check again” reads the list of devices.";
 pub const CHECKING: &str = "Checking…";
 
 pub fn new_device_named(name: &str) -> String {
@@ -290,17 +290,23 @@ pub fn code_expires(at: OffsetDateTime, cycle: HourCycle) -> String {
     format!("The code expires on {}.", utc(at, cycle))
 }
 
-// The link of this device on one server, on the new device.
+// The link of this device, on the new device.
 pub const LINK_THIS_DEVICE: &str = "I already have an account: link this device";
-pub const LINK_THIS_DEVICE_HELP: &str = "This device gets a link code. You type the code on a device that is logged in to your \
-     account, and approve it there.";
+pub const LINK_WAY_HELP: &str = "This device gets a code. You type it on a device of your account, which can also link \
+     this device on your other servers.";
+pub const LINK_THIS_DEVICE_HELP: &str = "Type the address of one of your servers. This device gets a code there, which you \
+     type on a device of your account. That device chooses the other servers to link.";
+pub const SERVER_ADDRESS: &str = "Address of one of your servers";
+pub const SERVER_ADDRESS_PLACEHOLDER: &str = "chat.example.com";
+pub const ADDRESS_EMPTY: &str = "Type the address of one of your servers.";
+pub const GET_A_CODE: &str = "Get a code";
 pub const REQUEST_LINK: &str = "Link this device";
 pub const REQUESTING_LINK: &str = "Asking for a code…";
 pub const LINK_CODE: &str = "Link code";
 pub const KEY_OF_THIS_DEVICE: &str = "Device code";
-pub const LINK_WAIT_HELP: &str = "On a device that is logged in to your account, open “Your account”, then “Devices”, \
-     and type this code under “Link a new device”. That device shows a key: approve only \
-     when it is the key shown here. This device logs in by itself after the approval.";
+pub const LINK_WAIT_HELP: &str = "On a device of your account, open Settings, Linked devices, “Link a new device”, and \
+     type this code. That device shows a device code: approve only when it is the one shown \
+     here. This device logs in by itself after the approval.";
 pub const LINK_WAIT_RECOVERY: &str = "When no device of your account is at hand, give this key to \
      the server owner. The owner can recover your account onto this device, and this device \
      logs in by itself after that.";
@@ -308,78 +314,41 @@ pub const LINK_CODE_NOT_SHOWN: &str =
     "The server gave a code in a form that Junto does not show. Ask for a new code.";
 pub const NEW_CODE: &str = "New code";
 pub const CANCEL_LINK: &str = "Cancel";
+pub const READING_OTHER_SERVERS: &str =
+    "Reading which other servers the device of your account chose…";
 
-// The link on all servers.
+/// The server whose code the new device shows. The name is text of the server: the
+/// caller cuts the sentence at the width of its place.
+pub fn code_from(server: &str) -> String {
+    format!("The code of {server}:")
+}
+
+/// The first server linked this device. The name is text of the server.
+pub fn linked_on(server: &str) -> String {
+    format!("This device is linked on {server}.")
+}
+
+// The section of the settings.
 pub const DEVICES_SECTION: &str = "Linked devices";
-pub const DEVICES_SECTION_HELP: &str = "A second installation of Junto gets access to your accounts on all your servers with \
-     two texts that you carry between the two devices.";
-pub const LINK_ALL_FIRST: &str = "Link a new device to all my servers";
-pub const LINK_ALL_NEW: &str = "Link this device to my servers";
+pub const DEVICES_SECTION_HELP: &str = "Another installation of Junto gets access to your accounts with one code, on the \
+     servers that you choose.";
+pub const START_OVER: &str = "Start over";
 pub const COPY: &str = "Copy";
 pub const COPIED: &str = "Copied";
-pub const START_OVER: &str = "Start over";
-pub const TEXT_TOO_LONG: &str =
-    "This text is longer than 32 KiB. A link text is shorter. The field was emptied.";
-pub const OFFER_TITLE: &str = "1. Give the offer to the new device";
-pub const OFFER_HELP: &str = "The offer names the servers on which this device has an account. It holds no secret. On \
-     the new device, open the settings, choose “Link this device to my servers”, and put \
-     the offer into its field.";
-pub const OFFER_LABEL: &str = "Link offer";
-pub const NO_OFFER: &str = "This device has no account on any server, so it has nothing to offer.";
-pub const REQUEST_TITLE: &str = "2. Take the request of the new device";
-pub const REQUEST_HELP: &str =
-    "The new device answers with a request text. Put it into this field.";
-pub const REQUEST_FIELD: &str = "Link request of the new device";
-pub const REQUEST_EMPTY: &str = "Put the request text of the new device into the field.";
-pub const CONFIRM_TITLE: &str = "3. Compare and approve";
-pub const CONFIRM_HELP: &str = "The new device shows a fingerprint. Approve only when it is the same as this one. \
-     Nothing is approved before you press “Approve”.";
-pub const FINGERPRINT: &str = "Device code";
-pub const USE_THIS_ACCOUNT: &str = "Use this account";
-pub const ALL_APPROVED: &str =
-    "The new device is approved on every server of the request. It logs in by itself.";
-pub const OFFER_FIELD_TITLE: &str = "1. Take the offer of the first device";
-pub const OFFER_FIELD_HELP: &str = "On a device that is logged in, open the settings and choose “Link a new device to all \
-     my servers”. It shows an offer text. Put it into this field.";
-pub const OFFER_FIELD: &str = "Link offer of the first device";
-pub const OFFER_EMPTY: &str = "Put the offer text of the first device into the field.";
 pub const THIS_DEVICE_NAME: &str = "Name of this device";
-pub const REQUEST_LINKS: &str = "Request links";
-pub const REQUESTING_LINKS: &str = "Asking the servers…";
-pub const REQUEST_TEXT_TITLE: &str = "2. Give the request to the first device";
-pub const REQUEST_TEXT_HELP: &str = "Put this text into the field on the first device. The first device shows the same \
-     fingerprint. The text holds link codes that expire after 10 minutes.";
-pub const REQUEST_LABEL: &str = "Link request";
-pub const NO_REQUEST: &str = "No server waits for an approval, so there is no request text.";
 pub const SERVERS: &str = "Servers";
-pub const CHECK: &str = "Check";
-pub const ALL_LINKED: &str = "This device is linked on every server of the offer.";
 pub const PROGRESS_WORKING: &str = "working…";
-pub const PROGRESS_READY: &str = "ready";
 pub const PROGRESS_APPROVED: &str = "approved";
-pub const PROGRESS_UNKNOWN: &str = "unknown: the answer of the server was lost";
+pub const PROGRESS_ALREADY_LINKED: &str = "already linked";
 pub const PROGRESS_WAITING: &str = "waiting for the approval";
+pub const PROGRESS_WAITING_FOR_DEVICE: &str = "waiting for the new device";
 pub const PROGRESS_LINKED: &str = "linked";
 pub const UNSAVED_SERVER: &str = "A server that this device has not saved";
-pub const NO_ACCOUNT_SHOWN: &str = "No account read yet";
-
-/// The servers that an offer names. The names are text of the servers: the caller cuts
-/// the sentence at the width of its place.
-pub fn offer_names(servers: &[String]) -> String {
-    match servers {
-        [one] => format!("The offer names 1 server: {one}."),
-        many => format!(
-            "The offer names {} servers: {}.",
-            many.len(),
-            many.join(", ")
-        ),
-    }
-}
 
 pub const fn role_title(role: LinkRole) -> &'static str {
     match role {
-        LinkRole::FirstDevice => LINK_ALL_FIRST,
-        LinkRole::NewDevice => LINK_ALL_NEW,
+        LinkRole::FirstDevice => LINK_NEW_DEVICE,
+        LinkRole::NewDevice => REQUEST_LINK,
     }
 }
 
@@ -389,22 +358,6 @@ pub fn progress_failed(reason: &str) -> String {
 
 pub fn account_line(name: &str) -> String {
     format!("Account: {name}")
-}
-
-/// What the line of a server tells when this device has another account there than the
-/// one of the line. It holds no name: the line names the account with [`account_now`].
-pub const ACCOUNT_CHANGED: &str = "This device now has another account on this server. Nothing is approved here until you \
-     choose “Use this account”.";
-
-/// The account that this device has now. The name is text of the server: the line is cut
-/// at the width of its place.
-pub fn account_now(name: &str) -> String {
-    format!("Account now: {name}")
-}
-
-/// The length of a text that the layer draws whole or cut. "Copy" takes the whole text.
-pub fn text_length(characters: usize) -> String {
-    format!("The text has {characters} characters. “{COPY}” takes all of it.")
 }
 
 pub fn incomplete(failed: usize, total: usize) -> String {
@@ -502,17 +455,24 @@ pub fn link_error(error: &FlowError) -> String {
                 "The server limits how many link codes are tried or asked for.",
             );
         }
-        FlowError::InvalidBundle("link offer") => {
-            "The text is not a link offer. Copy the whole offer text of the first device."
+        FlowError::NoServerChosen => "Choose at least one server.",
+        FlowError::NotSignedByDevice => {
+            "The answer is not signed by the device code that you compared. Nothing was approved \
+             on the other servers."
         }
-        FlowError::InvalidBundle(_) => {
-            "The text is not a link request. Copy the whole request text of the new device."
+        FlowError::RelayNotAvailable => {
+            "The first server cannot pass the other servers to the new device, so only it was \
+             linked. Link each other server from the new device."
+        }
+        FlowError::AlreadyLinked => "This device already has an account on this server.",
+        FlowError::OnNewDevice(reason) => {
+            return format!("The new device could not ask this server for a link: {reason}");
         }
         FlowError::Incomplete { failed, total } => return incomplete(*failed, *total),
         FlowError::UnknownServer => "This device has not saved this server.",
         FlowError::NotLoggedIn => "This device is not logged in to this server.",
         FlowError::Expired => "The link code expired. “Try again” asks for a new one.",
-        FlowError::OtherServer => "The address of the offer answers as another server.",
+        FlowError::OtherServer => "The address answers as another server.",
         FlowError::AlreadySaved { .. } => {
             "This device has saved this server under another address."
         }
@@ -699,13 +659,12 @@ mod tests {
             link_error(&FlowError::refused(ErrorCode::PublicKeyMismatch))
                 .contains("Nothing was approved")
         );
+        assert!(link_error(&FlowError::NotSignedByDevice).contains("Nothing was approved"));
         assert_eq!(
-            link_error(&FlowError::InvalidBundle("link offer")),
-            "The text is not a link offer. Copy the whole offer text of the first device."
-        );
-        assert_eq!(
-            link_error(&FlowError::InvalidBundle("link request")),
-            "The text is not a link request. Copy the whole request text of the new device."
+            link_error(&FlowError::OnNewDevice(
+                "the server cannot be reached.".to_owned()
+            )),
+            "The new device could not ask this server for a link: the server cannot be reached."
         );
         assert_eq!(
             link_error(&FlowError::Incomplete {
@@ -752,21 +711,11 @@ mod tests {
     fn a_question_holds_no_text_of_a_server() {
         // A sentence that asks or instructs is fixed text. A name of a server has a line
         // of its own, where its text cannot be read as a part of the sentence.
-        for sentence in [
-            remove_device_question(true),
-            remove_device_question(false),
-            ACCOUNT_CHANGED,
-        ] {
+        for sentence in [remove_device_question(true), remove_device_question(false)] {
             assert!(
                 sentence.ends_with('.') && !sentence.contains('!'),
                 "{sentence}"
             );
         }
-        assert!(ACCOUNT_CHANGED.contains(&format!("“{USE_THIS_ACCOUNT}”")));
-        assert_eq!(account_now("Ada H."), "Account now: Ada H.");
-        assert_eq!(
-            text_length(120),
-            "The text has 120 characters. “Copy” takes all of it."
-        );
     }
 }

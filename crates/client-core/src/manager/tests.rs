@@ -17,10 +17,9 @@ use crate::flow::add_server::{AddServerAction, AddServerActionKind, AddServerSta
 use crate::flow::approve_link::{
     ApproveLinkAction, ApproveLinkActionKind, ApproveLinkState, PendingApproval,
 };
-use crate::flow::link_all::{
-    ApprovalProgress, ApproveDevicesAction, ApproveDevicesActionKind, ApproveDevicesFlow,
-    ApproveDevicesState, LinkDeviceAction, LinkDeviceActionKind, LinkDeviceFlow, LinkDeviceState,
-    LinkProgress, LinkRequest, LinkRequestText,
+use crate::flow::link_device::{
+    ApprovalProgress, LinkNewDeviceAction, LinkNewDeviceFlow, LinkNewDeviceState, LinkProgress,
+    LinkThisDeviceAction, LinkThisDeviceActionKind, LinkThisDeviceFlow, LinkThisDeviceState,
 };
 use crate::updates::{CHECK_INTERVAL, FakeSource, Release, UpdateState};
 
@@ -3244,493 +3243,6 @@ async fn owner_of(network: &Arc<Network>, names: &[&str]) -> (Device, Vec<Arc<Fa
     (first, servers)
 }
 
-fn links(flow: &LinkDeviceFlow) -> (Vec<LinkProgress>, Option<LinkRequestText>, Option<String>) {
-    let LinkDeviceState::Requested {
-        servers,
-        request,
-        fingerprint,
-        ..
-    } = flow.view().state
-    else {
-        panic!("no links were requested");
-    };
-    (
-        servers.into_iter().map(|server| server.progress).collect(),
-        request,
-        fingerprint,
-    )
-}
-
-fn approvals(flow: &ApproveDevicesFlow) -> (Vec<ApprovalProgress>, String, String) {
-    let ApproveDevicesState::Confirm {
-        fingerprint,
-        device_name,
-        servers,
-    } = flow.view().state
-    else {
-        panic!("nothing to confirm");
-    };
-    (
-        servers.into_iter().map(|server| server.progress).collect(),
-        fingerprint,
-        device_name,
-    )
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_new_device_is_linked_on_every_server_of_the_first_device_in_one_flow() {
-    use ApprovalProgress::{Approved, Ready};
-    use LinkProgress::{Linked, Waiting};
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
-    let offer = first.client.link_offer();
-    assert_eq!(offer.servers.len(), 3);
-
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    assert_eq!(linking.view().actions, [LinkDeviceActionKind::Start]);
-    linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: offer.to_text(),
-            device_name: " Phone ".to_owned(),
-        })
-        .await
-        .unwrap();
-    let (progress, request, fingerprint) = links(&linking);
-    assert_eq!(progress, [Waiting, Waiting, Waiting]);
-    let (request, fingerprint) = (request.unwrap(), fingerprint.unwrap());
-    assert_eq!(second.client.servers().len(), 3);
-    let keys: Vec<_> = second
-        .client
-        .servers()
-        .iter()
-        .map(|handle| handle.device_public_key().unwrap())
-        .collect();
-    assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
-
-    let approving = first.client.approve_devices();
-    approving
-        .dispatch(ApproveDevicesAction::LookUp { request })
-        .await
-        .unwrap();
-    let (progress, shown, device_name) = approvals(&approving);
-    assert_eq!(progress, [Ready, Ready, Ready]);
-    assert_eq!(shown, fingerprint);
-    assert_eq!(device_name, "Phone");
-    let ApproveDevicesState::Confirm { servers: shown, .. } = approving.view().state else {
-        panic!("nothing to confirm");
-    };
-    assert_eq!(shown[0].name, "acme");
-    for (server, handle) in shown.iter().zip(first.client.servers()) {
-        assert_eq!(server.account_id, Some(logged_in(&handle)));
-    }
-    let shown_keys: Vec<_> = shown.iter().map(|server| server.public_key).collect();
-    assert_eq!(shown_keys, keys);
-    for (server, key) in servers.iter().zip(&keys) {
-        assert_eq!(server.account_of(*key), None);
-    }
-
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert_eq!(approvals(&approving).0, [Approved, Approved, Approved]);
-    linking.dispatch(LinkDeviceAction::Check).await.unwrap();
-    let (progress, request, fingerprint) = links(&linking);
-    assert_eq!(progress, [Linked, Linked, Linked]);
-    assert_eq!((request, fingerprint), (None, None));
-    for (old, new) in first.client.servers().iter().zip(second.client.servers()) {
-        assert_eq!(logged_in(&new), logged_in(old));
-        assert_eq!(new.api().devices().await.unwrap().len(), 2);
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_server_that_fails_during_a_link_of_all_servers_is_reported_and_resumed_alone() {
-    use ApprovalProgress::{Approved, Ready};
-    use LinkProgress::{Linked, Waiting};
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
-    let (acme, globex, initech) = (&servers[0], &servers[1], &servers[2]);
-    let offer = first.client.link_offer().to_text();
-
-    globex.set_down(true);
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    let started = linking
-        .dispatch(LinkDeviceAction::Start {
-            offer,
-            device_name: "Phone".to_owned(),
-        })
-        .await;
-    assert_eq!(
-        started,
-        Err(FlowError::Incomplete {
-            failed: 1,
-            total: 3
-        })
-    );
-    let (progress, request, _) = links(&linking);
-    assert_eq!(progress[0], Waiting);
-    assert!(matches!(
-        progress[1],
-        LinkProgress::Failed(FlowError::Unreachable(_))
-    ));
-    assert_eq!(progress[2], Waiting);
-    assert_eq!(second.client.servers().len(), 2);
-
-    let approving = first.client.approve_devices();
-    approving
-        .dispatch(ApproveDevicesAction::LookUp {
-            request: request.unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(approvals(&approving).0, [Ready, Ready]);
-    initech.fail("/account/device-links/approve", [Fault::LoseRequest]);
-    assert_eq!(
-        approving.dispatch(ApproveDevicesAction::Approve).await,
-        Err(FlowError::Incomplete {
-            failed: 1,
-            total: 2
-        })
-    );
-    let (progress, _, _) = approvals(&approving);
-    assert_eq!(progress[0], Approved);
-    assert!(matches!(progress[1], ApprovalProgress::Failed(_)));
-    assert_eq!(acme.count("/account/device-links/approve"), 1);
-
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert_eq!(approvals(&approving).0, [Approved, Approved]);
-    assert_eq!(acme.count("/account/device-links/approve"), 1);
-    assert_eq!(initech.count("/account/device-links/approve"), 2);
-
-    globex.set_down(false);
-    linking.dispatch(LinkDeviceAction::Retry).await.unwrap();
-    let (progress, request, _) = links(&linking);
-    assert_eq!(progress, [Linked, Waiting, Linked]);
-    let again = first.client.approve_devices();
-    again
-        .dispatch(ApproveDevicesAction::LookUp {
-            request: request.unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(approvals(&again).0, [Ready]);
-    again.dispatch(ApproveDevicesAction::Approve).await.unwrap();
-    linking.dispatch(LinkDeviceAction::Check).await.unwrap();
-    assert_eq!(links(&linking).0, [Linked, Linked, Linked]);
-    assert_eq!(globex.account_count(), 1);
-}
-
-#[tokio::test(start_paused = true)]
-async fn an_approval_whose_answer_was_lost_is_found_when_all_servers_are_resumed() {
-    use ApprovalProgress::Approved;
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
-            device_name: String::new(),
-        })
-        .await
-        .unwrap();
-    let approving = first.client.approve_devices();
-    approving
-        .dispatch(ApproveDevicesAction::LookUp {
-            request: links(&linking).1.unwrap(),
-        })
-        .await
-        .unwrap();
-    servers[1].fail("/account/device-links/approve", [Fault::LoseAnswer]);
-    servers[1].fail("/account/devices", [Fault::LoseRequest]);
-    assert!(
-        approving
-            .dispatch(ApproveDevicesAction::Approve)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        approvals(&approving).0,
-        [Approved, ApprovalProgress::Unknown]
-    );
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert_eq!(approvals(&approving).0, [Approved, Approved]);
-    assert_eq!(servers[1].count("/account/device-links/approve"), 2);
-    linking.dispatch(LinkDeviceAction::Check).await.unwrap();
-    assert!(
-        second
-            .client
-            .servers()
-            .iter()
-            .all(|handle| { matches!(handle.access().state, AccessState::LoggedIn { .. }) })
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_request_with_another_key_or_an_unknown_server_is_not_approved() {
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme"]).await;
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
-            device_name: String::new(),
-        })
-        .await
-        .unwrap();
-    let genuine = LinkRequest::parse(&links(&linking).1.unwrap()).unwrap();
-
-    let mut swapped = genuine.clone();
-    swapped.links[0].public_key = DeviceKey::generate().unwrap().public_key();
-    let mut elsewhere = genuine.clone();
-    elsewhere.links[0].server_id = ServerId::generate();
-    assert_ne!(swapped.fingerprint(), genuine.fingerprint());
-    for (request, key_differs) in [(swapped, true), (elsewhere, false)] {
-        let approving = first.client.approve_devices();
-        let looked_up = approving
-            .dispatch(ApproveDevicesAction::LookUp {
-                request: request.to_text().unwrap(),
-            })
-            .await;
-        assert_eq!(
-            looked_up,
-            Err(FlowError::Incomplete {
-                failed: 1,
-                total: 1
-            })
-        );
-        let expected = if key_differs {
-            refused(ErrorCode::PublicKeyMismatch)
-        } else {
-            FlowError::UnknownServer
-        };
-        assert_eq!(
-            approvals(&approving).0,
-            [ApprovalProgress::Failed(expected)]
-        );
-        assert!(
-            approving
-                .dispatch(ApproveDevicesAction::Approve)
-                .await
-                .is_err()
-        );
-    }
-    assert_eq!(servers[0].count("/account/device-links/approve"), 0);
-    let owner = &first.client.servers()[0];
-    assert_eq!(owner.api().devices().await.unwrap().len(), 1);
-
-    let approving = first.client.approve_devices();
-    assert_eq!(
-        approving
-            .dispatch(ApproveDevicesAction::LookUp {
-                request: LinkRequestText::new("junto-link-request-1.e30".to_owned().into())
-            })
-            .await,
-        Err(FlowError::InvalidBundle("link request"))
-    );
-    assert_eq!(approving.view().state, ApproveDevicesState::EnterRequest);
-}
-
-#[tokio::test(start_paused = true)]
-async fn an_offer_whose_address_answers_as_another_server_adds_nothing() {
-    let network = Arc::new(Network::default());
-    let (first, _servers) = owner_of(&network, &["acme"]).await;
-    network.host("impostor");
-    let mut offer = first.client.link_offer();
-    offer.servers[0].address = ServerAddress::parse("impostor.example.test").unwrap();
-
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    let started = linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: offer.to_text(),
-            device_name: String::new(),
-        })
-        .await;
-    assert!(matches!(started, Err(FlowError::Incomplete { .. })));
-    assert_eq!(
-        links(&linking).0,
-        [LinkProgress::Failed(FlowError::OtherServer)]
-    );
-    assert!(second.client.servers().is_empty());
-    assert_eq!(
-        std::fs::read_dir(second.client.data_dir().keys_dir())
-            .unwrap()
-            .count(),
-        0
-    );
-    let fresh = second.client.link_this_device();
-    assert_eq!(
-        fresh
-            .dispatch(LinkDeviceAction::Start {
-                offer: "not an offer".to_owned(),
-                device_name: String::new()
-            })
-            .await,
-        Err(FlowError::InvalidBundle("link offer"))
-    );
-    assert_eq!(fresh.view().state, LinkDeviceState::EnterOffer);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_link_of_all_servers_is_not_approved_for_an_account_that_the_user_did_not_confirm() {
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme"]).await;
-    let server = &servers[0];
-    server.add_invite("CODE", 1);
-    let approver = first.client.servers().remove(0);
-    let account_a = logged_in(&approver);
-    let other = device(&network);
-    let member = other.add("acme").await;
-    member.dispatch(join("CODE")).await.unwrap();
-    let account_b = logged_in(&member);
-
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
-            device_name: String::new(),
-        })
-        .await
-        .unwrap();
-    let new_key = second.client.servers()[0].device_public_key().unwrap();
-    let approving = first.client.approve_devices();
-    approving
-        .dispatch(ApproveDevicesAction::LookUp {
-            request: links(&linking).1.unwrap(),
-        })
-        .await
-        .unwrap();
-
-    server.reassign(approver.device_public_key().unwrap(), account_b);
-    for _ in 0..3 {
-        assert!(
-            approving
-                .dispatch(ApproveDevicesAction::Approve)
-                .await
-                .is_err()
-        );
-        assert_eq!(server.account_of(new_key), None);
-    }
-    assert_eq!(server.count("/account/device-links/approve"), 1);
-    let shown = |flow: &ApproveDevicesFlow| match flow.view().state {
-        ApproveDevicesState::Confirm { mut servers, .. } => servers.remove(0),
-        ApproveDevicesState::EnterRequest => panic!("nothing to confirm"),
-    };
-    assert_eq!(shown(&approving).account_id, Some(account_a));
-    assert_eq!(
-        shown(&approving).progress,
-        ApprovalProgress::AccountChanged { now: account_b }
-    );
-    assert!(
-        approving
-            .view()
-            .actions
-            .contains(&ApproveDevicesActionKind::ConfirmAccount)
-    );
-    assert_eq!(
-        approving
-            .dispatch(ApproveDevicesAction::ConfirmAccount {
-                server_id: ServerId::generate()
-            })
-            .await,
-        Err(FlowError::NotAvailable)
-    );
-
-    approving
-        .dispatch(ApproveDevicesAction::ConfirmAccount {
-            server_id: server.server_id(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(shown(&approving).account_id, Some(account_b));
-    assert_eq!(shown(&approving).progress, ApprovalProgress::Ready);
-    assert_eq!(server.account_of(new_key), None);
-    assert_eq!(server.count("/account/device-links/approve"), 1);
-    assert_eq!(
-        approving
-            .dispatch(ApproveDevicesAction::ConfirmAccount {
-                server_id: server.server_id()
-            })
-            .await,
-        Err(FlowError::NotAvailable)
-    );
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert_eq!(server.account_of(new_key), Some(account_b));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_server_whose_account_was_not_shown_is_looked_up_first_and_approved_after() {
-    let network = Arc::new(Network::default());
-    let (first, servers) = owner_of(&network, &["acme"]).await;
-    let server = &servers[0];
-    let second = device(&network);
-    let linking = second.client.link_this_device();
-    linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
-            device_name: String::new(),
-        })
-        .await
-        .unwrap();
-    let new_key = second.client.servers()[0].device_public_key().unwrap();
-
-    let restarted = first.reopened(&network);
-    let approving = restarted.approve_devices();
-    server.set_down(true);
-    assert!(
-        approving
-            .dispatch(ApproveDevicesAction::LookUp {
-                request: links(&linking).1.unwrap(),
-            })
-            .await
-            .is_err()
-    );
-    let shown = |flow: &ApproveDevicesFlow| match flow.view().state {
-        ApproveDevicesState::Confirm { mut servers, .. } => servers.remove(0),
-        ApproveDevicesState::EnterRequest => panic!("nothing to confirm"),
-    };
-    assert_eq!(shown(&approving).account_id, None);
-    assert!(matches!(
-        shown(&approving).progress,
-        ApprovalProgress::Failed(FlowError::Unreachable(_))
-    ));
-
-    server.set_down(false);
-    assert_eq!(
-        approving.dispatch(ApproveDevicesAction::Approve).await,
-        Err(FlowError::Incomplete {
-            failed: 1,
-            total: 1
-        })
-    );
-    assert_eq!(shown(&approving).progress, ApprovalProgress::Ready);
-    assert_eq!(
-        shown(&approving).account_id,
-        restarted.servers()[0].account()
-    );
-    assert_eq!(server.account_of(new_key), None);
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert!(server.account_of(new_key).is_some());
-}
-
 async fn until<F: Fn() -> bool>(client: &Client, reached: F) {
     let mut changes = client.changes();
     let waiting = async {
@@ -3743,129 +3255,489 @@ async fn until<F: Fn() -> bool>(client: &Client, reached: F) {
         .expect("the state was not reached while a server was suspended");
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_suspended_server_does_not_hold_up_the_other_servers_of_a_link() {
-    let network = Arc::new(Network::default());
-    let (first, _servers) = owner_of(&network, &["acme", "globex"]).await;
-    let second = device(&network);
+fn lines(flow: &LinkThisDeviceFlow) -> Vec<(ServerId, LinkProgress)> {
+    match flow.view().state {
+        LinkThisDeviceState::Linked { servers, .. } => servers
+            .into_iter()
+            .map(|server| (server.server_id, server.progress))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn approvals(flow: &LinkNewDeviceFlow) -> Vec<(ServerId, ApprovalProgress)> {
+    match flow.view().state {
+        LinkNewDeviceState::Linking { servers, .. } => servers
+            .into_iter()
+            .map(|server| (server.server_id, server.progress))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The code that the first server gave the new device.
+fn code_on(handle: &ServerHandle) -> LinkCode {
+    match handle.access().state {
+        AccessState::WaitingForLink { code, .. } => code,
+        other => panic!("no link waits: {other:?}"),
+    }
+}
+
+/// Starts the new device on `host` and lets the old device look its code up.
+async fn looked_up(
+    first: &Device,
+    second: &Device,
+    host: &str,
+    only: Option<ServerId>,
+) -> (LinkThisDeviceFlow, LinkNewDeviceFlow) {
     let linking = second.client.link_this_device();
-
-    network.suspend("acme");
-    let starting = linking.dispatch(LinkDeviceAction::Start {
-        offer: first.client.link_offer().to_text(),
-        device_name: String::new(),
-    });
-    let progress_of = |flow: &LinkDeviceFlow| match flow.view().state {
-        LinkDeviceState::Requested { servers, .. } => servers
-            .into_iter()
-            .map(|server| server.progress)
-            .collect::<Vec<_>>(),
-        LinkDeviceState::EnterOffer => Vec::new(),
+    assert_eq!(linking.view().actions, [LinkThisDeviceActionKind::Start]);
+    linking
+        .dispatch(LinkThisDeviceAction::Start {
+            address: format!("{host}.example.test"),
+            device_name: " Phone ".to_owned(),
+        })
+        .await
+        .unwrap();
+    let LinkThisDeviceState::Waiting { first: started } = linking.view().state else {
+        panic!("the new device does not wait");
     };
-    until(&second.client, || {
-        progress_of(&linking).get(1) == Some(&LinkProgress::Waiting)
-    })
-    .await;
-    assert!(linking.view().in_progress.is_some());
-    assert_ne!(progress_of(&linking)[0], LinkProgress::Waiting);
-    network.resume("acme");
-    starting.await.unwrap();
-    let request = links(&linking).1.unwrap();
+    let code = code_on(&second.client.server(started).unwrap());
+    let approving = first.client.link_new_device(only);
+    approving
+        .dispatch(LinkNewDeviceAction::LookUp { code })
+        .await
+        .unwrap();
+    (linking, approving)
+}
 
-    let approving = first.client.approve_devices();
-    network.suspend("acme");
-    let looking = approving.dispatch(ApproveDevicesAction::LookUp { request });
-    let approvals_of = |flow: &ApproveDevicesFlow| match flow.view().state {
-        ApproveDevicesState::Confirm { servers, .. } => servers
-            .into_iter()
-            .map(|server| server.progress)
-            .collect::<Vec<_>>(),
-        ApproveDevicesState::EnterRequest => Vec::new(),
+#[tokio::test(start_paused = true)]
+async fn a_new_device_is_linked_on_every_checked_server_with_one_code() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "globex", None).await;
+    assert_eq!(second.client.servers().len(), 1);
+
+    let LinkNewDeviceState::Confirm {
+        servers: choices,
+        first: found,
+        pending,
+    } = approving.view().state
+    else {
+        panic!("nothing to confirm");
     };
-    until(&first.client, || {
-        approvals_of(&approving).get(1) == Some(&ApprovalProgress::Ready)
-    })
-    .await;
-    assert_ne!(approvals_of(&approving)[0], ApprovalProgress::Ready);
-    network.resume("acme");
-    looking.await.unwrap();
-
-    network.suspend("acme");
-    let approval = approving.dispatch(ApproveDevicesAction::Approve);
-    until(&first.client, || {
-        approvals_of(&approving).get(1) == Some(&ApprovalProgress::Approved)
-    })
-    .await;
-    assert_ne!(approvals_of(&approving)[0], ApprovalProgress::Approved);
-    network.resume("acme");
-    approval.await.unwrap();
-
-    network.suspend("acme");
-    let checking = linking.dispatch(LinkDeviceAction::Check);
-    until(&second.client, || {
-        progress_of(&linking).get(1) == Some(&LinkProgress::Linked)
-    })
-    .await;
-    assert_ne!(progress_of(&linking)[0], LinkProgress::Linked);
-    network.resume("acme");
-    checking.await.unwrap();
+    assert_eq!(found, ids[1]);
+    assert_eq!(pending.device_name, "Phone");
+    let new_key = second
+        .client
+        .server(ids[1])
+        .unwrap()
+        .device_public_key()
+        .unwrap();
+    assert_eq!(pending.public_key, new_key);
+    assert!(choices.iter().all(|choice| choice.checked));
     assert_eq!(
-        progress_of(&linking),
-        [LinkProgress::Linked, LinkProgress::Linked]
+        approving
+            .dispatch(LinkNewDeviceAction::Choose {
+                server_id: ids[1],
+                checked: false,
+            })
+            .await,
+        Err(FlowError::NotAvailable)
+    );
+
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    use ApprovalProgress::{Approved, Waiting};
+    assert_eq!(
+        approvals(&approving),
+        [(ids[1], Approved), (ids[0], Waiting), (ids[2], Waiting)]
+    );
+
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(second.client.servers().len(), 3);
+    assert_eq!(
+        lines(&linking),
+        [
+            (ids[0], LinkProgress::Waiting),
+            (ids[2], LinkProgress::Waiting)
+        ]
+    );
+    let keys: Vec<_> = second
+        .client
+        .servers()
+        .iter()
+        .map(|handle| handle.device_public_key().unwrap())
+        .collect();
+    assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
+
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving),
+        [(ids[1], Approved), (ids[0], Approved), (ids[2], Approved)]
+    );
+    assert_eq!(servers[1].relay_count(), 0);
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(
+        lines(&linking),
+        [
+            (ids[0], LinkProgress::Linked),
+            (ids[2], LinkProgress::Linked)
+        ]
+    );
+    for old in first.client.servers() {
+        let new = second.client.server(old.id()).unwrap();
+        assert_eq!(logged_in(&new), logged_in(&old));
+        assert_eq!(new.api().devices().await.unwrap().len(), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_checked_servers_are_passed_to_the_new_device() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", Some(ids[0])).await;
+    let LinkNewDeviceState::Confirm {
+        servers: choices, ..
+    } = approving.view().state
+    else {
+        panic!("nothing to confirm");
+    };
+    let checked: Vec<_> = choices.iter().map(|choice| choice.checked).collect();
+    assert_eq!(checked, [true, false, false]);
+    approving
+        .dispatch(LinkNewDeviceAction::Choose {
+            server_id: ids[2],
+            checked: true,
+        })
+        .await
+        .unwrap();
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(lines(&linking), [(ids[2], LinkProgress::Waiting)]);
+    assert!(second.client.server(ids[1]).is_none());
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving),
+        [
+            (ids[0], ApprovalProgress::Approved),
+            (ids[2], ApprovalProgress::Approved)
+        ]
     );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_server_that_returns_a_huge_link_code_fails_alone() {
+async fn one_server_alone_needs_no_relay() {
     let network = Arc::new(Network::default());
     let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
-    servers[0].set_link_code(&"A".repeat(40 * 1024));
     let second = device(&network);
-    let linking = second.client.link_this_device();
-    let started = linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
-            device_name: String::new(),
-        })
-        .await;
+    let (linking, approving) =
+        looked_up(&first, &second, "acme", Some(servers[0].server_id())).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    assert_eq!(servers[0].relay_count(), 0);
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
     assert_eq!(
-        started,
+        linking.view().state,
+        LinkThisDeviceState::Linked {
+            first: servers[0].server_id(),
+            servers: Vec::new(),
+            offer_read: true,
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_code_that_no_checked_server_knows_is_refused() {
+    let network = Arc::new(Network::default());
+    let (first, _servers) = owner_of(&network, &["acme", "globex"]).await;
+    let approving = first.client.link_new_device(None);
+    assert_eq!(
+        approving
+            .dispatch(LinkNewDeviceAction::LookUp {
+                code: LinkCode::new("ABCD-EFGH"),
+            })
+            .await,
+        Err(FlowError::refused(ErrorCode::LinkCodeInvalid))
+    );
+    assert!(matches!(
+        approving.view().state,
+        LinkNewDeviceState::EnterCode { .. }
+    ));
+    for server in first.client.servers() {
+        approving
+            .dispatch(LinkNewDeviceAction::Choose {
+                server_id: server.id(),
+                checked: false,
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        approving
+            .dispatch(LinkNewDeviceAction::LookUp {
+                code: LinkCode::new("ABCD-EFGH"),
+            })
+            .await,
+        Err(FlowError::NoServerChosen)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_fails_on_the_new_device_is_reported_and_tried_again() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    servers[1].fail("/device-links", [Fault::NoConnection]);
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert!(matches!(
+        lines(&linking).as_slice(),
+        [(_, LinkProgress::Failed(FlowError::Unreachable(_)))]
+    ));
+    assert!(matches!(
+        approving.dispatch(LinkNewDeviceAction::Check).await,
         Err(FlowError::Incomplete {
             failed: 1,
             total: 2
         })
-    );
-    let (progress, request, _) = links(&linking);
+    ));
+    assert!(matches!(
+        approvals(&approving)[1].1,
+        ApprovalProgress::Failed(FlowError::OnNewDevice(_))
+    ));
+
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(lines(&linking), [(ids[1], LinkProgress::Waiting)]);
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(approvals(&approving)[1].1, ApprovalProgress::Approved);
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(lines(&linking), [(ids[1], LinkProgress::Linked)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_that_the_compared_device_did_not_sign_approves_nothing() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (_linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    let LinkNewDeviceState::Linking { device: added, .. } = approving.view().state else {
+        panic!("not linking");
+    };
+
+    // The first server writes an answer of its own: a key of its choice on the other
+    // server, sealed with a key that the person did not compare.
+    let intruder = DeviceKey::generate().unwrap();
+    let old_key = first.client.server(ids[0]).unwrap().device_key().unwrap();
+    servers[1].set_link_code("ABCD-WXYZ");
+    let forged = crate::flow::relay::seal(
+        crate::flow::relay::Kind::Answer,
+        crate::flow::relay::Binding {
+            first: ids[0],
+            new_device: added.public_key,
+        },
+        &intruder,
+        old_key.public_key(),
+        &crate::flow::relay::Answer {
+            links: vec![crate::flow::relay::AnsweredLink {
+                server_id: ids[1],
+                answered: crate::flow::relay::Answered::Waiting {
+                    code: LinkCode::new("ABCD-WXYZ"),
+                    public_key: intruder.public_key(),
+                },
+            }],
+        },
+    )
+    .unwrap();
+    servers[0].write_answer(added.id, forged);
     assert_eq!(
-        progress,
+        approving.dispatch(LinkNewDeviceAction::Check).await,
+        Err(FlowError::NotSignedByDevice)
+    );
+    assert_eq!(approvals(&approving)[1].1, ApprovalProgress::Waiting);
+    assert_eq!(servers[1].account_of(intruder.public_key()), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_holds_another_key_behind_the_code_is_not_approved() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    let LinkNewDeviceState::Linking { device: added, .. } = approving.view().state else {
+        panic!("not linking");
+    };
+    let new_key = second.client.server(ids[0]).unwrap().device_key().unwrap();
+    let old_key = first.client.server(ids[0]).unwrap().device_key().unwrap();
+    let other = DeviceKey::generate().unwrap();
+    let code = code_on(&second.client.server(ids[1]).unwrap());
+    let answer = crate::flow::relay::seal(
+        crate::flow::relay::Kind::Answer,
+        crate::flow::relay::Binding {
+            first: ids[0],
+            new_device: added.public_key,
+        },
+        &new_key,
+        old_key.public_key(),
+        &crate::flow::relay::Answer {
+            links: vec![crate::flow::relay::AnsweredLink {
+                server_id: ids[1],
+                answered: crate::flow::relay::Answered::Waiting {
+                    code,
+                    public_key: other.public_key(),
+                },
+            }],
+        },
+    )
+    .unwrap();
+    servers[0].write_answer(added.id, answer);
+    assert!(
+        approving
+            .dispatch(LinkNewDeviceAction::Check)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        approvals(&approving)[1].1,
+        ApprovalProgress::Failed(FlowError::refused(ErrorCode::PublicKeyMismatch))
+    );
+    assert_eq!(servers[1].account_of(other.public_key()), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_first_server_without_a_relay_links_only_itself() {
+    let network = Arc::new(Network::default());
+    let servers = [network.host("acme"), network.host("globex")];
+    servers[0].without_relay();
+    let first = device(&network);
+    for name in ["acme", "globex"] {
+        first.add(name).await.dispatch(claim()).await.unwrap();
+    }
+    let second = device(&network);
+    let (_linking, approving) = looked_up(&first, &second, "acme", None).await;
+    assert_eq!(
+        approving.dispatch(LinkNewDeviceAction::Approve).await,
+        Err(FlowError::RelayNotAvailable)
+    );
+    assert_eq!(
+        approvals(&approving),
         [
-            LinkProgress::Failed(FlowError::InvalidResponse),
-            LinkProgress::Waiting
+            (servers[0].server_id(), ApprovalProgress::Approved),
+            (
+                servers[1].server_id(),
+                ApprovalProgress::Failed(FlowError::RelayNotAvailable)
+            )
         ]
     );
-    let on_acme = second.client.server(servers[0].server_id()).unwrap();
+    assert_eq!(servers[0].relay_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suspended_server_does_not_hold_up_the_other_servers_of_a_link() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+
+    network.suspend("globex");
+    let checking = linking.dispatch(LinkThisDeviceAction::Check);
+    until(&second.client, || {
+        lines(&linking).get(1).map(|line| &line.1) == Some(&LinkProgress::Waiting)
+    })
+    .await;
+    assert!(linking.view().in_progress.is_some());
+    assert_ne!(lines(&linking)[0].1, LinkProgress::Waiting);
+    network.resume("globex");
+    checking.await.unwrap();
+
+    network.suspend("globex");
+    let following = approving.dispatch(LinkNewDeviceAction::Check);
+    until(&first.client, || {
+        approvals(&approving).get(2).map(|line| &line.1) == Some(&ApprovalProgress::Approved)
+    })
+    .await;
+    assert_ne!(approvals(&approving)[1].1, ApprovalProgress::Approved);
+    network.resume("globex");
+    following.await.unwrap();
     assert_eq!(
-        on_acme.access().state,
+        approvals(&approving),
+        [
+            (ids[0], ApprovalProgress::Approved),
+            (ids[1], ApprovalProgress::Approved),
+            (ids[2], ApprovalProgress::Approved)
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_returns_a_link_code_in_another_form_fails_alone() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    servers[1].set_link_code(&"A".repeat(40 * 1024));
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(
+        lines(&linking),
+        [(
+            servers[1].server_id(),
+            LinkProgress::Failed(FlowError::InvalidResponse)
+        )]
+    );
+    let on_globex = second.client.server(servers[1].server_id()).unwrap();
+    assert_eq!(
+        on_globex.access().state,
         AccessState::NoAccount { notice: None }
     );
-    let request = request.unwrap();
-    assert!(request.expose().len() < 1024);
-
-    let approving = first.client.approve_devices();
-    approving
-        .dispatch(ApproveDevicesAction::LookUp { request })
-        .await
-        .unwrap();
-    approving
-        .dispatch(ApproveDevicesAction::Approve)
-        .await
-        .unwrap();
-    assert_eq!(approvals(&approving).0, [ApprovalProgress::Approved]);
-
     for code in ["", "abcd-efgh", "ABCD EFGH", "ABCD\nEFGH", &"A".repeat(33)] {
-        servers[0].set_link_code(code);
+        servers[1].set_link_code(code);
         assert_eq!(
-            on_acme
+            on_globex
                 .dispatch(AccessAction::RequestLink {
                     device_name: String::new()
                 })
@@ -3874,13 +3746,6 @@ async fn a_server_that_returns_a_huge_link_code_fails_alone() {
             "{code:?}"
         );
     }
-    servers[0].set_link_code("ABCD-2345");
-    on_acme
-        .dispatch(AccessAction::RequestLink {
-            device_name: String::new(),
-        })
-        .await
-        .unwrap();
 }
 
 #[tokio::test(start_paused = true)]

@@ -579,6 +579,8 @@ impl Transport for OneServer {
                         event_revision: junto_client_core::protocol::events::EVENT_REVISION,
                     },
                     search: junto_client_core::protocol::discovery::SearchCapabilities::ALL,
+                    status_text: true,
+                    device_link_relay: true,
                 },
             };
             let body = serde_json::to_vec(&info).map_err(|error| {

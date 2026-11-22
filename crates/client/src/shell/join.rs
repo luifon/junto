@@ -42,8 +42,6 @@ pub(crate) enum Target {
 pub(crate) enum Running {
     Joining,
     Requesting,
-    /// A link code for this device is asked for.
-    Linking,
     Saving,
     Discarding,
 }
@@ -321,15 +319,36 @@ impl Shell {
 
     /// The third way in: this device asks for a link code that a logged-in device of the
     /// account approves (ADR 0112). A second request replaces the code of the first.
+    /// The third way starts the link of this device with this server (ADR 0782): the
+    /// layer of the link takes the place of the dialog, saves the server when it is not
+    /// saved, and shows the code.
     pub(crate) fn request_link_in_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_access(
-            Running::Linking,
-            AccessAction::RequestLink {
-                device_name: text::device_name(),
+        let Layer::Join(join) = &self.layer else {
+            return;
+        };
+        if join.running.is_some() {
+            return;
+        }
+        let address = match &join.target {
+            Target::Preview(flow) => match flow.view().state {
+                AddServerState::Preview(preview) => Some(preview.address.as_str().to_owned()),
+                _ => None,
             },
-            window,
-            cx,
-        );
+            Target::Saved(server_id) => self
+                .state
+                .read(cx)
+                .client()
+                .server(*server_id)
+                .map(|server| server.entry().address.as_str().to_owned()),
+            Target::Member(_) => None,
+        };
+        let Some(address) = address else {
+            return;
+        };
+        self.open_link_all(crate::state::linking::LinkRole::NewDevice, None, window, cx);
+        self.state.update(cx, |state, cx| {
+            state.start_linking(address, text::device_name(), cx);
+        });
     }
 
     /// Saves the previewed server when it is not saved yet, then runs one action of its
@@ -708,12 +727,7 @@ impl Shell {
                             &theme,
                         )),
                 );
-                dialog = dialog.child(self.render_link_way(
-                    busy,
-                    running == Some(Running::Linking),
-                    &theme,
-                    cx,
-                ));
+                dialog = dialog.child(self.render_link_way(busy, &theme, cx));
             }
             Body::LinkWait(server_id, wait) => {
                 let [cancel, new_code] = self.link_wait_actions(server_id, busy, cx);

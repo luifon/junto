@@ -1081,7 +1081,12 @@ impl Shell {
                 .update(cx, |state, cx| state.set_window_active(active, cx));
         }
         let notes = shell.state.read(cx).release_notes_due().to_vec();
-        if !detached && shell.state.read(cx).preset_name().is_empty() {
+        // A device that is linked to an account has servers: it needs no name for new
+        // accounts at its start (ADR 0782).
+        if !detached
+            && shell.state.read(cx).preset_name().is_empty()
+            && shell.state.read(cx).client().servers().is_empty()
+        {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
         } else if !detached && !notes.is_empty() {

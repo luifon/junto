@@ -2260,6 +2260,7 @@ impl AppState {
         self.followed_noticed(server_id, notice, cx);
         self.logos_noticed(server_id, notice, cx);
         self.account_noticed(server_id, Some(notice), cx);
+        self.linking_noticed(server_id, notice, cx);
         self.recordings_noticed(server_id, Some(notice), cx);
         let event = match notice {
             Notice::Event { event, .. } => event,
@@ -2972,6 +2973,7 @@ impl AppState {
         self.reconcile_device_checks(cx);
         self.reconcile_call_pin();
         self.reconcile_direct(cx);
+        self.reconcile_linking(cx);
         self.play_call_sounds();
         let servers = self.client.servers();
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();

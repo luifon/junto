@@ -37,9 +37,7 @@ use crate::flow::access::{
 };
 use crate::flow::add_server::AddServerFlow;
 use crate::flow::approve_link::ApproveLinkFlow;
-use crate::flow::link_all::{
-    ApproveDevicesFlow, LinkDeviceFlow, LinkOffer, SERVERS_AT_ONCE, link_code_is_plain,
-};
+use crate::flow::link_device::{SERVERS_AT_ONCE, link_code_is_plain};
 use crate::flow::machine::lock;
 use crate::flow::{FlowError, FlowView};
 use crate::keys::{self, DeviceKey, FileKeyStore, KeyStore, KeyStoreError};
@@ -314,24 +312,6 @@ impl Client {
     /// Starts the flow that adds a server by its address.
     pub fn add_server(&self) -> AddServerFlow {
         AddServerFlow::new(self.inner.clone())
-    }
-
-    /// The servers on which this device has an account, for a new device that is to be
-    /// linked on all of them (ADR 0104).
-    pub fn link_offer(&self) -> LinkOffer {
-        LinkOffer::of(self.servers().iter().map(ServerHandle::entry))
-    }
-
-    /// Starts the flow in which this new device asks for a link on every server of an
-    /// offer (ADR 0104).
-    pub fn link_this_device(&self) -> LinkDeviceFlow {
-        LinkDeviceFlow::new(self.clone())
-    }
-
-    /// Starts the flow in which this device approves a new device on each of its servers
-    /// (ADR 0104).
-    pub fn approve_devices(&self) -> ApproveDevicesFlow {
-        ApproveDevicesFlow::new(self.clone())
     }
 
     /// The runtime that carries the network work of this client.
@@ -1018,6 +998,15 @@ impl ServerHandle {
 
     pub(crate) fn core(&self) -> &Arc<Core> {
         &self.server.core
+    }
+
+    /// The stored key of this device for the server. Only the relay of a device link signs
+    /// and opens messages with it (ADR 0104).
+    pub(crate) fn device_key(&self) -> Result<DeviceKey, FlowError> {
+        self.server
+            .stored_key()
+            .map_err(|error| FlowError::from(&error))?
+            .ok_or(FlowError::NotLoggedIn)
     }
 
     /// The public key of this device for the server, created when there is none. The

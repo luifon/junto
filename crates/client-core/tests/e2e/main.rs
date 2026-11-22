@@ -36,9 +36,9 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState, ActionKind, Notice};
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 use junto_client_core::flow::approve_link::{ApproveLinkAction, ApproveLinkState, PendingApproval};
-use junto_client_core::flow::link_all::{
-    ApprovalProgress, ApproveDevicesAction, ApproveDevicesState, LinkDeviceAction, LinkDeviceState,
-    LinkProgress,
+use junto_client_core::flow::link_device::{
+    ApprovalProgress, LinkNewDeviceAction, LinkNewDeviceState, LinkProgress, LinkThisDeviceAction,
+    LinkThisDeviceState,
 };
 use junto_client_core::profile::{AVATAR_MAX_BYTES, InvalidAvatar, ProfileError, avatar_hash};
 use junto_client_core::protocol::account::{AccountStatus, ImageType, RecoverAccount};
@@ -1404,7 +1404,7 @@ fn the_prompt_for_a_secret_is_shown_only_after_the_echo_of_the_terminal_is_off()
     let mut child = Command::new(env!("CARGO_BIN_EXE_junto-cli"))
         .arg("--data-dir")
         .arg(directory.path().join("junto"))
-        .arg("link-all")
+        .arg("approve-device")
         .stdin(terminal.for_child())
         .stdout(std::process::Stdio::null())
         .stderr(full)
@@ -1427,15 +1427,15 @@ fn the_prompt_for_a_secret_is_shown_only_after_the_echo_of_the_terminal_is_off()
         messages.read_to_end(&mut text).unwrap();
         String::from_utf8_lossy(&text).into_owned()
     });
-    terminal.type_line("SECRET-OFFER-TEXT");
+    terminal.type_line("SECRET-CODE-TEXT");
     let status = child.wait().unwrap();
     let messages = reader.join().unwrap();
     assert!(!status.success());
-    assert!(messages.contains("link offer: "), "{messages}");
-    assert!(messages.contains("not a valid link offer"), "{messages}");
-    assert!(!messages.contains("SECRET-OFFER-TEXT"));
+    assert!(messages.contains("link code: "), "{messages}");
+    assert!(messages.contains("no server is chosen"), "{messages}");
+    assert!(!messages.contains("SECRET-CODE-TEXT"));
     let shown = terminal.shown();
-    assert!(!shown.contains("SECRET-OFFER-TEXT"), "{shown}");
+    assert!(!shown.contains("SECRET-CODE-TEXT"), "{shown}");
     assert!(terminal.echoes(), "the echo was not restored");
 }
 
@@ -1450,26 +1450,24 @@ async fn every_command_of_the_tool_shows_a_recovery_before_its_own_output() {
         &["claim", "--name", "Ada"],
         &format!("{}\n", server.owner_code().unwrap()),
     );
-    let offer = field(&owner.ok(&["link-offer"]), "offer").to_owned();
-
     let new_device = Device::new();
     let linking = new_device.client.link_this_device();
     linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: offer.clone(),
+        .dispatch(LinkThisDeviceAction::Start {
+            address: address.clone(),
             device_name: "Phone".to_owned(),
         })
         .await
         .unwrap();
-    let LinkDeviceState::Requested {
-        request: Some(request),
-        ..
-    } = linking.view().state
-    else {
-        panic!("no request");
+    let LinkThisDeviceState::Waiting { first } = linking.view().state else {
+        panic!("no link code");
     };
-    let request = format!("{}\n", request.expose());
-    let offer = format!("{offer}\n");
+    let AccessState::WaitingForLink { code, .. } =
+        new_device.client.server(first).unwrap().access().state
+    else {
+        panic!("no link code");
+    };
+    let code = format!("{}\n", code.expose());
     let unknown_request = uuid::Uuid::now_v7().to_string();
 
     let commands: [(&[&str], &str); 9] = [
@@ -1480,8 +1478,8 @@ async fn every_command_of_the_tool_shows_a_recovery_before_its_own_output() {
         (&["status"], ""),
         (&["approve-request", &unknown_request], ""),
         (&["approve-link", "--yes"], "ABCD-EFGH\n"),
-        (&["link-all"], &offer),
-        (&["approve-all", "--yes"], &request),
+        (&["link-device", &address], ""),
+        (&["approve-device", "--yes"], &code),
     ];
     for (arguments, input) in commands {
         let issued = support::code_in(&server.host_command(&["issue-owner-code"])).unwrap();
@@ -1541,7 +1539,7 @@ async fn every_command_of_the_tool_shows_a_recovery_before_its_own_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_device_is_linked_on_two_servers_in_one_flow() {
+async fn a_new_device_is_linked_on_two_servers_with_one_code_through_the_relay() {
     let acme = TestServer::start("Acme").await;
     let globex = TestServer::start("Globex").await;
     let first = Device::new();
@@ -1553,62 +1551,76 @@ async fn a_new_device_is_linked_on_two_servers_in_one_flow() {
     let second = Device::new();
     let linking = second.client.link_this_device();
     linking
-        .dispatch(LinkDeviceAction::Start {
-            offer: first.client.link_offer().to_text(),
+        .dispatch(LinkThisDeviceAction::Start {
+            address: globex.address(),
             device_name: "Phone".to_owned(),
         })
         .await
         .unwrap();
-    let LinkDeviceState::Requested {
-        request: Some(request),
-        fingerprint: Some(fingerprint),
-        ..
-    } = linking.view().state
+    let LinkThisDeviceState::Waiting { first: started } = linking.view().state else {
+        panic!("no link code");
+    };
+    let AccessState::WaitingForLink {
+        code, public_key, ..
+    } = second.client.server(started).unwrap().access().state
     else {
-        panic!("no request");
+        panic!("no link code");
     };
 
-    let approving = first.client.approve_devices();
+    let approving = first.client.link_new_device(None);
     approving
-        .dispatch(ApproveDevicesAction::LookUp { request })
+        .dispatch(LinkNewDeviceAction::LookUp { code })
         .await
         .unwrap();
-    let ApproveDevicesState::Confirm {
-        fingerprint: shown,
-        device_name,
+    let LinkNewDeviceState::Confirm {
+        first: found,
+        pending,
         servers,
     } = approving.view().state
     else {
         panic!("nothing to confirm");
     };
-    assert_eq!((shown, device_name.as_str()), (fingerprint, "Phone"));
-    assert_eq!(servers.len(), 2);
-    assert!(
-        servers
-            .iter()
-            .all(|server| server.progress == ApprovalProgress::Ready)
+    assert_eq!(found, on_globex.id());
+    assert_eq!(
+        (pending.public_key, pending.device_name.as_str()),
+        (public_key, "Phone")
     );
-    assert_eq!(on_acme.api().devices().await.unwrap().len(), 1);
+    assert!(servers.iter().all(|server| server.checked));
     approving
-        .dispatch(ApproveDevicesAction::Approve)
+        .dispatch(LinkNewDeviceAction::Approve)
         .await
         .unwrap();
 
-    linking.dispatch(LinkDeviceAction::Check).await.unwrap();
-    let LinkDeviceState::Requested {
-        servers, request, ..
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    let LinkThisDeviceState::Linked {
+        servers,
+        offer_read: true,
+        ..
     } = linking.view().state
     else {
-        panic!("no links");
+        panic!("the offer was not read");
     };
-    assert!(request.is_none());
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].server_id, on_acme.id());
+    assert_eq!(servers[0].progress, LinkProgress::Waiting);
+
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    let LinkNewDeviceState::Linking { servers, .. } = approving.view().state else {
+        panic!("not linking");
+    };
     assert!(
         servers
             .iter()
-            .all(|server| server.progress == LinkProgress::Linked)
+            .all(|server| server.progress == ApprovalProgress::Approved)
     );
-    // The new device saved the servers side by side, so their order in its book is the
-    // order in which they answered.
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    let LinkThisDeviceState::Linked { servers, .. } = linking.view().state else {
+        panic!("no links");
+    };
+    assert_eq!(servers[0].progress, LinkProgress::Linked);
     assert_eq!(second.client.servers().len(), 2);
     for old in first.client.servers() {
         let new = second.client.server(old.id()).unwrap();
@@ -1622,15 +1634,18 @@ async fn a_new_device_is_linked_on_two_servers_in_one_flow() {
                 .any(|device| device.current && device.name == "Phone")
         );
     }
+    // The device that approved ended the relay when no server waited any more.
+    let new_on_globex = second.client.server(on_globex.id()).unwrap();
+    assert!(new_on_globex.api().read_relay_offer().await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_tool_links_a_new_device_on_every_server_of_the_first_device() {
+    use std::io::BufRead;
     let acme = TestServer::start("Acme").await;
     let globex = TestServer::start("Globex").await;
     let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let owner = Cli::in_directory(first.path());
-    let phone = Cli::in_directory(second.path());
     for server in [&acme, &globex] {
         let address = server.address();
         owner.ok(&["add", &address]);
@@ -1640,31 +1655,62 @@ async fn the_tool_links_a_new_device_on_every_server_of_the_first_device() {
         );
     }
 
-    let offered = owner.ok(&["link-offer"]);
-    let offer = field(&offered, "offer");
-    let requested = phone.ok_with_input(
-        &["link-all", "--device-name", "Phone"],
-        &format!("{offer}\n"),
-    );
-    assert_eq!(requested.matches("waiting for approval").count(), 2);
-    let (request, fingerprint) = (
-        field(&requested, "request"),
-        field(&requested, "fingerprint"),
-    );
+    // The new device asks Acme for a code and follows the link until it ends.
+    let mut phone = Command::new(env!("CARGO_BIN_EXE_junto-cli"))
+        .arg("--data-dir")
+        .arg(second.path().join("junto"))
+        .args([
+            "link-device",
+            &acme.address(),
+            "--device-name",
+            "Phone",
+            "--wait",
+        ])
+        .env_remove("JUNTO_DATA_DIR")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (lines, read) = std::sync::mpsc::channel();
+    let stdout = phone.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            all.push_str(&line);
+            all.push('\n');
+            let _ = lines.send(line);
+        }
+        all
+    });
+    let code = loop {
+        let line = read
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the new device shows its code");
+        if let Some(code) = line.strip_prefix("code: ") {
+            break code.to_owned();
+        }
+    };
 
+    // The device of the account finds the code on Acme and asks before it approves.
     let (success, stdout, stderr) =
-        owner.run_with_input(&["approve-all"], &format!("{request}\nn\n"));
+        owner.run_with_input(&["approve-device"], &format!("{code}\nn\n"));
     assert!(
         !success && stderr.contains("not approved"),
         "{stdout}{stderr}"
     );
-    assert_eq!(stdout.matches("  ready").count(), 2);
+    assert_eq!(field(&stdout, "device name"), "Phone");
+    assert_eq!(stdout.matches("  linked").count(), 2, "{stdout}");
 
-    let approved = owner.ok_with_input(&["approve-all", "--yes"], &format!("{request}\n"));
-    assert_eq!(field(&approved, "fingerprint"), fingerprint);
-    assert_eq!(field(&approved, "device name"), "Phone");
-    assert_eq!(approved.matches("  approved").count(), 2);
+    // Approved: Acme links the new device, and Globex follows through the relay.
+    let approved = owner.ok_with_input(&["approve-device", "--yes"], &format!("{code}\n"));
+    assert_eq!(approved.matches("  approved").count(), 2, "{approved}");
+    assert!(phone.wait().unwrap().success());
+    let shown = reader.join().unwrap();
+    assert!(shown.contains("linked"), "{shown}");
 
+    let phone = Cli::in_directory(second.path());
     for server in [&acme, &globex] {
         let address = server.address();
         let login = phone.ok(&["login", "--server", &address]);
@@ -1673,7 +1719,7 @@ async fn the_tool_links_a_new_device_on_every_server_of_the_first_device() {
         let devices = owner.ok(&["devices", "--server", &address]);
         assert_eq!(devices.lines().count(), 2);
     }
-    let (success, _, stderr) = owner.run(&["approve-all", "--code", request]);
+    let (success, _, stderr) = owner.run(&["approve-device", "--code", &code]);
     assert!(!success && stderr.contains("standard input"), "{stderr}");
 }
 

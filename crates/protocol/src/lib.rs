@@ -14,6 +14,7 @@ pub mod appearance;
 pub mod audit;
 pub mod auth;
 pub mod call;
+pub mod device_relay;
 pub mod discovery;
 pub mod error;
 pub mod events;

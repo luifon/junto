@@ -449,12 +449,198 @@
         ]
       }
     },
+    "/api/v1/account/device-link-relay": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The offer for the calling device, from the device that approved it.",
+        "operationId": "read_offer",
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayOffer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-link-relay/answer": {
+      "put": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Writes the answer of the calling device, which replaces its earlier answer. The device\nthat approved it is told.",
+        "operationId": "write_answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerRelay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-link-relays/{device_id}": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The answer of the new device `device_id`, for the device that approved it.",
+        "operationId": "read_answer",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelayAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Ends the relay of the new device `device_id`. Either of its two devices ends it.",
+        "operationId": "end",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/account/device-links/approve": {
       "post": {
         "tags": [
           "account"
         ],
-        "summary": "Adds the device behind a link code to the caller's account. The approval names the public\nkey of the new device.",
+        "summary": "Adds the device behind a link code to the caller's account. The approval names the public\nkey of the new device. With an offer it also creates the relay of the link, in the same\ntransaction (ADR 0104).",
         "operationId": "approve_device_link",
         "requestBody": {
           "content": {
@@ -15325,6 +15511,17 @@
           },
           "public_key": {
             "$ref": "#/components/schemas/PublicKey"
+          },
+          "relay": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sealed",
+                "description": "The offer for the new device: the server keeps it in a relay of the link, which the\ntwo devices read and answer until it ends (ADR 0104). Only for a server that states\n`capabilities.device_link_relay`; an older server ignores the field."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -18241,6 +18438,10 @@
           },
           "channel_topics": {
             "type": "boolean"
+          },
+          "device_link_relay": {
+            "type": "boolean",
+            "description": "The approval of a device link takes an offer, which the server keeps in a relay for\nthe two devices (`/api/v1/account/device-link-relay`)."
           },
           "message_format": {
             "$ref": "#/components/schemas/DocumentFormat"

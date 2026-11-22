@@ -41,7 +41,7 @@ Recovery:
 - A device link and a link code that waited too long are deleted by the maintenance task (ADR 0009).
 - A link code alone gives no access. A person who creates a link request needs a logged-in user who types that code and approves that key.
 - The approving client must show the public key or compare it for the user; this is the step that names the key.
-- Linking all servers of a client (ADR 0104) repeats this flow once per server. The client carries the codes between the two devices.
+- Linking several servers of a client (ADR 0104) repeats this flow once per server. The relay on the first server carries the codes between the two devices (ADR 0716).
 - An account always has a device that can log in, unless the owner removes or bans the account.
 - Each device is told about a recovery at every login until it acknowledges the notice, whatever the time of that login. Every device has to log in again after a recovery, so the notice reaches it then.
 - A recovery interrupts the work on the other devices of the account until their clients have logged in again.

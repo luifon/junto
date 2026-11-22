@@ -1736,7 +1736,11 @@ pub fn link_code(code: &str) -> String {
 }
 
 // The first start and the settings.
-pub const WELCOME_TITLE: &str = "Your name";
+pub const WELCOME_TITLE: &str = "Welcome to Junto";
+pub const WELCOME_NEW: &str = "I am new to Junto";
+pub const WELCOME_OTHER_COMPUTER: &str = "I use Junto on another computer";
+pub const WELCOME_OTHER_COMPUTER_HELP: &str = "Link this device to your account with a code that you type on the other \
+     computer. Your name and picture come from your servers.";
 pub const WELCOME: &str = "People on a server see this name. A new account on a server starts \
      with it, and you can change it in the settings.";
 pub const NAME_FIELD: &str = "Name";
@@ -1902,7 +1906,17 @@ pub fn flow_error(error: &FlowError) -> String {
         ),
         FlowError::UnknownServer => "The server is not in the server book.".to_owned(),
         FlowError::Expired => "The code expired.".to_owned(),
-        FlowError::InvalidBundle(kind) => format!("The text is not a valid {kind}."),
+        FlowError::AlreadyLinked => "This device already has an account on the server.".to_owned(),
+        FlowError::NotSignedByDevice => "The message of the other device is not signed by the \
+             device code that was compared."
+            .to_owned(),
+        FlowError::NoServerChosen => "No server is chosen.".to_owned(),
+        FlowError::RelayNotAvailable => "The first server cannot pass the other servers to the \
+             new device."
+            .to_owned(),
+        FlowError::OnNewDevice(reason) => {
+            format!("The new device could not ask the server for a link: {reason}")
+        }
         FlowError::Incomplete { failed, total } => {
             format!("{failed} of {total} servers did not succeed.")
         }
@@ -3655,7 +3669,11 @@ mod tests {
             },
             FlowError::UnknownServer,
             FlowError::Expired,
-            FlowError::InvalidBundle("link offer"),
+            FlowError::AlreadyLinked,
+            FlowError::NotSignedByDevice,
+            FlowError::NoServerChosen,
+            FlowError::RelayNotAvailable,
+            FlowError::OnNewDevice("the server cannot be reached.".to_owned()),
             FlowError::Incomplete {
                 failed: 1,
                 total: 3,
@@ -3713,14 +3731,18 @@ mod tests {
                 FlowError::KeyOfOtherAddress { .. } => "key of other address",
                 FlowError::UnknownServer => "unknown server",
                 FlowError::Expired => "expired",
-                FlowError::InvalidBundle(_) => "invalid bundle",
+                FlowError::AlreadyLinked => "already linked",
+                FlowError::NotSignedByDevice => "not signed by device",
+                FlowError::NoServerChosen => "no server chosen",
+                FlowError::RelayNotAvailable => "relay not available",
+                FlowError::OnNewDevice(_) => "on new device",
                 FlowError::Incomplete { .. } => "incomplete",
                 FlowError::Storage(_) => "storage",
                 FlowError::DataHeld => "data held",
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 25);
+        assert_eq!(kinds.len(), 29);
     }
 
     #[test]

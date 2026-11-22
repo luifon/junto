@@ -18,13 +18,12 @@ use std::time::Duration;
 
 use junto_client_core::address::ServerAddress;
 use junto_client_core::book::{ConnectionMode, Membership, ProfileSync};
-use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState, Notice};
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 use junto_client_core::flow::approve_link::{ApproveLinkAction, ApproveLinkState};
-use junto_client_core::flow::link_all::{
-    ApprovalProgress, ApproveDevicesAction, ApproveDevicesFlow, ApproveDevicesState, LONGEST_TEXT,
-    LinkDeviceAction, LinkDeviceState, LinkProgress, LinkRequestText, ServerApproval,
+use junto_client_core::flow::link_device::{
+    ApprovalProgress, LinkNewDeviceAction, LinkNewDeviceFlow, LinkNewDeviceState, LinkProgress,
+    LinkThisDeviceAction, LinkThisDeviceFlow, LinkThisDeviceState, ServerApproval,
 };
 use junto_client_core::paths::data_dir_of_this_user;
 use junto_client_core::profile::{AVATAR_MAX_BYTES, ProfilePreset};
@@ -60,14 +59,15 @@ commands:
                                [--device-name <name>] [--wait]
   approve-link                 approve the link code that a new device shows
                                [--yes]
-  link-offer                   print the offer that a new device needs to link on every
-                               server of this device
-  link-all                     on a new device: take an offer and ask every server in it
-                               for a link; prints the request for the first device
+  link-device <address>        on a new device: ask the server at the address for a link
+                               code; with --wait, link on the servers that the other
+                               device names after its approval
                                [--device-name <name>] [--wait]
-  approve-all                  take the request of a new device and approve it on every
-                               server of this device
-                               [--yes]
+  approve-device               take the link code of a new device, approve its key on the
+                               server that knows the code, and approve it on the other
+                               servers of this device as the new device answers; --server
+                               names the only server to link
+                               [--server <server>] [--yes]
   devices                      list the devices of the account
   leave <workspace id>         leave a workspace; leaving the last one makes the account
                                inactive until an invite or an approved request returns it
@@ -404,7 +404,7 @@ Commands that work on one server take --server <identifier, address or name>. It
 left out while one server is saved. --name can be left out when the profile preset has a
 name.
 
-An owner code, an invite code, a link code, an offer and a request are read from standard
+An owner code, an invite code and a link code are read from standard
 input: one line, or a prompt without echo on a terminal. They are never taken from the
 command line.
 
@@ -607,12 +607,8 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "servers" => servers(&client),
         "add" => add(&client, &arguments).await,
         "profile" => profile(&client, &arguments),
-        "link-offer" => {
-            println!("offer: {}", client.link_offer().to_text());
-            Ok(())
-        }
-        "link-all" => link_all(&client, &arguments).await,
-        "approve-all" => approve_all(&client, &arguments).await,
+        "link-device" => link_device(&client, &arguments).await,
+        "approve-device" => approve_device(&client, &arguments).await,
         "remove" => {
             let server = pick(&client, &arguments)?;
             client
@@ -1073,11 +1069,6 @@ fn code(what: &str) -> Result<Zeroizing<String>, Failure> {
     secret(what, secret_input::LONGEST_CODE)
 }
 
-/// An offer or a request for a link on every server.
-fn bundle(what: &str) -> Result<Zeroizing<String>, Failure> {
-    secret(what, LONGEST_TEXT + 64)
-}
-
 /// True when the user agrees: `--yes`, or a line that says so.
 fn confirmed(arguments: &Arguments, question: &str) -> Result<bool, Failure> {
     if arguments.flag("yes") {
@@ -1243,53 +1234,73 @@ async fn approve_link(server: &ServerHandle, arguments: &Arguments) -> Result<()
     }
 }
 
-async fn link_all(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
+/// How long a command follows a link on several servers: the life of the relay (ADR 0104).
+const LONGEST_LINK: Duration = Duration::from_secs(15 * 60);
+
+async fn link_device(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
+    let address = arguments
+        .positional
+        .get(1)
+        .ok_or_else(|| usage("link-device needs the address of a server of the account"))?;
     let flow = client.link_this_device();
-    let offer = bundle("link offer")?;
     let started = flow
-        .dispatch(LinkDeviceAction::Start {
-            offer: offer.as_str().to_owned(),
+        .dispatch(LinkThisDeviceAction::Start {
+            address: address.clone(),
             device_name: arguments.device_name(),
         })
         .await;
     all_notices(client);
-    if !matches!(started, Ok(()) | Err(FlowError::Incomplete { .. })) {
-        return started.map_err(failed);
+    started.map_err(failed)?;
+    let LinkThisDeviceState::Waiting { first } = flow.view().state else {
+        return Err(Failure::Failed("no link code was given".to_owned()));
+    };
+    let server = client
+        .server(first)
+        .ok_or_else(|| Failure::Failed("the server is not saved".to_owned()))?;
+    show(&server);
+    if !arguments.flag("wait") {
+        return Ok(());
     }
-    show_links(&flow.view().state);
-    if arguments.flag("wait") {
-        while let LinkDeviceState::Requested { servers, .. } = flow.view().state {
-            if servers
-                .iter()
-                .all(|server| server.progress != LinkProgress::Waiting)
-            {
-                break;
-            }
-            tokio::time::sleep(WAIT_INTERVAL).await;
-            let _ = flow.dispatch(LinkDeviceAction::Check).await;
-            all_notices(client);
-        }
-        show_links(&flow.view().state);
-    }
+    let result = follow_new_device(client, &flow).await;
     for server in client.servers() {
         end_session(&server).await;
     }
-    match flow.view().error {
-        None => Ok(()),
-        Some(error) => Err(failed(error)),
+    result
+}
+
+/// Checks until every server of the link has an end, or the relay ends.
+async fn follow_new_device(client: &Client, flow: &LinkThisDeviceFlow) -> Result<(), Failure> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let checked = flow.dispatch(LinkThisDeviceAction::Check).await;
+        all_notices(client);
+        if let LinkThisDeviceState::Linked {
+            servers,
+            offer_read: true,
+            ..
+        } = flow.view().state
+            && servers
+                .iter()
+                .all(|server| matches!(server.progress, LinkProgress::Linked))
+        {
+            show_links(flow);
+            return checked.map_err(failed);
+        }
+        if started.elapsed() >= LONGEST_LINK {
+            show_links(flow);
+            return Err(Failure::Failed(
+                "the link did not end within the life of its relay".to_owned(),
+            ));
+        }
+        tokio::time::sleep(WAIT_INTERVAL).await;
     }
 }
 
-fn show_links(state: &LinkDeviceState) {
-    let LinkDeviceState::Requested {
-        servers,
-        request,
-        fingerprint,
-        ..
-    } = state
-    else {
+fn show_links(flow: &LinkThisDeviceFlow) {
+    let LinkThisDeviceState::Linked { first, servers, .. } = flow.view().state else {
         return;
     };
+    println!("{first}  linked");
     for server in servers {
         let progress = match &server.progress {
             LinkProgress::Working => "in progress".to_owned(),
@@ -1299,46 +1310,52 @@ fn show_links(state: &LinkDeviceState) {
         };
         println!("{}  {}  {progress}", server.server_id, server.address);
     }
-    if let (Some(request), Some(fingerprint)) = (request, fingerprint) {
-        println!("fingerprint: {fingerprint}");
-        println!("request: {}", request.expose());
-    }
 }
 
-async fn approve_all(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
-    let flow = client.approve_devices();
-    let request = LinkRequestText::new(bundle("link request")?);
-    let looked_up = flow
-        .dispatch(ApproveDevicesAction::LookUp { request })
-        .await;
+async fn approve_device(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
+    let only = match arguments.value("server") {
+        Some(_) => Some(pick(client, arguments)?.id()),
+        None => None,
+    };
+    for server in client.servers() {
+        let _ = server.connect_when_free().await;
+    }
+    let flow = client.link_new_device(only);
+    let code = LinkCode::new(code("link code")?.as_str());
+    let looked_up = flow.dispatch(LinkNewDeviceAction::LookUp { code }).await;
     all_notices(client);
-    let ApproveDevicesState::Confirm {
-        fingerprint,
-        device_name,
+    let LinkNewDeviceState::Confirm {
         servers,
+        first,
+        pending,
     } = flow.view().state
     else {
         return looked_up.map_err(failed);
     };
-    println!("device name: {device_name}");
-    println!("fingerprint: {fingerprint}");
-    show_approvals(&servers);
-    let question = "The new device must show the same fingerprint. Approve on every server, \
-                    each for the account shown?";
-    let agreed = confirmed(arguments, question)?;
-    let mut result = if agreed {
-        flow.dispatch(ApproveDevicesAction::Approve)
-            .await
-            .map_err(failed)
-    } else {
-        Err(Failure::Failed("not approved".to_owned()))
-    };
-    all_notices(client);
-    if let Some(again) = confirm_changed_accounts(&flow, arguments).await? {
-        result = again;
-        all_notices(client);
+    println!("first server: {first}");
+    println!("device name: {}", pending.device_name);
+    println!("public key: {}", pending.public_key);
+    for choice in &servers {
+        let state = match (&choice.unavailable, choice.checked) {
+            (Some(reason), _) => format!("not linked: {reason}"),
+            (None, true) => "linked".to_owned(),
+            (None, false) => "not chosen".to_owned(),
+        };
+        println!("{}  {}  {state}", choice.server_id, choice.name);
     }
-    if let (true, ApproveDevicesState::Confirm { servers, .. }) = (agreed, flow.view().state) {
+    if !confirmed(
+        arguments,
+        "The new device must show the same public key. Approve?",
+    )? {
+        return Err(Failure::Failed("not approved".to_owned()));
+    }
+    let approved = flow.dispatch(LinkNewDeviceAction::Approve).await;
+    all_notices(client);
+    let result = match approved {
+        Ok(()) => follow_approvals(client, &flow).await,
+        Err(error) => Err(failed(error)),
+    };
+    if let LinkNewDeviceState::Linking { servers, .. } = flow.view().state {
         show_approvals(&servers);
     }
     for server in client.servers() {
@@ -1347,63 +1364,48 @@ async fn approve_all(client: &Client, arguments: &Arguments) -> Result<(), Failu
     result
 }
 
-/// A server on which this device has another account than the one that was shown is
-/// approved only after the user agreed to that account. `--yes` does not agree to it.
-async fn confirm_changed_accounts(
-    flow: &ApproveDevicesFlow,
-    arguments: &Arguments,
-) -> Result<Option<Result<(), Failure>>, Failure> {
-    let ApproveDevicesState::Confirm { servers, .. } = flow.view().state else {
-        return Ok(None);
-    };
-    let mut confirmed_any = false;
-    for server in servers {
-        let ApprovalProgress::AccountChanged { now } = server.progress else {
-            continue;
+/// Follows the answers of the new device until no server waits for one.
+async fn follow_approvals(client: &Client, flow: &LinkNewDeviceFlow) -> Result<(), Failure> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let LinkNewDeviceState::Linking { servers, .. } = flow.view().state else {
+            return Ok(());
         };
-        println!(
-            "{}  {}  this device now has the account {now} there",
-            server.server_id, server.name
-        );
-        if arguments.flag("yes") {
-            continue;
+        let waits = servers.iter().any(|server| {
+            matches!(
+                server.progress,
+                ApprovalProgress::Waiting | ApprovalProgress::Working
+            )
+        });
+        if !waits {
+            return match flow.view().error {
+                None => Ok(()),
+                Some(error) => Err(failed(error)),
+            };
         }
-        eprint!("Approve the new device for the account {now}? [y/N] ");
-        let answer = secret_input::read_line(16).map_err(failed)?;
-        if matches!(answer.as_str(), "y" | "Y" | "yes") {
-            let server_id = server.server_id;
-            flow.dispatch(ApproveDevicesAction::ConfirmAccount { server_id })
-                .await
-                .map_err(failed)?;
-            confirmed_any = true;
+        if started.elapsed() >= LONGEST_LINK {
+            return Err(Failure::Failed(
+                "the new device did not answer within the life of the relay".to_owned(),
+            ));
         }
+        tokio::time::sleep(WAIT_INTERVAL).await;
+        let _ = flow.dispatch(LinkNewDeviceAction::Check).await;
+        all_notices(client);
     }
-    if !confirmed_any {
-        return Ok(None);
-    }
-    let approved = flow.dispatch(ApproveDevicesAction::Approve).await;
-    Ok(Some(approved.map_err(failed)))
 }
 
 fn show_approvals(servers: &[ServerApproval]) {
     for server in servers {
         let progress = match &server.progress {
+            ApprovalProgress::Waiting => "waiting for the new device".to_owned(),
             ApprovalProgress::Working => "in progress".to_owned(),
-            ApprovalProgress::Ready => "ready".to_owned(),
             ApprovalProgress::Approved => "approved".to_owned(),
+            ApprovalProgress::AlreadyLinked => "already linked".to_owned(),
             ApprovalProgress::Failed(error) => format!("failed: {error}"),
-            ApprovalProgress::Unknown => "unknown: the answer of the server was lost".to_owned(),
-            ApprovalProgress::AccountChanged { now } => {
-                format!("not approved: this device now has the account {now}")
-            }
-        };
-        let account = match server.account_id {
-            Some(account_id) => format!("account {account_id}"),
-            None => "no account".to_owned(),
         };
         println!(
-            "{}  {}  {account}  {}  {progress}",
-            server.server_id, server.name, server.public_key
+            "{}  {}  account {}  {progress}",
+            server.server_id, server.name, server.account_id
         );
     }
 }

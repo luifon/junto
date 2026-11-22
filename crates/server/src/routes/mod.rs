@@ -32,6 +32,7 @@ pub mod calls;
 pub mod channels;
 pub mod contacts;
 pub mod departures;
+pub mod device_relay;
 pub mod exports;
 pub mod glossary;
 pub mod groups;
@@ -258,6 +259,11 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(account_cards::get_card));
     add(&mut router, || routes!(presence::read_presence));
     add(&mut router, || routes!(presence::set_presence));
+    add(&mut router, || routes!(device_relay::read_offer));
+    add(&mut router, || routes!(device_relay::write_answer));
+    add(&mut router, || {
+        routes!(device_relay::read_answer, device_relay::end)
+    });
     add(&mut router, || routes!(account::get_avatar));
     add(&mut router, || routes!(account::list_devices));
     add(&mut router, || {

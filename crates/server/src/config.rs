@@ -433,6 +433,8 @@ pub struct Limits {
     pub invite_longest_lifetime: Duration,
     pub invite_most_uses: u32,
     pub device_link_lifetime: Duration,
+    /// How long the relay of a device link lives after the approval (ADR 0104).
+    pub device_link_relay_lifetime: Duration,
     pub join_request_lifetime: Duration,
     pub most_pending_join_requests: u32,
     pub join_request_history: Duration,
@@ -608,6 +610,7 @@ impl Default for Limits {
             invite_longest_lifetime: Duration::days(365),
             invite_most_uses: 10_000,
             device_link_lifetime: Duration::minutes(10),
+            device_link_relay_lifetime: Duration::minutes(15),
             join_request_lifetime: Duration::days(7),
             most_pending_join_requests: 200,
             join_request_history: Duration::days(30),

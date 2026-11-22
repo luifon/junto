@@ -651,6 +651,8 @@ pub(crate) mod testing {
                     event_revision: junto_protocol::events::EVENT_REVISION,
                 },
                 search: junto_protocol::discovery::SearchCapabilities::ALL,
+                status_text: true,
+                device_link_relay: true,
             },
         }
     }

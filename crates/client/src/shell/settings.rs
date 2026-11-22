@@ -244,10 +244,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
+        let heading = |label: &'static str| {
+            div()
+                .typeface(theme.types.heading, &theme)
+                .ink(theme.colors.ink)
+                .child(label)
+        };
         Dialog::new(text::WELCOME_TITLE, self.layer_focus())
             .selector("welcome-dialog")
+            .child(heading(text::WELCOME_NEW))
             .child(
                 div()
+                    .mt(u(4.0))
                     .typeface(theme.types.notice, &theme)
                     .ink(theme.colors.ink_2)
                     .child(text::WELCOME),
@@ -265,6 +273,39 @@ impl Shell {
                 .px(u(12.0))
                 .on_click(cx.listener(|this, _, window, cx| this.submit_name(window, cx)))
                 .into_any_element()]))
+            .child(
+                div()
+                    .mt(u(14.0))
+                    .pt(u(12.0))
+                    .border_t_1()
+                    .border_color(gpui::Hsla::from(theme.colors.rule))
+                    .child(heading(text::WELCOME_OTHER_COMPUTER))
+                    .child(
+                        div()
+                            .mt(u(4.0))
+                            .typeface(theme.types.notice, &theme)
+                            .ink(theme.colors.ink_2)
+                            .child(text::WELCOME_OTHER_COMPUTER_HELP),
+                    )
+                    .child(
+                        div().flex().flex_none().justify_end().mt(u(10.0)).child(
+                            Button::new("welcome-link")
+                                .icon(crate::assets::Icon::Link)
+                                .label(text::account::REQUEST_LINK)
+                                .selector("welcome-link")
+                                .h(u(30.0))
+                                .px(u(12.0))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_link_all(
+                                        crate::state::linking::LinkRole::NewDevice,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        ),
+                    ),
+            )
             .child(
                 crate::ui::notice_slot("name-error-slot").children(self.name_error.clone().map(
                     |error| {
