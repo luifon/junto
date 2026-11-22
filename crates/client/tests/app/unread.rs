@@ -60,6 +60,8 @@ fn linked_window(
         .run(first.handle().api().approve_device_link(code, public_key))
         .unwrap();
     second.until_ready();
+    // The way of the link opened the layer of the link (ADR 0782); it covers the window.
+    second.click("link-all-close");
     assert_eq!(
         second.view().person.account_id,
         first.view().person.account_id

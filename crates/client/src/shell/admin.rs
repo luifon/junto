@@ -1089,14 +1089,20 @@ impl Shell {
                     mentions: Some(text::unread_count(waiting as u64).into()),
                     label: text::admin::waiting(page, waiting).into(),
                 });
+                // Two pages can share a name ("Notifications" of a workspace and of the
+                // account): the row is known by the selector of its page.
                 column = column.child(
-                    ChannelRow::new(name, text::admin::page_icon(page), name)
-                        .selected(page == selected)
-                        .selector(text::admin::page_selector(page))
-                        .unread(sign)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_server_admin(page, window, cx);
-                        })),
+                    ChannelRow::new(
+                        text::admin::page_selector(page),
+                        text::admin::page_icon(page),
+                        name,
+                    )
+                    .selected(page == selected)
+                    .selector(text::admin::page_selector(page))
+                    .unread(sign)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_server_admin(page, window, cx);
+                    })),
                 );
             }
         }

@@ -74,7 +74,7 @@ fn the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_rec
         let server_id = state.client().servers()[0].id();
         state.link_wait(server_id).unwrap().fingerprint
     });
-    new.click("dialog-close");
+    new.click("link-all-close");
     assert!(new.shows("waiting-for-link"));
 
     // The owner offers the recovery of the account of another person only.
