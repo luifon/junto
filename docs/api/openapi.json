@@ -3439,66 +3439,6 @@
         ]
       }
     },
-    "/api/v1/call/speaking": {
-      "put": {
-        "tags": [
-          "calls"
-        ],
-        "summary": "Reports whether the person speaks. The server relays a mark, not a level, to the people\nwho may see who is in the voice channel, at most once per second for one call.",
-        "operationId": "report_speaking",
-        "parameters": [
-          {
-            "name": "Junto-Group-Conversations",
-            "in": "header",
-            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReportSpeaking"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "headers": {
-              "junto-event-cursor": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
-              }
-            }
-          },
-          "default": {
-            "description": "An error. The field `error.code` states which one.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ]
-      }
-    },
     "/api/v1/call/state": {
       "put": {
         "tags": [
@@ -21977,17 +21917,6 @@
             "format": "int32",
             "description": "The share that the report is about, below `MAX_SHARES`. Absent: slot 0, as a client\nfrom before several shares reports its one share.",
             "minimum": 0
-          }
-        }
-      },
-      "ReportSpeaking": {
-        "type": "object",
-        "required": [
-          "speaking"
-        ],
-        "properties": {
-          "speaking": {
-            "type": "boolean"
           }
         }
       },

@@ -29,10 +29,6 @@ use crate::ui::{
 /// height. More scroll in their list.
 const DIRECT_ROWS: f32 = 5.0;
 
-/// The lit segments of the meter of a person who speaks in a call that this device is not
-/// in. The server tells who speaks there and no level (ADR 0513).
-const SPEAKING_SEGMENTS: usize = 3;
-
 /// The states that the row of a voice channel shows at its right.
 pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
     let mut states = Vec::new();
@@ -76,27 +72,30 @@ pub(crate) fn occupant_marks(occupant: &Occupant) -> Vec<OccupantMark> {
     if occupant.sound_off {
         marks.push(OccupantMark::SoundOff(text::SOUND_OFF.into()));
     }
-    marks.push(match (occupant.presence, occupant.microphone) {
-        (Presence::Connecting, _) => OccupantMark::Status(text::STATUS_CONNECTING.into()),
-        (Presence::Reconnecting, _) => OccupantMark::Status(text::STATUS_RECONNECTING.into()),
-        (Presence::Here, Microphone::Held(reason)) => {
-            OccupantMark::MicrophoneHeld(text::microphone_held(reason).into())
+    // The meter shows who speaks only in the call of this device, where the media engine
+    // measures the level; outside it an open microphone has no mark (ADR 0513).
+    let mark = match (occupant.presence, occupant.microphone, occupant.level) {
+        (Presence::Connecting, ..) => Some(OccupantMark::Status(text::STATUS_CONNECTING.into())),
+        (Presence::Reconnecting, ..) => {
+            Some(OccupantMark::Status(text::STATUS_RECONNECTING.into()))
         }
-        (Presence::Here, Microphone::Closed) => {
-            OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into())
+        (Presence::Here, Microphone::Held(reason), _) => Some(OccupantMark::MicrophoneHeld(
+            text::microphone_held(reason).into(),
+        )),
+        (Presence::Here, Microphone::Closed, _) => {
+            Some(OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into()))
         }
-        (Presence::Here, Microphone::Open { speaking }) => OccupantMark::Level {
-            // In the call of this device the media engine measures the level.
-            lit: occupant
-                .level
-                .unwrap_or(if speaking { SPEAKING_SEGMENTS } else { 0 }),
+        (Presence::Here, Microphone::Open { speaking }, Some(lit)) => Some(OccupantMark::Level {
+            lit,
             label: if speaking {
                 text::SPEAKING.into()
             } else {
                 text::MICROPHONE_OPEN.into()
             },
-        },
-    });
+        }),
+        (Presence::Here, Microphone::Open { .. }, None) => None,
+    };
+    marks.extend(mark);
     marks
 }
 
@@ -1639,6 +1638,47 @@ mod tests {
         voice.hidden = true;
         voice.locked = false;
         assert_eq!(count(&voice), None);
+    }
+
+    #[test]
+    fn the_level_meter_is_drawn_only_for_the_people_of_the_call_of_this_device() {
+        let person = |level: Option<usize>, speaking: bool| Occupant {
+            account_id: junto_client_core::protocol::ids::AccountId::generate(),
+            name: None,
+            is_self: false,
+            microphone: Microphone::Open { speaking },
+            held_by: None,
+            sharing: true,
+            hand_raised: false,
+            sound_off: false,
+            sound_blocked: false,
+            level,
+            presence: Presence::Here,
+            volume: 100,
+        };
+        let meters = |occupant: &Occupant| {
+            occupant_marks(occupant)
+                .into_iter()
+                .filter(|mark| matches!(mark, OccupantMark::Level { .. }))
+                .count()
+        };
+        // Outside the call of this device: the other marks and no meter, also for a
+        // person marked as speaking.
+        for speaking in [false, true] {
+            let outside = person(None, speaking);
+            assert_eq!(meters(&outside), 0);
+            assert!(
+                occupant_marks(&outside)
+                    .iter()
+                    .any(|mark| matches!(mark, OccupantMark::Sharing(_)))
+            );
+        }
+        // In the call of this device: the measured level.
+        assert!(matches!(
+            occupant_marks(&person(Some(4), true)).last(),
+            Some(OccupantMark::Level { lit: 4, .. })
+        ));
+        assert_eq!(meters(&person(Some(0), false)), 1);
     }
 }
 

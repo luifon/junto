@@ -443,7 +443,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(calls::raise_hand, calls::lower_hand)
     });
-    add(&mut router, || routes!(calls::report_speaking));
     add(&mut router, || routes!(calls::get_channel_call));
     add(&mut router, || routes!(calls::update_call_settings));
     add(&mut router, || routes!(calls::set_voice_channel_status));

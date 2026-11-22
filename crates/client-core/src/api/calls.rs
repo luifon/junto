@@ -5,7 +5,7 @@
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, ChannelCall, EntryRequest,
     InviteToCall, MAX_SHARES, MoveParticipant, MuteDirectConversation, OwnCallView,
-    ReportCallState, ReportScreenShare, ReportSpeaking, SetVoiceChannelStatus, ShareAudio,
+    ReportCallState, ReportScreenShare, SetVoiceChannelStatus, ShareAudio,
     ShareShows, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -151,13 +151,6 @@ impl ServerApi {
 
     pub async fn lower_hand(&self) -> Result<(), ApiError> {
         self.act(Method::Delete, "/call/hand".to_owned()).await
-    }
-
-    /// Reports whether the person speaks, for the marks that people outside the voice
-    /// channel see (ADR 0513).
-    pub async fn report_speaking(&self, speaking: bool) -> Result<(), ApiError> {
-        let report = ReportSpeaking { speaking };
-        self.put("/call/speaking".to_owned(), &report).await
     }
 
     // The call of a voice channel.

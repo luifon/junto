@@ -1210,13 +1210,6 @@ async fn world() -> World {
         operation(Method::PUT, "/api/v1/call/hand", &[], none.clone(), &own),
         operation(Method::DELETE, "/api/v1/call/hand", &[], none.clone(), &own),
         operation(
-            Method::PUT,
-            "/api/v1/call/speaking",
-            &[],
-            json!({ "speaking": true }),
-            &own,
-        ),
-        operation(
             Method::GET,
             "/api/v1/channels/{channel_id}/call",
             &[&vault.id],

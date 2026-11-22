@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-A server decides who is in a call and gives the token for the media server (ADR 0508, ADR 0510). The engine carries the media of one connection and knows no rule of a server (ADR 0733). ADR 0107 states that a client is in one call at a time over all its servers; ADR 0720 left that rule to the part that holds the media connection. The server expects from the device in a call: its own microphone and sound setting (ADR 0510), and whether its person speaks (ADR 0513). A microphone block is in the state of the server and must stop the microphone (ADR 0503); a sound block is applied by the client. The media server can restart, and a token is usable for about two minutes (ADR 0506). ADR 0507 leaves open how the client decides when a microphone is sent.
+A server decides who is in a call and gives the token for the media server (ADR 0508, ADR 0510). The engine carries the media of one connection and knows no rule of a server (ADR 0733). ADR 0107 states that a client is in one call at a time over all its servers; ADR 0720 left that rule to the part that holds the media connection. The server expects from the device in a call: its own microphone and sound setting (ADR 0510). A microphone block is in the state of the server and must stop the microphone (ADR 0503); a sound block is applied by the client. The media server can restart, and a token is usable for about two minutes (ADR 0506). ADR 0507 leaves open how the client decides when a microphone is sent.
 
 ## Decision
 
@@ -48,7 +48,6 @@ Reports:
 
 - When the media connection is made, and after each change, the device reports "muted" and "sound off". At most one report is on its way, and two reports are at least 500 ms apart.
 - A person whose microphone cannot be used (no permission, no device) is reported as muted. The person's own setting is not changed by that.
-- In a voice channel the device reports whether its person speaks: a change at once, at most one report in 700 ms, and a renewal every 3 seconds while the person speaks (ADR 0513).
 - A report that failed is sent again after 3 seconds.
 
 Blocks:
@@ -62,7 +61,7 @@ Blocks:
 
 When a microphone is sent (ADR 0507):
 
-- Voice activation, the default: the open microphone is sent all the time, and the level decides the speaking mark. No gate cuts the sound below a level. A gate with a fixed level removes quiet speech and the start of words; noise suppression and the silence detection of the codec already reduce what silence costs.
+- Voice activation, the default: the open microphone is sent all the time, and the level decides the speaking mark that the people in the call see. No gate cuts the sound below a level. A gate with a fixed level removes quiet speech and the start of words; noise suppression and the silence detection of the codec already reduce what silence costs.
 - Push-to-talk: the microphone is sent while the key is held, and the window has the focus. The key is one of two modifier keys, Alt (Option on macOS) or Control: a modifier types nothing into a focused field.
 
 Reconnect:

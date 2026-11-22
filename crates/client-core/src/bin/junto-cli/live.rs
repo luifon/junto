@@ -65,7 +65,6 @@ enum CallAction {
     Share(ShareAudio),
     Unshare,
     Hand(bool),
-    Speaking(bool),
     Settings {
         channel_id: ChannelId,
         change: UpdateCallSettings,
@@ -163,7 +162,6 @@ fn parse_call(words: &[String], arguments: &Arguments) -> Result<CallAction, Fai
         }),
         "unshare" => CallAction::Unshare,
         "hand" => CallAction::Hand(choice(words, 1, "up", "down", "the hand")?),
-        "speaking" => CallAction::Speaking(yes_no(1, "speaking")?),
         "settings" => {
             if arguments.value("limit").is_some() && arguments.flag("no-limit") {
                 return Err(usage("--limit and --no-limit exclude each other"));
@@ -299,10 +297,6 @@ async fn perform(api: &ServerApi, action: CallAction) -> Result<Vec<String>, Fai
         CallAction::Hand(false) => {
             api.lower_hand().await.map_err(failed)?;
             done("hand: down")
-        }
-        CallAction::Speaking(speaking) => {
-            api.report_speaking(speaking).await.map_err(failed)?;
-            Ok(vec![format!("reported: speaking {speaking}")])
         }
         CallAction::Settings { channel_id, change } => {
             let channel = api
@@ -468,7 +462,7 @@ fn mute_end(until: Option<OffsetDateTime>) -> String {
     }
 }
 
-fn participant_line(participant: &CallParticipant, speaking: Option<bool>, indent: &str) -> String {
+fn participant_line(participant: &CallParticipant, indent: &str) -> String {
     let microphone_block = match &participant.microphone_block {
         Some(block) => format!("by {} ({})", block.by, word(&block.reason)),
         None => "none".to_owned(),
@@ -498,14 +492,10 @@ fn participant_line(participant: &CallParticipant, speaking: Option<bool>, inden
     } else {
         "down"
     };
-    let speaking = match speaking {
-        Some(speaking) => format!("  speaking: {speaking}"),
-        None => String::new(),
-    };
     format!(
         "{indent}participant: {}  muted: {}  deafened: {}  microphone block: \
          {microphone_block}  sound block: {sound_block}  hand: {hand}  screen share: \
-         {screen_share}{speaking}",
+         {screen_share}",
         participant.account_id, participant.muted, participant.deafened
     )
 }
@@ -555,7 +545,7 @@ fn call_lines(call: &Call, indent: &str) -> Vec<String> {
     lines.extend(
         call.participants
             .iter()
-            .map(|participant| participant_line(participant, None, indent)),
+            .map(|participant| participant_line(participant, indent)),
     );
     lines
 }
@@ -666,10 +656,11 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             lines.push(lock_line(call.lock.as_ref(), "  "));
             lines.push(meeting_line(call.meeting.as_ref(), "  "));
             lines.push(recording_line(call.recording.as_ref(), "  "));
-            lines.extend(call.participants.iter().map(|participant| {
-                let speaking = call.speaking.contains(&participant.account_id);
-                participant_line(participant, Some(speaking), "  ")
-            }));
+            lines.extend(
+                call.participants
+                    .iter()
+                    .map(|participant| participant_line(participant, "  ")),
+            );
         }
     }
     lines.push(match &model.own_call {
@@ -684,10 +675,11 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
     for call in &model.direct_calls {
         lines.push(format!("direct call: {}  {}", call.id, place(&call.place)));
         lines.push(started_line(call.started_at, "  "));
-        lines.extend(call.participants.iter().map(|participant| {
-            let speaking = call.speaking.contains(&participant.account_id);
-            participant_line(participant, Some(speaking), "  ")
-        }));
+        lines.extend(
+            call.participants
+                .iter()
+                .map(|participant| participant_line(participant, "  ")),
+        );
     }
     lines.extend(model.invitations.iter().map(invitation_line));
     lines.extend(model.entry_requests.iter().map(entry_request_line));
@@ -919,14 +911,6 @@ fn event_details(event: &Event) -> String {
             place,
             reason,
         } => format!("{} reason={}", at(call_id, place), word(reason)),
-        Event::CallSpeaking {
-            call_id,
-            place,
-            account_ids,
-        } => {
-            let speakers: Vec<String> = account_ids.iter().map(ToString::to_string).collect();
-            format!("{} speaking={}", at(call_id, place), speakers.join(","))
-        }
         Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => format!(
             "recording={} call={} channel={} state={}",
             recording.id,

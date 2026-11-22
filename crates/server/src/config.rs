@@ -366,12 +366,6 @@ pub struct CallLimits {
     /// Joins, locks, requests, invitations, moves, meetings and blocks of one session.
     pub actions: RateLimit,
     pub state_reports: RateLimit,
-    pub speaking_reports: RateLimit,
-    /// The shortest time between two speaking events of one call.
-    pub speaking_interval: Duration,
-    /// A speaking mark ends when its report is not renewed within this time.
-    pub speaking_mark_lifetime: Duration,
-    pub most_speaking_marks: usize,
 }
 
 impl Default for CallLimits {
@@ -413,13 +407,6 @@ impl Default for CallLimits {
                 attempts: 30,
                 window: Duration::seconds(10),
             },
-            speaking_reports: RateLimit {
-                attempts: 20,
-                window: Duration::seconds(10),
-            },
-            speaking_interval: Duration::seconds(1),
-            speaking_mark_lifetime: Duration::seconds(5),
-            most_speaking_marks: 16,
         }
     }
 }

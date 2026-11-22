@@ -292,7 +292,7 @@ impl CloseCode {
 /// document of each revision, and the generator of the documents refuses a changed document
 /// under a revision that has a digest. A server states it in `hello`, so that a client of an
 /// older build knows that the server sends what the client does not read.
-pub const EVENT_REVISION: u32 = 22;
+pub const EVENT_REVISION: u32 = 23;
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
@@ -518,13 +518,6 @@ pub enum Event {
         call_id: CallId,
         place: CallPlace,
         reason: MeetingEnd,
-    },
-    /// The people in a voice channel who speak now, as the clients inside report it. The
-    /// list replaces the one before. It is not sent for a channel that hides who is inside.
-    CallSpeaking {
-        call_id: CallId,
-        place: CallPlace,
-        account_ids: Vec<AccountId>,
     },
     /// A person outside asks to enter a locked or full voice channel. Anyone inside answers.
     CallEntryRequested {
@@ -859,7 +852,6 @@ impl Event {
         "call_lock_changed",
         "call_meeting_started",
         "call_meeting_ended",
-        "call_speaking",
         "call_entry_requested",
         "call_entry_resolved",
         "call_entry_answered",
@@ -966,7 +958,6 @@ impl Event {
             Self::CallLockChanged { .. } => "call_lock_changed",
             Self::CallMeetingStarted { .. } => "call_meeting_started",
             Self::CallMeetingEnded { .. } => "call_meeting_ended",
-            Self::CallSpeaking { .. } => "call_speaking",
             Self::CallEntryRequested { .. } => "call_entry_requested",
             Self::CallEntryResolved { .. } => "call_entry_resolved",
             Self::CallEntryAnswered { .. } => "call_entry_answered",
@@ -1447,11 +1438,6 @@ mod tests {
                 call_id,
                 place,
                 reason: MeetingEnd::ShareStopped,
-            },
-            Event::CallSpeaking {
-                call_id,
-                place,
-                account_ids: vec![account_id],
             },
             Event::CallEntryRequested {
                 request: EntryRequest {

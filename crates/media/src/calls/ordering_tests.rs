@@ -233,13 +233,11 @@ fn fixture() -> Fixture {
         renew_open: false,
         renewals: Vec::new(),
         grant_closed: false,
-        state_report: Reporter::new(timing.state_spacing, None),
-        speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
+        state_report: Reporter::new(timing.state_spacing),
         share_reports: ShareReports::new(timing.share_spacing),
         watch_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
         probes: Vec::new(),
-        speaking: false,
         sent_open: None,
         sent_controls: Vec::new(),
         timing,
@@ -1933,10 +1931,10 @@ async fn the_loop_of_a_session_takes_missed_notices_as_events_that_were_not_told
         looping.live.tell_for_test(Notice::Event {
             id: 1_000 + id,
             at: OffsetDateTime::UNIX_EPOCH,
-            event: Arc::new(Event::CallSpeaking {
+            event: Arc::new(Event::CallLockChanged {
                 call_id,
                 place,
-                account_ids: Vec::new(),
+                lock: None,
             }),
         });
     }

@@ -146,7 +146,6 @@ impl Class {
             | Event::CallLockChanged { .. }
             | Event::CallMeetingStarted { .. }
             | Event::CallMeetingEnded { .. }
-            | Event::CallSpeaking { .. }
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::RecordingStarted { .. }
@@ -789,8 +788,7 @@ impl Audience {
             | Event::CallParticipantLeft { call_id, place, .. }
             | Event::CallLockChanged { call_id, place, .. }
             | Event::CallMeetingStarted { call_id, place, .. }
-            | Event::CallMeetingEnded { call_id, place, .. }
-            | Event::CallSpeaking { call_id, place, .. } => {
+            | Event::CallMeetingEnded { call_id, place, .. } => {
                 Some(of_call(place, Some((*call_id, CallReach::Occupancy))))
             }
             Event::AccountAdded { .. }

@@ -606,11 +606,6 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
             role_ids: Vec::new(),
         },
     ]);
-    for held in &mut workspace.channels {
-        if let Some(call) = &mut held.call {
-            call.speaking = vec![ana];
-        }
-    }
     let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
     let mut known = Known::default();
     known.people.read_name(server.id, carla, "Carla");
@@ -642,8 +637,9 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     assert_eq!(
         people,
         [
-            // From the members of the workspace.
-            (Some("Ana"), open(true), false, false, false, false),
+            // From the members of the workspace. Outside the call of this device nobody
+            // is shown as speaking.
+            (Some("Ana"), open(false), false, false, false, false),
             (Some("Bruno"), Microphone::Closed, false, false, true, false),
             // From the profile route, because the member list does not hold the account.
             (
@@ -1421,25 +1417,11 @@ pub(super) mod calls {
             daily,
             vec![participant(ana), participant(ben), participant(own)],
         );
-        let mut model = scene.model();
-        // The server marks Ben as speaking. In the call of this device the sound decides.
-        let place = CallPlace::Channel {
-            workspace_id: scene.studio,
-            channel_id: daily,
-        };
-        let mut speaking = model.call_at(&place).unwrap().clone();
-        speaking.speaking = vec![ben];
-        let workspace = Arc::make_mut(&mut model.workspaces[1]);
-        workspace
-            .channels
-            .iter_mut()
-            .find(|channel| channel.channel.id == daily)
-            .unwrap()
-            .call = Some(speaking);
+        let model = scene.model();
         let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
         let servers = std::slice::from_ref(&server);
 
-        // Outside the call: the marks of the server, and no measured level.
+        // Outside the call: no speaking mark and no measured level.
         let outside = derive(
             servers,
             &selected(&server, &scene, daily),
@@ -1448,7 +1430,7 @@ pub(super) mod calls {
         let row = voice(outside.workspace().unwrap(), "Daily");
         assert_eq!(row.relation, Relation::Outside);
         let shown = occupant(&outside, "Daily", ben);
-        assert_eq!(shown.microphone, Microphone::Open { speaking: true });
+        assert_eq!(shown.microphone, Microphone::Open { speaking: false });
         assert_eq!((shown.level, shown.volume), (None, 100));
         assert!(outside.lists().unwrap().call.is_none());
         assert_eq!(

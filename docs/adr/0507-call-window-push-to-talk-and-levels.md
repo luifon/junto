@@ -30,15 +30,13 @@ Call window:
 Levels and volume:
 
 - For the voice channel that a user is in, the channel list shows a level meter per person.
-- For other voice channels, the channel list shows only a mark for who is speaking. The clients in that voice channel report this to the server.
-- A voice channel that hides who is inside shows neither.
+- For other voice channels, the channel list shows who is inside and no level and no mark of who is speaking (ADR 0513).
+- A voice channel that hides who is inside shows no people.
 - Each listener can set a volume per person.
 
 ## Consequences
 
 - Push-to-talk and the key that mutes work while another application is in front on Windows, on X11, on macOS with the permission Input Monitoring, and on a Wayland desktop with the global shortcuts portal (ADR 0776).
-- The speaking marks for other voice channels depend on reports from clients, so a modified client can send a false report.
-- The server receives and distributes speaking reports for every voice channel that does not hide who is inside.
 - A volume per person is a setting of the listener and does not change what other listeners hear.
 - On Wayland the call window can be covered by other windows.
 - The client has an interface for this request, which answers "applied", "unsupported" or "failed". It answers "unsupported" for a Wayland window and under an X11 window manager that does not list the state "above"; the choice "keep on top" is to be offered only under X11. For a window that the window manager has not taken yet, the state is also written as a property of the window, which the window manager reads when it takes the window. The detached call window is the caller of this interface (ADR 0772).

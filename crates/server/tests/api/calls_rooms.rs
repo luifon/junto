@@ -10,7 +10,6 @@ use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{AccountId, ChannelId};
 use junto_protocol::snapshot::Snapshot;
 use junto_server::calls::admission::Outcome;
-use junto_server::calls::speaking;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use time::Duration;
@@ -76,11 +75,6 @@ async fn a_hidden_voice_channel_shows_the_people_outside_only_that_it_is_in_use(
         )
         .await
         .empty(StatusCode::NO_CONTENT);
-    server
-        .put(ann, "/api/v1/call/speaking", &json!({ "speaking": true }))
-        .await
-        .empty(StatusCode::NO_CONTENT);
-    assert_eq!(speaking::publish(&server.state).await.unwrap(), 0);
     server
         .put_empty(ann, &lock_path(voice))
         .await

@@ -261,7 +261,6 @@ fn a_snapshot_gives_the_structure_the_calls_and_the_permissions_of_the_roles() {
     let call = daily.call.as_ref().unwrap();
     assert_eq!(call.id, call_id);
     assert!(call.participant(other).is_some());
-    assert!(call.speaking.is_empty());
     assert_eq!(
         model.call_at(&scene.place(scene.daily)).unwrap().id,
         call_id
@@ -442,10 +441,11 @@ fn a_copy_shares_the_workspaces_that_an_event_did_not_change() {
         workspace_id: scene.workspace_id,
         channel_id: ChannelId::generate(),
     });
-    model.apply(&Event::CallSpeaking {
+    model.apply(&Event::CallParticipantLeft {
         call_id: CallId::generate(),
         place: scene.place(scene.daily),
-        account_ids: vec![scene.account_id],
+        account_id: scene.account_id,
+        reason: LeaveReason::Left,
     });
     assert!(Arc::ptr_eq(
         &model.workspaces[studio],
@@ -528,11 +528,6 @@ fn a_call_in_a_voice_channel_follows_its_events() {
         place,
         participant: muted.clone(),
     });
-    model.apply(&Event::CallSpeaking {
-        call_id,
-        place,
-        account_ids: vec![ana.account_id, bruno.account_id],
-    });
     let lock = CallLock {
         by: ana.account_id,
         at: time(),
@@ -544,7 +539,6 @@ fn a_call_in_a_voice_channel_follows_its_events() {
     });
     let call = model.call_at(&place).unwrap();
     assert_eq!(call.participants, [ana.clone(), muted]);
-    assert_eq!(call.speaking, [ana.account_id, bruno.account_id]);
     assert_eq!(call.lock, Some(lock));
 
     model.apply(&Event::CallParticipantLeft {
@@ -555,7 +549,6 @@ fn a_call_in_a_voice_channel_follows_its_events() {
     });
     let call = model.call_at(&place).unwrap();
     assert_eq!(call.participants.len(), 1);
-    assert_eq!(call.speaking, [bruno.account_id]);
 
     // An event of a call that the place no longer has changes nothing.
     let before = model.clone();
@@ -1220,11 +1213,6 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
         left: None,
     });
     model.apply(&started(call_id, place));
-    model.apply(&Event::CallSpeaking {
-        call_id,
-        place,
-        account_ids: vec![scene.account_id],
-    });
     let request = EntryRequest {
         id: EntryRequestId::generate(),
         call_id,
@@ -1264,7 +1252,6 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
     assert_eq!(model.entry_requests, std::slice::from_ref(&request));
     let call = model.call_at(&place).unwrap();
     assert_eq!(call.participants.len(), 1);
-    assert_eq!(call.speaking, [scene.account_id]);
     assert!(model.channel(scene.daily).unwrap().in_use);
 
     // The call moves to another device of the account: the requests stay.

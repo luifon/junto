@@ -597,36 +597,6 @@
       ],
       "type": "object"
     },
-    "call_speaking": {
-      "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
-      "properties": {
-        "account_ids": {
-          "items": {
-            "$ref": "#/components/schemas/AccountId"
-          },
-          "type": "array"
-        },
-        "call_id": {
-          "$ref": "#/components/schemas/CallId"
-        },
-        "place": {
-          "$ref": "#/components/schemas/CallPlace"
-        },
-        "type": {
-          "enum": [
-            "call_speaking"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "call_id",
-        "place",
-        "account_ids",
-        "type"
-      ],
-      "type": "object"
-    },
     "call_started": {
       "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
       "properties": {
@@ -4301,36 +4271,6 @@
               "call_id",
               "place",
               "reason",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
-            "properties": {
-              "account_ids": {
-                "items": {
-                  "$ref": "#/components/schemas/AccountId"
-                },
-                "type": "array"
-              },
-              "call_id": {
-                "$ref": "#/components/schemas/CallId"
-              },
-              "place": {
-                "$ref": "#/components/schemas/CallPlace"
-              },
-              "type": {
-                "enum": [
-                  "call_speaking"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "call_id",
-              "place",
-              "account_ids",
               "type"
             ],
             "type": "object"

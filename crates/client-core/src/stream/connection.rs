@@ -1231,7 +1231,6 @@ impl Client {
                     .as_ref()
                     .is_some_and(|own| own.call_id == call_id)
                 && Part::OwnCall.concerns(&event, model)
-                && !matches!(event.as_ref(), Event::CallSpeaking { .. })
         });
         let saved_call = covered.then(|| {
             (
@@ -1246,11 +1245,7 @@ impl Client {
         });
         let follow = model.apply_at(&event, Some(at));
         if let Some((call, entry_requests, own_seat)) = saved_call {
-            if let Some(mut call) = call {
-                // The answer holds no speaking marks: they follow the events (ADR 0785).
-                if let Some(applied) = model.call_at(&call.place) {
-                    call.speaking.clone_from(&applied.speaking);
-                }
+            if let Some(call) = call {
                 model.put_call(call);
             }
             model.entry_requests = entry_requests;

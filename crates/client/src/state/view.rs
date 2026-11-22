@@ -2173,12 +2173,9 @@ fn call_people(
                     (Some(block), _) => Microphone::Held(block.reason),
                     (None, true) => Microphone::Closed,
                     (None, false) => Microphone::Open {
-                        // In the call of this device the sound itself tells who speaks;
-                        // outside, the marks of the server do (ADR 0513).
-                        speaking: match measured {
-                            Some((_, speaking)) => speaking,
-                            None => call.speaking.contains(&participant.account_id),
-                        },
+                        // Only the call of this device shows who speaks, from its sound
+                        // (ADR 0513).
+                        speaking: measured.is_some_and(|(_, speaking)| speaking),
                     },
                 },
                 held_by: participant

@@ -739,9 +739,8 @@ impl TestServer {
         Self::start_as(configure, setup).await
     }
 
-    /// Starts a server with a fake media server. The admission check and the publication of
-    /// speaking marks do not run by themselves: a test runs each check, so that the order of
-    /// things is fixed.
+    /// Starts a server with a fake media server. The admission check does not run by
+    /// itself: a test runs each check, so that the order of things is fixed.
     pub async fn start_for_calls() -> Self {
         Self::start_for_calls_with(|_| {}).await
     }

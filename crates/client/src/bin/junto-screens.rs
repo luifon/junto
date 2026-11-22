@@ -481,13 +481,6 @@ fn acme_model_of(
             })
             .collect(),
     );
-    for channel in &mut studio.channels {
-        if let Some(call) = &mut channel.call
-            && channel.channel.name == "Daily"
-        {
-            call.speaking = vec![person("Ana")];
-        }
-    }
     Arc::new(model)
 }
 
