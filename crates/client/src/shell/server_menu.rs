@@ -65,7 +65,15 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.read(cx).server(server_id).is_none() {
+        // A server of the server book, as the view lists it.
+        if !self
+            .state
+            .read(cx)
+            .view()
+            .servers
+            .iter()
+            .any(|row| row.id == server_id)
+        {
             return;
         }
         // A move of a server that failed is told in the menu that asked for it.
