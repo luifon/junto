@@ -1446,7 +1446,7 @@ impl Shell {
                 )
                 .icon(Icon::Clock)
                 .selector("waiting-for-approval")
-                .action(check(text::TRY_AGAIN, cx))
+                .action(check(text::CHECK_AGAIN, cx))
                 .action(
                     Button::new("cancel-request")
                         .label(text::CANCEL_REQUEST)
@@ -1485,7 +1485,7 @@ impl Shell {
             )
             .icon(Icon::Clock)
             .selector("waiting-for-link")
-            .action(check(text::TRY_AGAIN, cx))
+            .action(check(text::CHECK_AGAIN, cx))
             .action(forget(cx)),
             ServerStatus::NoAccount(notice) => {
                 let (title, sentence) = text::no_account(*notice);
