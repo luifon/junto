@@ -630,6 +630,23 @@ impl AppState {
         });
     }
 
+    /// Mutes a channel or a group conversation for a time, or ends its mute with `None`.
+    pub fn set_scope_mute(
+        &mut self,
+        server_id: ServerId,
+        scope: SettingsScope,
+        length: Option<MuteFor>,
+        cx: &mut Context<Self>,
+    ) {
+        match scope {
+            SettingsScope::Channel(channel_id) => {
+                self.set_channel_mute(server_id, channel_id, length, cx);
+            }
+            SettingsScope::Conversation(id) => self.set_group_mute(server_id, id, length, cx),
+            SettingsScope::Account | SettingsScope::Workspace(_) => {}
+        }
+    }
+
     pub fn set_mention_switch(
         &mut self,
         server_id: ServerId,

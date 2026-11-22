@@ -575,7 +575,8 @@ pub struct NotifyPanel {
     /// The name of the server, of the workspace or of the channel.
     pub name: String,
     pub level: LevelView,
-    /// Present for a channel.
+    /// Present for a channel and a group conversation; the mention switches belong to a
+    /// channel only.
     pub channel: Option<ChannelNotify>,
     /// A change is on its way to the server.
     pub busy: bool,
@@ -666,19 +667,28 @@ pub fn notify_panel(
 ) -> Option<NotifyPanel> {
     let settings = stored_settings(server_id, scope, model, known);
     // The levels of the server and of each workspace are on the page "Notifications" of
-    // the account group (ADR 0742); the dialog belongs to one channel.
-    let SettingsScope::Channel(channel_id) = scope else {
-        return None;
+    // the account group (ADR 0742); the dialog belongs to one channel or one named group
+    // conversation, which has a level and a mute and no mention switches.
+    let name = match scope {
+        SettingsScope::Channel(channel_id) => model.channel(channel_id)?.channel.name.clone(),
+        SettingsScope::Conversation(id) => {
+            let group = model
+                .group_conversations
+                .iter()
+                .find(|group| group.id == id)?;
+            if group.name.trim().is_empty() {
+                text::GROUP_CONVERSATION.to_owned()
+            } else {
+                group.name.clone()
+            }
+        }
+        SettingsScope::Account | SettingsScope::Workspace(_) => return None,
     };
-    let channel = model.channel(channel_id)?;
-    let (name, channel) = (
-        channel.channel.name.clone(),
-        Some(ChannelNotify {
-            mute: Mute::of(settings.mute, settings.muted_until, known),
-            role_mentions: settings.role_mentions.unwrap_or(true),
-            everyone_mentions: settings.everyone_mentions.unwrap_or(true),
-        }),
-    );
+    let channel = Some(ChannelNotify {
+        mute: Mute::of(settings.mute, settings.muted_until, known),
+        role_mentions: settings.role_mentions.unwrap_or(true),
+        everyone_mentions: settings.everyone_mentions.unwrap_or(true),
+    });
     let key = (server_id, scope.id());
     Some(NotifyPanel {
         server_id,

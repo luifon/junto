@@ -46,15 +46,25 @@ impl Shell {
             None => exception.state.clone().into(),
         };
         let number = scope_number(scope);
-        let change = matches!(scope, SettingsScope::Channel(_)).then(|| {
-            Button::new(("own-notify-change", number))
-                .label(text::CHANGE_ELLIPSIS)
-                .disabled(busy)
-                .h(u(28.0))
-                .px(u(10.0))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_notify_settings_from_admin(server_id, scope, window, cx);
-                }))
+        let change = matches!(
+            scope,
+            SettingsScope::Channel(_) | SettingsScope::Conversation(_)
+        )
+        .then(|| {
+            let id = scope.id();
+            div()
+                .flex_none()
+                .debug_selector(move || format!("own-notify-change-{id}"))
+                .child(
+                    Button::new(("own-notify-change", number))
+                        .label(text::CHANGE_ELLIPSIS)
+                        .disabled(busy)
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_notify_settings_from_admin(server_id, scope, window, cx);
+                        })),
+                )
         });
         let remove = Button::new(("own-notify-remove", number))
             .label(text::REMOVE_SETTING)

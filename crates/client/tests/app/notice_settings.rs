@@ -4,7 +4,7 @@
 //! direct conversation, "do not disturb" on two servers, and the older notices.
 
 use gpui::TestAppContext;
-use junto_client::state::notices::{Agreement, Mute};
+use junto_client::state::notices::{Agreement, Mute, MuteFor};
 use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
 use junto_client_core::api::SettingsScope;
@@ -495,6 +495,61 @@ fn offset_in(zone: chrono_tz::Tz) -> time::UtcOffset {
         .fix()
         .local_minus_utc();
     time::UtcOffset::from_whole_seconds(seconds).unwrap()
+}
+
+/// A group conversation with a setting of its own has "Change…" on the page of the own
+/// notifications, which opens its level and its mute (ADR 0742).
+#[gpui::test]
+fn a_group_conversation_with_a_setting_of_its_own_is_changed_from_the_page(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let code = crate::admin_pages::invite(&world, &admin.handle, Vec::new());
+    let (_third_device, third) = crate::admin_pages::joined(&world, &server, &code, "Third");
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Writer");
+    let writer = window.view().person.account_id.unwrap();
+    let group = world
+        .run(admin.handle.api().create_group(
+            "Project".to_owned(),
+            vec![writer, crate::support::logged_in(&third)],
+        ))
+        .unwrap();
+    window.until("the group is listed", |window| {
+        window.shows_named(format!("direct-row:{}", group.id))
+    });
+    let (server_id, handle) = (window.view().selected.unwrap().id, window.handle());
+    let scope = SettingsScope::Conversation(group.id);
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_group_mute(server_id, group.id, Some(MuteFor::UntilTurnedOff), cx);
+    });
+    window.until("the mute is stored", |_| {
+        stored(&world, &handle, scope).mute
+    });
+
+    window.open_workspace_settings();
+    let change = format!("own-notify-change-{}", group.id);
+    window.until("the group has its own setting", |window| {
+        window.shows_named(change.clone())
+    });
+    window.click_named(change);
+    window.until("the dialog of the group", |window| {
+        window.shows("notify-dialog")
+            && window
+                .view()
+                .notify
+                .is_some_and(|panel| panel.scope == scope)
+    });
+    assert!(window.shows("dialog-unmute") && !window.shows("role-mentions"));
+    window.click("notify-level-2");
+    window.until("the level of the group is stored", |_| {
+        stored(&world, &handle, scope).level == Some(NotificationLevel::Mentions)
+    });
+    window.click("dialog-unmute");
+    window.until("the mute of the group ends", |_| {
+        !stored(&world, &handle, scope).mute
+    });
 }
 
 #[gpui::test]

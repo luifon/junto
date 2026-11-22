@@ -1401,24 +1401,35 @@ impl Shell {
         }))
         .child(help(about_level));
 
-        if let (Some(channel), SettingsScope::Channel(channel_id)) = (&panel.channel, scope) {
-            let switches = [
-                (
-                    MentionSwitch::Roles,
-                    channel.role_mentions,
-                    text::ROLE_MENTIONS,
-                    text::ROLE_MENTIONS_HELP,
-                    "role-mentions",
-                ),
-                (
-                    MentionSwitch::Everyone,
-                    channel.everyone_mentions,
-                    text::EVERYONE_MENTIONS,
-                    text::EVERYONE_MENTIONS_HELP,
-                    "everyone-mentions",
-                ),
-            ];
-            for (switch, on, title, sentence, selector) in switches {
+        if let Some(channel) = &panel.channel {
+            let switches = match scope {
+                SettingsScope::Channel(channel_id) => vec![
+                    (channel_id, MentionSwitch::Roles),
+                    (channel_id, MentionSwitch::Everyone),
+                ],
+                _ => Vec::new(),
+            };
+            let switches = switches
+                .into_iter()
+                .map(|(channel_id, switch)| match switch {
+                    MentionSwitch::Roles => (
+                        channel_id,
+                        MentionSwitch::Roles,
+                        channel.role_mentions,
+                        text::ROLE_MENTIONS,
+                        text::ROLE_MENTIONS_HELP,
+                        "role-mentions",
+                    ),
+                    MentionSwitch::Everyone => (
+                        channel_id,
+                        MentionSwitch::Everyone,
+                        channel.everyone_mentions,
+                        text::EVERYONE_MENTIONS,
+                        text::EVERYONE_MENTIONS_HELP,
+                        "everyone-mentions",
+                    ),
+                });
+            for (channel_id, switch, on, title, sentence, selector) in switches {
                 dialog = dialog.child(
                     div()
                         .flex()
@@ -1473,7 +1484,7 @@ impl Shell {
                         .selector("dialog-unmute")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
-                                state.set_channel_mute(server_id, channel_id, None, cx);
+                                state.set_scope_mute(server_id, scope, None, cx);
                             });
                         }))
                         .into_any_element(),
@@ -1490,9 +1501,9 @@ impl Shell {
                                     .disabled(busy)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
-                                            state.set_channel_mute(
+                                            state.set_scope_mute(
                                                 server_id,
-                                                channel_id,
+                                                scope,
                                                 Some(length),
                                                 cx,
                                             );
