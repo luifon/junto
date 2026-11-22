@@ -44,13 +44,30 @@ pub fn empty_bands(
     let most = (MOST_GAP * design).round() as u32;
     let mut found = Vec::new();
     // An area drawn before a layer that covers it is not seen; the areas of the layer are
-    // drawn after its cover. The shadow of the layer lies over the area too: read as a part,
-    // it made the empty end of a list under a menu a band between two parts.
+    // drawn after its cover.
     let covered = |index: usize, bounds: &Bounds<Pixels>| {
         areas[index + 1..].iter().any(|(name, cover)| {
-            name.as_ref() == junto_client::ui::COVER
-                && cover.dilate(gpui::px(LAYER_SHADOW)).intersects(bounds)
+            name.as_ref() == junto_client::ui::COVER && cover.intersects(bounds)
         })
+    };
+    // The shadow of a later layer lies over the area beside the layer: its pixels are not
+    // measured, as a part they made the empty end of a list under a menu a band between two
+    // parts. The rest of the area is measured.
+    let shadows = |index: usize, bounds: &Bounds<Pixels>| -> Vec<(u32, u32, u32, u32)> {
+        areas[index + 1..]
+            .iter()
+            .filter(|(name, _)| name.as_ref() == junto_client::ui::COVER)
+            .map(|(_, cover)| cover.dilate(gpui::px(LAYER_SHADOW)))
+            .filter(|shadow| shadow.intersects(bounds))
+            .map(|shadow| {
+                (
+                    (f32::from(shadow.left()) * device).max(0.0) as u32,
+                    (f32::from(shadow.right()) * device).max(0.0) as u32,
+                    (f32::from(shadow.top()) * device).max(0.0) as u32,
+                    (f32::from(shadow.bottom()) * device).max(0.0) as u32,
+                )
+            })
+            .collect()
     };
     for (index, (name, bounds)) in areas.iter().enumerate() {
         if name.as_ref() == junto_client::ui::COVER || covered(index, bounds) {
@@ -70,14 +87,23 @@ pub fn empty_bands(
         let ground = ground(image, left, right, top, bottom);
         let raw = image.as_raw();
         let stride = image.width() as usize * 4;
+        let shadowed = shadows(index, bounds);
         let blank = |y: u32| {
             let start = y as usize * stride + left as usize * 4;
             let end = y as usize * stride + right as usize * 4;
-            raw[start..end].as_chunks::<4>().0.iter().all(|pixel| {
-                pixel[0].abs_diff(ground[0]) <= TOLERANCE
-                    && pixel[1].abs_diff(ground[1]) <= TOLERANCE
-                    && pixel[2].abs_diff(ground[2]) <= TOLERANCE
-            })
+            raw[start..end]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .all(|(offset, pixel)| {
+                    let x = left + offset as u32;
+                    shadowed.iter().any(|&(from, to, above, below)| {
+                        (from..to).contains(&x) && (above..below).contains(&y)
+                    }) || (pixel[0].abs_diff(ground[0]) <= TOLERANCE
+                        && pixel[1].abs_diff(ground[1]) <= TOLERANCE
+                        && pixel[2].abs_diff(ground[2]) <= TOLERANCE)
+                })
         };
         let at = |y: u32| (y as f32 / design).round();
         let centred = name.as_ref() == junto_client::ui::CENTRED;
@@ -219,21 +245,27 @@ mod tests {
         assert!(found[0].contains("40 design px of empty space between two parts"));
     }
 
-    /// A layer whose shadow reaches the end of a list covers that list: the shadow is not a
-    /// part of the list.
+    /// The shadow of a layer that reaches the end of a list is no part of the list, and the
+    /// rest of the list is still measured.
     #[test]
-    fn an_area_under_the_shadow_of_a_layer_is_not_measured() {
-        let image = screen(&[(10, 30), (380, 400)]);
+    fn the_shadow_of_a_layer_is_no_part_and_the_rest_of_the_area_is_measured() {
         let mut areas = area();
         areas.push((
             junto_client::ui::COVER.into(),
             Bounds::new(point(px(0.0), px(420.0)), size(px(200.0), px(60.0))),
         ));
+        // The shadow at the end of the list: no band between two parts.
+        let shadow = screen(&[(10, 30), (395, 400)]);
         assert_eq!(
-            empty_bands(&image, &areas, 200.0, 100),
+            empty_bands(&shadow, &areas, 200.0, 100),
             Vec::<String>::new()
         );
-        assert_eq!(empty_bands(&image, &area(), 200.0, 100).len(), 1);
+        assert_eq!(empty_bands(&shadow, &area(), 200.0, 100).len(), 1);
+        // A band between two parts above the shadow is found.
+        let band = screen(&[(10, 30), (200, 220), (395, 400)]);
+        let found = empty_bands(&band, &areas, 200.0, 100);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("between two parts"), "{found:?}");
     }
 
     /// The frame of a kept result that is much taller than its sentence is an empty band
