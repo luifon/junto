@@ -23,6 +23,7 @@ impl Admin {
             document,
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(self.handle.api().reply_in_thread(root_id, &message))
@@ -710,6 +711,7 @@ fn a_person_writes_to_another_person_and_a_channel_marks_permanent_messages(
         document: document("Hello back"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(admin.handle.api().send_message(direct, &answer))
@@ -1098,6 +1100,7 @@ fn in_a_direct_conversation_a_person_replies_edits_reacts_and_sends_a_file(
         document: document("Can you send the mix?"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     let question = world.run(api.send_message(direct, &question)).unwrap().id;
     window.until_message("Can you send the mix?");

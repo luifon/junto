@@ -113,6 +113,10 @@ pub const MAX_FORWARDED_BYTES: usize = 256 * 1024;
 pub const MAX_LIST_ITEMS: usize = 5_500;
 pub const DOCUMENT_REVISION: u32 = 9;
 pub const FORWARD_SNAPSHOT_REVISION: u32 = 10;
+/// The event revision from which a forward carries a comment of its own (ADR 0408).
+pub const FORWARD_COMMENT_REVISION: u32 = 23;
+/// The compact JSON bytes of the comment of a forward, as of an ordinary document.
+pub const MAX_COMMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -273,6 +277,10 @@ pub struct Message {
     /// their first reply that is not deleted (ADR 0413).
     #[serde(default)]
     pub reply_authors: Vec<AccountId>,
+    /// The comment that the sender of a forward wrote with it, kept apart from the forwarded
+    /// content in `document` (ADR 0408). Absent for every other message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -290,12 +298,20 @@ pub struct SendMessage {
     /// The completed uploads that the message holds. The message lists them in this order.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// The comment of a forward: only with a document that holds a forward origin
+    /// (ADR 0408).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EditMessage {
     pub document: Document,
+    /// The new comment of a forward. Absent: the comment stays; a document without blocks
+    /// removes it (ADR 0408).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<Document>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

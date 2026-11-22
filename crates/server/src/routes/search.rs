@@ -182,7 +182,10 @@ pub async fn search(
              else null::text end as text,
              case when not page.transcript then (
                  select m.document from messages m where m.id=page.id)
-             else null::jsonb end as document
+             else null::jsonb end as document,
+             case when not page.transcript then (
+                 select m.comment from messages m where m.id=page.id)
+             else null::jsonb end as comment
              from page order by page.rank desc,page.id desc,page.line desc")
             .bind(query.q.trim())
             .bind(allowed.ids())
@@ -213,8 +216,15 @@ pub async fn search(
             next = Some(format!("{rank}:{id}:{line}"));
             let transcript: bool = row.try_get("transcript")?;
             let document = row.try_get::<Option<sqlx::types::Json<junto_protocol::message::Document>>, _>("document")?;
+            let comment = row.try_get::<Option<sqlx::types::Json<junto_protocol::message::Document>>, _>("comment")?;
+            // The comment of a forward stands before the forwarded content, as in its card
+            // (ADR 0408).
             let text = if let Some(document) = document {
-                messages::document::preview_text(&document.0)
+                let content = messages::document::preview_text(&document.0);
+                match comment.map(|comment| messages::document::preview_text(&comment.0)) {
+                    Some(comment) if !comment.is_empty() => format!("{comment} {content}"),
+                    _ => content,
+                }
             } else { row.try_get::<Option<String>, _>("text")?.unwrap_or_default() };
             let text = text.chars().take(512).collect();
             results.push(SearchHit {

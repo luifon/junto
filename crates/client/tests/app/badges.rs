@@ -210,6 +210,7 @@ fn the_messages_for_the_person_are_counted_everywhere_and_a_read_takes_them_away
                     document: document(text),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 },
             ))
             .unwrap();
@@ -350,6 +351,7 @@ fn a_thread_row_counts_the_mentions_of_its_thread_and_a_read_takes_the_count_awa
         document: document("One per speaker."),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(window.handle().api().reply_in_thread(followed, &answer))

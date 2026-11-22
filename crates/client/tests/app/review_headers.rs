@@ -97,6 +97,7 @@ fn server_workspace_text_voice_and_direct_titles_have_pointer_and_keyboard_menus
                 document: document("A conversation title"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

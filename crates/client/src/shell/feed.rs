@@ -4160,17 +4160,37 @@ impl Shell {
                     .into_any_element(),
             ]
         } else {
-            let mut body = match &message.document {
-                Some(document) => self.document(
+            // The comment of a forward stands above the forwarded content, in the same row
+            // (ADR 0408).
+            let mut body: Vec<AnyElement> = message
+                .comment
+                .as_ref()
+                .map(|comment| {
+                    div()
+                        .debug_selector(move || format!("forward-comment:{message_id}"))
+                        .mb(u(4.0))
+                        .children(self.document(
+                            (Some(feed.server_id), None),
+                            comment,
+                            Some((feed, message, false)),
+                            &feed.names,
+                            &theme,
+                            cx,
+                        ))
+                        .into_any_element()
+                })
+                .into_iter()
+                .collect();
+            if let Some(document) = &message.document {
+                body.extend(self.document(
                     (Some(feed.server_id), None),
                     document,
                     Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
                     cx,
-                ),
-                None => Vec::new(),
-            };
+                ));
+            }
             body.extend(self.attachments(
                 (feed.server_id, feed.place),
                 message,
@@ -4515,7 +4535,21 @@ impl Shell {
                 }
             })
             .collect();
-        let body = self.document(
+        let mut body: Vec<AnyElement> = Vec::new();
+        if let Some(comment) = &pending.comment {
+            body.extend(self.document(
+                (
+                    Some(feed.server_id),
+                    Some(DocumentSource::Pending(pending.id)),
+                ),
+                comment,
+                None,
+                &feed.names,
+                &theme,
+                cx,
+            ));
+        }
+        body.extend(self.document(
             (
                 Some(feed.server_id),
                 Some(DocumentSource::Pending(pending.id)),
@@ -4525,7 +4559,7 @@ impl Shell {
             &feed.names,
             &theme,
             cx,
-        );
+        ));
         let frame = div()
             .id(("waiting", pending.id))
             .focusable()

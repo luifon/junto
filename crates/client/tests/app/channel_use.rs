@@ -54,6 +54,7 @@ fn reply(world: &World, admin: &Admin, channel_id: ChannelId, root_id: MessageId
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(admin.handle.api().send_message(

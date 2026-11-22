@@ -150,6 +150,7 @@ fn a_person_creates_names_extends_and_leaves_a_private_group(cx: &mut TestAppCon
                 document: document("Added to the project"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

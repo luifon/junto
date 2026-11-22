@@ -346,6 +346,11 @@ fn refresh_limit(held: usize) -> u32 {
 }
 
 impl FollowedList {
+    /// The held followed threads with their channel, as far as their pages were read.
+    pub fn held(&self) -> Option<((ServerId, ChannelId), &[ThreadState])> {
+        Some((self.channel?, &self.threads))
+    }
+
     /// The channel that is shown now, or none. With another channel the list starts
     /// empty and is read, and the answer of a read that is on its way is not used.
     pub fn show(&mut self, channel: Option<(ServerId, ChannelId)>) {
@@ -1542,6 +1547,7 @@ mod tests {
             reply_count: 0,
             last_reply: None,
             reply_authors: Vec::new(),
+            comment: None,
             pinned: false,
             files_removed_by_retention: false,
         }

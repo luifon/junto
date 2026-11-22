@@ -49,7 +49,8 @@ fn message(text: &str) -> SendMessage {
         document: document(text),
         reply_to: None,
         attachments: Vec::new(),
-    }
+    },
+    comment: None,
 }
 
 /// True when one of the notices is an event for which `holds` is true.

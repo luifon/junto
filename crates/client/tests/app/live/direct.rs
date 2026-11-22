@@ -710,6 +710,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
                 document: crate::messages::document("Can you hear me"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

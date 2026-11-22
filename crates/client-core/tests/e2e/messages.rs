@@ -449,6 +449,7 @@ async fn a_client_that_was_offline_gets_the_missed_changes_without_a_duplicate_a
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         owner.api().send_message(place, &message).await.unwrap()
     };
@@ -561,6 +562,7 @@ async fn a_long_history_is_read_by_page_in_both_directions() {
             document: document(&format!("m{number}")),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         owner.api().send_message(place, &message).await.unwrap();
     }
@@ -1100,6 +1102,7 @@ async fn the_unread_counts_are_the_same_on_two_devices_of_one_account() {
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         positions.push(
             owner
@@ -1120,6 +1123,7 @@ async fn the_unread_counts_are_the_same_on_two_devices_of_one_account() {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     let mentioned: Message = owner.api().send_message(place, &mention).await.unwrap();
     counts_when(3, 1, Some(0)).await;

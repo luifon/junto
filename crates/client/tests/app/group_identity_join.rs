@@ -44,6 +44,7 @@ fn group_reactors_keep_profiles_presence_and_menu_lifetime(cx: &mut TestAppConte
                 document: document("a group review"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

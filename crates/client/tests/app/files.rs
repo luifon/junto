@@ -41,6 +41,7 @@ fn the_controls_of_a_file_download_it_cancel_the_download_and_show_the_file(
             document: document("The budget"),
             reply_to: None,
             attachments: vec![attachment_id],
+            comment: None,
         };
         admin
             .handle

@@ -25,6 +25,7 @@ fn hiding_a_conversation_keeps_the_channel_and_a_new_message_restores_its_row(
                     document: document(words),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 },
             ))
             .unwrap()
@@ -134,6 +135,7 @@ fn a_hidden_group_can_be_reopened_without_another_message(cx: &mut TestAppContex
                 document: document("Still the same project"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -205,6 +207,7 @@ fn a_late_reopen_does_not_replace_a_newer_channel_selection(cx: &mut TestAppCont
                 document: document("Earlier plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -261,6 +264,7 @@ fn a_hidden_pair_message_jump_reopens_and_marks_the_message(cx: &mut TestAppCont
                 document: document("Quartz decision"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

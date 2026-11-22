@@ -59,6 +59,7 @@ fn group_filter_controls_authors_files_and_jumps_keep_their_current_scope(cx: &m
                         document: body,
                         reply_to: None,
                         attachments: Vec::new(),
+                        comment: None,
                     },
                 ))
                 .unwrap(),
@@ -85,6 +86,7 @@ fn group_filter_controls_authors_files_and_jumps_keep_their_current_scope(cx: &m
                     document: Document { blocks: Vec::new() },
                     reply_to: None,
                     attachments: vec![attachment],
+                    comment: None,
                 },
             )
             .await

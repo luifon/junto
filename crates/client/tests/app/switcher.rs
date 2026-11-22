@@ -376,6 +376,7 @@ fn named_groups_follow_unread_order_rename_and_membership_in_the_switcher(cx: &m
                 document: crate::messages::document("an unread plan"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

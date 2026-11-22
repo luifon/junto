@@ -122,6 +122,7 @@ impl Admin {
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(api.send_message(PlaceId::Direct(conversation.id), &message))

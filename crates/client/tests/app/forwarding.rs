@@ -172,6 +172,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
                     document: source_body,
                     reply_to: None,
                     attachments: vec![attachment],
+                    comment: None,
                 },
             )
             .await
@@ -227,8 +228,11 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
     });
     assert!(drawn(&mut window).contains("a protected source"));
     let shown = drawn(&mut window);
-    assert!(shown.contains("Not verified"), "{shown}");
-    assert!(!shown.contains("Forwarded message · Ada"), "{shown}");
+    // The caption names the other server; the information mark states that this server does
+    // not confirm the copy.
+    assert!(shown.contains("Forwarded from "), "{shown}");
+    assert!(!shown.contains("· Ada"), "{shown}");
+    assert!(window.shows_named(format!("forward-about:{}", source.id)));
     assert!(!window.shows_named(format!("forward-author-profile:{}", source.id)));
     window.until("the server stored the copied body", |window| {
         window.messages().iter().any(|row| {
@@ -336,7 +340,7 @@ fn a_forward_between_servers_copies_body_for_a_reader_without_source_access(
 }
 
 #[gpui::test]
-fn a_thread_link_can_choose_a_destination_outside_the_thread_list(cx: &mut TestAppContext) {
+fn a_pasted_thread_link_chooses_a_destination_outside_the_thread_list(cx: &mut TestAppContext) {
     use junto_client::state::feed::FeedRow;
     use junto_client_core::protocol::message::Block;
     let world = World::new();
@@ -357,8 +361,7 @@ fn a_thread_link_can_choose_a_destination_outside_the_thread_list(cx: &mut TestA
     window.right_click_message(source.id);
     window.click("message-forward");
     window.type_into("forward-find", &link);
-    window.click("forward-thread-link");
-    window.until("the thread is selected", |window| {
+    window.until("the pasted link selects the thread", |window| {
         window.shows_named(format!(
             "forward-destination:{server_id}:thread:{}",
             root.id
@@ -411,6 +414,7 @@ fn a_forward_keeps_code_whitespace_and_downloads_the_sources_file(cx: &mut TestA
                     },
                     reply_to: None,
                     attachments: vec![attachment],
+                    comment: None,
                 },
             )
             .await
@@ -579,4 +583,53 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
             && !window.shows("account-menu")
     });
     assert!(drawn(&mut window).contains("a shared plan"));
+}
+
+#[gpui::test]
+fn a_forward_carries_a_comment_above_the_forwarded_content(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let source_channel = window.selected_channel();
+    let source = admin.send(&world, source_channel, document("the quarterly plan"));
+    let target = admin.text_channel(&world, &mut window, "delivery");
+    let server_id = window.view().selected.unwrap().id;
+    window.until_message("the quarterly plan");
+    window.right_click_message(source.id);
+    window.click("message-forward");
+    window.click_named(format!("forward-destination:{server_id}:channel:{target}"));
+    window.type_into("forward-comment", "please read this first");
+    window.click("forward-send");
+    window.until("the forward with its comment is shown", |window| {
+        window.selected_channel() == target
+            && window.messages().iter().any(|row| {
+                serde_json::to_string(&row.message.comment)
+                    .unwrap()
+                    .contains("please read this first")
+            })
+    });
+    let copy = window
+        .messages()
+        .into_iter()
+        .find(|row| row.message.comment.is_some())
+        .unwrap()
+        .message;
+    assert!(
+        !serde_json::to_string(&copy.document)
+            .unwrap()
+            .contains("please read this first")
+    );
+    let comment = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("forward-comment:{}", copy.id)))
+        .unwrap();
+    let caption = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("forward-message:{}", source.id)))
+        .unwrap();
+    assert!(comment.bottom() <= caption.top());
+    let shown = drawn(&mut window);
+    assert!(shown.contains("please read this first"), "{shown}");
+    assert!(shown.contains("the quarterly plan"), "{shown}");
 }

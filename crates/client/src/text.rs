@@ -3468,16 +3468,25 @@ pub const PASTE: &str = "Paste";
 pub const SELECT_ALL: &str = "Select all";
 
 pub const FORWARD_UNVERIFIED: &str = "Source link · Not verified";
-pub const FORWARD_REMOTE_UNVERIFIED: &str = "Forwarded from another server · Not verified";
 pub const FORWARDED_MESSAGE: &str = "Forwarded message";
+/// The caption of a forwarded message: the server, or the channel or conversation, that it
+/// comes from (ADR 0740).
+pub fn forwarded_from(source: &str) -> String {
+    format!("Forwarded from {source}")
+}
+pub const FORWARD_VERIFIED_ABOUT: &str =
+    "This server made the copy from the original message, which has not changed it since.";
+pub const FORWARD_EDITED_ABOUT: &str =
+    "The copy was edited after it was forwarded, so this server does not confirm that it matches the original message.";
+pub const FORWARD_REMOTE_ABOUT: &str =
+    "The copy comes from another server, which this server does not ask: it does not confirm that the copy matches the original message.";
+pub const FORWARD_COMMENT: &str = "Comment (optional)";
 pub const FORWARD_MESSAGE: &str = "Forward message";
 pub const FORWARD_SEND: &str = "Forward";
 pub const FORWARD_UNAVAILABLE: &str = "Original message unavailable";
 pub const FORWARD_LOADING: &str = "Loading original message…";
-pub const FORWARD_FIND: &str = "Find a destination or paste a thread link";
+pub const FORWARD_FIND: &str = "Find a channel, a conversation or a thread, or paste a message link";
 pub const FORWARD_NONE: &str = "No writable destinations match.";
-
-pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 
 pub const VIEW_ORIGINAL: &str = "Go to message";
 

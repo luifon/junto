@@ -72,6 +72,7 @@ fn message(number: u32, place: MessagePlace, author: &str, minutes: i64, text: &
         pinned: false,
         files_removed_by_retention: false,
         reply_authors: Vec::new(),
+        comment: None,
     }
 }
 

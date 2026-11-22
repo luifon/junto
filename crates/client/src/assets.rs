@@ -98,6 +98,7 @@ icons! {
     Hash => "lucide/hash",
     Heart => "lucide/heart",
     History => "lucide/rotate-ccw-clock",
+    Info => "lucide/info",
     Invite => "lucide/user-plus",
     Key => "lucide/key-round",
     Keyboard => "lucide/keyboard",

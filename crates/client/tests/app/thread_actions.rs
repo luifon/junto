@@ -188,6 +188,7 @@ fn the_followed_threads_after_the_first_eight_are_listed_when_the_person_asks(
                     document: document(&format!("Answer {number}")),
                     reply_to: None,
                     attachments: Vec::new(),
+                    comment: None,
                 };
                 world.run(api.reply_in_thread(root.id, &reply)).unwrap();
                 root.id

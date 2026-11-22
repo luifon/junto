@@ -104,7 +104,7 @@ Places:
 
 ### Forwarding
 
-The message menu opens a destination chooser with a name filter over the writable channels, voice chats, conversations and known threads of saved accounts. A pasted message link selects its thread after a permission-checked read, so a thread outside the loaded lists can be chosen. The chooser binds the source and selected destination to their saved entries/accounts, cancels a pending preparation when closed, and rechecks them before sending. Sending uses the existing outbox and preserves the destination's draft and uploads. It selects the destination; a thread opens its panel.
+The message menu and the Forward button of the hover bar open a destination chooser with a name filter over the writable channels, voice chats, conversations and known threads of saved accounts: the open and unread threads, and the threads that the account follows that the window holds. A message link pasted into the filter selects its thread after a permission-checked read, without a further button, so a thread outside the loaded lists can be chosen. The chooser has an optional comment field; a written comment travels with the forward as its own field and is drawn above the forwarded content in the same row (ADR 0408). Test: `forwarding::a_forward_carries_a_comment_above_the_forwarded_content`. The chooser binds the source and selected destination to their saved entries/accounts, cancels a pending preparation when closed, and rechecks them before sending. Sending uses the existing outbox and preserves the destination's draft and uploads. It selects the destination; a thread opens its panel.
 
 The forwarded card groups the stored copied body beneath its origin caption, with ordinary destination attachment controls. Selection, code copying and spoilers use the same renderer as ordinary messages. Only the caption's View original and Copy original link actions depend on a fresh source read under the reader's own account. An unavailable source changes the caption without hiding or changing the copied body and files (ADR 0408). The quote reader resolves this origin in both windows, pending messages and pins, with its ordinary concurrency, owner and weight bounds. Window tests in `forwarding::` cover channels, conversations, thread links, cross-server copies and files, readers without source access, forwarding an existing copy, immutable copied text, access loss, source deletion, code whitespace and preservation of a destination draft. The window draws a forward as a waiting message before the server stores it, so a test reads the stored copy from the server only after the window shows the forward as a stored message.
 
@@ -233,10 +233,15 @@ Typing start and stop commands are queued in order for the next application upda
 
 Archived messages keep Copy text, Copy link, Forward, Mark unread and Who reacted because none changes their source content. Forward still needs a writable destination. Their menu omits content mutations; reactions and checklists cannot change archived messages. The window regression checks both the retained actions and absence of source changes.
 
-The forward header shows a source author's name only for a verified snapshot
-whose origin matches the delivering saved server. An edited local copy says
-Source link · Not verified; a remote copy says Forwarded from another server ·
-Not verified. Both retain only the source-access-checked navigation. The
+The forward header says "Forwarded from" with where the message comes from: for a
+verified snapshot whose origin matches the delivering saved server, the source server and
+place and the source author's name; for an edited local copy, the source server; for a
+remote copy, the name of the saved server of that origin or its host. An information mark
+beside the caption states in its tooltip whether this server confirms the copy: a verified
+snapshot, an edited copy that it does not confirm, or a copy from another server that it does
+not ask. Reason: the former captions "Source link · Not verified" and "Forwarded from another
+server · Not verified" read as a warning without saying what they meant. Both unverified forms
+retain only the source-access-checked navigation. The
 composer clears verification when its copied document changes, and the server
 independently enforces the same rule (ADR 0408).
 

@@ -134,6 +134,7 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
                 document: document("a private confirmation"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

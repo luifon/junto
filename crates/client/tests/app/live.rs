@@ -594,6 +594,7 @@ fn the_chat_of_a_call_is_read_when_its_tab_is_shown(cx: &mut TestAppContext) {
         },
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     let place = PlaceId::Channel(room(&mut window).id);
     world

@@ -36,6 +36,7 @@ mod devices;
 mod downloads;
 mod exports;
 mod first_start;
+mod forward_comments;
 mod forwarding_review;
 mod glossary;
 mod group_conversations;

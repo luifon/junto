@@ -156,6 +156,7 @@ fn filter_only_search_stays_a_search_and_finds_captionless_pictures(cx: &mut Tes
                 document: document("Direct notes"),
                 reply_to: None,
                 attachments: vec![],
+                comment: None,
             },
         ))
         .unwrap();
@@ -1052,6 +1053,7 @@ fn content_and_mention_controls_and_custom_dates_filter_the_search(cx: &mut Test
                 document: document("quartz direct"),
                 reply_to: None,
                 attachments: vec![],
+                comment: None,
             },
         ))
         .unwrap();

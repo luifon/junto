@@ -264,6 +264,7 @@ async fn two_clients_use_a_pin_a_fork_a_search_and_a_direct_conversation() {
                 document: document("quartz reply"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         )
         .await
@@ -403,6 +404,7 @@ async fn two_clients_use_a_pin_a_fork_a_search_and_a_direct_conversation() {
             document: document(&format!("later {number}")),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         owner.api().send_message(place, &later).await.unwrap();
     }
@@ -475,6 +477,7 @@ async fn two_clients_use_a_pin_a_fork_a_search_and_a_direct_conversation() {
                 document: document("no"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         )
         .await

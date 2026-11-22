@@ -260,6 +260,7 @@ fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppConte
                 document: document("a private reminder"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

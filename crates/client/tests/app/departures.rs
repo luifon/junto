@@ -164,6 +164,7 @@ fn deleting_the_account_removes_the_server_and_others_see_a_deleted_author(
         document: crate::messages::document("A direct line"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(api.send_message(PlaceId::Direct(conversation.id), &line))

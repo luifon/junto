@@ -1613,6 +1613,7 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
         document: document("kept in the export"),
         reply_to: None,
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(owner.api().send_message(PlaceId::Channel(plans), &message))

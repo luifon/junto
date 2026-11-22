@@ -61,6 +61,7 @@ fn general_with_thread() -> (Timeline, Arc<Message>, Vec<Message>) {
         reply_count: 0,
         last_reply: None,
         reply_authors: Vec::new(),
+        comment: None,
         pinned: false,
         files_removed_by_retention: false,
     };
@@ -269,6 +270,7 @@ fn earlier_root(number: u32, author: &str, text: &str) -> Message {
         reply_count: 3,
         last_reply: None,
         reply_authors: Vec::new(),
+        comment: None,
         pinned: false,
         files_removed_by_retention: false,
     }

@@ -227,6 +227,7 @@ fn channel_references_lose_hidden_names_and_use_the_shared_refusal(cx: &mut Test
                 },
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

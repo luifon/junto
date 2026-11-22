@@ -1408,6 +1408,29 @@ impl Transfers {
         reply_to: Option<MessageId>,
         uploads: &[Upload],
     ) -> Option<u64> {
+        self.queue(place, document, reply_to, None, uploads)
+    }
+
+    /// Sends a forward with its comment and its files, as [`Transfers::send`] sends a
+    /// message (ADR 0408).
+    pub fn send_forward(
+        &self,
+        place: PlaceId,
+        document: Document,
+        comment: Option<Document>,
+        uploads: &[Upload],
+    ) -> Option<u64> {
+        self.queue(place, document, None, comment, uploads)
+    }
+
+    fn queue(
+        &self,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+        comment: Option<Document>,
+        uploads: &[Upload],
+    ) -> Option<u64> {
         let (owner, _) = (self.owned)()?;
         let files = uploads
             .iter()
@@ -1427,7 +1450,7 @@ impl Transfers {
         let waits = files.iter().any(|file| file.attachment_id.is_none());
         let id =
             self.live
-                .enqueue_message_for(owner.account_id, place, document, reply_to, files)?;
+                .enqueue_message_for(owner.account_id, place, document, reply_to, comment, files)?;
         if waits {
             let uploads = uploads.to_vec();
             let live = self.live.clone();

@@ -169,6 +169,7 @@ fn channel_files_include_thread_files_and_offer_copy_download_and_the_message(
                     document: document("The thread notes"),
                     reply_to: None,
                     attachments: vec![id],
+                    comment: None,
                 },
             )
             .await

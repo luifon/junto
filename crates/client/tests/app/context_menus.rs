@@ -192,6 +192,7 @@ fn a_direct_menu_marks_its_conversation_read_without_opening_it(cx: &mut TestApp
                 document: document("A direct update"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -339,6 +340,7 @@ fn copy_target_links_from_channel_direct_and_notice_menus(cx: &mut TestAppContex
                 document: document("A linked update"),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();
@@ -1540,6 +1542,7 @@ fn a_reply_preview_copies_its_target_and_gives_its_author_a_separate_menu(cx: &m
                 document: document("A reply preview"),
                 reply_to: Some(root),
                 attachments: Vec::new(),
+                comment: None,
             },
         ))
         .unwrap();

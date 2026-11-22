@@ -33,6 +33,7 @@ impl Admin {
             document,
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(
@@ -709,6 +710,7 @@ fn a_quoted_message_that_is_not_loaded_follows_its_changes(cx: &mut TestAppConte
         document: document("an answer"),
         reply_to: Some(quoted.id),
         attachments: Vec::new(),
+        comment: None,
     };
     world
         .run(api.send_message(PlaceId::Channel(channel_id), &answer))
@@ -1092,6 +1094,7 @@ fn the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server(
             document: document("A chart"),
             reply_to: None,
             attachments: vec![attachment_id],
+            comment: None,
         };
         admin
             .handle
@@ -1513,6 +1516,7 @@ fn an_administrator_deletes_one_permanent_message_of_another_person(cx: &mut Tes
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world
             .run(luca.api().send_message(PlaceId::Channel(general), &message))
@@ -1702,6 +1706,7 @@ fn scrolling_up_reads_the_older_history_of_a_channel(cx: &mut TestAppContext) {
                 document: document(text),
                 reply_to: None,
                 attachments: Vec::new(),
+                comment: None,
             };
             world
                 .run(
@@ -1880,6 +1885,7 @@ fn a_moderator_deletes_an_ordinary_message_of_another_person(cx: &mut TestAppCon
             document: document(text),
             reply_to: None,
             attachments: Vec::new(),
+            comment: None,
         };
         world.run(luca.api().send_message(place, &message)).unwrap()
     };
