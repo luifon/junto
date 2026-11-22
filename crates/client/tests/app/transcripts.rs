@@ -454,12 +454,13 @@ fn a_failed_transcript_is_asked_for_again_from_its_card(cx: &mut TestAppContext)
             .card_detail(recording_id)
             .is_some_and(|detail| detail.transcript.state == TranscriptState::Failed)
     });
-    // The roles of a member do not hold "manage recordings": the control says so.
+    // The roles of a member do not hold "manage recordings": the control is absent
+    // (ADR 0790).
     assert_eq!(
         window.recording_card(recording_id).unwrap().request,
         TranscriptRequest::NotAllowed
     );
-    assert!(window.shows("request-transcript"));
+    assert!(!window.shows("request-transcript"));
 
     give_everyone(
         &world,

@@ -71,7 +71,13 @@ fn the_sources_of_a_call_follow_the_rules_of_the_voice_channel(cx: &mut TestAppC
     window.until("the administrator hears nothing", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
     });
-    assert!(window.shows("sound-warning"));
+    // The microphone is drawn held with its tooltip; no sentence states the permission
+    // (ADR 0790).
+    assert!(!window.shows("sound-warning"));
+    assert_eq!(
+        window.view().controls.microphone,
+        junto_client::state::view::MicrophoneButton::NotPermitted
+    );
     window.in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
     window.click("room-limit-raise");
     window.until("the limit is set without manage channel", |window| {

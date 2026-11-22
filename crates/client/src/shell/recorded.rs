@@ -979,11 +979,8 @@ impl Shell {
             .h(u(26.0))
             .px(u(8.0));
         let button = match card.request {
-            TranscriptRequest::NotOffered => return None,
-            TranscriptRequest::NotAllowed => button
-                .label(label)
-                .tooltip(text::transcripts::REQUEST_NEEDS)
-                .disabled(true),
+            // Without the permission the request is absent (ADR 0790).
+            TranscriptRequest::NotOffered | TranscriptRequest::NotAllowed => return None,
             TranscriptRequest::Allowed { sending } => button
                 .label(if sending {
                     text::transcripts::REQUESTING

@@ -2012,7 +2012,6 @@ impl Shell {
                 Icon::MicrophoneOff
             }
             SoundWarning::SoundHeld { .. } | SoundWarning::OutputFailed => Icon::PhonesOff,
-            SoundWarning::SpeakNotPermitted => Icon::MicrophoneHeld,
             SoundWarning::PushToTalkRequired => Icon::Microphone,
         };
         let permission = if matches!(warning, SoundWarning::NoMicrophoneAccess) {

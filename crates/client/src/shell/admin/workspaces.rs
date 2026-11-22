@@ -153,7 +153,7 @@ impl Shell {
         let workspace_id: WorkspaceId = row.id;
         let name = row.name.clone();
         let content: AnyElement = match self.admin.mode {
-            Some(Mode::RenameWorkspace(id)) if id == workspace_id => self
+            Some(Mode::RenameWorkspace(id)) if id == workspace_id && page.may_manage => self
                 .render_form(
                     Form {
                         field: FormField::Name,
@@ -169,8 +169,10 @@ impl Shell {
                     cx,
                 )
                 .into_any_element(),
-            Some(Mode::RemoveWorkspaceLogo(id)) if id == workspace_id && row.has_logo => self
-                .render_row_question(
+            Some(Mode::RemoveWorkspaceLogo(id))
+                if id == workspace_id && row.has_logo && page.may_manage =>
+            {
+                self.render_row_question(
                     Question {
                         sentence: text::admin::remove_workspace_logo_question(&row.name).into(),
                         confirm: text::admin::REMOVE_LOGO,
@@ -187,8 +189,9 @@ impl Shell {
                         });
                     },
                 )
-                .into_any_element(),
-            Some(Mode::DeleteWorkspace(id)) if id == workspace_id => self
+                .into_any_element()
+            }
+            Some(Mode::DeleteWorkspace(id)) if id == workspace_id && page.may_manage => self
                 .render_row_question(
                     Question {
                         sentence: text::admin::delete_workspace_question(&row.name).into(),
@@ -346,6 +349,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // A form whose permission went is put away: its action is no longer offered
+        // (ADR 0790).
+        let refused = match self.admin.mode {
+            Some(
+                Mode::RenameWorkspace(_) | Mode::RemoveWorkspaceLogo(_) | Mode::DeleteWorkspace(_),
+            ) => !page.may_manage,
+            Some(Mode::CreateWorkspace) => !page.may_create,
+            _ => false,
+        };
+        if refused {
+            self.admin.mode = None;
+        }
         let list = std::iter::once(Row::part("workspaces-header", true))
             .chain(
                 page.rows

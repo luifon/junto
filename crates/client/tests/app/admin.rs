@@ -1026,6 +1026,11 @@ fn the_keyboard_reaches_every_place_that_a_drag_reaches(cx: &mut TestAppContext)
             .takes(x, Some(projects), 1)
     );
 
+    // Without "manage channel" a channel has no "Move to" (ADR 0790).
+    assert!(window.shows_named(format!("channel-move-{x}")));
+    assert!(!window.shows_named(format!("channel-move-{b}")));
+    assert!(!window.shows_named(format!("channel-move-{c}")));
+
     // "Move to" offers the same place: the category, and then the place after "b".
     window.click_named(format!("channel-move-{x}"));
     window.click_named(format!("channel-group-{projects}"));
@@ -1829,4 +1834,53 @@ fn the_afk_form_changes_the_workspace_timeout_channel_and_enabled_state(cx: &mut
     let settings = world.run(handle.api().afk_settings(workspace)).unwrap();
     assert!(!settings.enabled);
     assert_eq!(settings.channel_id, voice.id);
+}
+
+/// An open form of a workspace goes with the permission: an administrator whose role is
+/// taken away while the rename form is open no longer has the form or its action
+/// (ADR 0790).
+#[gpui::test]
+fn an_open_workspace_form_goes_when_the_permission_goes(cx: &mut TestAppContext) {
+    use junto_client_core::protocol::ServerPermission;
+    use junto_client_core::protocol::roles::CreateServerRole;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        color: None,
+        hoist: false,
+        name: "Administrators".to_owned(),
+        permissions: vec![ServerPermission::Administrator],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap();
+    world.run(api.assign_server_role(own, role.id)).unwrap();
+    window.until("the menu offers the invite of the role", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.may_invite_people)
+    });
+    let default = world
+        .run(api.workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-workspaces");
+    let rename = selector(format!("workspace-rename-{default}"));
+    window.until("the workspace may be renamed", |window| {
+        window.shows(rename)
+    });
+    window.click(rename);
+    assert!(window.shows("workspace-name"));
+
+    world.run(api.unassign_server_role(own, role.id)).unwrap();
+    window.until("the form and its action are gone", |window| {
+        !window.shows("workspace-name") && !window.shows(rename)
+    });
 }

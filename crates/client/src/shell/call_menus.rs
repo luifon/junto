@@ -377,7 +377,7 @@ impl Shell {
             CallMenuAction::Camera(camera),
         );
         // An action that the permissions of the channel do not allow is absent (ADR 0790).
-        let speaks = controls.microphone != MicrophoneButton::NotPermitted;
+        let speaks = !call.withheld.microphone;
         let mut items: Vec<_> = speaks.then_some(microphone).into_iter().collect();
         items.push(make(
             "call-menu-sound",
