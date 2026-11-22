@@ -878,3 +878,55 @@ fn a_refused_choice_on_the_server_permissions_of_an_account_keeps_the_row_under_
         "override-create_invites-neutral",
     );
 }
+
+/// "Private channel" on a synced channel asks first whether the channel stops taking the
+/// rules of its category; Cancel puts the question away and sends nothing (ADR 0761).
+#[gpui::test]
+fn cancel_puts_away_the_question_before_a_synced_channel_becomes_private(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let default = default_workspace(&world, &owner);
+    let teams = category(&world, &owner, default, "Teams");
+    let plans = channel_in(&world, &owner, (default, teams), "plans");
+    open_channel_settings(&mut window, "plans", plans);
+    window.click("channel-nav-permissions");
+    click_in_page(&mut window, "channel-private");
+    window.until("the question is asked", |window| {
+        window.shows("visibility-question")
+    });
+    click_in_page(&mut window, "visibility-cancel");
+    window.until("the question is put away", |window| {
+        !window.shows("visibility-question")
+    });
+    window.settle();
+    let stored = world.run(owner.api().channel_rules(plans)).unwrap();
+    assert!(stored.synced && stored.rules.is_empty(), "{stored:?}");
+}
+
+/// A refused change of "Private channel" is told beside the switch while the advanced
+/// permissions are folded (ADR 0761).
+#[gpui::test]
+fn a_refused_private_switch_is_told_beside_the_switch(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let default = default_workspace(&world, &owner);
+    let everyone = everyone_of(&world, &owner, default);
+    let plans = text_channel(&world, &owner, default, "plans");
+    open_channel_settings(&mut window, "plans", plans);
+    window.click("channel-nav-permissions");
+    window.until("the switch is drawn", |window| {
+        window.shows("channel-private")
+    });
+    proxy.fail_ending(&format!("/rules/roles/{everyone}"), busy());
+    click_in_page(&mut window, "channel-private");
+    window.until("the refusal is told at the switch", |window| {
+        window.shows("visibility-refused")
+    });
+    assert!(
+        window.shows("rules-advanced"),
+        "the advanced permissions stay folded"
+    );
+}

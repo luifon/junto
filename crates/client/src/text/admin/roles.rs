@@ -348,6 +348,14 @@ pub fn member_count(count: usize) -> String {
     }
 }
 
+pub fn show_role(name: &str) -> String {
+    format!("Show the role “{name}”")
+}
+
+pub fn hide_role(name: &str) -> String {
+    format!("Hide the role “{name}”")
+}
+
 #[cfg(test)]
 mod tests {
     use junto_client_core::protocol::WorkspacePermission;

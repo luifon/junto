@@ -43,7 +43,7 @@ use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::protocol::roles::{CreateServerRole, CreateWorkspaceRole};
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ChannelKind, CreateCategory, CreateChannel, UpdateChannel,
+    ChannelKind, CreateCategory, CreateChannel, OverrideState, RuleSubject, UpdateChannel,
 };
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::secret::SecretToken;
@@ -3968,4 +3968,55 @@ fn a_page_of_the_account_scrolls_in_a_low_window(cx: &mut TestAppContext) {
         window.shows("account-delete")
     });
     reveal_in_page(&mut window, "account-delete");
+}
+
+/// The menu of a channel offers only what the person may do there: a rule of the channel
+/// that denies "manage channel" takes its Rename, Move to, Archive and Delete away, and
+/// another channel keeps them (ADR 0761, ADR 0731).
+#[gpui::test]
+fn the_menu_of_a_channel_leaves_out_what_its_rules_refuse(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let luca = window.view().person.account_id.unwrap();
+    let workspace = default_workspace(&world, &admin.handle);
+    grant_workspace(
+        &world,
+        &admin.handle,
+        workspace,
+        luca,
+        WorkspacePermission::ManageChannel,
+    );
+    let plans = text_channel(&world, &admin.handle, workspace, "plans");
+    let notes = text_channel(&world, &admin.handle, workspace, "notes");
+    world
+        .run(admin.handle.api().change_channel_rule(
+            plans,
+            RuleSubject::Person { account_id: luca },
+            WorkspacePermission::ManageChannel,
+            OverrideState::Deny,
+        ))
+        .unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-channels", |window| {
+        window.shows(sel("admin-row-channel", plans))
+            && window.shows(sel("admin-row-channel", notes))
+    });
+    let items = |channel: ChannelId| {
+        ["rename", "move", "archive", "delete"].map(|item| sel(&format!("channel-{item}"), channel))
+    };
+    reveal_in_page(&mut window, sel("admin-row-channel", plans));
+    window.right_click_row(sel("admin-row-channel", plans));
+    assert!(window.shows(sel("channel-settings", plans)));
+    for item in items(plans) {
+        assert!(!window.shows(item), "{item} is offered");
+    }
+    window.press("escape");
+    reveal_in_page(&mut window, sel("admin-row-channel", notes));
+    window.right_click_row(sel("admin-row-channel", notes));
+    for item in items(notes) {
+        assert!(window.shows(item), "{item} is not offered");
+    }
+    window.press("escape");
 }

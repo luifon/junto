@@ -838,9 +838,11 @@ impl Shell {
                 .mt(u(6.0))
                 .into_any_element();
         };
-        let held = row.assignment().err().map(txt::no_deletion);
+        // The server states apart whether the person gives the role and takes it (ADR 0764).
+        let give = row.assignment(true).err().map(txt::no_deletion);
+        let take = row.assignment(false).err().map(txt::no_deletion);
         let mut column = div().flex().flex_col().flex_none().mt(u(6.0));
-        if held.is_none() {
+        if give.is_none() {
             column = column.child(
                 div().flex_none().child(
                     Field::new(&self.admin.roles.member_search, txt::ADD_MEMBERS)
@@ -869,6 +871,10 @@ impl Shell {
                     let what = AskKind::AssignRole(role, account_id);
                     column = column.child(
                         line(theme)
+                            .debug_selector({
+                                let selector = format!("role-candidate-{written}-{account_id}");
+                                move || selector
+                            })
                             .child(line_text(name.clone(), None, theme))
                             .child(row_action(
                                 ("role-member-add", account_id.as_uuid().as_u128() as u64),
@@ -882,27 +888,31 @@ impl Shell {
                                 }),
                             )),
                     );
+                    // A refused addition is told at the person it was for, who stays among
+                    // the candidates.
+                    column = column.children(
+                        view.refused(what)
+                            .and_then(|reason| refusal(Some(reason), "role-member-refused")),
+                    );
                 }
                 if found.is_empty() {
                     column = column.child(sentence(txt::NO_MEMBER_FOUND, theme).py(u(4.0)));
                 }
             }
-        } else if let Some(reason) = held {
+        } else if let Some(reason) = give {
             column = column.child(sentence(reason, theme));
         }
         if members.holders.is_empty() {
             column = column.child(sentence(txt::NO_HOLDER, theme).mt(u(4.0)));
         }
-        let mut refused = None;
         for (account_id, name) in &members.holders {
             let account_id = *account_id;
             let what = AskKind::AssignRole(role, account_id);
-            refused = refused.or(view.refused(what));
             let selector = format!("role-member-{written}-{account_id}");
             let mut line = line(theme)
                 .debug_selector(move || selector)
                 .child(line_text(name.clone(), None, theme));
-            if held.is_none() {
+            if take.is_none() {
                 line = line.child(row_action(
                     ("role-member-remove", account_id.as_uuid().as_u128() as u64),
                     text::REMOVE,
@@ -915,11 +925,12 @@ impl Shell {
                     }),
                 ));
             }
-            column = column.child(line);
+            column = column.child(line).children(
+                view.refused(what)
+                    .and_then(|reason| refusal(Some(reason), "role-member-refused")),
+            );
         }
-        column
-            .children(refusal(refused, "role-member-refused"))
-            .into_any_element()
+        column.into_any_element()
     }
 
     /// One role: its row, the reason why the person cannot act on it, and its
@@ -1099,17 +1110,33 @@ impl Shell {
                     content = content.child(Chip::new(txt::member_count(members.holders.len())));
                 }
                 self.register_role_actions(view, row, cx);
-                // A press on the row shows the role with its tabs, or hides it.
+                // The button shows the role with its tabs, or hides it: a tab stop that Enter
+                // and Space press. A press elsewhere on the row does the same.
+                let opener = Button::new(("role-open", role.number()))
+                    .kind(ButtonKind::Ghost)
+                    .icon(if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    })
+                    .accessible_label(if expanded {
+                        txt::hide_role(&row.name)
+                    } else {
+                        txt::show_role(&row.name)
+                    })
+                    .h(u(26.0))
+                    .px(u(6.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.show_role_permissions((!expanded).then_some(role), cx);
+                    }));
+                content = content.child(named(format!("role-select-{written}"), opener));
                 div()
                     .id(("role-select", role.number()))
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .cursor_pointer()
-                    .debug_selector({
-                        let selector = format!("role-select-{written}");
-                        move || selector
-                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.show_role_permissions((!expanded).then_some(role), cx);
                     }))

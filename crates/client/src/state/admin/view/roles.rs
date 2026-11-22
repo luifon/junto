@@ -162,14 +162,25 @@ pub struct RoleMembers {
 }
 
 impl RoleRow {
-    /// Whether the person gives and takes the role, and why not.
-    pub fn assignment(&self) -> Result<(), NoDeletion> {
+    /// Whether the person gives the role (`give`) or takes it, and why not. The server
+    /// states the two apart: the rules of single channels limit them differently (ADR 0764).
+    pub fn assignment(&self, give: bool) -> Result<(), NoDeletion> {
         if let Some(locked) = self.locked {
             return Err(NoDeletion::Locked(locked));
         }
         match &self.stated {
             Stated::Reading => Err(NoDeletion::Reading),
-            stated if !stated.allows(|actions| actions.may_assign) => Err(NoDeletion::NotAllowed),
+            stated
+                if !stated.allows(|actions| {
+                    if give {
+                        actions.may_assign
+                    } else {
+                        actions.may_remove
+                    }
+                }) =>
+            {
+                Err(NoDeletion::NotAllowed)
+            }
             _ => Ok(()),
         }
     }
@@ -1238,7 +1249,10 @@ mod tests {
         // channel denies a permission that the person does not hold.
         set(
             &mut model,
-            Some(vec![(scene.helpers, allowed), (scene.guests, refused)]),
+            Some(vec![
+                (scene.helpers, allowed.clone()),
+                (scene.guests, refused),
+            ]),
         );
         let page = scene.page(&model);
         let row = |role_id| page.row(scene.role(role_id)).unwrap().clone();
@@ -1260,6 +1274,31 @@ mod tests {
         };
         assert_eq!(of(scene.helpers), None);
         assert_eq!(of(scene.guests), Some(NoAssignment::NotAllowed));
+        // The tab "Members" gives and takes a role by the two flags apart: a rule of a
+        // channel can allow taking a role and refuse giving it.
+        set(
+            &mut model,
+            Some(vec![
+                (scene.helpers, allowed.clone()),
+                (
+                    scene.guests,
+                    RoleActions {
+                        may_assign: false,
+                        may_remove: true,
+                        may_delete: false,
+                    },
+                ),
+            ]),
+        );
+        let page = scene.page(&model);
+        let guests = page.row(scene.role(scene.guests)).unwrap();
+        assert_eq!(guests.assignment(true), Err(NoDeletion::NotAllowed));
+        assert_eq!(guests.assignment(false), Ok(()));
+        let helpers = page.row(scene.role(scene.helpers)).unwrap();
+        assert_eq!(
+            (helpers.assignment(true), helpers.assignment(false)),
+            (Ok(()), Ok(()))
+        );
         // A role that the list does not name was added after the read: the read after
         // that event is on its way, and so is the first read.
         assert_eq!(row(scene.everyone).stated, Stated::Reading);

@@ -806,6 +806,27 @@ impl Shell {
         cx: &mut Context<Self>,
         confirmed: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Div {
+        self.render_row_question_with(
+            question,
+            theme,
+            cx,
+            (confirmed, |this, window, cx| {
+                this.set_admin_mode(None, "", window, cx);
+            }),
+        )
+    }
+
+    /// A question in a row whose Cancel puts away more than the form of the page.
+    pub(crate) fn render_row_question_with(
+        &mut self,
+        question: Question,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+        (confirmed, cancelled): (
+            impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+            impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        ),
+    ) -> gpui::Div {
         div()
             .flex()
             .flex_1()
@@ -826,8 +847,8 @@ impl Shell {
                     .selector(question.cancel_selector)
                     .h(u(28.0))
                     .px(u(10.0))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.set_admin_mode(None, "", window, cx);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cancelled(this, window, cx);
                     })),
             )
             .child(
@@ -1469,6 +1490,17 @@ impl Shell {
             ServerPage::Glossary(page) => self.render_glossary_page(view, page, window, cx),
             ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
             ServerPage::Account => self.render_account_page(window, cx),
+            // The page states that the access ended, without a control (ADR 0761).
+            ServerPage::AccessEnded => div()
+                .flex()
+                .flex_col()
+                .debug_selector(|| "admin-access-ended".to_owned())
+                .child(page_title(
+                    text::admin::ACCESS_ENDED_TITLE,
+                    text::admin::ACCESS_ENDED,
+                    &theme(cx),
+                ))
+                .into_any_element(),
         }
     }
 
@@ -1490,17 +1522,6 @@ impl Shell {
                 self.render_channel_archive(view, settings, page, window, cx)
             }
         }
-            // The page states that the access ended, without a control (ADR 0761).
-            ServerPage::AccessEnded => div()
-                .flex()
-                .flex_col()
-                .debug_selector(|| "admin-access-ended".to_owned())
-                .child(page_title(
-                    text::admin::ACCESS_ENDED_TITLE,
-                    text::admin::ACCESS_ENDED,
-                    &theme(cx),
-                ))
-                .into_any_element(),
     }
 }
 

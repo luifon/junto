@@ -806,10 +806,18 @@ impl Shell {
                     })),
                 )),
         );
+        // A refused change of who sees the channel is told here: the rows of the advanced
+        // permissions, which tell it too, can be folded (ADR 0761).
+        let refused = view.asks.iter().find_map(|ask| match ask.what {
+            AskKind::SetRule(of, _) if of == at => view.refused(ask.what),
+            _ => None,
+        });
+        column =
+            column.children(refused.and_then(|reason| refusal(Some(reason), "visibility-refused")));
         if let Some(pending) = self.admin.overrides.pending {
             let category = settings_sync.clone().unwrap_or_default();
             column = column.child(
-                self.render_row_question(
+                self.render_row_question_with(
                     Question {
                         sentence: text::admin::overrides::stop_sync_question(&category).into(),
                         confirm: text::admin::overrides::STOP_SYNC_CONFIRM,
@@ -819,10 +827,17 @@ impl Shell {
                     },
                     theme,
                     cx,
-                    move |this, _, cx| {
-                        this.admin.overrides.pending = None;
-                        this.send_visibility((server_id, channel_id), pending, cx);
-                    },
+                    (
+                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.admin.overrides.pending = None;
+                            this.send_visibility((server_id, channel_id), pending, cx);
+                        },
+                        // Cancel puts the question away and sends nothing.
+                        |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                            this.admin.overrides.pending = None;
+                            cx.notify();
+                        },
+                    ),
                 )
                 .debug_selector(|| "visibility-question".to_owned()),
             );

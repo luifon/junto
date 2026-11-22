@@ -1391,3 +1391,107 @@ fn ordinary_member_windows_follow_role_colours_groups_search_and_server_fallback
         });
     }
 }
+
+/// The button of a role row is a tab stop: Enter shows the role with its tabs (ADR 0791).
+#[gpui::test]
+fn the_keyboard_shows_a_role_with_its_tabs(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
+        name: "Chiefs".to_owned(),
+        permissions: Vec::new(),
+    };
+    let chiefs = world
+        .run(owner.api().create_workspace_role(workspace_id, &role))
+        .unwrap()
+        .id;
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    let opener = sel("role-select", chiefs);
+    window.until("the role is listed", |window| window.shows(opener));
+    window.tab_to(opener);
+    window.press("enter");
+    window.until("the role shows its tabs", |window| {
+        window.shows(sel("role-detail", chiefs)) && window.shows("role-tab-members")
+    });
+}
+
+/// The tab "Members" gives the role to a person found by name, tells a refused addition at
+/// that person, and takes the role away (ADR 0791).
+#[gpui::test]
+fn the_members_tab_gives_and_takes_a_role_and_tells_a_refused_addition(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let workspace_id = default_workspace(&world, &owner);
+    let (_device, bruno) = joined(
+        &world,
+        &server,
+        &invite(&world, &owner, Vec::new()),
+        "Bruno",
+    );
+    let bruno_id = logged_in(&bruno);
+    let role = CreateWorkspaceRole {
+        color: None,
+        hoist: false,
+        name: "Chiefs".to_owned(),
+        permissions: Vec::new(),
+    };
+    let chiefs = world
+        .run(owner.api().create_workspace_role(workspace_id, &role))
+        .unwrap()
+        .id;
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        roles_page(window).is_some()
+    });
+    click_in_page(&mut window, sel("role-select", chiefs));
+    click_in_page(&mut window, "role-tab-members");
+    window.until("the search is drawn", |window| {
+        window.shows("role-member-search")
+    });
+    window.click("role-member-search");
+    crate::rehearsal::type_into(&mut window, "role-member-search", "bru");
+    let add = selector(format!("role-member-add-{chiefs}-{bruno_id}"));
+    window.until("Bruno is offered", |window| window.shows(add));
+
+    // The server refuses the first addition: the refusal is told at Bruno, who stays offered.
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    proxy.fail_ending(
+        &format!("/members/{bruno_id}/roles/{chiefs}"),
+        std::iter::repeat_n(Fault::Busy, attempts),
+    );
+    click_in_page(&mut window, add);
+    window.until("the refusal is told", |window| {
+        window.shows("role-member-refused") && window.shows(add)
+    });
+
+    // The second addition is done, and Remove takes the role away.
+    click_in_page(&mut window, add);
+    let holder = selector(format!("role-member-{chiefs}-{bruno_id}"));
+    window.until("Bruno holds the role", |window| window.shows(holder));
+    let holds = |world: &World| {
+        world
+            .run(owner.api().workspace_members(workspace_id))
+            .unwrap()
+            .iter()
+            .any(|member| member.account_id == bruno_id && member.role_ids.contains(&chiefs))
+    };
+    assert!(holds(&world));
+    click_in_page(
+        &mut window,
+        selector(format!("role-member-remove-{chiefs}-{bruno_id}")),
+    );
+    window.until("Bruno no longer holds the role", |window| {
+        !window.shows(holder)
+    });
+    assert!(!holds(&world));
+}

@@ -842,7 +842,9 @@ impl Shell {
                     .child({
                         // The actions of a channel are the items of the menu of its row
                         // (ADR 0761); the handle orders it by a drag.
-                        let manage = (!row.may_manage).then_some(text::admin::CHANNEL_MANAGE_NEEDS);
+                        // An item that the permissions refuse is not offered (ADR 0731); a
+                        // disabled item states a passing state, such as the first place.
+                        let manage = row.may_manage;
                         menu_action(
                             text::admin::SETTINGS,
                             format!("channel-settings-{channel_id}"),
@@ -858,34 +860,41 @@ impl Shell {
                             }),
                         );
                         let name = row.name.clone();
-                        menu_action(
-                            text::admin::RENAME,
-                            format!("channel-rename-{channel_id}"),
-                            manage,
-                            cx.listener(move |this, _, window, cx| {
-                                this.open_channel_settings(
-                                    workspace_id,
-                                    channel_id,
-                                    ChannelPage::Overview,
-                                    window,
-                                    cx,
-                                );
-                                this.set_admin_mode(Some(Mode::RenameChannel), &name, window, cx);
-                            }),
-                        );
-                        menu_action(
-                            text::admin::MOVE_TO,
-                            format!("channel-move-{channel_id}"),
-                            manage,
-                            cx.listener(move |this, _, window, cx| {
-                                this.set_admin_mode(
-                                    Some(Mode::MoveChannel(channel_id)),
-                                    "",
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        );
+                        if manage {
+                            menu_action(
+                                text::admin::RENAME,
+                                format!("channel-rename-{channel_id}"),
+                                None,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.open_channel_settings(
+                                        workspace_id,
+                                        channel_id,
+                                        ChannelPage::Overview,
+                                        window,
+                                        cx,
+                                    );
+                                    this.set_admin_mode(
+                                        Some(Mode::RenameChannel),
+                                        &name,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            );
+                            menu_action(
+                                text::admin::MOVE_TO,
+                                format!("channel-move-{channel_id}"),
+                                None,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.set_admin_mode(
+                                        Some(Mode::MoveChannel(channel_id)),
+                                        "",
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            );
+                        }
                         menu_action(
                             text::admin::roles::MOVE_UP,
                             format!("channel-up-{channel_id}"),
@@ -919,11 +928,14 @@ impl Shell {
                         for (label, selector) in [
                             (text::admin::ARCHIVE, "channel-archive"),
                             (text::admin::DELETE, "channel-delete"),
-                        ] {
+                        ]
+                        .into_iter()
+                        .filter(|_| manage)
+                        {
                             menu_action(
                                 label,
                                 format!("{selector}-{channel_id}"),
-                                manage,
+                                None,
                                 cx.listener(move |this, _, window, cx| {
                                     this.open_channel_settings(
                                         workspace_id,
