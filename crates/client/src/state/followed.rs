@@ -1352,7 +1352,11 @@ impl AppState {
                                 .insert((read.server_id, thread.state.root_id), thread.channel_id);
                         }
                         FollowedThreads {
-                            threads: page.threads.into_iter().map(|thread| thread.state).collect(),
+                            threads: page
+                                .threads
+                                .into_iter()
+                                .map(|thread| thread.state)
+                                .collect(),
                             more: page.more,
                             next: page.next,
                         }
@@ -1380,7 +1384,8 @@ impl AppState {
                     .workspace_channels
                     .get(&(server_id, state.root_id))
                     .copied();
-                if channel.is_some_and(|channel| held_root(&model, channel, state.root_id).is_none())
+                if channel
+                    .is_some_and(|channel| held_root(&model, channel, state.root_id).is_none())
                     && !missing.contains(&state.root_id)
                 {
                     missing.push(state.root_id);

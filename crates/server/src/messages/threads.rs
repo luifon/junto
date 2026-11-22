@@ -110,7 +110,8 @@ pub const FOLLOWED_QUERY: &str = "select root_id,latest_id from thread_reads
       and (latest_id,root_id)<($3,$4)
     order by latest_id desc,root_id desc limit $5";
 
-pub const WORKSPACE_FOLLOWED_QUERY: &str = "select r.root_id,r.latest_id,(r.position<r.latest)::int,r.place_id
+pub const WORKSPACE_FOLLOWED_QUERY: &str =
+    "select r.root_id,r.latest_id,(r.position<r.latest)::int,r.place_id
     from thread_reads r join channels c on c.id=r.place_id
     where r.account_id=$1 and c.workspace_id=$2 and r.place_id=any($3) and r.following
       and r.latest_id is not null

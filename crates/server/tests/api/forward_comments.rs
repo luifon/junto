@@ -58,7 +58,11 @@ async fn a_forward_keeps_its_comment_apart_and_its_author_edits_the_comment_alon
 
     // An edit without a comment keeps it; an empty comment removes it.
     let kept: Message = server
-        .put(&copier, &message(copy.id), &json!({"document":copy.document}))
+        .put(
+            &copier,
+            &message(copy.id),
+            &json!({"document":copy.document}),
+        )
         .await
         .ok(StatusCode::OK);
     assert_eq!(kept.comment, edited.comment);
@@ -124,7 +128,11 @@ async fn the_comment_of_a_forward_is_searched_and_leaves_with_its_deleted_messag
     let source = send(&server, &owner, &channel, "the source text").await;
     let path = format!("/api/v1/channels/{}/messages", channel.id);
     let copy: Message = server
-        .post(&owner, &path, &forwarded(source.id, Some("cobalt reminder")))
+        .post(
+            &owner,
+            &path,
+            &forwarded(source.id, Some("cobalt reminder")),
+        )
         .await
         .ok(StatusCode::CREATED);
     let found: SearchPage = server

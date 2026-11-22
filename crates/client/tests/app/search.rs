@@ -118,9 +118,15 @@ impl Window {
         match selector {
             "search-mentions-me" => self.click(selector),
             "search-direct" => {
-                let direct = self.search_panel().is_some_and(|panel| panel.filters.direct);
+                let direct = self
+                    .search_panel()
+                    .is_some_and(|panel| panel.filters.direct);
                 self.click("search-in");
-                self.click(if direct { "search-in:server" } else { "search-in:direct" });
+                self.click(if direct {
+                    "search-in:server"
+                } else {
+                    "search-in:direct"
+                });
             }
             _ => {
                 self.click("search-has");

@@ -32,7 +32,10 @@ async fn the_viewers_of_a_channel_are_the_members_who_may_see_it() {
     server
         .put(
             &owner,
-            &format!("/api/v1/channels/{}/rules/people/{}", plans.id, ann.account_id),
+            &format!(
+                "/api/v1/channels/{}/rules/people/{}",
+                plans.id, ann.account_id
+            ),
             &json!({ "allow": ["view_channel"] }),
         )
         .await

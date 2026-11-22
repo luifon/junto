@@ -390,7 +390,9 @@ impl Shell {
                     .gap(u(6.0))
                     .px(u(14.0))
                     .pt(u(12.0))
-                    .child(Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name"))
+                    .child(
+                        Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name"),
+                    )
                     .child(
                         div().flex().child(
                             Button::new("group-rename")

@@ -238,33 +238,33 @@ impl Shell {
                     .capabilities
                     .is_some_and(|supported| supported.filters);
                 if conversations {
-                items.push(crate::ui::menu_separator(cx).into_any_element());
-                items.push(item(
-                    "search-in:direct".to_owned(),
-                    index,
-                    text::DIRECT_MESSAGES.into(),
-                    filters.direct,
-                    Filters {
-                        direct: true,
-                        ..anywhere
-                    },
-                    cx,
-                ));
-                index += 1;
-                for (conversation_id, name) in &panel.conversations {
+                    items.push(crate::ui::menu_separator(cx).into_any_element());
                     items.push(item(
-                        format!("search-in:conversation:{conversation_id}"),
+                        "search-in:direct".to_owned(),
                         index,
-                        name.clone().into(),
-                        filters.conversation == Some(*conversation_id),
+                        text::DIRECT_MESSAGES.into(),
+                        filters.direct,
                         Filters {
-                            conversation: Some(*conversation_id),
+                            direct: true,
                             ..anywhere
                         },
                         cx,
                     ));
                     index += 1;
-                }
+                    for (conversation_id, name) in &panel.conversations {
+                        items.push(item(
+                            format!("search-in:conversation:{conversation_id}"),
+                            index,
+                            name.clone().into(),
+                            filters.conversation == Some(*conversation_id),
+                            Filters {
+                                conversation: Some(*conversation_id),
+                                ..anywhere
+                            },
+                            cx,
+                        ));
+                        index += 1;
+                    }
                 }
                 (text::FILTER_IN, items)
             }
@@ -561,14 +561,26 @@ impl Shell {
                     div()
                         .flex()
                         .gap(u(6.0))
-                        .child(div().flex_1().min_w_0().child(text::FILTER_FROM_DATE).child(
-                            Field::new(&self.search_from, text::FILTER_FROM_DATE)
-                                .selector("search-from"),
-                        ))
-                        .child(div().flex_1().min_w_0().child(text::FILTER_THROUGH_DATE).child(
-                            Field::new(&self.search_through, text::FILTER_THROUGH_DATE)
-                                .selector("search-through"),
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_FROM_DATE)
+                                .child(
+                                    Field::new(&self.search_from, text::FILTER_FROM_DATE)
+                                        .selector("search-from"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(text::FILTER_THROUGH_DATE)
+                                .child(
+                                    Field::new(&self.search_through, text::FILTER_THROUGH_DATE)
+                                        .selector("search-through"),
+                                ),
+                        ),
                 )
                 .child(
                     Button::new("search-apply-dates")

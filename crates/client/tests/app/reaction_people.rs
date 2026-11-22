@@ -470,7 +470,10 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     });
     let who = window.cx.debug_bounds("message-reaction-people").unwrap();
     let reply = window.cx.debug_bounds("message-reply").unwrap();
-    assert!(who.bottom() <= reply.top(), "Who reacted is in the group of the reactions");
+    assert!(
+        who.bottom() <= reply.top(),
+        "Who reacted is in the group of the reactions"
+    );
     window.click("message-reaction-people");
     let author = admin.handle.account().unwrap();
     window.until("the reactor is listed", |window| {

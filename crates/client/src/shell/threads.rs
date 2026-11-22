@@ -96,7 +96,10 @@ impl Shell {
             // The channels that the thread was forked into stay listed under the header
             // (ADR 0741).
             let forks = (!thread.forks.is_empty()).then(|| self.render_forks(thread, &theme, cx));
-            let refused = thread.follow.as_ref().and_then(|follow| follow.refused.clone());
+            let refused = thread
+                .follow
+                .as_ref()
+                .and_then(|follow| follow.refused.clone());
             forks
                 .into_iter()
                 .chain([
@@ -242,7 +245,10 @@ impl Shell {
         Some(
             crate::ui::bind_button_menu(
                 frame,
-                ("thread-follow-menu", thread.root_id.as_uuid().as_u128() as u64),
+                (
+                    "thread-follow-menu",
+                    thread.root_id.as_uuid().as_u128() as u64,
+                ),
                 crate::ui::ButtonMenu {
                     icon: if following { Icon::Bell } else { Icon::BellOff },
                     label: if following {
@@ -329,8 +335,9 @@ impl Shell {
                     ..crate::ui::RowAction::new(
                         text::MARK_AS_UNREAD,
                         cx.listener(move |this, _, _, cx| {
-                            this.state
-                                .update(cx, |state, cx| state.mark_place_unread(server_id, place, cx));
+                            this.state.update(cx, |state, cx| {
+                                state.mark_place_unread(server_id, place, cx)
+                            });
                         }),
                     )
                 });
@@ -965,15 +972,16 @@ impl Shell {
         } else {
             let rows = panel.rows.iter().map(|row| {
                 let (root_id, channel_id) = (row.root_id, row.channel_id);
-                let title = row
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| text::THREAD.to_owned());
+                let title = row.title.clone().unwrap_or_else(|| text::THREAD.to_owned());
                 let unread = row.unread.max(row.mentions);
                 div()
                     .id(("followed-thread", root_id.as_uuid().as_u128() as u64))
                     .role(Role::ListItem)
-                    .aria_label(text::followed_thread_label(&title, &row.channel_name, unread))
+                    .aria_label(text::followed_thread_label(
+                        &title,
+                        &row.channel_name,
+                        unread,
+                    ))
                     .debug_selector(move || format!("followed-thread:{root_id}"))
                     .flex()
                     .items_center()
@@ -1032,8 +1040,9 @@ impl Shell {
                                 .selector("more-followed")
                                 .disabled(panel.reading)
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.read_more_followed_threads(cx));
+                                    this.state.update(cx, |state, cx| {
+                                        state.read_more_followed_threads(cx)
+                                    });
                                 })),
                         ),
                     )

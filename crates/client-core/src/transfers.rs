@@ -1448,9 +1448,14 @@ impl Transfers {
             })
             .collect::<Vec<_>>();
         let waits = files.iter().any(|file| file.attachment_id.is_none());
-        let id =
-            self.live
-                .enqueue_message_for(owner.account_id, place, document, reply_to, comment, files)?;
+        let id = self.live.enqueue_message_for(
+            owner.account_id,
+            place,
+            document,
+            reply_to,
+            comment,
+            files,
+        )?;
         if waits {
             let uploads = uploads.to_vec();
             let live = self.live.clone();

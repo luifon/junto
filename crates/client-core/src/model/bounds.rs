@@ -119,8 +119,12 @@ pub fn fits(message: &Message) -> bool {
         document.content_blocks().count() <= MOST_BLOCKS
             && inline_nodes(document) <= MOST_INLINE_NODES
             && document.list_items() <= MOST_LIST_ITEMS
-            && document.inlines().all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
-            && document.blocks.iter().all(|block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)))
+            && document
+                .inlines()
+                .all(|(_, depth)| depth <= junto_protocol::message::MAX_INLINE_DEPTH)
+            && document.blocks.iter().all(
+                |block| !matches!(block, Block::Heading { level, .. } if !(1..=3).contains(level)),
+            )
     };
     message.attachments.len() <= MOST_FILES
         && message.reactions.len() <= MOST_REACTIONS

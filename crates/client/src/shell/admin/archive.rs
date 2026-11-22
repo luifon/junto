@@ -130,7 +130,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.view.as_ref().and_then(|view| view.selected.as_ref()).map(|server| server.id)
+        if self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id)
             != Some(server_id)
         {
             return;
@@ -152,7 +156,9 @@ impl Shell {
         let theme = crate::theme::theme(cx);
         crate::ui::Dialog::new(text::conversations::EXPORT_TITLE, self.layer_focus())
             .selector("confirm-export")
-            .on_close(Self::handler(cx, |this, window, cx| this.close_layer(window, cx)))
+            .on_close(Self::handler(cx, |this, window, cx| {
+                this.close_layer(window, cx)
+            }))
             .child(
                 div()
                     .typeface(theme.types.notice, &theme)

@@ -1398,20 +1398,23 @@ fn the_threads_entry_lists_the_followed_threads_of_the_workspace(cx: &mut TestAp
     });
 
     window.click("threads-row");
-    window.until("the panel lists both threads, the unread one first", |window| {
-        window
-            .view()
-            .workspace()
-            .and_then(|workspace| workspace.followed.clone())
-            .is_some_and(|panel| {
-                panel
-                    .rows
-                    .iter()
-                    .map(|row| (row.root_id, row.channel_id))
-                    .collect::<Vec<_>>()
-                    == [(other_root, other), (root, channel)]
-            })
-    });
+    window.until(
+        "the panel lists both threads, the unread one first",
+        |window| {
+            window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.followed.clone())
+                .is_some_and(|panel| {
+                    panel
+                        .rows
+                        .iter()
+                        .map(|row| (row.root_id, row.channel_id))
+                        .collect::<Vec<_>>()
+                        == [(other_root, other), (root, channel)]
+                })
+        },
+    );
     assert!(window.shows("followed-panel"));
     assert_eq!(window.selected_channel(), channel);
 

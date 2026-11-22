@@ -505,7 +505,9 @@ fn thread_cursor(value: Option<&str>) -> ApiResult<Option<(uuid::Uuid, uuid::Uui
         .transpose()
 }
 
-fn workspace_thread_cursor(value: Option<&str>) -> ApiResult<Option<(i32, uuid::Uuid, uuid::Uuid)>> {
+fn workspace_thread_cursor(
+    value: Option<&str>,
+) -> ApiResult<Option<(i32, uuid::Uuid, uuid::Uuid)>> {
     value
         .map(|value| {
             let invalid = || ApiError::invalid("invalid thread cursor");

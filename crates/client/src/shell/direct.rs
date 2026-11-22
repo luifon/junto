@@ -82,9 +82,13 @@ impl Shell {
         let incoming = view.invitations.iter().any(|invited| {
             invited.target.server_id == server
                 && match (other, invited.target.place) {
-                    (Some(other), CallPlace::Direct { low_account_id, high_account_id }) => {
-                        low_account_id == other || high_account_id == other
-                    }
+                    (
+                        Some(other),
+                        CallPlace::Direct {
+                            low_account_id,
+                            high_account_id,
+                        },
+                    ) => low_account_id == other || high_account_id == other,
                     (None, CallPlace::Group { conversation_id }) => conversation_id == id,
                     _ => false,
                 }
@@ -109,7 +113,11 @@ impl Shell {
             buttons.push(
                 Button::new("conversation-call")
                     .icon(Icon::Phone)
-                    .tooltip(if closed { words::CLOSED } else { text::DIRECT_CALL })
+                    .tooltip(if closed {
+                        words::CLOSED
+                    } else {
+                        text::DIRECT_CALL
+                    })
                     .accessible_label(text::DIRECT_CALL)
                     .disabled(closed)
                     .selector("conversation-call")
@@ -161,7 +169,9 @@ impl Shell {
                     .accessible_label(words::PEOPLE)
                     .selector("conversation-people")
                     .when(people_open, |button| {
-                        button.bg(gpui::Hsla::from(colors.limestone_lo)).shadow_none()
+                        button
+                            .bg(gpui::Hsla::from(colors.limestone_lo))
+                            .shadow_none()
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.toggle_group_people(server, id, window, cx);

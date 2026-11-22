@@ -1322,8 +1322,9 @@ impl Shell {
                 .selector(format!("{prefix}-mark-unread"))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_layer(window, cx);
-                    this.state
-                        .update(cx, |state, cx| state.mark_place_unread(server_id, place, cx));
+                    this.state.update(cx, |state, cx| {
+                        state.mark_place_unread(server_id, place, cx)
+                    });
                 }))
         };
         Some(item.into_any_element())

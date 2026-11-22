@@ -467,10 +467,8 @@ fn the_member_list_of_a_channel_lists_the_people_who_can_see_it(cx: &mut gpui::T
     let world = crate::harness::World::new();
     let server = world.server("Acme Studio");
     let admin = world.owner(&server);
-    let (_first, mut window) =
-        crate::harness::member(cx, &world, &server.address(), &admin, "Rin");
-    let (_second, mut other) =
-        crate::harness::member(cx, &world, &server.address(), &admin, "Mia");
+    let (_first, mut window) = crate::harness::member(cx, &world, &server.address(), &admin, "Rin");
+    let (_second, mut other) = crate::harness::member(cx, &world, &server.address(), &admin, "Mia");
     let (rin, mia) = (window.own_account(), other.own_account());
     let secret = admin.text_channel(&world, &mut window, "secret");
     let api = admin.handle.api();
@@ -502,20 +500,24 @@ fn the_member_list_of_a_channel_lists_the_people_who_can_see_it(cx: &mut gpui::T
             },
         ))
         .unwrap();
-    other.until("the private channel is hidden from the other member", |window| {
-        !window.shows_channel("secret")
-    });
+    other.until(
+        "the private channel is hidden from the other member",
+        |window| !window.shows_channel("secret"),
+    );
 
     window.until("the private channel is listed", |window| {
         window.shows_channel("secret")
     });
     window.click_channel("secret");
     window.click("members-button");
-    window.until("the list holds the people who can see the channel", |window| {
-        window.view().workspace().is_some_and(|workspace| {
-            matches!(&workspace.viewers, Some(junto_client::state::view::Viewers::Read(seeing))
+    window.until(
+        "the list holds the people who can see the channel",
+        |window| {
+            window.view().workspace().is_some_and(|workspace| {
+                matches!(&workspace.viewers, Some(junto_client::state::view::Viewers::Read(seeing))
                 if seeing.contains(&rin) && !seeing.contains(&mia))
-        }) && window.shows_member("Rin")
-    });
+            }) && window.shows_member("Rin")
+        },
+    );
     assert!(!window.shows_member("Mia"));
 }

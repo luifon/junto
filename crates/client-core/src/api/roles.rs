@@ -87,9 +87,8 @@ impl ServerApi {
         &self,
         channel_id: ChannelId,
     ) -> Result<Vec<junto_protocol::ids::AccountId>, ApiError> {
-        let viewers: junto_protocol::structure::ChannelViewers = self
-            .get(format!("/channels/{channel_id}/viewers"))
-            .await?;
+        let viewers: junto_protocol::structure::ChannelViewers =
+            self.get(format!("/channels/{channel_id}/viewers")).await?;
         if viewers.channel_id != channel_id {
             return Err(ApiError::InvalidResponse {
                 status: 200,

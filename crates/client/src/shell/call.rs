@@ -438,7 +438,11 @@ impl Shell {
 
     /// The panel of the call shows the notices of the server of the call.
     pub(crate) fn call_notices_open(&self, cx: &gpui::App) -> bool {
-        self.state.read(cx).view().lists().is_some_and(|lists| lists.notices.is_some())
+        self.state
+            .read(cx)
+            .view()
+            .lists()
+            .is_some_and(|lists| lists.notices.is_some())
     }
 
     /// The panel of the call shows a tab again in place of the notices.

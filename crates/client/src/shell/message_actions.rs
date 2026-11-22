@@ -16,7 +16,9 @@ use crate::state::feed::{Feed, MessageRow};
 use crate::text;
 use crate::theme::{Theme, u};
 use crate::ui::OwnPress as _;
-use crate::ui::{Button, ButtonKind, Menu, MenuItem, StyleExt, icon, ledge, menu_separator, tooltip};
+use crate::ui::{
+    Button, ButtonKind, Menu, MenuItem, StyleExt, icon, ledge, menu_separator, tooltip,
+};
 
 /// One action of a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +168,8 @@ impl Shell {
         }) else {
             return;
         };
-        if feed.server_id != server_id || !MessageAction::offered(&row, &feed, pane).contains(&action)
+        if feed.server_id != server_id
+            || !MessageAction::offered(&row, &feed, pane).contains(&action)
         {
             return;
         }

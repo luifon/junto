@@ -300,10 +300,9 @@ impl Shell {
         )
         // Two or more people make a group, whose name is optional (ADR 0302).
         .children(
-            (matches!(self.groups.mode, Some(super::groups::Mode::Create(_))) && chosen >= 2)
-                .then(|| {
-                    Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name")
-                }),
+            (matches!(self.groups.mode, Some(super::groups::Mode::Create(_))) && chosen >= 2).then(
+                || Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name"),
+            ),
         )
         .child(
             div()

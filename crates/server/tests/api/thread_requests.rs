@@ -409,10 +409,7 @@ async fn the_followed_threads_of_a_workspace_list_unread_ones_first() {
     server
         .put(
             &owner,
-            &format!(
-                "/api/v1/channels/{}/rules/roles/{}",
-                hidden.id, everyone.id
-            ),
+            &format!("/api/v1/channels/{}/rules/roles/{}", hidden.id, everyone.id),
             &json!({ "deny": ["read_message_history"] }),
         )
         .await
@@ -433,9 +430,13 @@ async fn the_followed_threads_of_a_workspace_list_unread_ones_first() {
     let first = workspace_followed(&server, &member, workspace.id, "?limit=1").await;
     assert!(first.more);
     let next = first.next.unwrap();
-    let second =
-        workspace_followed(&server, &member, workspace.id, &format!("?limit=1&before={next}"))
-            .await;
+    let second = workspace_followed(
+        &server,
+        &member,
+        workspace.id,
+        &format!("?limit=1&before={next}"),
+    )
+    .await;
     assert_eq!(second.threads[0].state.root_id, roots[1]);
     assert!(!second.more);
 

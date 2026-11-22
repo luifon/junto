@@ -395,9 +395,7 @@ pub async fn edit_message(
         }
         // A forward keeps its comment unless the edit names a new one (ADR 0408).
         let comment = match &body.comment {
-            Some(comment) => {
-                messages::forwarding::comment(&body.document, Some(comment))?
-            }
+            Some(comment) => messages::forwarding::comment(&body.document, Some(comment))?,
             None => message.comment.clone(),
         };
         let content_unchanged = message.document.as_ref() == Some(&body.document);
@@ -415,7 +413,11 @@ pub async fn edit_message(
             comment,
         };
         let mentioning = body.comment.as_ref().unwrap_or(&body.document);
-        let previous = if message.document.as_ref().is_some_and(|stored| stored.forward_origins() > 0) {
+        let previous = if message
+            .document
+            .as_ref()
+            .is_some_and(|stored| stored.forward_origins() > 0)
+        {
             message.comment.as_ref()
         } else {
             message.document.as_ref()

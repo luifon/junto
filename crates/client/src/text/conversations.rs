@@ -10,7 +10,8 @@ pub const EXPORT: &str = "Export conversation…";
 pub const EXPORT_TITLE: &str = "Export this conversation";
 pub const EXPORT_ABOUT: &str = "The server prepares a ZIP file with the messages and files of this conversation, as JSON and as HTML pages. When it is ready, it is listed in Exports of your account on this server, where you download it.";
 pub const EXPORT_START: &str = "Export";
-pub const CLOSED: &str = "This conversation is closed: you no longer share a workspace with this person.";
+pub const CLOSED: &str =
+    "This conversation is closed: you no longer share a workspace with this person.";
 /// The name of a group conversation: its name, or the names of its present members when
 /// it has none (ADR 0302).
 pub fn group_name(name: &str, members: &[String]) -> String {

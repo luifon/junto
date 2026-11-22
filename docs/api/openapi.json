@@ -6076,6 +6076,59 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/viewers": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The members of the workspace of a channel who can see the channel. The caller sees the\nchannel. Each member is checked by the permission function, as a request of that member\nwould be.",
+        "operationId": "get_channel_viewers",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelViewers"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels/{channel_id}/voice-status": {
       "put": {
         "tags": [
@@ -14993,6 +15046,97 @@
           }
         ]
       }
+    },
+    "/api/v1/workspaces/{workspace_id}/threads": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "The threads of a workspace that the caller follows in the channels whose history it\nreads: unread ones first, each group with the newest reply first, in pages (ADR 0413).\nThe caller is a member of the workspace.",
+        "operationId": "workspace_followed",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "description": "The value `next` of the page before.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "From 1 to 200. Absent: 50.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Junto-Group-Conversations",
+            "in": "header",
+            "description": "1 enables group places on existing routes; group-specific routes opt in by their path; omitted readers receive pairs and channels",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceThreads"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -18777,6 +18921,25 @@
           }
         }
       },
+      "ChannelViewers": {
+        "type": "object",
+        "description": "The members of the workspace of a channel who can see it: the permission function\nallows them \"view channel\" there (ADR 0790).",
+        "required": [
+          "channel_id",
+          "account_ids"
+        ],
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          }
+        }
+      },
       "CheckItem": {
         "type": "object",
         "required": [
@@ -19352,6 +19515,17 @@
           "document"
         ],
         "properties": {
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The new comment of a forward. Absent: the comment stays; a document without blocks\nremoves it (ADR 0408)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "document": {
             "$ref": "#/components/schemas/Document"
           }
@@ -20340,6 +20514,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The comment that the sender of a forward wrote with it, kept apart from the forwarded\ncontent in `document` (ADR 0408). Absent for every other message."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "created_at": {
@@ -22513,6 +22698,17 @@
               "$ref": "#/components/schemas/AttachmentId"
             },
             "description": "The completed uploads that the message holds. The message lists them in this order."
+          },
+          "comment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The comment of a forward: only with a document that holds a forward origin\n(ADR 0408)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "document": {
             "$ref": "#/components/schemas/Document"
@@ -25033,6 +25229,48 @@
           },
           "workspace": {
             "$ref": "#/components/schemas/Workspace"
+          }
+        }
+      },
+      "WorkspaceThread": {
+        "type": "object",
+        "description": "One followed thread of a workspace, with its channel.",
+        "required": [
+          "channel_id",
+          "state"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ThreadState"
+          }
+        }
+      },
+      "WorkspaceThreads": {
+        "type": "object",
+        "description": "One page of the threads of a workspace that the caller follows, unread ones first\n(ADR 0413).",
+        "required": [
+          "threads",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to read the next page. Absent on the last page."
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceThread"
+            }
           }
         }
       }

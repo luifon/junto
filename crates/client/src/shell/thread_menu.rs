@@ -271,24 +271,25 @@ impl Shell {
                         .icon(Icon::Unread)
                         .selector("thread-unread")
                 };
-                menu.child(item.disabled(busy).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        if this.thread_menu_current(open, cx)
-                            && this.state.update(cx, |state, cx| {
-                                if unread {
-                                    state.mark_thread_menu_read(open.owner, open.root_id, cx)
-                                } else {
-                                    state.mark_thread_menu_unread(open.owner, open.root_id, cx)
+                menu.child(
+                    item.disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.thread_menu_current(open, cx)
+                                && this.state.update(cx, |state, cx| {
+                                    if unread {
+                                        state.mark_thread_menu_read(open.owner, open.root_id, cx)
+                                    } else {
+                                        state.mark_thread_menu_unread(open.owner, open.root_id, cx)
+                                    }
+                                })
+                            {
+                                if let Layer::ThreadMenu(open) = &mut this.layer {
+                                    open.waiting = true;
                                 }
-                            })
-                        {
-                            if let Layer::ThreadMenu(open) = &mut this.layer {
-                                open.waiting = true;
+                                cx.notify();
                             }
-                            cx.notify();
-                        }
-                    },
-                )))
+                        })),
+                )
             })
             .child(
                 MenuItem::new("thread-follow", text::followed::action(following))

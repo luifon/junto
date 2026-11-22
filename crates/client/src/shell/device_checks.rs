@@ -159,14 +159,16 @@ impl Shell {
             .read(cx)
             .server(target.server_id)
             .and_then(|server| server.owner());
-        Button::new(SharedString::from(format!("{selector}:{owner:?}:{target:?}")))
-            .icon(Icon::ChevronDown)
-            .tooltip(words::CHECK)
-            .accessible_label(words::CHECK)
-            .selector(selector)
-            .disabled(disabled || owner.is_none())
-            .on_click(self.prejoin_opener(owner, target, None, cx))
-            .into_any_element()
+        Button::new(SharedString::from(format!(
+            "{selector}:{owner:?}:{target:?}"
+        )))
+        .icon(Icon::ChevronDown)
+        .tooltip(words::CHECK)
+        .accessible_label(words::CHECK)
+        .selector(selector)
+        .disabled(disabled || owner.is_none())
+        .on_click(self.prejoin_opener(owner, target, None, cx))
+        .into_any_element()
     }
 
     fn prejoin_opener(
