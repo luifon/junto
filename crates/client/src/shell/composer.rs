@@ -41,6 +41,9 @@ use crate::ui::{
 const MOST_ROWS: usize = 10;
 /// The members and roles that the mention picker lists at one time.
 const MOST_CANDIDATES: usize = 8;
+/// The candidates that the mention picker shows without a scroll.
+const MOST_SHOWN_CANDIDATES: usize = 5;
+const CANDIDATE_HEIGHT: f32 = 30.0;
 /// The emoji that the picker draws at one time.
 const MOST_EMOJI: usize = 240;
 
@@ -2354,6 +2357,18 @@ impl Shell {
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
+        // At most five candidates are shown and the others scroll, so that the list covers
+        // less of the end of the message list, where the waiting messages are; the chosen
+        // candidate stays in view.
+        let picker_scroll = window
+            .use_keyed_state(
+                gpui::ElementId::Name(pane.id("mention-picker-scroll").into()),
+                cx,
+                |_, _| gpui::ScrollHandle::new(),
+            )
+            .read(cx)
+            .clone();
+        picker_scroll.scroll_to_item(chosen);
         let picker =
             (!preview && self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
                 div()
@@ -2373,6 +2388,9 @@ impl Shell {
                     .bg(Hsla::from(colors.travertine_hi))
                     .shadow(float_shadow(colors.shadow_deep, 8.0, 22.0))
                     .occlude()
+                    .max_h(u(MOST_SHOWN_CANDIDATES as f32 * CANDIDATE_HEIGHT + 8.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&picker_scroll)
                     .children(found.iter().enumerate().map(|(index, candidate)| {
                         let taken = candidate.clone();
                         let person = match candidate.target {
@@ -2388,7 +2406,8 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(u(8.0))
-                            .h(u(30.0))
+                            .h(u(CANDIDATE_HEIGHT))
+                            .flex_none()
                             .px(u(10.0))
                             .cursor_pointer()
                             .when(index == chosen, |row| {

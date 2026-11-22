@@ -395,3 +395,58 @@ fn mention_suggestions_offer_only_what_the_person_may_mention(cx: &mut TestAppCo
         },
     );
 }
+
+/// The mention picker shows at most five candidates and scrolls the others, so that it
+/// covers less of the end of the message list; the chosen candidate stays in view.
+#[gpui::test]
+fn the_mention_picker_shows_five_candidates_and_scrolls_to_the_chosen_one(cx: &mut TestAppContext) {
+    let (scene, _directory, mut window) = scene(cx, "Emil");
+    let Scene {
+        world,
+        admin,
+        workspace_id,
+        ..
+    } = &scene;
+    for name in ["Art", "Build", "Copy", "Design", "Edit", "Film", "Games"] {
+        let role = CreateWorkspaceRole {
+            color: None,
+            hoist: false,
+            name: name.to_owned(),
+            permissions: Vec::new(),
+        };
+        world
+            .run(
+                admin
+                    .handle
+                    .api()
+                    .create_workspace_role(*workspace_id, &role),
+            )
+            .unwrap();
+    }
+    window.until("the roles are in the workspace", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.roles.len() >= 7)
+    });
+    window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "@", window, cx);
+        shell.focus_composer(Pane::Main, window, cx);
+    });
+    window.until("the picker holds more than five candidates", |window| {
+        window.shows("candidate:6")
+    });
+    let picker = window.cx.debug_bounds("mention-picker").unwrap();
+    assert!(
+        picker.size.height <= gpui::px(5.0 * 30.0 + 10.0),
+        "{picker:?}"
+    );
+    for _ in 0..6 {
+        window.press("down");
+    }
+    let chosen = window.cx.debug_bounds("candidate:6").unwrap();
+    assert!(
+        chosen.top() >= picker.top() && chosen.bottom() <= picker.bottom(),
+        "{chosen:?} {picker:?}"
+    );
+}
