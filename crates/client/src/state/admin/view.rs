@@ -6,6 +6,7 @@
 pub mod glossary;
 pub mod notifications;
 pub mod overrides;
+pub mod own_notifications;
 pub mod people;
 pub mod person;
 pub mod recordings;
@@ -500,6 +501,8 @@ pub enum ServerPage {
     Archive(ArchivePage),
     Members(people::MembersPage),
     Notifications(notifications::NotificationsPage),
+    /// The levels that the person chose on this server.
+    OwnNotifications(own_notifications::OwnNotificationsPage),
     People(people::PeoplePage),
     Invites(people::InvitesPage),
     JoinRequests(people::RequestsPage),
@@ -746,7 +749,9 @@ pub fn nav(
     }
     // Every account lists and revokes its own tokens, also after it lost the
     // administrator permission (ADR 0210).
-    let mut own = Vec::new();
+    // The person's own levels: a page of its own in this group, so that it moves with the
+    // group (ADR 0742).
+    let mut own = vec![AdminPage::OwnNotifications];
     if !model.is_administrator() {
         own.push(AdminPage::Tokens);
     }
@@ -782,7 +787,10 @@ pub fn needs(
     match *open {
         AdminOpen::Server { page, .. } => match page {
             // The snapshot carries the notification level of a workspace.
-            AdminPage::Workspaces | AdminPage::Channels | AdminPage::Notifications => Vec::new(),
+            AdminPage::Workspaces
+            | AdminPage::Channels
+            | AdminPage::Notifications
+            | AdminPage::OwnNotifications => Vec::new(),
             // The logo is no collection: its image is read from the public route. The page
             // is an administrator's.
             AdminPage::Server => {
@@ -1410,6 +1418,9 @@ pub fn derive(
                 }
                 (AdminPage::Exports, _) => {
                     ServerPage::Exports(records::exports(server_id, model, known, admin))
+                }
+                (AdminPage::OwnNotifications, _) => {
+                    ServerPage::OwnNotifications(own_notifications::derive(server_id, model, known))
                 }
                 (AdminPage::AuditLog, _) => ServerPage::AuditLog(Box::new(records::audit(
                     server_id, model, workspace, known, admin,

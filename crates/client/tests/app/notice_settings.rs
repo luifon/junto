@@ -49,16 +49,30 @@ impl Window {
         });
     }
 
-    /// Opens the notification settings of the shown workspace from the menu of the server.
+    /// Opens the page of the own notification levels from the menu of the server.
     fn open_workspace_settings(&mut self) {
         self.click("server-menu-button");
         self.click("workspace-notifications");
-        self.until("the settings of the workspace", |window| {
-            window
-                .view()
-                .notify
-                .is_some_and(|panel| matches!(panel.scope, SettingsScope::Workspace(_)))
+        self.until("the page of the own levels", |window| {
+            window.shows("own-notify-workspace-0")
         });
+    }
+
+    /// The level that the person stored for the shown workspace, as the page shows it once
+    /// no change is on its way.
+    fn workspace_level(&mut self) -> Option<Option<NotificationLevel>> {
+        let page = match self.admin()?.scope {
+            junto_client::state::admin::view::Scope::Server {
+                page: junto_client::state::admin::view::ServerPage::OwnNotifications(page),
+                ..
+            } => page,
+            _ => return None,
+        };
+        (!page.busy).then(|| {
+            page.workspaces
+                .first()
+                .and_then(|workspace| workspace.level.stored)
+        })
     }
 
     /// The messages of the notices that the state of the server holds, the newest first.
@@ -143,16 +157,16 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
     // The level of the workspace for the person: "All messages". A message without a
     // mention is a notice then.
     window.open_workspace_settings();
-    assert_eq!(window.stored_level(), Some(None));
-    window.click("notify-level-1");
+    assert_eq!(window.workspace_level(), Some(None));
+    window.click("own-notify-workspace-1");
     window.until("the level of the workspace", |window| {
-        window.stored_level() == Some(Some(NotificationLevel::All))
+        window.workspace_level() == Some(Some(NotificationLevel::All))
     });
     assert_eq!(
         stored(&world, &handle, SettingsScope::Workspace(workspace_id)).level,
         Some(NotificationLevel::All)
     );
-    window.click("dialog-close");
+    window.press("escape");
     admin.send(&world, general, document("for the workspace"));
     window.until("the notice of a plain message", |window| {
         window.unread_notices() == 1 && window.kept().shown.len() == 1
@@ -199,15 +213,15 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
     // The workspace takes the level of the server again: "Mentions only". A plain message
     // is no notice, and a mention is one.
     window.open_workspace_settings();
-    window.click("notify-level-0");
+    window.click("own-notify-workspace-0");
     window.until("the default level of the workspace", |window| {
-        window.stored_level() == Some(None)
+        window.workspace_level() == Some(None)
     });
     assert_eq!(
         stored(&world, &handle, SettingsScope::Workspace(workspace_id)).level,
         None
     );
-    window.click("dialog-close");
+    window.press("escape");
     admin.send(&world, general, document("for nobody again"));
     admin.mention(&world, general, "only this, ", own);
     // The server lists a notice of a plain message only while the level of its place is
@@ -221,11 +235,11 @@ fn a_person_sets_the_level_of_a_workspace_and_gives_a_channel_back_to_it(cx: &mu
     // "All messages" for the workspace again: the earlier notices are listed again, and
     // the two messages that were sent at "Nothing" and at "Mentions only" made none.
     window.open_workspace_settings();
-    window.click("notify-level-1");
+    window.click("own-notify-workspace-1");
     window.until("the level of the workspace again", |window| {
-        window.stored_level() == Some(Some(NotificationLevel::All))
+        window.workspace_level() == Some(Some(NotificationLevel::All))
     });
-    window.click("dialog-close");
+    window.press("escape");
     window.open_notices();
     window.until("the three notices", |window| {
         window.notice_texts()
@@ -600,7 +614,7 @@ fn a_direct_conversation_is_muted_and_unmuted_from_its_menu(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_take_it(
+fn a_setting_of_the_device_on_two_servers_states_a_difference_and_a_server_that_did_not_take_it(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
@@ -638,13 +652,13 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
     };
     let (acme_handle, harbor_handle) = (handle_of("Acme Studio"), handle_of("Harbor"));
     let quiet_on = |world: &World, handle: &ServerHandle| {
-        stored(world, handle, SettingsScope::Account).do_not_disturb
+        stored(world, handle, SettingsScope::Account).hide_text
     };
 
-    // "Do not disturb" is on for one server only: the settings say that the servers
-    // differ.
+    // The text of messages is left out on one server only: the settings say that the
+    // servers differ.
     let settings = NotificationSettings {
-        do_not_disturb: true,
+        hide_text: true,
         ..stored(&world, &harbor_handle, SettingsScope::Account)
     };
     world
@@ -655,20 +669,20 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
         )
         .unwrap();
     window.click("app-settings");
-    window.click("settings-section-quiet");
+    window.click("settings-section-notifications");
     window.until("the servers differ", |window| {
-        window.view().quiet.do_not_disturb == Some(Agreement::Differs)
+        window.view().quiet.hide_text == Some(Agreement::Differs)
     });
-    assert!(window.shows("quiet-differs"));
 
-    // The switch turns it on for both.
-    window.click_in_settings("do-not-disturb");
-    window.until("do not disturb on both servers", |window| {
+    // While the servers differ the switch is drawn on (the text is shown), and a press
+    // shows the text on both.
+    window.click_in_settings("notification-text");
+    window.until("the text is shown on both servers", |window| {
         let quiet = window.view().quiet;
-        quiet.do_not_disturb == Some(Agreement::All(true)) && !quiet.busy
+        quiet.hide_text == Some(Agreement::All(false)) && !quiet.busy
     });
-    assert!(!window.shows("quiet-differs") && !window.shows("quiet-failed"));
-    assert!(quiet_on(&world, &acme_handle) && quiet_on(&world, &harbor_handle));
+    assert!(!window.shows("quiet-failed"));
+    assert!(!quiet_on(&world, &acme_handle) && !quiet_on(&world, &harbor_handle));
 
     // One server does not take the next change: the settings name it, and say that the
     // servers differ again.
@@ -676,26 +690,26 @@ fn do_not_disturb_on_two_servers_states_a_difference_and_a_server_that_did_not_t
         &format!("/notification-settings/{}", uuid::Uuid::nil()),
         [Fault::Cut],
     );
-    window.click_in_settings("do-not-disturb");
+    window.click_in_settings("notification-text");
     window.until("the change of one server failed", |window| {
         let quiet = window.view().quiet;
         !quiet.busy && quiet.failed.len() == 1
     });
     let quiet = window.view().quiet;
     assert_eq!(quiet.failed[0].0, "Harbor");
-    assert_eq!(quiet.do_not_disturb, Some(Agreement::Differs));
-    assert!(window.shows("quiet-failed") && window.shows("quiet-differs"));
-    assert!(!quiet_on(&world, &acme_handle) && quiet_on(&world, &harbor_handle));
+    assert_eq!(quiet.hide_text, Some(Agreement::Differs));
+    assert!(window.shows("quiet-failed"));
+    assert!(quiet_on(&world, &acme_handle) && !quiet_on(&world, &harbor_handle));
 
-    // The switch of servers that differ is drawn off, and a press turns it on for both.
-    // The failure is not shown any more.
-    window.click_in_settings("do-not-disturb");
-    window.until("do not disturb on both servers again", |window| {
+    // A press while they differ shows the text on both again; the failure is not shown
+    // any more.
+    window.click_in_settings("notification-text");
+    window.until("the text is shown on both servers again", |window| {
         let quiet = window.view().quiet;
-        !quiet.busy && quiet.failed.is_empty() && quiet.do_not_disturb == Some(Agreement::All(true))
+        !quiet.busy && quiet.failed.is_empty() && quiet.hide_text == Some(Agreement::All(false))
     });
-    assert!(!window.shows("quiet-failed") && !window.shows("quiet-differs"));
-    assert!(quiet_on(&world, &acme_handle) && quiet_on(&world, &harbor_handle));
+    assert!(!window.shows("quiet-failed"));
+    assert!(!quiet_on(&world, &acme_handle) && !quiet_on(&world, &harbor_handle));
 }
 
 #[gpui::test]
@@ -807,39 +821,6 @@ fn the_text_of_a_message_can_be_left_out_of_its_system_notification(cx: &mut Tes
     let hidden = window.kept().told[1].clone();
     assert_eq!(hidden.title, title);
     assert_eq!(hidden.body, junto_client::text::ALERT_TEXT_HIDDEN);
-}
-
-#[gpui::test]
-fn notification_text_is_configured_for_one_server(cx: &mut TestAppContext) {
-    let world = World::new();
-    let first = world.server("Studio");
-    let second = world.server("Harbor");
-    let owner = world.owner(&first);
-    let other_owner = world.owner(&second);
-    let (_directory, mut window) = member(cx, &world, &first.address(), &owner, "Reader");
-    let first_id = window.view().selected.unwrap().id;
-    window.join_further(&world, &second, &other_owner);
-    let second_id = window.view().selected.unwrap().id;
-    window.in_shell(|shell, window, cx| {
-        shell.open_notify_settings(first_id, SettingsScope::Account, window, cx)
-    });
-    window.click("server-notification-text");
-    window.until("the server preference is saved", |window| {
-        window.view().notify.is_some_and(|panel| !panel.busy)
-    });
-    for (id, hidden) in [(first_id, true), (second_id, false)] {
-        let server = window
-            .state
-            .read_with(&window.cx, |state, _| state.server(id))
-            .unwrap();
-        assert_eq!(
-            world
-                .run(server.api().notification_settings(SettingsScope::Account))
-                .unwrap()
-                .hide_text,
-            hidden
-        );
-    }
 }
 
 /// While the call of this device runs a share, a mention gives no system notification; the

@@ -2937,9 +2937,24 @@ pub fn level_default_now(
     format!("Default now: {}.", level_name(level).to_lowercase())
 }
 
-pub const WORKSPACE_DEFAULT: &str = "For every member";
-pub const WORKSPACE_DEFAULT_HELP: &str =
-    "The level of a member who chose none. Only an administrator of the server can change it.";
+/// "Default" with the level that it means now, as a choice of a control.
+pub fn level_default_named(
+    level: junto_client_core::protocol::discovery::NotificationLevel,
+) -> String {
+    format!("Default ({})", level_name(level).to_lowercase())
+}
+
+pub const OWN_NOTIFICATIONS_HELP: &str = "What notifies you on this server. The settings of this device are in Settings, \
+     Notifications.";
+pub const THIS_SERVER: &str = "This server";
+pub const OWN_EXCEPTIONS: &str = "Channels and conversations with their own setting";
+pub const NO_OWN_EXCEPTIONS: &str =
+    "No channel or conversation has a setting of its own. The menu of a channel sets one.";
+pub const NO_ROLE_MENTIONS: &str = "no role mentions";
+pub const NO_EVERYONE_MENTIONS: &str = "no @everyone";
+pub const GROUP_CONVERSATION: &str = "Group conversation";
+pub const CHANGE_ELLIPSIS: &str = "Change…";
+pub const REMOVE_SETTING: &str = "Remove";
 pub const MUTE: &str = "Mute";
 pub const MUTE_HELP: &str = "A muted channel sends no notification and shows no unread sign.";
 pub const MUTE_CHANNEL: &str = "Mute channel";
@@ -3352,7 +3367,7 @@ pub const DO_NOT_DISTURB: &str = "Do not disturb";
 pub const DO_NOT_DISTURB_HELP: &str =
     "No notification of the system is shown. Unread signs still follow new messages.";
 pub const DAILY_QUIET: &str = "Daily quiet time";
-pub const DAILY_QUIET_HELP: &str = "The same as \"do not disturb\", every day between the two times. The times keep the distance from UTC of the day on which they were set.";
+pub const DAILY_QUIET_HELP: &str = "Every day between the two times on the clock of the time zone below, notifications wait on every server. Your status does not change.";
 pub const QUIET_FROM: &str = "From";
 pub const QUIET_UNTIL: &str = "Until";
 pub const QUIET_SET: &str = "Set";

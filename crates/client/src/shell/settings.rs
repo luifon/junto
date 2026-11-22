@@ -874,7 +874,7 @@ impl Shell {
         ];
         // Settings of the account on each server; the window sets them on every server of
         // the device, as the quiet times (ADR 0742).
-        if let Some(hide_text) = quiet.hide_text {
+        if let Some(hide_text) = quiet.hide_text.clone() {
             let shown = hide_text == crate::state::notices::Agreement::All(false);
             let busy = quiet.busy;
             parts.push(self.switch_row(
@@ -894,7 +894,7 @@ impl Shell {
                 cx,
             ));
         }
-        if let Some(hold) = quiet.hold_while_presenting {
+        if let Some(hold) = quiet.hold_while_presenting.clone() {
             let on = hold == crate::state::notices::Agreement::All(true);
             let busy = quiet.busy;
             parts.push(self.switch_row(

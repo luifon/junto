@@ -70,6 +70,8 @@ pub enum AdminPage {
     Glossary,
     /// The exports of the person.
     Exports,
+    /// The notification levels that the person chose on this server (ADR 0742).
+    OwnNotifications,
 }
 
 /// A page of the settings of one channel.

@@ -318,6 +318,7 @@ fn a_member_without_permissions_has_the_pages_that_every_member_may_use() {
             AdminPage::Members,
             AdminPage::Recordings,
             AdminPage::Glossary,
+            AdminPage::OwnNotifications,
             AdminPage::Tokens,
             AdminPage::Exports
         ]
@@ -382,6 +383,7 @@ fn an_administrator_and_the_owner_have_every_page() {
         AdminPage::Notifications,
         AdminPage::Recordings,
         AdminPage::Glossary,
+        AdminPage::OwnNotifications,
         AdminPage::Exports,
     ];
     let mut scene = scene();
@@ -1111,7 +1113,14 @@ fn an_account_without_the_administrator_permission_has_the_page_of_its_own_token
         .iter()
         .find(|group| group.title == NavTitle::Own)
         .unwrap();
-    assert_eq!(own.pages, [AdminPage::Tokens, AdminPage::Exports]);
+    assert_eq!(
+        own.pages,
+        [
+            AdminPage::OwnNotifications,
+            AdminPage::Tokens,
+            AdminPage::Exports
+        ]
+    );
     assert!(!nav[0].pages.contains(&AdminPage::Tokens));
 }
 

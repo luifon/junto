@@ -506,6 +506,9 @@ pub struct Shell {
     pub(crate) joins_opened: u64,
     /// The number of results of join actions that this window has received.
     pub(crate) join_results: u64,
+    /// The administration page that opened the notification dialog of a channel, which
+    /// opens again when the dialog closes.
+    pub(crate) notify_return: Option<crate::state::admin::AdminOpen>,
     // The messages.
     /// The list of the messages of the shown channel.
     pub(crate) feed: feed::FeedList,
@@ -1028,6 +1031,7 @@ impl Shell {
             code,
             joins_opened: 0,
             join_results: 0,
+            notify_return: None,
             feed,
             message_pictures: feed::MessagePictures::default(),
             viewer_reads: 0,

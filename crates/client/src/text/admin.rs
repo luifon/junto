@@ -79,6 +79,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Recordings => "Recordings",
         AdminPage::Glossary => "Glossary",
         AdminPage::Exports => "Exports",
+        AdminPage::OwnNotifications => "Notifications",
     }
 }
 
@@ -98,6 +99,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::Recordings => Icon::Record,
         AdminPage::Glossary => Icon::Book,
         AdminPage::Exports => Icon::Download,
+        AdminPage::OwnNotifications => Icon::Bell,
     }
 }
 
@@ -120,6 +122,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Glossary => "admin-nav-glossary",
         AdminPage::Exports => "admin-nav-exports",
+        AdminPage::OwnNotifications => "admin-nav-own-notifications",
     }
 }
 

@@ -31,8 +31,8 @@ Mute:
 
 Do not disturb:
 
-- Do not disturb applies to the whole application. The client shows no operating-system notifications, and unread signs still update.
-- It is switched by hand or on a daily schedule.
+- Do not disturb applies per server: it is one of the status choices of the account on that server (ADR 0401). The client shows no operating-system notifications of that server, and unread signs still update.
+- A daily quiet time holds notifications back at set hours without changing the status. The device sends it to every server on which it has a session.
 
 Direct messages, call invites and threads:
 

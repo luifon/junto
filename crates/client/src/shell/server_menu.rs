@@ -171,28 +171,18 @@ impl Shell {
                     .icon(Icon::Bell)
                     .selector("server-notifications")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_notify_settings(
-                            server_id,
-                            junto_client_core::api::SettingsScope::Account,
-                            window,
-                            cx,
-                        );
+                        this.open_own_notifications(server_id, window, cx);
                     }))
                     .into_any_element(),
             );
         }
-        if let Some(workspace_id) = workspace_id {
+        if workspace_id.is_some() {
             notifications.push(
                 MenuItem::new("workspace-notifications", text::WORKSPACE_NOTIFICATIONS)
                     .icon(Icon::Bell)
                     .selector("workspace-notifications")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_notify_settings(
-                            server_id,
-                            junto_client_core::api::SettingsScope::Workspace(workspace_id),
-                            window,
-                            cx,
-                        );
+                        this.open_own_notifications(server_id, window, cx);
                     }))
                     .into_any_element(),
             );
