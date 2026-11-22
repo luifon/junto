@@ -12,7 +12,6 @@ use junto_client_core::protocol::ids::{AccountId, RecordingId, ServerId, Workspa
 use junto_client_core::protocol::recording::Recording;
 
 use super::view::recordings::{MOST_RECORDINGS, RECORDINGS_PAGE};
-use super::{AdminOpen, AdminPage};
 use crate::state::AppState;
 use crate::text;
 
@@ -214,14 +213,17 @@ pub(crate) fn concerns(notice: Option<&Notice>, workspace_id: WorkspaceId) -> Co
 }
 
 impl AppState {
-    /// The workspace whose list of recordings the open page shows.
+    /// The workspace whose list of recordings a reader shows. Server settings have no page of
+    /// the recordings since release 0.3.0; the Recordings tab of the Files panel reads this
+    /// list (ADR 0784).
     fn open_recordings(&self) -> Option<(ServerId, WorkspaceId)> {
-        let shown = self.admin.recordings.shown?;
-        matches!(
-            self.admin.open,
-            Some(AdminOpen::Server { server_id, page: AdminPage::Recordings }) if server_id == shown.0
-        )
-        .then_some(shown)
+        self.admin.recordings.shown
+    }
+
+    /// Ends the list of recordings that a reader showed: no event reads it again.
+    pub fn hide_recordings(&mut self, cx: &mut Context<Self>) {
+        self.admin.recordings = RecordingList::default();
+        cx.notify();
     }
 
     /// Shows the recordings of a workspace and reads the first page. A second call for

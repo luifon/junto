@@ -62,10 +62,15 @@ pub const MOVE_REFUSAL_SHOWN: &str =
 pub const LAST_ALREADY: &str = "It is the last one.";
 pub const NAME_EMPTY: &str = "Type a name.";
 
+/// The selector of the workspace while the chosen workspace is gone.
+pub const NO_WORKSPACE_CHOSEN: &str = "Choose a workspace";
+pub const ACCESS_ENDED_TITLE: &str = "Your access ended";
+pub const ACCESS_ENDED: &str = "You no longer have access to this workspace, or to this page of it. Choose a workspace above, or another page.";
+
 pub fn nav_title(title: &NavTitle) -> String {
     match title {
         NavTitle::Server => "Server".to_owned(),
-        NavTitle::Workspace(_) => WORKSPACE_CHOICE.to_owned(),
+        NavTitle::Workspace(_) | NavTitle::WorkspaceGone => WORKSPACE_CHOICE.to_owned(),
         NavTitle::Own => "Your account".to_owned(),
     }
 }
@@ -84,7 +89,6 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Roles => "Roles",
         AdminPage::Archive => "Archive and retention",
         AdminPage::Members => "Members",
-        AdminPage::Recordings => "Recordings",
         AdminPage::Glossary => "Glossary",
         AdminPage::Exports => "Exports",
         AdminPage::Profile => {
@@ -114,7 +118,6 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::AuditLog => Icon::Scroll,
         AdminPage::Channels => Icon::Hash,
         AdminPage::Archive => Icon::Archive,
-        AdminPage::Recordings => Icon::Record,
         AdminPage::Glossary => Icon::Book,
         AdminPage::Exports => Icon::Download,
         AdminPage::Profile => Icon::Account,
@@ -150,7 +153,6 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Roles => "admin-nav-roles",
         AdminPage::Archive => "admin-nav-archive",
         AdminPage::Members => "admin-nav-members",
-        AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Glossary => "admin-nav-glossary",
         AdminPage::Exports => "admin-nav-exports",
         AdminPage::Profile => "account-nav-profile",

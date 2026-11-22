@@ -803,3 +803,24 @@ fn the_later_of_two_chosen_files_opens_its_cut(cx: &mut TestAppContext) {
     window.settle();
     assert_eq!(window.picture_crop().map(|crop| crop.width), Some(64));
 }
+
+/// The profile opened from the list of pages of Server settings starts with the name that the
+/// server holds, as when the menu opens it (ADR 0781).
+#[gpui::test]
+fn the_profile_opened_from_the_list_of_pages_holds_the_name_of_the_account(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.open_administration();
+    window.click("account-nav-profile");
+    window.until("the profile is shown", |window| {
+        window.shows("account-name-field")
+    });
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.account_name_typed(cx)),
+        "Luca"
+    );
+}

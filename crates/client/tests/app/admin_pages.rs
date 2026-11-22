@@ -3918,3 +3918,54 @@ fn administration_people_have_identity_actions_without_leaving_the_page(cx: &mut
     );
     assert!(server_page!(&mut window, Members).is_some());
 }
+
+/// The overview of a workspace lists every voice channel that can be the AFK channel; the page
+/// scrolls to the last one (ADR 0761).
+#[gpui::test]
+fn the_workspace_overview_scrolls_to_its_last_afk_channel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = owner_window(cx, &server);
+    let workspace = default_workspace(&world, &owner);
+    let mut last = None;
+    for index in 0..30 {
+        let channel = CreateChannel {
+            topic: String::new(),
+            name: format!("room-{index:02}"),
+            kind: ChannelKind::Voice,
+            category_id: None,
+            position: None,
+        };
+        last = Some(
+            world
+                .run(owner.api().create_channel(workspace, &channel))
+                .unwrap()
+                .id,
+        );
+    }
+    let last = last.unwrap();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-workspace-overview", |window| {
+        window.shows("afk-settings-open")
+    });
+    click_in_page(&mut window, "afk-settings-open");
+    let row = sel("afk-channel", last);
+    window.until("the voice channels are listed", |window| window.shows(row));
+    reveal_in_page(&mut window, row);
+}
+
+/// A page of the account in a low window scrolls to its last control (ADR 0781).
+#[gpui::test]
+fn a_page_of_the_account_scrolls_in_a_low_window(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.simulate(|cx| cx.simulate_resize(gpui::size(px(720.0), px(480.0))));
+    window.open_administration();
+    window.click("account-nav-departure");
+    window.until("the page of the departure is shown", |window| {
+        window.shows("account-delete")
+    });
+    reveal_in_page(&mut window, "account-delete");
+}

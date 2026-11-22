@@ -248,7 +248,6 @@ impl Shell {
         let Some(server_id) = self.state.read(cx).view().selected.map(|server| server.id) else {
             return;
         };
-        self.reset_account_ui(window, cx);
         self.open_admin(
             crate::state::admin::AdminOpen::Server {
                 server_id,
@@ -257,7 +256,12 @@ impl Shell {
             window,
             cx,
         );
-        // The name field starts with the name that the server holds.
+    }
+
+    /// Readies a page of the account that Server settings open, whatever opened it: the menu,
+    /// the list of pages or a link. The name field starts with the name that the server holds.
+    pub(crate) fn ready_account_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_account_ui(window, cx);
         let held = self
             .state
             .read(cx)
@@ -359,6 +363,11 @@ impl Shell {
                 .update(cx, |state, cx| state.dismiss_account_ask(cx));
         }
         cx.notify();
+    }
+
+    /// The text of the name field of the profile page. The window tests read it.
+    pub fn account_name_typed(&self, cx: &App) -> String {
+        self.account.name.read(cx).value().to_string()
     }
 
     /// Puts text into the name field of the profile page, as typing does.

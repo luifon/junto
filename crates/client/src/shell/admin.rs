@@ -9,9 +9,9 @@ mod glossary;
 mod list;
 mod notifications;
 pub mod overrides;
+mod page_scroll;
 pub mod people;
 mod person;
-mod recordings;
 pub mod records;
 pub mod roles;
 pub mod server;
@@ -147,7 +147,6 @@ pub(crate) struct AdminUi {
     pub(crate) overrides: overrides::Ui,
     pub(crate) people: people::Ui,
     pub(crate) records: records::Ui,
-    pub(crate) recordings: recordings::Ui,
     pub(crate) roles: roles::Ui,
 }
 
@@ -217,7 +216,6 @@ impl AdminUi {
             overrides,
             people,
             records,
-            recordings: recordings::Ui::default(),
             roles,
         };
         (ui, subscriptions)
@@ -477,6 +475,11 @@ impl Shell {
             Some(workspace_id) => state.open_admin_in_workspace(open, workspace_id, cx),
             None => state.open_admin(open, cx),
         });
+        if let AdminOpen::Server { page, .. } = open
+            && page.account_page().is_some()
+        {
+            self.ready_account_page(window, cx);
+        }
         match self.layer {
             Layer::Admin => {}
             Layer::None => self.open_layer(Layer::Admin, window, cx),
@@ -563,7 +566,6 @@ impl Shell {
         self.reset_overrides_ui(window, cx);
         self.reset_people_ui(window, cx);
         self.reset_records_ui(window, cx);
-        self.reset_recordings_ui();
         self.reset_roles_ui(window, cx);
     }
 
@@ -1113,8 +1115,19 @@ impl Shell {
                     .truncate()
                     .child(text::admin::nav_title(&group.title)),
             );
-            if let crate::state::admin::view::NavTitle::Workspace(name) = &group.title {
-                column = column.child(self.render_workspace_selector(view, name, theme, cx));
+            match &group.title {
+                crate::state::admin::view::NavTitle::Workspace(name) => {
+                    column = column.child(self.render_workspace_selector(view, name, theme, cx));
+                }
+                crate::state::admin::view::NavTitle::WorkspaceGone => {
+                    column = column.child(self.render_workspace_selector(
+                        view,
+                        text::admin::NO_WORKSPACE_CHOSEN,
+                        theme,
+                        cx,
+                    ));
+                }
+                _ => {}
             }
             for page in group.pages.iter().copied() {
                 let name = text::admin::nav_page_name(page, view.administrator);
@@ -1453,7 +1466,6 @@ impl Shell {
             ServerPage::Tokens(page) => self.render_tokens_page(view, page, window, cx),
             ServerPage::Exports(page) => self.render_exports_page(view, page, window, cx),
             ServerPage::AuditLog(page) => self.render_audit_page(view, page, window, cx),
-            ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
             ServerPage::Glossary(page) => self.render_glossary_page(view, page, window, cx),
             ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
             ServerPage::Account => self.render_account_page(window, cx),
@@ -1478,6 +1490,17 @@ impl Shell {
                 self.render_channel_archive(view, settings, page, window, cx)
             }
         }
+            // The page states that the access ended, without a control (ADR 0761).
+            ServerPage::AccessEnded => div()
+                .flex()
+                .flex_col()
+                .debug_selector(|| "admin-access-ended".to_owned())
+                .child(page_title(
+                    text::admin::ACCESS_ENDED_TITLE,
+                    text::admin::ACCESS_ENDED,
+                    &theme(cx),
+                ))
+                .into_any_element(),
     }
 }
 

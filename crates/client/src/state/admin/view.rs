@@ -60,6 +60,9 @@ pub enum NavTitle {
     /// The workspace of the layer, by its name. The shell draws the selector of the
     /// workspace in its place.
     Workspace(String),
+    /// The workspace chosen in the selector is gone: the person left it or lost every page
+    /// of it. The shell draws the selector without a workspace.
+    WorkspaceGone,
     Own,
 }
 
@@ -505,6 +508,8 @@ pub enum ServerPage {
     Server(server::ServerSettingsPage),
     /// The overview of the chosen workspace.
     WorkspaceOverview(Box<WorkspaceOverviewPage>),
+    /// A page of the chosen workspace after the person lost the workspace (ADR 0761).
+    AccessEnded,
     Channels(ChannelsPage),
     Archive(ArchivePage),
     Members(people::MembersPage),
@@ -515,7 +520,6 @@ pub enum ServerPage {
     Exports(records::ExportsPage),
     /// In a box: the page with its filters is larger than every other page.
     AuditLog(Box<records::AuditPage>),
-    Recordings(recordings::RecordingsPage),
     Glossary(glossary::GlossaryPage),
     /// The server roles, or the roles of the shown workspace.
     Roles(roles::RolesPage),
@@ -713,13 +717,10 @@ pub fn nav(
 ) -> Vec<NavGroup> {
     let administrator = model.is_administrator();
     let mut server = Vec::new();
-    // Only an administrator changes the server itself (ADR 0101). The workspaces of the
-    // server are listed for a person who creates them or deletes them (ADR 0102).
+    // Only an administrator changes the server itself (ADR 0101) and lists, creates and
+    // deletes its workspaces on the page Workspaces (ADR 0761).
     if administrator {
-        server.push(AdminPage::Server);
-    }
-    if administrator || holds_server(model, ServerPermission::CreateWorkspace) {
-        server.push(AdminPage::Workspaces);
+        server.extend([AdminPage::Server, AdminPage::Workspaces]);
     }
     for (page, permission) in [
         (AdminPage::People, ServerPermission::BanMembers),
@@ -767,11 +768,8 @@ pub fn nav(
         }
         // Every member reads the members, the archived channels and the glossary; "manage
         // glossary" changes the glossary (ADR 0603).
-        pages.extend([AdminPage::Members, AdminPage::Archive]);
-        // Every member lists the recordings: the server answers with what the account
-        // may see.
-        pages.push(AdminPage::Recordings);
-        pages.push(AdminPage::Glossary);
+        // The recordings are not a page of the list: the Files panel lists them (ADR 0784).
+        pages.extend([AdminPage::Members, AdminPage::Archive, AdminPage::Glossary]);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
             waiting: waiting_of(&pages, model, Some(workspace), waiting),
@@ -812,9 +810,12 @@ pub(crate) fn layer_workspace<'a>(
         }
         AdminOpen::Server { .. } | AdminOpen::Person { .. } => None,
     };
-    own.or(admin.chosen)
-        .and_then(|workspace_id| model.workspace(workspace_id))
-        .or_else(|| shown_workspace(model, selection.workspaces.get(&server_id).copied()))
+    // A chosen workspace that is gone gives no other workspace: the layer does not change
+    // the workspace whose settings the person was looking at (ADR 0761).
+    match own.or(admin.chosen) {
+        Some(workspace_id) => model.workspace(workspace_id),
+        None => shown_workspace(model, selection.workspaces.get(&server_id).copied()),
+    }
 }
 
 /// The workspaces of the selector of the layer. The server sends the state of a workspace
@@ -909,7 +910,6 @@ pub fn needs(
                 parts
             }
             // A recording of an archived channel is named by the archived list.
-            AdminPage::Recordings => workspace_id.map(AdminPart::Archived).into_iter().collect(),
             AdminPage::Glossary => workspace_id.map(AdminPart::Glossary).into_iter().collect(),
             AdminPage::Members => {
                 let mut parts = Vec::new();
@@ -1426,7 +1426,27 @@ pub fn derive(
             .contains(server_id, account_id, export_id)
     };
     let waiting = waiting(server_id, model, &saved, known.clock);
-    let nav = nav(model, workspace, &waiting);
+    let mut nav = nav(model, workspace, &waiting);
+    // The chosen workspace is gone: the selector stays without a workspace until the person
+    // chooses another one, and a page of the workspace states that the access ended.
+    let gone = matches!(open, AdminOpen::Server { .. } | AdminOpen::Person { .. })
+        && admin
+            .chosen
+            .is_some_and(|workspace_id| model.workspace(workspace_id).is_none());
+    if gone {
+        let at = nav
+            .iter()
+            .position(|group| !matches!(group.title, NavTitle::Server))
+            .unwrap_or(nav.len());
+        nav.insert(
+            at,
+            NavGroup {
+                title: NavTitle::WorkspaceGone,
+                waiting: Vec::new(),
+                pages: Vec::new(),
+            },
+        );
+    }
     // The first page that the person may use; a page that the person may not use any more
     // gives way to it. A page of the workspace gives way to the first page of the workspace.
     let first_in = |workspace_page: bool| {
@@ -1487,6 +1507,12 @@ pub fn derive(
         AdminOpen::Person { .. } | AdminOpen::Server { .. } if person.is_some() => {
             Scope::Person(Box::new(person?))
         }
+        AdminOpen::Person { .. } | AdminOpen::Server { .. } if gone && listed.of_workspace() => {
+            Scope::Server {
+                selected: listed,
+                page: ServerPage::AccessEnded,
+            }
+        }
         AdminOpen::Person { .. } | AdminOpen::Server { .. } => {
             let page = listed;
             let selected = if nav.iter().any(|group| group.pages.contains(&page)) {
@@ -1511,9 +1537,6 @@ pub fn derive(
                 }
                 (AdminPage::WorkspaceOverview, Some(workspace)) => ServerPage::WorkspaceOverview(
                     Box::new(workspace_overview(server_id, model, workspace, known)),
-                ),
-                (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
-                    recordings::recordings(server_id, model, workspace, known, admin),
                 ),
                 (AdminPage::Glossary, Some(workspace)) => {
                     ServerPage::Glossary(glossary::derive(server_id, model, workspace, admin))
@@ -1564,7 +1587,6 @@ pub fn derive(
                     | AdminPage::Roles
                     | AdminPage::Archive
                     | AdminPage::Members
-                    | AdminPage::Recordings
                     | AdminPage::Glossary,
                     _,
                 ) => ServerPage::Workspaces(workspaces_page(

@@ -1,42 +1,29 @@
-//! The screens of the server book with several servers, of the update notice, and of the
-//! page of the recordings of a workspace (ADR 0780, ADR 0784).
+//! The screens of the server book with several servers and of the update notice
+//! (ADR 0780).
 
 use std::sync::Arc;
 
 use junto_client::shell::add_server::AddTab;
 use junto_client::shell::{Open, Shell};
-use junto_client::state::admin::{AdminOpen, AdminPage, RecordingList};
 use junto_client::state::book::UpdatesKnown;
-use junto_client::state::feed::Zone;
 use junto_client::state::view::ServerSnapshot;
 use junto_client::text;
 use junto_client_core::Reach;
 use junto_client_core::arrangement::{Arrangement, Change, GroupColour, GroupId, WorkspaceSpot};
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::StreamStatus;
-use junto_client_core::protocol::ids::{ChannelId, RecordingId};
 use junto_client_core::protocol::message::{Conversation, MessagePlace, MessageState};
-use junto_client_core::protocol::recording::{
-    Recording, RecordingFailure, RecordingState, RecordingStop, RecordingStopReason,
-};
-use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::updates::{Release, UpdateState, Version};
 use junto_client_core::version::Incompatibility;
 use junto_media::calls::Phase;
-use time::{Duration, UtcOffset};
 
-use super::{
-    Screen, Studio, acme, at, harbor, harbor_as, id, in_call, person, reachable, recording,
-};
+use super::{Screen, Studio, acme, harbor, harbor_as, id, in_call, person, reachable};
 
 // The numbers of the identifiers of the servers of the screens.
 const ACME: u32 = 1;
 const HARBOR: u32 = 2;
 const QUARRY: u32 = 3;
 const STUDIO: u32 = 10;
-const DAILY: u32 = 34;
-const HR: u32 = 36;
-const RECORDING: u32 = 4100;
 
 const BUILD: Version = Version::new(0, 3, 1);
 const NEWER: Version = Version::new(0, 4, 0);
@@ -525,206 +512,8 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
     Ok(())
 }
 
-/// One recording of a call of "Studio", this number of hours before the newest record of
-/// the screens.
-fn recorded(
-    number: u32,
-    channel: u32,
-    hours: i64,
-    state: RecordingState,
-    change: impl FnOnce(&mut Recording),
-) -> Recording {
-    let requested = at() - Duration::hours(hours);
-    let since = requested + Duration::seconds(4);
-    let ended = !state.is_active();
-    let mut held = recording(|recording| {
-        recording.id = id(RECORDING + number);
-        recording.workspace_id = id(STUDIO);
-        recording.channel_id = id(channel);
-        recording.state = state;
-        recording.requested_at = requested;
-        recording.recording_since = Some(since);
-        if ended {
-            let at = since + Duration::minutes(36) + Duration::seconds(5);
-            recording.stop = Some(RecordingStop {
-                reason: RecordingStopReason::Stopped,
-                by: Some(person("Ana")),
-                at,
-            });
-            recording.ended_at = Some(at);
-        }
-    });
-    change(&mut held);
-    held
-}
-
-/// The recordings of "Studio": one in each state, and what the state can lack.
-fn recordings() -> Vec<Recording> {
-    let gone: ChannelId = id(3999);
-    vec![
-        recorded(1, DAILY, 0, RecordingState::Starting, |recording| {
-            recording.recording_since = None;
-            recording.segments = 0;
-        }),
-        recorded(2, HR, 1, RecordingState::Recording, |recording| {
-            recording.started_by = person("Marta");
-        }),
-        recorded(3, DAILY, 26, RecordingState::Processing, |_| {}),
-        recorded(4, DAILY, 50, RecordingState::Ready, |recording| {
-            recording.bytes = Some(48_200_000);
-            recording.transcript = TranscriptState::Ready;
-            recording.transcript_lines = 212;
-        }),
-        recorded(5, DAILY, 74, RecordingState::Ready, |recording| {
-            recording.bytes = Some(1_260_000_000);
-            recording.transcript = TranscriptState::Running;
-            recording.ended_at = recording
-                .recording_since
-                .map(|since| since + Duration::hours(1) + Duration::minutes(4));
-        }),
-        recorded(6, DAILY, 98, RecordingState::PartlyFailed, |recording| {
-            recording.failed_segments = 2;
-            recording.bytes = Some(31_000_000);
-            recording.transcript = TranscriptState::Partial;
-            recording.transcript_lines = 40;
-        }),
-        recorded(7, DAILY, 122, RecordingState::Failed, |recording| {
-            recording.recording_since = None;
-            recording.failure = Some(RecordingFailure::RecorderUnavailable);
-            recording.segments = 0;
-        }),
-        recorded(8, DAILY, 146, RecordingState::Failed, |recording| {
-            recording.failure = Some(RecordingFailure::NothingRecorded);
-            recording.transcript = TranscriptState::Failed;
-        }),
-        // The channel was deleted, and the account that started the recording left.
-        recorded(9, 0, 170, RecordingState::Ready, |recording| {
-            recording.channel_id = gone;
-            recording.started_by = id(4999);
-            recording.bytes = Some(912_000);
-            recording.transcript = TranscriptState::Waiting;
-        }),
-    ]
-}
-
-/// Opens the page of the recordings of "Studio" and shows this list. The opening of the
-/// administration puts the list away, so the list is shown after it.
-fn open_recordings(
-    shell: &mut Shell,
-    list: impl FnOnce(RecordingList) -> RecordingList,
-    recordings: Vec<Recording>,
-    older: bool,
-    window: &mut gpui::Window,
-    cx: &mut gpui::Context<Shell>,
-) {
-    shell.state().clone().update(cx, |state, cx| {
-        state.set_zone(Zone::Fixed(UtcOffset::UTC), cx)
-    });
-    let open = AdminOpen::Server {
-        server_id: id(ACME),
-        page: AdminPage::Recordings,
-    };
-    shell.open_admin(open, window, cx);
-    let loaded = RecordingList::loaded(id(ACME), id(STUDIO), person("Luca"), recordings, older);
-    shell.state().clone().update(cx, |state, cx| {
-        state.show_recording_list_fixture(list(loaded), cx)
-    });
-}
-
-fn draw_recordings(studio: &mut Studio) -> Result<(), String> {
-    let servers = || vec![acme(), harbor()];
-    studio.draw(
-        Screen::new("admin-recordings", servers()),
-        |shell, window, cx| open_recordings(shell, |list| list, recordings(), true, window, cx),
-    )?;
-    // A recording was removed: its row is gone from the page.
-    studio.draw(
-        Screen::new("admin-recording-removed", servers()),
-        |shell, window, cx| {
-            let mut fewer = recordings();
-            if !fewer.is_empty() {
-                fewer.remove(0);
-            }
-            open_recordings(shell, |list| list, fewer, true, window, cx)
-        },
-    )?;
-    studio.draw(
-        Screen::new("admin-recordings-scale-150", servers()).scale(150),
-        |shell, window, cx| open_recordings(shell, |list| list, recordings(), false, window, cx),
-    )?;
-    studio.draw(
-        Screen::new("admin-recordings-empty", servers()),
-        |shell, window, cx| open_recordings(shell, |list| list, Vec::new(), false, window, cx),
-    )?;
-    studio.draw(
-        Screen::new("admin-recordings-reading", servers()),
-        |shell, window, cx| {
-            open_recordings(
-                shell,
-                RecordingList::with_reading,
-                Vec::new(),
-                false,
-                window,
-                cx,
-            );
-        },
-    )?;
-    studio.draw(
-        Screen::new("admin-recordings-refused", servers()),
-        |shell, window, cx| {
-            open_recordings(
-                shell,
-                |list| {
-                    list.with_failure("Your account may not read the recordings of this workspace.")
-                },
-                Vec::new(),
-                false,
-                window,
-                cx,
-            );
-        },
-    )?;
-    studio.draw(
-        Screen::new("admin-recordings-unreachable", servers()),
-        |shell, window, cx| {
-            open_recordings(
-                shell,
-                |list| {
-                    list.with_failure(
-                        "No connection to the server. Check the address and the network \
-                         connection.",
-                    )
-                },
-                recordings(),
-                true,
-                window,
-                cx,
-            );
-        },
-    )?;
-    // The page holds the most recordings that it keeps: the end of the list.
-    studio.draw(
-        Screen::new("admin-recordings-bound", servers()),
-        |shell, window, cx| {
-            let one = recorded(0, DAILY, 2, RecordingState::Ready, |recording| {
-                recording.bytes = Some(48_200_000);
-            });
-            let many: Vec<Recording> = (0..2000u32)
-                .map(|number| Recording {
-                    id: id::<RecordingId>(100_000 + number),
-                    ..one.clone()
-                })
-                .collect();
-            open_recordings(shell, |list| list, many, true, window, cx);
-            shell.scroll_admin_page_to_end();
-        },
-    )?;
-    Ok(())
-}
-
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     draw_book(studio)?;
     draw_arrangement(studio)?;
-    draw_update(studio)?;
-    draw_recordings(studio)
+    draw_update(studio)
 }

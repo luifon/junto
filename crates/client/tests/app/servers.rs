@@ -1,13 +1,11 @@
-//! Several servers in one window against the real server (ADR 0107, ADR 0780, ADR 0784):
+//! Several servers in one window against the real server (ADR 0107, ADR 0780):
 //! a second server that is joined by approval, a notice from a server in the background,
-//! the order of the server book, the notice of a newer build, the version of a server in its
-//! menu, and the page of the recordings of a workspace.
+//! the order of the server book, the notice of a newer build, and the version of a server in
+//! its menu.
 
 use std::time::{Duration, Instant};
 
 use gpui::TestAppContext;
-use junto_client::state::admin::view::recordings::RecordingsRead;
-use junto_client::state::admin::view::{Scope, ServerPage};
 use junto_client::state::book::CheckShown;
 use junto_client::state::view::{ServerRelease, ServerStatus};
 use junto_client::text;
@@ -20,7 +18,7 @@ use junto_client_core::version::ServerVersion;
 
 use crate::harness::{Admin, Window, World, member, named, open, open_with_updates};
 use crate::messages::document;
-use crate::support::{Fault, FaultProxy, TestServer};
+use crate::support::TestServer;
 
 impl Window {
     pub(crate) fn server_names(&mut self) -> Vec<String> {
@@ -734,95 +732,6 @@ fn the_application_without_a_source_of_releases_shows_no_notice_and_asks_nothing
     assert_eq!(version.check, CheckShown::NotConfigured);
     assert_eq!(version.build, Version::THIS_BUILD);
     assert!(!version.can_check && !version.checking);
-}
-
-/// The page of the recordings that the open administration shows.
-fn recordings_page(
-    window: &mut Window,
-) -> Option<junto_client::state::admin::view::recordings::RecordingsPage> {
-    window.run_tasks();
-    let view = window
-        .state
-        .read_with(&window.cx, |state, _| state.admin_view())?;
-    match view.scope {
-        Scope::Server {
-            page: ServerPage::Recordings(page),
-            ..
-        } => Some(page),
-        _ => None,
-    }
-}
-
-#[gpui::test]
-fn a_member_reads_the_recordings_of_a_workspace_that_has_none_and_a_read_that_failed_again(
-    cx: &mut TestAppContext,
-) {
-    let world = World::new();
-    let server = world.server("Acme Studio");
-    let admin = world.owner(&server);
-    let proxy = world.run(FaultProxy::start(&server));
-    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
-    let workspace_id = window.view().workspace().unwrap().id;
-    // One read asks for the 50 newest recordings.
-    let path = format!("/api/v1/workspaces/{workspace_id}/recordings?limit=50");
-
-    // A member has the page in the group of the shown workspace.
-    window.open_server_menu();
-    window.click("menu-administration");
-    window.until("the administration is open", |window| {
-        window.shows("admin") && window.shows("admin-nav-recordings")
-    });
-    // The first read gets no answer: the page states the failure with "Try again".
-    proxy.fail(&path, [Fault::Cut; 8]);
-    window.click("admin-nav-recordings");
-    window.until("the read failed", |window| {
-        window.shows("recordings-failed")
-    });
-    let page = recordings_page(&mut window).unwrap();
-    assert!(matches!(
-        page.state,
-        RecordingsRead::Failed { older: false, .. }
-    ));
-    assert!(page.rows.is_empty());
-    assert!(window.shows("recordings-retry"));
-    assert!(!window.shows("recordings-empty") && !window.shows("recordings-older"));
-    assert!(!proxy.seen(&path).is_empty());
-
-    // The server answers again: the list is empty, and the page says so.
-    window.until("the list was read", |window| {
-        if window.shows("recordings-retry") {
-            window.click("recordings-retry");
-        }
-        window.shows("recordings-empty")
-    });
-    let page = recordings_page(&mut window).unwrap();
-    assert_eq!(page.state, RecordingsRead::Loaded);
-    assert_eq!(page.workspace_id, workspace_id);
-    assert!(page.rows.is_empty() && !page.older && !page.at_bound);
-    assert!(!window.shows("recordings-failed") && !window.shows("recordings-older"));
-    assert!(!window.shows("recordings-bound"));
-    assert!(window.shows("recordings-reload") && window.shows("recordings-count"));
-    // Every request asked for the first page, and for nothing else of the recordings.
-    let all = proxy.all();
-    assert!(
-        all.iter()
-            .filter(|seen| seen.path.contains("/recordings"))
-            .all(|seen| seen.path == path && seen.method == "GET")
-    );
-
-    // "Try again" reads the list again.
-    let reads = proxy.seen(&path).len();
-    window.click("recordings-reload");
-    window.until("the list was read again", |window| {
-        proxy.seen(&path).len() > reads && window.shows("recordings-empty")
-    });
-
-    // The page offers no player and no control that saves or removes a recording.
-    for absent in ["recording-play", "recording-save", "recording-remove"] {
-        assert!(!window.shows(absent), "{absent}");
-    }
-    window.click("admin-close");
-    assert!(!window.shows("admin"));
 }
 
 /// Finding 11 of the first live test: the menu of a server kept an empty space for a

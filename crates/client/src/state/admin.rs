@@ -65,8 +65,6 @@ pub enum AdminPage {
     Archive,
     /// The members of the shown workspace.
     Members,
-    /// The recordings of the shown workspace that the account can see (ADR 0784).
-    Recordings,
     /// The glossary of the shown workspace (ADR 0616). Every member reads it.
     Glossary,
     /// The exports of the person.
@@ -113,7 +111,6 @@ impl AdminPage {
                 | Self::Roles
                 | Self::Archive
                 | Self::Members
-                | Self::Recordings
                 | Self::Glossary
         )
     }

@@ -12,7 +12,7 @@ A server keeps the recordings of calls of a workspace and lists them, the newest
 
 The page:
 
-- The administration has the page "Recordings" in the group of the shown workspace. Every member has it: the server answers with what the account may see.
+- Release 0.3.0 removed this page from Server settings (ADR 0761): the Recordings tab of the Files panel lists the recordings. The state of the list (`state::admin::recordings`: the reads page by page, the reads again at the events, the bound of rows) and its derivation (`state::admin::view::recordings`) stay for that tab, which shows and hides the list (`show_recordings`, `hide_recordings`); the rules below describe that list, and "the page" is the place that shows it. Every member reads it: the server answers with what the account may see.
 - The page lists the recordings of the shown workspace, the newest first, in the order of the server.
 - A row shows:
   - the channel, by its name in the state, or "A channel that is not shown" when the state does not hold it. The page holds open the archived list of the workspace, so an archived channel is named;
@@ -54,7 +54,7 @@ Whose list it is:
 
 - A list belongs to one server, one workspace and one account. A request is made for the account that the device had when the read started; it fails when the device has another account by then.
 - An answer is taken only when it is the answer to the newest read, the page still shows that server and that workspace, and the device still has that account. Every other answer is dropped.
-- The list is put away when the page changes, when the layer closes, and when the layer closes because its server shows another account (ADR 0761).
+- The list is put away when its reader hides it, and a list read for another account is not shown (ADR 0761).
 
 ## Consequences
 

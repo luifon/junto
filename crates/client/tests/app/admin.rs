@@ -275,6 +275,13 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
     window.until("the workspace is deleted", |window| {
         !window.workspace_names().contains(&"Laboratory".to_owned())
     });
+    // The deleted workspace was the chosen one: its pages state that the access ended until
+    // another workspace is chosen (ADR 0761).
+    window.until("the selector has no workspace", |window| {
+        window.shows("admin-workspace") && !window.shows("admin-nav-channels")
+    });
+    window.click("admin-workspace");
+    window.click(selector(format!("admin-workspace-{default}")));
 
     // A category and a channel in it; the member gets both.
     window.click("admin-nav-channels");
