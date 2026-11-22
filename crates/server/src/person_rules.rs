@@ -1,9 +1,11 @@
 //! The removal of the workspace permission rules of one member (ADR 0301, ADR 0005). Each rule
-//! of a current member becomes a role that only that member holds, at the bottom of the role
-//! order of its workspace, so that it outranks nobody (ADR 0309). A role only grants, so a
-//! deny of such a rule has no place in the new model: `check-upgrade` lists every account that
-//! the change would give more than it has now, and the server does not apply the change while
-//! the list is not empty.
+//! of a member becomes a role that only that member holds, at the bottom of the role order of
+//! its workspace (ADR 0309). A role only grants, so a deny of such a rule has no place in the
+//! new model, and a member without a role who gets one stands above the members without a
+//! role: `check-upgrade` lists every account that the change would give more than it has now,
+//! in permissions or in authority over people, and the server does not apply the change while
+//! the list is not empty. A banned member keeps its memberships and roles, which an unban
+//! restores, so it is compared as a member.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -44,13 +46,15 @@ pub enum Case {
         workspace: String,
         permissions: Vec<WorkspacePermission>,
     },
-    /// The member holds "manage roles" and would stand above the roles made from the rules
-    /// of these members, who stand at or above the member now: the member could take those
-    /// roles away or give them to others (ADR 0309).
+    /// The member would stand above these members, or above the roles made from their
+    /// rules, who stand at or above the member now, and holds permissions that act on the
+    /// people and the roles below: "manage roles" gives and takes those roles, and "manage
+    /// channel" sets the rules of those people in channels and categories (ADR 0309).
     Outranks {
         member: String,
         workspace: String,
         over: Vec<String>,
+        permissions: Vec<WorkspacePermission>,
     },
     /// The account left the workspace and its rule stays; a role is held only by a member,
     /// so the change removes the rule.
@@ -100,11 +104,14 @@ impl Case {
                 member,
                 workspace,
                 over,
+                permissions,
             } => format!(
-                "{member} in {workspace} holds Manage roles and would stand above the roles made \
-                 from the rules of {}, who stand at or above {member} now. Remove those rules, or \
-                 take Manage roles from {member}.",
-                over.join(", ")
+                "{member} in {workspace} holds {} and would stand above {}, or above the roles made \
+                 from their rules, who stand at or above {member} now. Remove the rule of \
+                 {member} or theirs, or take {} from {member}.",
+                names(permissions),
+                over.join(", "),
+                names(permissions)
             ),
             Self::Former {
                 account,
@@ -174,6 +181,7 @@ struct Role {
 struct Workspace {
     name: String,
     everyone: WorkspacePermissions,
+    everyone_id: Option<WorkspaceRoleId>,
     roles: Vec<Role>,
     held: HashMap<AccountId, Vec<WorkspaceRoleId>>,
     names: HashMap<AccountId, String>,
@@ -246,11 +254,13 @@ async fn workspace(
     .fetch_all(&mut *connection)
     .await?;
     let mut everyone = WorkspacePermissions::EMPTY;
+    let mut everyone_id = None;
     let mut kept = Vec::new();
     for (id, position, bits, is_everyone) in roles {
         let permissions = db::workspace_permissions(bits)?;
         if is_everyone {
             everyone = permissions;
+            everyone_id = Some(id);
         } else {
             kept.push(Role {
                 id,
@@ -263,7 +273,7 @@ async fn workspace(
         "select m.account_id, a.name, r.role_id from workspace_members m
          join accounts a on a.id = m.account_id
          left join member_roles r on r.workspace_id = m.workspace_id and r.account_id = m.account_id
-         where m.workspace_id = $1 and a.status = 'active'",
+         where m.workspace_id = $1 and a.status in ('active', 'banned')",
     )
     .bind(workspace_id)
     .fetch_all(&mut *connection)
@@ -278,10 +288,44 @@ async fn workspace(
     Ok(Workspace {
         name,
         everyone,
+        everyone_id,
         roles: kept,
         held,
         names,
     })
+}
+
+/// The permissions that act by role order (ADR 0309).
+const BY_RANK: [WorkspacePermission; 2] = [
+    WorkspacePermission::ManageRoles,
+    WorkspacePermission::ManageChannel,
+];
+
+/// What a channel or category rule of the workspace allows the member: by the "everyone"
+/// role, by a role that the member holds, or by a rule of the member there.
+async fn allowed_in_places(
+    connection: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    account_id: AccountId,
+    roles: &[WorkspaceRoleId],
+) -> ApiResult<WorkspacePermissions> {
+    let bits: i64 = sqlx::query_scalar(
+        "select coalesce(bit_or(allow), 0)::bigint from (
+             select allow from channel_overrides where workspace_id = $1 and role_id = any($2)
+             union all
+             select allow from category_overrides where workspace_id = $1 and role_id = any($2)
+             union all
+             select allow from channel_person_overrides where workspace_id = $1 and account_id = $3
+             union all
+             select allow from category_person_overrides where workspace_id = $1 and account_id = $3
+         ) allowed",
+    )
+    .bind(workspace_id)
+    .bind(roles)
+    .bind(account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    db::workspace_permissions(bits)
 }
 
 async fn is_administrator(connection: &mut PgConnection, account_id: AccountId) -> ApiResult<bool> {
@@ -395,61 +439,87 @@ pub async fn cases(connection: &mut PgConnection, limits: &Limits) -> ApiResult<
                 )
             })
             .collect();
-        let mut accounts: Vec<(&AccountId, &String)> = held.names.iter().collect();
-        accounts.sort_by(|left, right| left.1.cmp(right.1).then(left.0.cmp(right.0)));
-        for (account_id, member) in accounts {
-            let own = rule_of.get(account_id);
-            let before = held
-                .granted(*account_id)
-                .difference(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.deny))
-                .union(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.allow));
-            let after = held
-                .granted(*account_id)
-                .union(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.allow));
-            if !after.contains(WorkspacePermission::ManageRoles) {
-                continue;
-            }
-            let rank_before = held.rank(*account_id);
-            let rank_after = held
-                .held
-                .get(account_id)
+        let rank_after = |account_id: AccountId| {
+            held.held
+                .get(&account_id)
                 .into_iter()
                 .flatten()
                 .filter_map(|role_id| shifted.get(role_id).copied())
-                .chain(generated_at.get(account_id).copied())
+                .chain(generated_at.get(&account_id).copied())
                 .max()
-                .unwrap_or(0);
-            let over: Vec<String> = generated
+                .unwrap_or(0)
+        };
+        let before_of = |account_id: AccountId| {
+            let own = rule_of.get(&account_id);
+            held.granted(account_id)
+                .difference(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.deny))
+                .union(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.allow))
+        };
+        let mut accounts: Vec<(&AccountId, &String)> = held.names.iter().collect();
+        accounts.sort_by(|left, right| left.1.cmp(right.1).then(left.0.cmp(right.0)));
+        // An administrator compares by a server role and stands above every workspace role
+        // (ADR 0309): nobody gains authority over one, and one gains none that counts.
+        for (account_id, _) in &accounts {
+            if !administrators.contains_key(*account_id) {
+                let known = is_administrator(connection, **account_id).await?;
+                administrators.insert(**account_id, known);
+            }
+        }
+        let administrator = |account_id: AccountId| administrators.get(&account_id) == Some(&true);
+        for (account_id, member) in &accounts {
+            let account_id = **account_id;
+            let own = rule_of.get(&account_id);
+            let (rank_before, rank_now) = (held.rank(account_id), rank_after(account_id));
+            // The members that the member would outrank and does not outrank now.
+            if administrator(account_id) {
+                continue;
+            }
+            let mut over: Vec<String> = accounts
                 .iter()
-                .filter(|rule| rule.account_id != *account_id)
-                .filter(|rule| {
-                    let below = generated_at
-                        .get(&rule.account_id)
-                        .is_some_and(|position| *position < rank_after);
-                    let managed_before = before.contains(WorkspacePermission::ManageRoles)
-                        && rank_before > held.rank(rule.account_id);
-                    below && !managed_before
+                .filter(|(other, _)| **other != account_id && !administrator(**other))
+                .filter(|(other, _)| {
+                    rank_before <= held.rank(**other) && rank_now > rank_after(**other)
                 })
-                .map(|rule| rule.account.clone())
+                .map(|(_, name)| (*name).clone())
                 .collect();
+            // The roles made from the rules of others that the member would stand above,
+            // whose rule the member could not change now (ADR 0306).
+            let managed_before = |other: AccountId| {
+                before_of(account_id).contains(WorkspacePermission::ManageRoles)
+                    && rank_before > held.rank(other)
+            };
+            for rule in &generated {
+                let below = generated_at
+                    .get(&rule.account_id)
+                    .is_some_and(|position| *position < rank_now);
+                if rule.account_id != account_id
+                    && below
+                    && !managed_before(rule.account_id)
+                    && !over.contains(&rule.account)
+                {
+                    over.push(rule.account.clone());
+                }
+            }
             if over.is_empty() {
                 continue;
             }
-            let administrator = match administrators.get(account_id) {
-                Some(known) => *known,
-                None => {
-                    let known = is_administrator(connection, *account_id).await?;
-                    administrators.insert(*account_id, known);
-                    known
-                }
-            };
-            // An administrator compares by a server role and stands above every workspace
-            // role (ADR 0309).
-            if !administrator {
+            let mut roles: Vec<WorkspaceRoleId> =
+                held.held.get(&account_id).cloned().unwrap_or_default();
+            roles.extend(held.everyone_id);
+            let after = held
+                .granted(account_id)
+                .union(own.map_or(WorkspacePermissions::EMPTY, |rule| rule.allow))
+                .union(allowed_in_places(connection, workspace_id, account_id, &roles).await?);
+            let acting: Vec<WorkspacePermission> = BY_RANK
+                .into_iter()
+                .filter(|permission| after.contains(*permission))
+                .collect();
+            if !acting.is_empty() {
                 cases.push(Case::Outranks {
-                    member: member.clone(),
+                    member: (*member).clone(),
                     workspace: held.name.clone(),
                     over,
+                    permissions: acting,
                 });
             }
         }

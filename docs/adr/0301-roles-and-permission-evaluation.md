@@ -36,7 +36,7 @@ their union. A workspace has no permission rule for one member: roles only grant
 one member that could deny what a role grants made "why can this person do this" hard to answer,
 which Discord and Slack avoid the same way. Category and channel overrides exist for everyone,
 roles and people, using disjoint allow and deny sets. Release 0.3.0 turned the allows of each
-rule of a current member into a role held only by that member, at the bottom of the role order of
+rule of a member, a banned one included, into a role held only by that member, at the bottom of the role order of
 its workspace, and removed every rule of one member; it does so only when `check-upgrade` lists
 no case (ADR 0005, `person_rules`). Neutral removes an override for that permission.
 Workspace administration checks workspace scope; a channel grant cannot grant workspace authority.
