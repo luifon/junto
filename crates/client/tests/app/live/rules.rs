@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use gpui::TestAppContext;
-use junto_client::shell::Open;
 use junto_client::state::view::{
     CallNotice, CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton,
     OwnShare, Presence, RoomView, VoiceState,
@@ -20,7 +19,6 @@ use junto_client_core::protocol::call::{
 use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ChannelId};
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
-use junto_client_core::settings::Panel;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
@@ -288,33 +286,11 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice.locked && voice.closed == Some(Closed::Locked)
     });
 
-    // The box that asks to enter belongs to the room that the person chose. In the narrowest
-    // channel column its text takes the most lines, and the whole box stays in view.
-    assert!(!scene.window.shows("entry-box"));
-    scene
-        .window
-        .state
-        .update(&mut scene.window.cx, |state, cx| {
-            state.set_panel_width(Panel::Channels, 200.0, cx);
-        });
+    // The header of the locked room offers "Ask to join" in the place of "Join call"; the
+    // channel list holds no box.
+    assert!(!scene.window.shows("ask-to-enter"));
     scene.window.click_channel(ROOM);
-    assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
-    let area = scene
-        .window
-        .cx
-        .debug_bounds("channel-entry-notices")
-        .unwrap();
-    let entry = scene.window.cx.debug_bounds("entry-box").unwrap();
-    assert!(
-        entry.top() >= area.top() && entry.bottom() <= area.bottom(),
-        "entry box {entry:?} outside its area {area:?}"
-    );
-    // A join is refused, and the refusal is told.
-    scene.window.click("join-call");
-    scene
-        .window
-        .until("the refusal is told", |window| window.shows("call-notice"));
-    scene.window.click("dismiss-call-notice");
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
 
     // The people inside deny the request.
     scene.window.click("ask-to-enter");
@@ -322,6 +298,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         voice_of(window).entry == Some(EntryState::Waiting)
     });
     assert!(scene.window.shows("withdraw-entry") && !scene.window.shows("ask-to-enter"));
+    assert!(scene.window.shows("entry-request"));
     let request = scene.entry_request();
     assert_eq!(request.account_id, scene.luca);
     scene
@@ -382,7 +359,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
     scene
         .window
         .until("the person is in the locked room", connected);
-    assert!(!scene.window.shows("entry-box"));
+    assert!(!scene.window.shows("ask-to-enter") && !scene.window.shows("entry-request"));
     scene.window.until("the room shows its lock", |window| {
         room_view(window).is_some_and(|room| room.locked && room.inside == 2)
     });
@@ -439,15 +416,13 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         room_view(window).is_some_and(|room| !room.locked)
     });
 
-    // The settings of the room, in the settings of the application at "Call", need "manage
-    // channel": without it the switches take no click, and a request is refused by the server
-    // and told.
+    // The settings of the room, in the window of "Room settings" on the call bar, need
+    // "manage channel": without it the switches take no click, and a request is refused by
+    // the server and told.
     let room = room_view(&mut scene.window).unwrap();
     assert!(room.allowed.lock && !room.allowed.manage);
-    scene
-        .window
-        .in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
-    assert!(scene.window.shows("room-no-manage"));
+    scene.window.click("room-settings-open");
+    assert!(scene.window.shows("room-settings"));
     scene.window.click("room-hide");
     scene.window.click("room-limit-raise");
     let state = scene.window.state.clone();
@@ -471,12 +446,10 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
     scene.allow_everyone(&[WorkspacePermission::ManageChannel]);
     scene
         .window
-        .in_shell(|shell, window, cx| shell.open(Open::RoomSettings, window, cx));
-    scene
-        .window
         .until("the person may manage the room", |window| {
-            !window.shows("room-no-manage")
+            room_view(window).is_some_and(|room| room.allowed.manage)
         });
+    scene.window.click("room-settings-open");
     // The first limit is the number of people inside, and a limit of one that is lowered
     // is removed.
     scene.window.click("room-limit-raise");
@@ -498,8 +471,8 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
                 .is_some_and(|room| room.hides_occupants && room.hide_waits_for_next_call)
         });
 
-    // The person leaves. The call that runs still shows who is inside, and it is full: a
-    // full room that shows who is inside tells it under its row.
+    // The person leaves. The call that runs still shows who is inside, and it is full: the
+    // header of the room asks to join, and other channels show nothing of it but its row.
     scene.window.press("escape");
     scene.window.click("leave-call");
     scene
@@ -520,9 +493,9 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .find(|row| row.kind == ChannelKind::Text)
         .unwrap();
     scene.window.click_channel(&other.name);
-    assert!(!scene.window.shows("entry-box"));
-    assert!(scene.window.shows_named(format!("full-note:{voice}")));
+    assert!(!scene.window.shows("ask-to-enter"));
     scene.window.click_channel(ROOM);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
 
     // The next call of the room hides who is inside: the people outside see that it is in
     // use, and learn from a join that it is full.
@@ -545,7 +518,7 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .until("the refusal tells that it is full", |window| {
             window.shows("call-notice") && voice_of(window).closed == Some(Closed::Full)
         });
-    assert!(scene.window.shows("entry-box"));
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     // The request to enter passes the limit. The person reads who is inside from the
     // moment at which the server has seen the device in the room.
     scene.window.click("ask-to-enter");
@@ -1996,13 +1969,9 @@ fn a_double_click_on_a_locked_or_full_room_is_refused_and_the_request_enters_it(
         voice_of(window).closed == Some(Closed::Locked)
     });
     scene.window.double_click_channel(ROOM);
-    let at_double_click = refusal(&mut scene.window, "the refusal of the locked room");
+    refusal(&mut scene.window, "the refusal of the locked room");
     assert!(scene.window.view().call.is_none());
-    assert!(scene.window.shows("entry-box") && scene.window.shows("ask-to-enter"));
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();
@@ -2035,12 +2004,9 @@ fn a_double_click_on_a_locked_or_full_room_is_refused_and_the_request_enters_it(
         voice_of(window).closed == Some(Closed::Full)
     });
     scene.window.double_click_channel(ROOM);
-    let at_double_click = refusal(&mut scene.window, "the refusal of the full room");
+    refusal(&mut scene.window, "the refusal of the full room");
     assert!(scene.window.view().call.is_none());
-    scene.window.click("dismiss-call-notice");
-    scene.window.click("join-call");
-    let at_button = refusal(&mut scene.window, "the refusal of the join button");
-    assert_eq!(at_double_click, at_button);
+    assert!(scene.window.shows("ask-to-enter") && !scene.window.shows("join-call"));
     scene.window.click("dismiss-call-notice");
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();

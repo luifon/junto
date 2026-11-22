@@ -1,4 +1,5 @@
 pub const CHECK: &str = "Test microphone and camera";
+pub const JOIN_AFTER_CHECK: &str = "Join after a device check";
 pub const TITLE: &str = "Test microphone and camera";
 pub const MICROPHONE: &str = "Test microphone";
 pub const OUTPUT: &str = "Test output";

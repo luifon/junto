@@ -285,7 +285,12 @@ impl Shell {
         if share.watched {
             items.push(CallControl {
                 id: "call-menu-stop-watching",
-                label: text::STOP_WATCHING,
+                // The own share is stopped on its line; here its preview is put away.
+                label: if *account_id == open.owner.account_id {
+                    text::HIDE_PREVIEW
+                } else {
+                    text::STOP_WATCHING
+                },
                 action: CallMenuAction::StopWatching(*id),
                 disabled: false,
                 detail: None,

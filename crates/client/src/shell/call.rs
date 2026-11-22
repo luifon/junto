@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
+    AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement,
     Styled, StyledText, Subscription, Window, div, prelude::FluentBuilder, px,
 };
@@ -92,6 +92,10 @@ pub(crate) struct OutsideRow {
     name: SharedString,
     state: Option<(Icon, SharedString)>,
 }
+
+/// Below this width of the stage, in design pixels, the row of own controls moves its less
+/// used controls into its "⋮".
+const OWN_CONTROLS_WIDE: f32 = 520.0;
 
 /// The marks on the plate of the tile of a person, and the words for them.
 pub(crate) fn tile_marks(occupant: &Occupant) -> (Vec<TileMark>, String) {
@@ -228,7 +232,10 @@ impl Shell {
     }
 
     /// What the header of a voice channel shows after its title, for a channel that this
-    /// device is not in: the line about its chat, and the action that enters the call.
+    /// device is not in: the place that the states of its call follow, and the action that
+    /// enters the call: "Join call" with the arrow of the device check, or "Ask to join"
+    /// with the state of the request while the room is locked or full for the person
+    /// (ADR 0735, ADR 0739).
     pub(crate) fn render_voice_entry(
         &mut self,
         view: &ShellView,
@@ -242,7 +249,6 @@ impl Shell {
             return Vec::new();
         };
         let (server_id, workspace_id, channel_id) = (server.id, workspace.id, channel.id);
-        let joining = voice.relation == Relation::Joining;
         let mut parts = vec![
             div()
                 .flex_none()
@@ -250,60 +256,56 @@ impl Shell {
                 .h(u(20.0))
                 .bg(Hsla::from(colors.rule))
                 .into_any_element(),
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .typeface(theme.types.control, theme)
-                .font_weight(gpui::FontWeight::NORMAL)
-                .ink(colors.ink_2)
-                .child(text::voice_channel_topic(
-                    voice.occupants.len(),
-                    voice.hidden,
-                ))
-                .into_any_element(),
+            div().flex_1().into_any_element(),
         ];
-        // Without "connect" the server gives no place, and the channel offers no join
-        // (ADR 0790).
-        if !channel.allowed.connect {
+        // Without "connect" the server gives no place and takes no request, and the
+        // channel offers neither (ADR 0790). A request of the person stays shown.
+        if !channel.allowed.connect && voice.entry.is_none() {
             return parts;
         }
-        parts.extend([
-            if !joining {
-                self.device_check_button(
-                    junto_media::calls::CallTarget {
+        if voice.relation == Relation::Outside && (voice.closed.is_some() || voice.entry.is_some())
+        {
+            parts.extend(self.render_entry_request(server_id, channel, voice, theme, cx));
+            return parts;
+        }
+        let joining = voice.relation == Relation::Joining;
+        let join = Button::new("join-call")
+            .kind(ButtonKind::Green)
+            .icon(Icon::Speaker)
+            .label(if joining {
+                text::JOINING_CALL
+            } else {
+                text::JOIN_CALL
+            })
+            .tooltip(text::ENTER_VOICE_CHANNEL)
+            .accessible_label(text::JOIN_CALL)
+            .disabled(joining)
+            .selector("join-call")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.join_call(server_id, workspace_id, channel_id, cx);
+                });
+            }));
+        parts.push(if joining {
+            join.into_any_element()
+        } else {
+            self.join_control(
+                join,
+                ButtonKind::Green,
+                super::device_checks::JoinCheck {
+                    target: junto_media::calls::CallTarget {
                         server_id,
                         place: junto_client_core::protocol::call::CallPlace::Channel {
                             workspace_id,
                             channel_id,
                         },
                     },
-                    None,
-                    "check-call-devices",
-                    cx,
-                )
-            } else {
-                div().into_any_element()
-            },
-            Button::new("join-call")
-                .kind(ButtonKind::Green)
-                .icon(Icon::Speaker)
-                .label(if joining {
-                    text::JOINING_CALL
-                } else {
-                    text::JOIN_CALL
-                })
-                .tooltip(text::ENTER_VOICE_CHANNEL)
-                .accessible_label(text::JOIN_CALL)
-                .disabled(joining)
-                .selector("join-call")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.join_call(server_id, workspace_id, channel_id, cx);
-                    });
-                }))
-                .into_any_element(),
-        ]);
+                    invitation: None,
+                    arrow: "join-call-check",
+                },
+                cx,
+            )
+        });
         parts
     }
 
@@ -332,16 +334,6 @@ impl Shell {
 
     /// The button of the header of a call that opens the settings of the application at
     /// "Voice and video", in the main window and in the call window (ADR 0735).
-    pub(crate) fn render_call_settings_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("open-call-settings")
-            .icon(Icon::Gear)
-            .tooltip(text::VOICE_AND_VIDEO_SETTINGS)
-            .accessible_label(text::VOICE_AND_VIDEO_SETTINGS)
-            .selector("open-call-settings")
-            .on_click(cx.listener(|this, _, window, cx| this.open_voice_settings(window, cx)))
-            .into_any_element()
-    }
-
     /// The buttons of the header that open the panel of the call at one tab, in a narrow
     /// window and in the call window, with the counts of the tabs.
     pub(crate) fn render_call_panel_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1196,29 +1188,6 @@ impl Shell {
                 .child(this.call_member_item(index, &people, &outside, server_id, window, cx))
                 .into_any_element()
         });
-        let share_controls: Vec<_> = panel
-            .stage
-            .as_ref()
-            .into_iter()
-            .flat_map(|stage| &stage.shares)
-            .filter(|share| share.id.person != junto_media::engine::Person::Own)
-            .map(|share| {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(u(14.0))
-                    .py(u(4.0))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(text::share_title(share, false)),
-                    )
-                    .child(self.share_mute_button(share, "member-share-sound", cx))
-                    .into_any_element()
-            })
-            .collect();
         let list = div()
             .id("call-members")
             .debug_selector(|| "call-members".to_owned())
@@ -1256,16 +1225,6 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(
-                div()
-                    .id("member-share-sounds")
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .max_h(u(140.0))
-                    .overflow_y_scroll()
-                    .children(share_controls),
-            )
             .child(list)
             .children(
                 panel
@@ -1561,8 +1520,11 @@ impl Shell {
             .child(icon(
                 if interrupted {
                     Icon::Retry
-                } else {
+                } else if strip.channel_id.is_some() {
                     Icon::Speaker
+                } else {
+                    // A direct or group call has no voice channel.
+                    Icon::Phone
                 },
                 15.0,
                 ink,
@@ -1669,9 +1631,12 @@ impl Shell {
                     .accessible_label(text::SHARE_RUNS),
             }
             .selector("call-share")
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.share_menu_in_row = false;
+                this.toggle_share(window, cx);
+            }));
             let camera_refused = strip.withheld.camera;
-            let share_menu = matches!(self.layer, Layer::ShareMenu)
+            let share_menu = (matches!(self.layer, Layer::ShareMenu) && !self.share_menu_in_row)
                 .then(|| self.render_share_menu(&strip.own_shares, strip.share_limit, cx));
             let share = (!share_refused).then(|| {
                 div()
@@ -1738,7 +1703,12 @@ impl Shell {
                         } else {
                             ButtonKind::Call
                         })
-                        .icon(Icon::LayoutGrid)
+                        // The icon shows the layout that the stage has now.
+                        .icon(if self.camera_focus {
+                            Icon::SpeakerView
+                        } else {
+                            Icon::LayoutGrid
+                        })
                         .selector("camera-focus")
                         .tooltip(if self.state.read(cx).pinned_call_person().is_some() {
                             text::call_pin::LAYOUT_HELP
@@ -1763,6 +1733,7 @@ impl Shell {
                     |row| {
                         row.child(
                             Button::new("detach-call")
+                                .kind(ButtonKind::Call)
                                 .icon(Icon::Detach)
                                 .accessible_label(text::DETACH_CALL)
                                 .tooltip(text::DETACH_CALL)
@@ -1772,6 +1743,7 @@ impl Shell {
                     },
                 )
                 .children(hand)
+                .children(self.render_room_settings_button(theme, cx))
                 .child(div().flex_1())
                 .child(leave(cx))
         };
@@ -1814,6 +1786,604 @@ impl Shell {
             })
             .child(second)
             .into_any_element()
+    }
+
+    /// The row of the person's own controls under the stage of the call, in the main
+    /// window and in the call window (ADR 0735, ADR 0772): microphone, sound, camera,
+    /// share, raise hand, View, the devices, the separate window or its return, and Leave.
+    /// On a narrow stage, and always for the window controls of the call window, the less
+    /// used ones are in "⋮" at the end of the row, in a fixed order.
+    pub(crate) fn render_own_controls(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let view = self.view.clone()?;
+        let strip = view.call.clone()?;
+        let controls = view.controls.clone();
+        let narrow = self
+            .stage_area
+            .get()
+            .is_some_and(|(width, _)| width < OWN_CONTROLS_WIDE);
+        let microphone = match controls.microphone {
+            crate::state::view::MicrophoneButton::Open => Button::new("own-microphone")
+                .kind(ButtonKind::CallOn)
+                .icon(Icon::Microphone)
+                .tooltip(text::CLOSE_MICROPHONE),
+            crate::state::view::MicrophoneButton::Muted => Button::new("own-microphone")
+                .kind(ButtonKind::Call)
+                .icon(Icon::MicrophoneOff)
+                .tooltip(text::OPEN_MICROPHONE),
+            crate::state::view::MicrophoneButton::Held => Button::new("own-microphone")
+                .kind(ButtonKind::SquareHeld)
+                .icon(Icon::MicrophoneHeld)
+                .tooltip(text::MICROPHONE_HELD),
+            crate::state::view::MicrophoneButton::NotPermitted => Button::new("own-microphone")
+                .kind(ButtonKind::SquareHeld)
+                .icon(Icon::MicrophoneHeld)
+                .tooltip(text::MICROPHONE_CLOSED_IN_CALL)
+                .disabled(true),
+        }
+        .selector("own-microphone")
+        .on_click({
+            // The control does what it shows now (ADR 0788).
+            let action = controls.microphone_action.clone();
+            cx.listener(move |this, _, _, cx| {
+                this.state
+                    .update(cx, |state, _| state.use_microphone(&action));
+            })
+        });
+        let sound_off = controls.sound_off;
+        let sound = Button::new("own-sound")
+            .kind(if sound_off {
+                ButtonKind::Call
+            } else {
+                ButtonKind::CallOn
+            })
+            .icon(if sound_off {
+                Icon::PhonesOff
+            } else {
+                Icon::Phones
+            })
+            .tooltip(if sound_off {
+                text::SOUND_OUTPUT_OFF
+            } else {
+                text::SOUND_OUTPUT_ON
+            })
+            .selector("own-sound")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state.update(cx, |state, _| state.set_sound_off(!sound_off));
+            }));
+        let camera_call = self.state.read(cx).media_calls().call;
+        let camera = camera_call.as_ref().map(CameraAction::drawn_for);
+        let camera_on = camera == Some(CameraAction::Stop);
+        let camera_usable = camera_on
+            || camera_call
+                .as_ref()
+                .is_some_and(|call| call.phase == junto_media::calls::Phase::Connected);
+        let camera = (!strip.withheld.camera).then(|| {
+            let label = if camera_on {
+                text::TURN_OFF_CAMERA
+            } else {
+                text::TURN_ON_CAMERA
+            };
+            Button::new("own-camera")
+                .kind(if camera_on {
+                    ButtonKind::CallOn
+                } else {
+                    ButtonKind::Call
+                })
+                .icon(if camera_on {
+                    Icon::Camera
+                } else {
+                    Icon::CameraOff
+                })
+                .tooltip(label)
+                .accessible_label(label)
+                .selector("own-camera")
+                .disabled(!camera_usable)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(action) = &camera {
+                        this.state
+                            .update(cx, |state, cx| state.use_camera(action, cx));
+                    }
+                }))
+        });
+        let share_refused = strip.withheld.share && strip.share == OwnShare::Off;
+        let share = (!share_refused).then(|| {
+            let (kind, shown, label) = match (strip.can_share, strip.share) {
+                (false, _) => (ButtonKind::Call, Icon::Screen, text::SHARE_NOT_ON_THIS_SYSTEM),
+                (true, OwnShare::Off) => (ButtonKind::Call, Icon::Screen, text::SHARE_SCREEN),
+                (true, OwnShare::Starting) => {
+                    (ButtonKind::CallOn, Icon::ScreenOff, text::SHARE_STARTING)
+                }
+                (true, OwnShare::Running) => (ButtonKind::CallOn, Icon::ScreenOff, text::SHARE_RUNS),
+            };
+            let menu = (matches!(self.layer, Layer::ShareMenu) && self.share_menu_in_row)
+                .then(|| self.render_share_menu(&strip.own_shares, strip.share_limit, cx));
+            div()
+                .relative()
+                .flex_none()
+                .child(
+                    Button::new("own-share")
+                        .kind(kind)
+                        .icon(shown)
+                        .tooltip(label)
+                        .accessible_label(label)
+                        .disabled(!strip.can_share)
+                        .selector("own-share")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.share_menu_in_row = true;
+                            this.toggle_share(window, cx);
+                        })),
+                )
+                .children(menu)
+        });
+        let hand = strip.hand_raised.map(|raised| {
+            Button::new("own-hand")
+                .kind(if raised {
+                    ButtonKind::CallOn
+                } else {
+                    ButtonKind::Call
+                })
+                .icon(Icon::Hand)
+                .tooltip(if raised {
+                    text::LOWER_HAND
+                } else {
+                    text::RAISE_HAND
+                })
+                .selector("own-hand")
+                .on_click(self.call_listener(cx, move |this, _, _, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.set_hand(!raised, cx));
+                }))
+        });
+        let view_menu = matches!(self.layer, Layer::ViewMenu).then(|| self.render_view_menu(cx));
+        let view_button = div()
+            .relative()
+            .flex_none()
+            .child(
+                Button::new("own-view")
+                    .kind(ButtonKind::Call)
+                    .icon(if self.camera_focus {
+                        Icon::SpeakerView
+                    } else {
+                        Icon::LayoutGrid
+                    })
+                    .tooltip(text::VIEW)
+                    .accessible_label(text::VIEW)
+                    .selector("own-view")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_own_menu(Layer::ViewMenu, window, cx);
+                    })),
+            )
+            .children(view_menu);
+        let devices = Button::new("own-devices")
+            .kind(ButtonKind::Call)
+            .icon(Icon::Sliders)
+            .tooltip(text::YOUR_DEVICES)
+            .accessible_label(text::YOUR_DEVICES)
+            .selector("own-devices")
+            .on_click(cx.listener(|this, _, window, cx| this.open_voice_settings(window, cx)));
+        let separate = if self.detached {
+            Button::new("own-return")
+                .kind(ButtonKind::Call)
+                .icon(Icon::Detach)
+                .tooltip(text::RETURN_CALL)
+                .accessible_label(text::RETURN_CALL)
+                .selector("own-return")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.hand_over_drafts(super::composer::HandTo::Main, cx);
+                    this.state
+                        .update(cx, |state, cx| state.call_window_returned(cx));
+                    window.remove_window();
+                }))
+        } else {
+            Button::new("own-detach")
+                .kind(ButtonKind::Call)
+                .icon(Icon::Detach)
+                .tooltip(text::DETACH_CALL)
+                .accessible_label(text::DETACH_CALL)
+                .selector("own-detach")
+                .on_click(cx.listener(|this, _, _, cx| this.detach_call(cx)))
+        };
+        let leave = Button::new("own-leave")
+            .kind(ButtonKind::CallLeave)
+            .icon(Icon::PhoneOff)
+            .tooltip(text::LEAVE_CALL)
+            .accessible_label(text::LEAVE_CALL)
+            .selector("own-leave")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |state, cx| state.leave_call(cx));
+            }));
+        // Microphone, sound, camera, share and Leave stay in view; the others move into
+        // "⋮" on a narrow stage. The call window keeps its window controls there.
+        let more = (narrow || self.detached).then(|| {
+            let menu = matches!(self.layer, Layer::OwnControlsMore)
+                .then(|| self.render_own_controls_more(narrow, strip.hand_raised, cx));
+            div()
+                .relative()
+                .flex_none()
+                .child(
+                    Button::new("own-more")
+                        .kind(ButtonKind::Call)
+                        .icon(Icon::Dots)
+                        .tooltip(text::MORE_CALL_CONTROLS)
+                        .accessible_label(text::MORE_CALL_CONTROLS)
+                        .selector("own-more")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_own_menu(Layer::OwnControlsMore, window, cx);
+                        })),
+                )
+                .children(menu)
+        });
+        let colors = theme.colors;
+        Some(
+            div()
+                .id("own-controls")
+                .role(Role::Toolbar)
+                .aria_label(text::YOUR_CALL_CONTROLS)
+                .debug_selector(|| "own-controls".to_owned())
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .gap(u(8.0))
+                .py(u(8.0))
+                .px(u(10.0))
+                .bg(Hsla::from(colors.basalt))
+                .child(microphone)
+                .child(sound)
+                .children(camera)
+                .children(share)
+                .when(!narrow, |row| {
+                    row.children(hand)
+                        .child(view_button)
+                        .child(devices)
+                        .child(separate)
+                })
+                .children(more)
+                .child(leave)
+                .into_any_element(),
+        )
+    }
+
+    /// Opens a menu of the row of own controls; a press on the button of the open menu
+    /// closes it and does not open it again.
+    fn open_own_menu(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.own_menu_closed_by_press) {
+            return;
+        }
+        self.open_layer(layer, window, cx);
+    }
+
+    /// A menu above a button of the row of own controls.
+    fn own_controls_menu(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        items: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .left_0()
+            .bottom(u(40.0))
+            .child(gpui::deferred(
+                gpui::anchored()
+                    .anchor(gpui::Anchor::BottomLeft)
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(
+                        crate::ui::Menu::new(id, label, self.layer_focus())
+                            .width(260.0)
+                            .selector(id)
+                            .on_close(Self::handler(cx, |this, window, cx| {
+                                this.own_menu_closed_by_press = !window.last_input_was_keyboard();
+                                this.close_layer(window, cx);
+                            }))
+                            .children(items)
+                            .child(div().h(u(4.0))),
+                    ),
+            ))
+            .into_any_element()
+    }
+
+    /// "View": the grid or the person who speaks in a large tile, and the two settings of
+    /// "Your view" (ADR 0735), which this menu reads and writes.
+    fn render_view_menu(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let voice = self.state.read(cx).voice().clone();
+        let pinned = self.state.read(cx).pinned_call_person().is_some();
+        let camera_runs = self.state.read(cx).media_calls().call.is_some_and(|call| {
+            matches!(
+                call.camera,
+                junto_media::camera::CameraState::Starting
+                    | junto_media::camera::CameraState::Running
+            )
+        });
+        let check = |on: bool, item: crate::ui::MenuItem| {
+            if on { item.end_icon(Icon::Check) } else { item }
+        };
+        let focus = self.camera_focus;
+        let hide_without_video = voice.hide_people_without_video;
+        let hide_own = voice.hide_own_camera;
+        let mut items = vec![
+            check(
+                !focus,
+                crate::ui::MenuItem::new("view-grid", text::VIEW_GRID)
+                    .icon(Icon::LayoutGrid)
+                    .selector("view-grid")
+                    .disabled(pinned)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.camera_focus = false;
+                        this.close_layer(window, cx);
+                    })),
+            )
+            .into_any_element(),
+            check(
+                focus,
+                crate::ui::MenuItem::new("view-speaker", text::VIEW_SPEAKER)
+                    .icon(Icon::SpeakerView)
+                    .selector("view-speaker")
+                    .disabled(pinned)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.camera_focus = true;
+                        this.close_layer(window, cx);
+                    })),
+            )
+            .into_any_element(),
+            crate::ui::menu_separator(cx).into_any_element(),
+            check(
+                hide_without_video,
+                crate::ui::MenuItem::new("view-hide-without-video", text::HIDE_WITHOUT_VIDEO)
+                    .icon(Icon::CameraOff)
+                    .selector("view-hide-without-video")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.set_hide_without_video(!hide_without_video, cx)
+                        });
+                        this.close_layer(window, cx);
+                    })),
+            )
+            .into_any_element(),
+        ];
+        let own = crate::ui::MenuItem::new("view-hide-my-tile", text::HIDE_MY_TILE)
+            .icon(Icon::EyeOff)
+            .selector("view-hide-my-tile")
+            .disabled(!camera_runs)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.state
+                    .update(cx, |state, cx| state.set_hide_own_camera(!hide_own, cx));
+                this.close_layer(window, cx);
+            }));
+        let own = if camera_runs {
+            own
+        } else {
+            own.detail(text::HIDE_MY_TILE_CAMERA_OFF)
+        };
+        items.push(check(hide_own, own).into_any_element());
+        if pinned {
+            items.insert(
+                0,
+                div()
+                    .px(u(12.0))
+                    .py(u(4.0))
+                    .typeface(theme(cx).types.small, &theme(cx))
+                    .child(text::call_pin::LAYOUT_HELP)
+                    .into_any_element(),
+            );
+        }
+        self.own_controls_menu("view-menu", text::VIEW, items, cx)
+    }
+
+    /// "⋮" of the row of own controls: the controls that a narrow stage leaves out, in the
+    /// order of the row, and in the call window "Keep on top" and "Full screen".
+    fn render_own_controls_more(
+        &mut self,
+        narrow: bool,
+        hand_raised: Option<bool>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut items: Vec<AnyElement> = Vec::new();
+        if narrow {
+            if let Some(raised) = hand_raised {
+                items.push(
+                    crate::ui::MenuItem::new(
+                        "more-hand",
+                        if raised {
+                            text::LOWER_HAND
+                        } else {
+                            text::RAISE_HAND
+                        },
+                    )
+                    .icon(Icon::Hand)
+                    .selector("more-hand")
+                    .on_click(self.call_listener(cx, move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state
+                            .update(cx, |state, cx| state.set_hand(!raised, cx));
+                    }))
+                    .into_any_element(),
+                );
+            }
+            items.push(
+                crate::ui::MenuItem::new("more-view", text::VIEW)
+                    .icon(Icon::LayoutGrid)
+                    .selector("more-view")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_layer(Layer::ViewMenu, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                crate::ui::MenuItem::new("more-devices", text::YOUR_DEVICES)
+                    .icon(Icon::Sliders)
+                    .selector("more-devices")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_voice_settings(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(if self.detached {
+                crate::ui::MenuItem::new("more-return", text::RETURN_CALL)
+                    .icon(Icon::Detach)
+                    .selector("more-return")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.hand_over_drafts(super::composer::HandTo::Main, cx);
+                        this.state
+                            .update(cx, |state, cx| state.call_window_returned(cx));
+                        window.remove_window();
+                    }))
+                    .into_any_element()
+            } else {
+                crate::ui::MenuItem::new("more-detach", text::DETACH_CALL)
+                    .icon(Icon::Detach)
+                    .selector("more-detach")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.detach_call(cx);
+                    }))
+                    .into_any_element()
+            });
+        }
+        if self.detached {
+            items.extend(self.call_window_menu_items(cx));
+        }
+        self.own_controls_menu("own-more-menu", text::MORE_CALL_CONTROLS, items, cx)
+    }
+
+    /// The window controls of the call window, as items of its "⋮" (ADR 0772).
+    fn call_window_menu_items(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut items = Vec::new();
+        if crate::window_level::offered(cx) {
+            let top = self.state.read(cx).call_window_settings().keep_on_top;
+            let item = crate::ui::MenuItem::new("more-on-top", text::KEEP_ON_TOP)
+                .icon(Icon::Pin)
+                .selector("more-on-top")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.toggle_call_on_top(top, window, cx);
+                }));
+            items.push(if top { item.end_icon(Icon::Check) } else { item }.into_any_element());
+        }
+        items.push(
+            crate::ui::MenuItem::new("more-fullscreen", text::FULLSCREEN)
+                .icon(Icon::FullScreen)
+                .selector("more-fullscreen")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    window.toggle_fullscreen();
+                }))
+                .into_any_element(),
+        );
+        items
+    }
+
+    /// "Room settings" on the call bar of a call of a voice channel, and the window of the
+    /// four settings of the room attached to it (ADR 0739). Every person in the call sees
+    /// them; a setting that the person may not change is disabled.
+    fn render_room_settings_button(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let colors = theme.colors;
+        let room = match self.view.as_ref().and_then(|view| view.call_room.clone()) {
+            Some(crate::state::view::CallRoom::Channel(room)) => room,
+            _ => return None,
+        };
+        let open = matches!(self.layer, Layer::RoomSettings);
+        let button = Button::new("room-settings-open")
+            .kind(if open {
+                ButtonKind::CallOn
+            } else {
+                ButtonKind::Call
+            })
+            .icon(Icon::Door)
+            .tooltip(text::ROOM_SETTINGS)
+            .accessible_label(text::ROOM_SETTINGS)
+            .selector("room-settings-open")
+            .on_click(cx.listener(|this, _, window, cx| {
+                // A click on the button of the open window closes it: the press closed it,
+                // and the click does not open it again.
+                if std::mem::take(&mut this.room_settings_closed_by_press) {
+                    return;
+                }
+                this.open(super::Open::RoomSettings, window, cx);
+            }));
+        let window = open.then(|| {
+            let close = cx.listener(|this, _: &(), window, cx| {
+                this.room_settings_closed_by_press = !window.last_input_was_keyboard();
+                this.close_layer(window, cx);
+            });
+            let close = std::rc::Rc::new(close);
+            let (outside, escape) = (close.clone(), close);
+            div()
+                .absolute()
+                .left_0()
+                .bottom(u(34.0))
+                .child(gpui::deferred(
+                    gpui::anchored()
+                        .anchor(gpui::Anchor::BottomLeft)
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(
+                            div()
+                                .id("room-settings")
+                                .role(Role::Dialog)
+                                .aria_label(text::ROOM_SETTINGS)
+                                .debug_selector(|| "room-settings".to_owned())
+                                .track_focus(self.layer_focus())
+                                .occlude()
+                                .flex()
+                                .flex_col()
+                                .w(u(320.0))
+                                .pt(u(10.0))
+                                .px(u(14.0))
+                                .pb(u(8.0))
+                                .rounded(u(theme.metrics.radius))
+                                .border_1()
+                                .border_color(Hsla::from(colors.rule))
+                                .bg(Hsla::from(colors.travertine_hi))
+                                .shadow(float_shadow(colors.shadow, 6.0, 16.0))
+                                .ink(colors.ink)
+                                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                                    if event.keystroke.key == "escape" {
+                                        escape(&(), window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                })
+                                .on_mouse_down_out(move |_, window, cx| outside(&(), window, cx))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    div()
+                                        .typeface(theme.types.control_strong, theme)
+                                        .child(text::ROOM_SETTINGS),
+                                )
+                                .child(
+                                    div()
+                                        .typeface(theme.types.small, theme)
+                                        .ink(colors.ink_2)
+                                        .child(text::ROOM_SETTINGS_FOR_EVERYONE),
+                                )
+                                .child(
+                                    div()
+                                        .mt(u(4.0))
+                                        .flex()
+                                        .flex_col()
+                                        .children(self.render_room_settings(&room, theme, cx)),
+                                ),
+                        ),
+                ))
+        });
+        Some(
+            div()
+                .relative()
+                .flex_none()
+                .child(button)
+                .children(window)
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn render_camera_notice(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1943,9 +2513,7 @@ impl Shell {
         controls: &crate::state::view::Controls,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !controls.muted_speech {
-            return None;
-        }
+        let shown = controls.muted_speech?;
         let state = self.state.read(cx);
         let held = state.holds_mute();
         let ptt = state.voice().input_mode == junto_client_core::voice::InputMode::PushToTalk
@@ -1966,25 +2534,81 @@ impl Shell {
             format!("{}. {hint}", text::YOU_ARE_MUTED)
         };
         let action = crate::state::view::MicrophoneAction::Open(controls.seat.clone());
-        Some(
-            crate::ui::Notice::new(label)
-                .selector("muted-speech")
-                .stacked()
-                .action(
-                    Button::new("unmute-muted-speech")
-                        .label(text::UNMUTE)
-                        .selector("unmute-muted-speech")
-                        .disabled(held)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, _| {
-                                if !state.holds_mute() {
-                                    state.use_microphone(&action);
-                                }
-                            });
-                        })),
+        let notice = crate::ui::Notice::new(label)
+            .selector("muted-speech")
+            .action(
+                Button::new("unmute-muted-speech")
+                    .label(text::UNMUTE)
+                    .selector("unmute-muted-speech")
+                    .disabled(held)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, _| {
+                            if !state.holds_mute() {
+                                state.use_microphone(&action);
+                            }
+                        });
+                    })),
+            )
+            .below(
+                div().pt(u(4.0)).child(
+                    crate::ui::CheckBox::new(
+                        "muted-speech-setting",
+                        text::MUTED_SPEECH_SETTING,
+                        !shown.turned_off,
+                    )
+                    .focus(&self.muted_speech_focus)
+                    .selector("muted-speech-setting")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let on = shown.turned_off;
+                        this.state
+                            .update(cx, |state, cx| state.set_muted_speech_notice(on, cx));
+                    })),
+                ),
+            )
+            .when(shown.turned_off, |notice| {
+                notice.below(
+                    div()
+                        .debug_selector(|| "muted-speech-turned-off".to_owned())
+                        .child(text::MUTED_SPEECH_TURNED_OFF),
                 )
-                .into_any_element(),
-        )
+            });
+        let hold = cx.listener(move |this, hovered: &bool, _, cx| {
+            this.hold_muted_speech(Some(*hovered), None, cx);
+        });
+        let frame = div()
+            .id("muted-speech-frame")
+            .on_hover(move |hovered, window, cx| hold(hovered, window, cx))
+            .child(notice);
+        Some(if shown.fading {
+            frame
+                .with_animation(
+                    "muted-speech-fade",
+                    gpui::Animation::new(crate::state::muted_speech::FADE),
+                    |frame, delta| frame.opacity(1.0 - delta),
+                )
+                .into_any_element()
+        } else {
+            frame.into_any_element()
+        })
+    }
+
+    /// The pointer came over the notice of speech while muted or left it, or its check box
+    /// took or lost the focus. The app state holds the notice while either holds.
+    pub(crate) fn hold_muted_speech(
+        &mut self,
+        hovered: Option<bool>,
+        focused: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let (was_hovered, was_focused) = self.muted_speech_held;
+        self.muted_speech_held = (
+            hovered.unwrap_or(was_hovered),
+            focused.unwrap_or(was_focused),
+        );
+        let held = self.muted_speech_held.0 || self.muted_speech_held.1;
+        let window = cx.entity_id();
+        self.state
+            .update(cx, |state, cx| state.hold_muted_speech(window, held, cx));
     }
 
     /// The line above the profile strip about the sound of this device.
@@ -2227,6 +2851,7 @@ impl Shell {
             .children(self.render_pin_bar(panel, theme, cx))
             .child(body)
             .children(self.render_own_camera_hidden_note(cx))
+            .children(self.render_own_controls(theme, cx))
             .into_any_element()
     }
 

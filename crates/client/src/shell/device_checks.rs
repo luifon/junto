@@ -116,48 +116,145 @@ impl Prejoin {
     }
 }
 
-impl Shell {
-    pub fn device_check_scroll_handle(&self) -> gpui::ScrollHandle {
-        self.device_ui.scroll.clone()
-    }
+/// The device check that the arrow of a join control offers: the place to join, the
+/// invitation that the join accepts, and the selector of the arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JoinCheck {
+    pub target: CallTarget,
+    pub invitation: Option<CallInvitationId>,
+    pub arrow: &'static str,
+}
 
-    pub(crate) fn device_check_button(
-        &self,
-        target: CallTarget,
-        invitation: Option<CallInvitationId>,
-        selector: &'static str,
+impl JoinCheck {
+    /// The place of the check still exists for the account that the server has now.
+    pub fn current(&self, state: &AppState) -> bool {
+        state
+            .server(self.target.server_id)
+            .and_then(|server| server.owner())
+            .is_some_and(|owner| {
+                Prejoin {
+                    owner,
+                    target: self.target,
+                    invitation: self.invitation,
+                }
+                .current(state)
+            })
+    }
+}
+
+impl Shell {
+    /// A join control (ADR 0735): the button that joins at once, and attached to it a
+    /// small arrow whose menu has "Join after a device check". The join of a voice
+    /// channel, the call of a conversation and the answer to an invitation or a ring use
+    /// it.
+    pub(crate) fn join_control(
+        &mut self,
+        join: Button,
+        kind: ButtonKind,
+        check: JoinCheck,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let owner = self
+        if matches!(&self.layer, Layer::JoinMenu(open) if open.target == check.target && open.invitation == check.invitation && !check.current(self.state.read(cx)))
+        {
+            self.layer = Layer::None;
+        }
+        let open = matches!(&self.layer, Layer::JoinMenu(open) if **open == check);
+        let arrow = Button::new(SharedString::from(format!(
+            "{}:{:?}:{:?}",
+            check.arrow, check.target, check.invitation
+        )))
+        .kind(kind)
+        .icon(Icon::ChevronDown)
+        .tooltip(words::JOIN_AFTER_CHECK)
+        .accessible_label(words::JOIN_AFTER_CHECK)
+        .selector(check.arrow)
+        .px(u(6.0))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // A click on the arrow of an open menu closes it: the press closed it, and the
+            // click does not open it again.
+            if std::mem::take(&mut this.join_menu_closed_by_press) {
+                return;
+            }
+            if check.current(this.state.read(cx)) {
+                this.open_layer(Layer::JoinMenu(Box::new(check)), window, cx);
+            }
+        }));
+        div()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(gpui::px(1.0))
+            .child(join)
+            .child(arrow)
+            .children(open.then(|| {
+                div()
+                    .absolute()
+                    .right_0()
+                    .top(u(32.0))
+                    .child(deferred(
+                        anchored().snap_to_window().child(
+                            Menu::new("join-check-menu", words::JOIN_AFTER_CHECK, self.layer_focus())
+                                .width(240.0)
+                                .selector("join-check-menu")
+                                .on_close(Self::handler(cx, |this, window, cx| {
+                                    this.join_menu_closed_by_press =
+                                        !window.last_input_was_keyboard();
+                                    this.close_layer(window, cx);
+                                }))
+                                .child(
+                                    div().debug_selector(|| "join-after-check".to_owned()).child(
+                                        MenuItem::new("join-after-check", words::JOIN_AFTER_CHECK)
+                                            .icon(Icon::Phones)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.close_layer(window, cx);
+                                                this.open_prejoin(
+                                                    check.target,
+                                                    check.invitation,
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                                ),
+                        ),
+                    ))
+            }))
+            .into_any_element()
+    }
+
+    /// Opens the device check before a join of `target`, which accepts `invitation`.
+    pub(crate) fn open_prejoin(
+        &mut self,
+        target: CallTarget,
+        invitation: Option<CallInvitationId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(owner) = self
             .state
             .read(cx)
             .server(target.server_id)
-            .and_then(|server| server.owner());
-        Button::new(SharedString::from(format!(
-            "{selector}:{owner:?}:{target:?}:{invitation:?}"
-        )))
-        .label(words::CHECK)
-        .icon(Icon::Phones)
-        .selector(selector)
-        .disabled(owner.is_none())
-        .on_click(cx.listener(move |this, _, window, cx| {
-            let Some(owner) = owner else {
-                return;
-            };
-            let prejoin = Prejoin {
-                owner,
-                target,
-                invitation,
-            };
-            if !prejoin.current(this.state.read(cx)) {
-                return;
-            }
-            this.device_ui.scroll.set_offset(gpui::Point::default());
-            this.open_layer(Layer::Prejoin(Box::new(prejoin)), window, cx);
-            this.state
-                .update(cx, |state, cx| state.set_device_checks(true, cx));
-        }))
-        .into_any_element()
+            .and_then(|server| server.owner())
+        else {
+            return;
+        };
+        let prejoin = Prejoin {
+            owner,
+            target,
+            invitation,
+        };
+        if !prejoin.current(self.state.read(cx)) {
+            return;
+        }
+        self.device_ui.scroll.set_offset(gpui::Point::default());
+        self.open_layer(Layer::Prejoin(Box::new(prejoin)), window, cx);
+        self.state
+            .update(cx, |state, cx| state.set_device_checks(true, cx));
+    }
+
+    pub fn device_check_scroll_handle(&self) -> gpui::ScrollHandle {
+        self.device_ui.scroll.clone()
     }
 
     pub(crate) fn render_prejoin(

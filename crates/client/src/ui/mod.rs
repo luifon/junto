@@ -56,7 +56,9 @@ pub use button::{Button, ButtonKind};
 pub(crate) use code_text::code_text;
 #[cfg(feature = "test-support")]
 pub use code_text::{CodePaintRecord, PaintedCode, record_painted_code, take_painted_code};
-pub use controls::{LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider};
+pub use controls::{
+    CheckBox, LevelSlider, SelectBox, Stepper, Tab, TabRow, Toggle, VolumeSlider,
+};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use fit::Fit;

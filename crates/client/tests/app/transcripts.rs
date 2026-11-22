@@ -1031,13 +1031,10 @@ const RECORDING_PARTS: [&str; 6] = [
     "recording-details",
 ];
 
-const HEADER_BUTTONS: [&str; 7] = [
-    "call-on-top",
+const HEADER_BUTTONS: [&str; 4] = [
     "return-call",
-    "call-fullscreen",
     "open-call-chat",
     "open-call-members",
-    "open-call-settings",
     "open-call-notices",
 ];
 

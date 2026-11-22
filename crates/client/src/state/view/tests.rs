@@ -3540,7 +3540,7 @@ fn role_appearance_covers_a_roster_larger_than_the_profile_cache_without_images(
 }
 
 #[test]
-fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_call() {
+fn a_muted_speech_notice_requires_its_speech_an_explicit_mute_and_a_connected_call() {
     let mut controls = Controls {
         microphone: MicrophoneButton::Muted,
         seat: Some(junto_media::calls::Seat {
@@ -3552,19 +3552,25 @@ fn a_muted_speech_notice_requires_local_input_an_explicit_mute_and_a_connected_c
         }),
         ..Default::default()
     };
-    controls.show_muted_speech(0, true);
-    assert!(!controls.muted_speech);
-    controls.show_muted_speech(20, true);
-    assert!(controls.muted_speech);
-    controls.show_muted_speech(20, false);
-    assert!(!controls.muted_speech);
+    let shown = MutedSpeechShown {
+        shown: true,
+        ..Default::default()
+    };
+    controls.show_muted_speech(MutedSpeechShown::default(), true);
+    assert_eq!(controls.muted_speech, None);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, Some(shown));
+    controls.show_muted_speech(shown, false);
+    assert_eq!(controls.muted_speech, None);
     controls.microphone = MicrophoneButton::Open;
-    controls.show_muted_speech(20, true);
-    assert!(!controls.muted_speech);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, None);
     controls.microphone = MicrophoneButton::Muted;
     controls.warning = Some(SoundWarning::NoMicrophoneAccess);
-    controls.show_muted_speech(20, true);
-    assert!(!controls.muted_speech);
+    controls.show_muted_speech(shown, true);
+    assert_eq!(controls.muted_speech, None);
+    // The input level decides at the threshold of speech.
+    assert!(!speech_heard(0) && speech_heard(20));
 }
 
 /// The revision of the `hello` of the stream decides; while the stream has not greeted, the

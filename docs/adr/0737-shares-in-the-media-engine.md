@@ -85,9 +85,9 @@ client cannot replace these preferences when it writes its own settings. Slots a
 values when another slot changes. The old `share_volume` value seeds accounts without a
 saved value, so an upgrade keeps the earlier listening level. Microphone volumes are separate.
 
-The header, share tiles and share context menus expose mute, and the Members panel shows
-each received share and its mute. The context menu exposes that share's volume even when
-another share is watched. The Settings volume acts on the watched share. Both windows use
+The line of the watched share and the share context menus expose mute; a share tile shows
+only a mark while its share is muted (ADR 0738). The context menu exposes that share's volume
+even when another share is watched. Both windows use
 the same controls and media state, and their buttons and volume controls accept keyboard input.
 These are local preferences and require no server change.
 

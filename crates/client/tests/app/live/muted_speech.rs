@@ -27,11 +27,47 @@ fn local_speech_while_muted_offers_unmute_without_bypassing_held_keys(cx: &mut T
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
     });
     window.click("microphone");
+    // The notice waits for a few seconds of continuous speech.
+    let muted_at = window.cx.executor().now();
+    assert!(!window.shows("muted-speech"));
     window.until(
         "local speech is warned about while nothing is sent",
         |window| window.shows("muted-speech") && heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS,
     );
-    window.sound.say("tone", &vec![0.0; 96_000], 48_000);
+    let waited = window.cx.executor().now().duration_since(muted_at);
+    assert!(waited >= junto_client::state::muted_speech::ONSET, "{waited:?}");
+
+    // Unchecked, the notice says so; checked again within its time, it stays as it was.
+    let notice_on = |window: &Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.voice().muted_speech_notice)
+    };
+    window.click("muted-speech-setting");
+    assert!(window.shows("muted-speech-turned-off") && !notice_on(&window));
+    window.click("muted-speech-setting");
+    assert!(window.shows("muted-speech") && !window.shows("muted-speech-turned-off"));
+    assert!(notice_on(&window));
+    // Unchecked for good: the statement, then the notice goes and does not come back.
+    window.click("muted-speech-setting");
+    window.until("the turned-off notice goes", |window| {
+        !window.shows("muted-speech")
+    });
+    window.pass(junto_client::state::muted_speech::ONSET * 2);
+    window.settle();
+    assert!(!window.shows("muted-speech"));
+    window.state.update(&mut window.cx, |state, cx| {
+        state.set_muted_speech_notice(true, cx)
+    });
+    window.until("the setting turns the notice on again", |window| {
+        window.shows("muted-speech")
+    });
+
+    // The notice stays through a pause in the speech and goes after its hold.
+    window.sound.say("tone", &vec![0.0; 48_000 * 8], 48_000);
+    window.pass(std::time::Duration::from_secs(2));
+    window.settle();
+    assert!(window.shows("muted-speech"));
     window.until("remote speech alone does not warn", |window| {
         !window.shows("muted-speech") && heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
     });

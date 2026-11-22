@@ -29,6 +29,7 @@ pub mod logo;
 mod message_links;
 mod messages;
 pub mod moderation;
+pub mod muted_speech;
 pub mod notices;
 mod notifying;
 pub mod people;
@@ -468,6 +469,12 @@ pub struct AppState {
     mute_holds: HashSet<Option<gpui::EntityId>>,
     /// The calls were told the press of push to mute and not yet its release.
     hold_told: bool,
+    /// When the notice of speech while muted is drawn, and the timer that steps it when
+    /// the drawn notice can change without a change of the levels.
+    muted_speech: muted_speech::MutedSpeech,
+    muted_speech_wake: Option<Task<()>>,
+    /// The windows whose notice has the pointer over it or the focus in its check box.
+    muted_speech_holds: HashSet<gpui::EntityId>,
     /// The places that the window showed, for Back and Forward (ADR 0777).
     history: history::History,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -900,6 +907,7 @@ impl AppState {
                         this.known.media.levels = shown;
                         cx.emit(LevelsChanged);
                     }
+                    this.step_muted_speech(cx);
                 });
                 match told {
                     Updated::Done(()) => {}
@@ -1042,6 +1050,9 @@ impl AppState {
             keybind_global_ready: true,
             mute_holds: HashSet::new(),
             hold_told: false,
+            muted_speech: muted_speech::MutedSpeech::default(),
+            muted_speech_wake: None,
+            muted_speech_holds: HashSet::new(),
             history: history::History::default(),
             call_window: None,
             call_window_closing: None,
@@ -1316,6 +1327,7 @@ impl AppState {
             self.calls.dismiss_closed();
         }
         self.known.media.calls = view;
+        self.step_muted_speech(cx);
         self.afk_changed(cx);
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
@@ -2568,6 +2580,76 @@ impl AppState {
     fn sound_on_for_microphone(&mut self) {
         if self.known.media.voice.sound_off_mutes && self.calls.view().deafened {
             self.calls.set_deafened(false);
+        }
+    }
+
+    /// Steps the notice of speech while muted with the levels and the call of this moment,
+    /// and wakes it again when the drawn notice can change without them (ADR 0735).
+    fn step_muted_speech(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let media = &self.known.media;
+        let muted = (media.voice.muted_speech_notice || self.muted_speech.turned_off())
+            && (media.calls.muted || self.holds_mute())
+            && media.calls.call.as_ref().is_some_and(|call| {
+                call.phase == junto_media::calls::Phase::Connected
+                    && call.microphone == MicrophoneState::Running
+            });
+        let heard = view::speech_heard(media.levels.speech_input);
+        if self.muted_speech.step(now, heard, muted) {
+            self.known.media.muted_speech = view::MutedSpeechShown {
+                shown: self.muted_speech.shown(),
+                turned_off: self.muted_speech.turned_off(),
+                fading: self.muted_speech.fading(),
+            };
+            cx.notify();
+        }
+        self.muted_speech_wake = self.muted_speech.wake().map(|at| {
+            cx.spawn(async move |this, cx| {
+                let wait = at.saturating_duration_since(cx.background_executor().now());
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, cx| this.step_muted_speech(cx));
+            })
+        });
+    }
+
+    /// "Tell me when I talk while muted", in the notice and in Settings, Voice and video.
+    /// Turned off from the notice, the notice states it for a moment and then goes.
+    pub fn set_muted_speech_notice(&mut self, on: bool, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        if on {
+            self.muted_speech.turn_on();
+        } else {
+            self.muted_speech.turn_off(now);
+        }
+        self.known.media.voice.muted_speech_notice = on;
+        self.write_voice(cx, move |voice| voice.muted_speech_notice = on);
+        self.known.media.muted_speech = view::MutedSpeechShown {
+            shown: self.muted_speech.shown(),
+            turned_off: self.muted_speech.turned_off(),
+            fading: self.muted_speech.fading(),
+        };
+        self.step_muted_speech(cx);
+        cx.notify();
+    }
+
+    /// The pointer is over the notice of speech while muted, or its check box has the
+    /// keyboard focus, in a window: the statement that it was turned off stays.
+    pub fn hold_muted_speech(
+        &mut self,
+        window: gpui::EntityId,
+        held: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if held {
+            self.muted_speech_holds.insert(window)
+        } else {
+            self.muted_speech_holds.remove(&window)
+        };
+        if changed {
+            let now = cx.background_executor().now();
+            self.muted_speech
+                .hold(!self.muted_speech_holds.is_empty(), now);
+            self.step_muted_speech(cx);
         }
     }
 

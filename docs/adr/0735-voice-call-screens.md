@@ -12,7 +12,7 @@ This version has the voice of a call and no camera, no screen share and no text 
 
 Entering:
 
-- A click on a voice channel shows the channel and joins nothing. Its header has "Join call". A double click on a voice channel that this device is not in also asks for a place in its call, through the same request as "Join call": a locked or a full room refuses it and the refusal is told, and from a call in another voice channel the device moves into this one, as the button does (`Calls::join`, one call of a client over all its servers). Its first click shows the channel. A double click on a text channel does nothing more than a click. The channel list is the one place that lists voice channels to enter; the notices and the administration list them for other purposes. Tests: the window test `calls::a_double_click_on_a_voice_channel_asks_for_a_place_and_a_single_click_only_shows_it` and the window live tests `live::rules::a_double_click_enters_a_voice_channel_as_the_join_button_does` and `live::rules::a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there`, which also has a full room refuse the double click while the call on the first server goes on. The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
+- A click on a voice channel shows the channel and joins nothing. Its header has one "Join call" button, with a small arrow attached to it whose menu has "Join after a device check" (the device check below); the header has no sentence about the chat or the people, and the states of the call (recording, lock, the count against a user limit) follow the title. While the room is locked or full for the person, the same place has "Ask to join" in the place of "Join call", with the state of the request (ADR 0739). Reason: "Check devices" and "Join call" were two buttons for one intent, and "Join call" on a locked room was offered and refused. Tests: `device_checks::channel_pair_and_group_calls_offer_a_guarded_check_before_joining` (the press on the arrow opens only its menu and joins nothing, and the menu opens the check, also from the call of a pair and of a group conversation) and `live::device_checks::`. A double click on a voice channel that this device is not in also asks for a place in its call, through the same request as "Join call": a locked or a full room refuses it and the refusal is told, and from a call in another voice channel the device moves into this one, as the button does (`Calls::join`, one call of a client over all its servers). Its first click shows the channel. A double click on a text channel does nothing more than a click. The channel list is the one place that lists voice channels to enter; the notices and the administration list them for other purposes. Tests: the window test `calls::a_double_click_on_a_voice_channel_asks_for_a_place_and_a_single_click_only_shows_it` and the window live tests `live::rules::a_double_click_enters_a_voice_channel_as_the_join_button_does` and `live::rules::a_double_click_on_a_voice_channel_of_another_server_moves_the_call_there`, which also has a full room refuse the double click while the call on the first server goes on. The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
 - A join that the server refuses is told by a notice in the notice area of the shown view, with the name of the channel and what the person can do. The notice stays until the person closes it.
 
 The call in the main area:
@@ -23,7 +23,7 @@ The call in the main area:
 - While the first media connection is made, and while the call is restored, the stage shows that statement in place of the tiles.
 - "Hide people without video" (Settings, "Your view") leaves out the tile of every person without a camera in each layout of the stage: the grid, the focus, the strip under a share (ADR 0738) and the call window (ADR 0772). A person has video while a camera of that person is published in the call; the camera of this device counts while it starts or runs. A camera counts before its first picture arrives, because only a drawn tile asks the media server for its picture (ADR 0770): a rule by the picture never drew a camera that started while the setting was on. The setting also leaves out every tile when nobody has a camera, and the stage then states it. A statement with the avatars of the first three people left out says how many the stage leaves out ("2 people without video are hidden") and that they are listed in Members. Reason: the setting first applied only while at least one picture was drawn, so in a call without cameras it changed nothing, and a person saw no effect. Test: `live::cameras::the_people_without_video_are_hidden_in_every_layout` reads the statement and the avatars of the people left out in the grid, the focus, the strip and the call window.
 - The panel has the tabs Chat and Members. Chat shows the chat of the voice channel with its composer (ADR 0740). Members lists the people in the call with their state and the volume control of each other person, and the members of the workspace outside the call with the voice channel that they are in. Members lists people only.
-- The header of the call has a settings button in every width of the window, in the main window and in the call window. It opens the settings of the application at "Voice and video"; in the call window, which has no settings of its own, the main window opens them and comes to the front (ADR 0772). The panel had a third tab, Settings, until 2026-11-09. Reason for its removal: its devices, the quality of the own share and "Your view" were personal settings that the settings of the application also held, under other rules (the device lists of the application settings were unavailable in a call); one place for them removes one of the two sets of rules. Of the tab, only the volume of the watched share and the settings of the room belonged to the call: the volume is on the line of the watched share (ADR 0738), and the settings of the room are in the settings section "Call" (ADR 0739). Tests: `device_checks::in_a_call_the_device_lists_of_the_settings_open_and_choose_the_devices` (the panel has no Settings tab, and the button opens "Voice and video") and `live::detached::the_call_window_has_the_chat_the_members_and_the_settings_of_its_call` (the button of the call window opens them in the main window).
+- A row of the person's own controls lies under the stage, in the main window and in the call window (`Shell::render_own_controls`): microphone, sound, camera, share, raise hand (in a call with a hand), View, the devices (the sliders icon, which opens Settings at "Voice and video"; in the call window the main window opens them and comes to the front, ADR 0772), the separate window or its return, and Leave, each an icon with a tooltip. Some are also on the call bar and the profile strip, on purpose, so the call can be seen and left from any channel. On a stage narrower than 520 design pixels the row keeps microphone, sound, camera, share and Leave, and the others move into "⋮" at the end of the row in the order of the row; the call window has "⋮" in every width, with "Keep on top" and "Full screen" (ADR 0772). "View" opens a menu: Grid, Speaker (the person who speaks in a large tile), "Hide people without video" and "Hide my tile", which read and write the settings of "Your view"; "Hide my tile" is disabled while the camera is off, and the layout items while a person is pinned. The press on a button of the row opens only its menu. Reason: the controls of one call were split over the header, the call bar and the profile strip, and the call window placed them elsewhere again; the row puts the own controls in one place under the call, as Discord and Slack huddles do. The header of the call holds only what everyone in the call shares: the recording control, which looks the same for everyone ("Record", or the mark of the recording with its time and "Stop"), enabled with "record calls" and disabled for the others; meeting mode (with an icon of its own, a presentation board) and the lock as toggles for a person who may change them, and for the others a mark ("Meeting mode", "Locked") only while the state is on; and the count against a user limit. The header has no settings button. The call bar keeps its controls; its grid button shows the grid or the large tile with two icons, and its separate-window button has the form of the bar. Tests: `own_controls::the_row_of_own_controls_lies_under_the_call_and_narrows_into_its_menu`, `live::detached::` (the window controls in "⋮"), and the header tests of `header::` and `badges::`.
 - In a narrow window the panel starts closed, two buttons of the header open its tabs, and it lies over the stage (ADR 0731).
 
 A direct-message call:
@@ -40,7 +40,7 @@ Outside the main area:
 - The strip of the call is above the profile strip while the device is in a call, whatever server and channel are shown. It names the voice channel, leads to it, shows the time since the call started, and has "Leave". Its share button starts and ends a share (ADR 0738), and its hand button raises and lowers the hand of the person (ADR 0739). Its camera button is drawn disabled, so that the strip has its final form.
 - The microphone and the sound button of the profile strip work in a call and outside one. A microphone that the person closed has the crossed mark on terracotta; a microphone that the server holds closed has the lock mark and takes no click.
 - A line above the profile strip tells who closed the microphone or the sound, and that the microphone cannot be used, with "Try again".
-- The settings of the application have the section "Voice and video": the devices of the person (the component of the device check below), the input mode, the key of push-to-talk, the three parts of the processing, "Your screen share" (the resolution and the frame rate of the next share, ADR 0738) and "Your view" ("Hide people without video" and "Hide your camera tile"). Test: `device_checks::the_settings_of_a_share_and_of_the_view_are_in_voice_and_video`. The section "Call" after it holds the settings of the room of the call (ADR 0739).
+- The settings of the application have the section "Voice and video": the devices of the person (the component of the device check below), the input mode, the key of push-to-talk, the three parts of the processing, "Your screen share" (the resolution and the frame rate of the next share, ADR 0738) and "Your view" ("Hide people without video" and "Hide your camera tile"). Test: `device_checks::the_settings_of_a_share_and_of_the_view_are_in_voice_and_video`.
 
 Structure:
 
@@ -63,15 +63,19 @@ The notice area is the fixed scrolling area at the end of a call stage, the area
 Tests: `live::direct::a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a_call` in the window live tier of `crates/client` starts a direct-message call in the window, reads the ringing call, sets the volume of the other person, reads and writes the conversation in the panel, chooses the microphone, the speaker and the camera in the settings of the application at "Voice and video", shares a screen with its sound, watches the share of the other person, sets the volume of the watched share on its line and the quality of the own share in the settings.
 
 
-A device check is available beside the join control of a voice channel, the start controls of
-pair and group conversations, and an invitation's accept control. Quick join remains available.
+A device check is offered by the arrow of each join control (`Shell::join_control`): "Join call"
+of a voice channel, "Call" of a pair or group conversation, and the answer to an invitation or a
+ring ("Join", "Accept"). The arrow is a button of its own attached to the join button; its
+press opens only its menu, whose one item "Join after a device check" opens the check, and
+joins nothing. Quick join remains the join button itself.
 The check and the settings at "Voice and video" draw one component of the devices
 (`Shell::render_device_checks`), which behaves the same in both places. Its
 Join action retains the exact server owner, call place and invitation identifier. Closing it
 joins nothing. Losing that owner, leaving the target group, or resolving the invitation closes
-the check and its previews; a stale Join action is refused. A real join cancels all local tests
-before the call takes the devices, and a camera preview never enables the call camera. While
-already in a call, the check behaves as the settings do in a call (below).
+the check, its previews and the menu of the arrow; a stale Join action is refused. A real join
+cancels all local tests before the call takes the devices, and a camera preview never enables
+the call camera. While already in a call, the check behaves as the settings do in a call
+(below).
 
 In every list of devices, in the settings and in the device check, the selected device has a check
 mark and every other choice has the icon of its kind of device: a camera for a camera, a
@@ -128,23 +132,61 @@ pair-call end, and rejection of old owners and seats.
 
 ## Local input while muted
 
-A connected call shows a short "You are muted" notice with Unmute when the person's
-explicit mute is on and the independently echo-filtered local input reaches the segment
-containing -45 dBFS, the speaking threshold used by the media engine. Its meter release
-removes the notice after the input becomes quiet. A separate echo canceller always takes
-a copy of the microphone and the actual output mix as its reference, even when optional
-sending processing is off. It does not change the settings input meter or the sent samples.
-Remote playback picked up by the microphone is filtered before detection. The warning
-starts no capture and opens no sending gate. An isolated virtual-device test routes
-playback into capture, then adds local speech beside it, with all sending processing off
-and the sending gate closed.
+A connected call shows the notice "You are muted" with Unmute when the person's explicit
+mute is on (or a key of push to mute is held) and the person keeps talking: the
+independently echo-filtered local input reaches the segment containing -45 dBFS, the
+speaking threshold used by the media engine, for 2.5 seconds, where pauses shorter than
+0.8 seconds keep the speech continuous. It then stays until 5 seconds after the last speech,
+so the pauses between words do not hide it, and it goes at once when the person unmutes or
+the call is no longer connected. The next mute needs new speech. One state machine in the
+application state decides it (`state::muted_speech::MutedSpeech`), stepped with each change
+of the levels and of the calls, and with a timer at the moment when the drawn notice can
+change without them (`MutedSpeech::wake`): the levels change only when the input changes, so
+a steady level is speech that goes on, and silence changes nothing until the hold ends.
+Reason: the notice followed the level of each moment, so each pause between words hid it,
+each next word showed it again, and the controls around it moved with every word. It keeps
+its place above the call bar (in the call window, the notice area of the stage), where it
+covers no control; it moves the call bar once per period of speech.
+
+A separate echo canceller always takes a copy of the microphone and the actual output mix as
+its reference, even when optional sending processing is off. It does not change the settings
+input meter or the sent samples. Remote playback picked up by the microphone is filtered
+before detection. The warning starts no capture and opens no sending gate. An isolated
+virtual-device test routes playback into capture, then adds local speech beside it, with all
+sending processing off and the sending gate closed. The threshold of -45 dBFS is to be checked
+in real rooms, so that other people talking in the background do not start the notice.
+
+The first row holds the statement and Unmute, with no close button. In push-to-talk mode
+an explicit mute still warns, but waiting for the talk key alone does not; Unmute removes
+the explicit mute and preserves the talk-key gate. A held push-to-mute key also warns, with
+an explanation and a disabled Unmute until release; the callback checks the hold again so a
+press drawn before the hold cannot bypass it. The second row, apart from Unmute, is the
+check box "Tell me when I talk while muted" in a click area at least 24 design pixels high
+(`ui::CheckBox`). Unchecking it turns the device setting off (`muted_speech_notice` in the
+sound settings, on by default and when a file of 0.2 or earlier lacks it; the format version
+stays 8, whose readers ignore the field) and the notice states "Turned off. Settings, Voice
+and video turns it on again." for 3 seconds, then fades out in 0.4 seconds. Checking the box
+again within that time turns the setting on and leaves the notice as it was. The 3 seconds
+start again when the pointer leaves the notice and the check box loses the keyboard focus
+in every window, so the statement does not go while the person reaches for it. Settings,
+Voice and video has the same setting as a switch.
 
 The main and detached windows show the same notice. Unmute names the seat drawn by the
-control. In push-to-talk mode an explicit mute still warns, but waiting for the talk key
-alone does not; Unmute removes the explicit mute and preserves the talk-key gate. A held
-push-to-mute key also warns, with an explanation and a disabled Unmute until release; the
-callback checks the hold again so a press drawn before the hold cannot bypass it. No sound
-is sent or played because the notice appears.
+control. No sound is sent or played because the notice appears.
+
+Tests: `state::muted_speech::tests` (speech with pauses shorter than the limit shows the
+notice after the onset and single words do not; a steady level shows it at its onset; pauses of two to four seconds keep it, and
+it goes after the hold at the moment it asks to be woken; an unmute hides it and the next
+mute needs new speech; the statement of a notice turned off lasts 3 seconds, waits while
+held and fades), `voice::tests::the_muted_speech_notice_is_on_by_default_and_in_files_without_the_setting`
+in `crates/client-core`, and the window live test
+`call_notices::local_input_while_muted_shows_a_notice_in_both_windows` (no earlier than the
+onset after a steady level, and gone after the hold), and the window live test
+`live::muted_speech::local_speech_while_muted_offers_unmute_without_bypassing_held_keys`,
+which reads that the notice comes no earlier than the onset after the mute, unchecks and
+checks the box, waits until a notice turned off goes and stays away during speech, turns the
+setting on again, keeps the notice through a pause and loses it after the hold, and keeps
+its checks of remote speech, push to talk, push to mute and the call window.
 
 ## Hiding the own camera tile
 

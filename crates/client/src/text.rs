@@ -19,7 +19,7 @@ use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 
 use crate::state::view::{
-    CallNotice, Closed, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
+    CallNotice, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
 };
 
 pub mod account;
@@ -119,6 +119,7 @@ pub const TEXT_CHANNELS: &str = "Text channels";
 pub const VOICE_CHANNELS: &str = "Voice channels";
 pub const SERVER_MENU: &str = "Server menu";
 pub const LOCKED: &str = "locked";
+pub const LOCKED_MARK: &str = "Locked";
 pub const IN_USE: &str = "in use";
 pub const FULL: &str = "full";
 pub const RECORDING_MARK: &str = "REC";
@@ -288,6 +289,14 @@ pub const TURN_ON_CAMERA: &str = "Turn on camera";
 pub const TURN_OFF_CAMERA: &str = "Turn off camera";
 pub const CAMERA_ON: &str = "Camera on";
 pub const SHOW_GRID: &str = "Show everyone in a grid";
+pub const VIEW: &str = "View";
+pub const VIEW_GRID: &str = "Grid";
+pub const VIEW_SPEAKER: &str = "Speaker";
+pub const HIDE_MY_TILE: &str = "Hide my tile";
+pub const HIDE_MY_TILE_CAMERA_OFF: &str = "Your camera is off";
+pub const YOUR_DEVICES: &str = "Your devices (Settings, Voice and video)";
+pub const MORE_CALL_CONTROLS: &str = "More call controls";
+pub const YOUR_CALL_CONTROLS: &str = "Your call controls";
 
 // The rules of the room of a call (ADR 0739).
 pub const MEETING_MODE_HELP: &str = "Only the person who is sharing a screen can turn it on. It \
@@ -340,6 +349,10 @@ pub const OWN_CAMERA_VIEW_HIDDEN: &str = "Your camera tile is hidden from your v
 pub const YOU_ARE_MUTED: &str = "You are muted";
 pub const MUTED_SPEECH_PTT: &str = "Your push-to-talk key still controls the microphone.";
 pub const MUTED_SPEECH_HOLD: &str = "Release push-to-mute to unmute.";
+pub const MUTED_SPEECH_SETTING: &str = "Tell me when I talk while muted";
+pub const MUTED_SPEECH_SETTING_HELP: &str =
+    "After a few seconds of speech while muted, a notice above the call bar offers Unmute.";
+pub const MUTED_SPEECH_TURNED_OFF: &str = "Turned off. Settings, Voice and video turns it on again.";
 pub const UNMUTE: &str = "Unmute";
 pub const UNMUTE_HELP: &str = "Unmute your microphone. Junto does not unmute it for you.";
 pub const MICROPHONE_OPEN_AGAIN: &str = "Your microphone is no longer blocked. It is on, and \
@@ -376,18 +389,8 @@ pub fn unused_action(unused: Unused) -> &'static str {
 }
 
 /// The heading of the settings section "Call": the voice channel of the call.
-pub fn call_section_heading(channel: &str) -> String {
-    format!("The call in {channel}")
-}
-
-pub const CALL_SECTION: &str = "Call";
-pub const CALL_SECTION_FOR_EVERYONE: &str = "These settings apply to everyone in the call.";
-pub const CALL_SECTION_NO_CALL: &str = "This section holds the settings of the call that you are \
-     in. You are in no call now.";
-pub const CALL_SECTION_NO_ROOM: &str = "This section holds the settings of the call that you are \
-     in. A direct call has no such settings.";
-pub const CALL_SECTION_NOT_READ: &str = "The settings of your call appear here once its voice \
-     channel is read.";
+pub const ROOM_SETTINGS: &str = "Room settings";
+pub const ROOM_SETTINGS_FOR_EVERYONE: &str = "These settings apply to everyone in the call.";
 
 /// " · Carla runs it", after the statement that meeting mode is on.
 pub fn runs_it(presenter: Option<&str>) -> String {
@@ -430,9 +433,9 @@ pub const ASK_TO_ENTER: &str = "Ask to join";
 pub const ASK_TO_ENTER_HELP: &str = "The people in the call get your request. For a full call, \
      it goes to the people in the call who may let others into a full call, or to everyone in \
      the call when none of them is in it. You join when one of them lets you in.";
-pub const FULL_NOTE: &str = "Full. You can join when someone leaves or invites you.";
 pub const ENTRY_ASKING: &str = "Asking…";
 pub const ENTRY_WAITING_TITLE: &str = "You asked to join";
+pub const ENTRY_WAITING_MARK: &str = "Asked to join";
 pub const ENTRY_WAITING: &str = "Waiting for someone in the call to let you in. The request \
      ends after one minute without an answer.";
 pub const ENTRY_DENIED_TITLE: &str = "Your request was denied";
@@ -443,21 +446,6 @@ pub const WITHDRAW_REQUEST: &str = "Cancel request";
 pub const ASK_AGAIN: &str = "Ask again";
 pub const LET_IN: &str = "Let in";
 pub const DENY: &str = "Deny";
-
-/// "Focus room is locked", "All hands is full".
-pub fn closed_title(channel: &str, closed: Closed) -> String {
-    match closed {
-        Closed::Locked => format!("{channel} is locked"),
-        Closed::Full => format!("{channel} is full"),
-    }
-}
-
-pub fn closed_help(closed: Closed) -> &'static str {
-    match closed {
-        Closed::Locked => LOCK_ROOM_SETTING_HELP,
-        Closed::Full => "You can join when someone leaves or invites you.",
-    }
-}
 
 /// The prompt of the people inside about a person who asks to enter.
 pub fn entry_prompt(name: Option<&str>, channel: &str) -> String {
@@ -554,7 +542,7 @@ pub fn call_refused(reason: &str) -> String {
 }
 
 // The share of this device.
-pub const SHARE_SCREEN: &str = "Share";
+pub const SHARE_SCREEN: &str = "Share screen or window";
 pub const SHARE_STARTING: &str = "Starting your share…";
 pub const SHARE_RUNS: &str = "Share";
 pub const YOUR_SHARES: &str = "Your shares";
@@ -564,6 +552,7 @@ pub const SHARE_ANOTHER: &str = if cfg!(target_os = "linux") {
     "Share another screen, window or application"
 };
 pub const STOP_ALL_SHARES: &str = "Stop all shares";
+pub const HIDE_PREVIEW: &str = "Hide preview";
 pub const SHARE_STARTS: &str = "Starts…";
 
 /// Why "Share another" is disabled: the person runs as many shares as one person can in the
@@ -616,9 +605,7 @@ pub const SOUND_OF_JUNTO_NOT_SHARED: &str = "Junto does not share its own sound,
      that sound holds this call. Choose all system sound or no sound.";
 /// In the place of the picture of an own share of a window or of the application of Junto
 /// itself (ADR 0738).
-pub const SHARE_SHOWS_JUNTO: &str = "This share shows Junto. Its picture is not shown here, \
-     so that a window that shows the call does not show its own picture again inside itself. \
-     The people in the call see the picture.";
+pub const SHARE_SHOWS_JUNTO: &str = "Your share shows Junto, so it is not drawn here. Others see it.";
 /// The line under an application in the dialog of a share: its windows and the screen whose
 /// area is shared.
 pub fn application_picture_detail(windows: usize, screen: usize, size: (u32, u32)) -> String {
@@ -636,12 +623,11 @@ pub fn share_preview(name: &str) -> String {
 }
 pub const WHAT_TO_SHARE: &str = "What to share";
 pub const SHARE_SOUND: &str = "Sound of this share";
+pub const SHARE_QUALITY: &str = "Quality";
 pub const SOUND_NONE: &str = "No sound";
 pub const SOUND_SYSTEM: &str = "All system sound";
 pub const SOUND_ONE_APPLICATION: &str = "One application";
 pub const SOUND_THIS_APPLICATION: &str = "This application";
-pub const SOUND_CHOICE_HELP: &str =
-    "Choose the sound for each share. Sound from other applications may include the call.";
 pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear all sound of this computer. \
      Sound from another running copy of Junto may include the call.";
 pub const SOUND_NONE_HELP: &str = "The people in the call see the share without sound.";
@@ -764,7 +750,6 @@ pub const ENTIRE_SCREEN: &str = "Entire screen";
 pub const ONE_WINDOW: &str = "Window";
 pub const ONE_APPLICATION: &str = "Application";
 pub const PICTURE_ARRIVES: &str = "Waiting for the picture…";
-pub const SOUND_FOLLOWS: &str = "You hear only the share you are watching.";
 pub const SHARE_SOUND_HELD: &str = "Its sound is not sent while your microphone is blocked";
 pub const SHARE_SOUND_OFF_FOR_YOU: &str = "You set its volume to 0 %";
 pub const LISTED_IN_MEMBERS: &str = "They are listed under Members.";
@@ -889,12 +874,12 @@ pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
 pub const HIDE_WITHOUT_VIDEO_HELP: &str = "Hides the tiles of people whose camera is off. Only \
      your window changes. They are still in the call and listed under Members.";
 pub const STOP_WATCHING: &str = "Stop watching";
-pub const MUTE_SHARE: &str = "Mute share";
-pub const UNMUTE_SHARE: &str = "Unmute share";
-pub const SHARE_MUTED: &str = "Muted";
+pub const MUTE_SHARE: &str = "Mute share sound";
+pub const UNMUTE_SHARE: &str = "Unmute share sound";
+pub const SHARE_MUTED: &str = "Share sound muted";
 pub const SHARE_SOUND_TITLE: &str = "Share sound";
 pub const SHARE_VOLUME_ONE: &str = "Share volume";
-pub const SHARE_VOLUME: &str = "Volume of the share you are watching";
+pub const SHARE_VOLUME: &str = "Share sound volume";
 
 pub fn share_resolution(resolution: ShareResolution) -> &'static str {
     match resolution {
@@ -1053,20 +1038,6 @@ pub fn panic_notice(count: usize, report: Option<&std::path::Path>) -> String {
         ),
         None => format!("{happened} No report file was written; the log of Junto names the error."),
     }
-}
-
-/// The line beside the title of a voice channel that this device is not in.
-pub fn voice_channel_topic(inside: usize, hidden: bool) -> String {
-    let state = if hidden {
-        "Someone is in the call. Only the people in the call can see who is in it.".to_owned()
-    } else {
-        match inside {
-            0 => "Nobody is in the call now.".to_owned(),
-            1 => "1 person is in the call.".to_owned(),
-            inside => format!("{inside} people are in the call."),
-        }
-    };
-    format!("Chat of this voice channel. {state}")
 }
 
 /// What the stage tells while the media connection of the call is restored.
@@ -3905,13 +3876,6 @@ mod tests {
     fn the_texts_of_states_and_counts() {
         assert_eq!(occupancy(8, 8, true), "8 / 8 · full");
         assert_eq!(occupancy(5, 8, false), "5 / 8");
-        assert_eq!(
-            voice_channel_topic(0, false),
-            "Chat of this voice channel. Nobody is in the call now."
-        );
-        assert!(voice_channel_topic(1, false).ends_with("1 person is in the call."));
-        assert!(voice_channel_topic(3, false).ends_with("3 people are in the call."));
-        assert!(voice_channel_topic(3, true).contains("Only the people in the call can see"));
         assert_eq!(call_time(Duration::from_secs(42 * 60 + 17)), "00:42:17");
         assert_eq!(call_time(Duration::from_secs(26 * 3600 + 5)), "26:00:05");
         assert_eq!(system_default(""), "System default");

@@ -208,7 +208,7 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     let mut detached = window.window_of(handle);
     detached.simulate(|cx| cx.update(|window, _| window.activate_window()));
     detached.run_tasks();
-    assert!(detached.cx.debug_bounds("detached-microphone").is_some());
+    assert!(detached.cx.debug_bounds("own-microphone").is_some());
     detached.simulate(|cx| cx.simulate_modifiers_change(held));
     window.until("detached key sends", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
@@ -221,24 +221,26 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
         state.calls().view().call.unwrap().identity
     });
     detached.run_tasks();
-    let fullscreen = detached.cx.debug_bounds("call-fullscreen").unwrap();
-    detached.simulate(|cx| cx.simulate_click(fullscreen.center(), Modifiers::none()));
+    // The window controls are in "⋮" of the row of own controls (ADR 0772).
+    detached.click("own-more");
+    detached.click("more-fullscreen");
     assert!(detached.cx.update(|window, _| window.is_fullscreen()));
     // The choice "keep on top" is drawn only where the system can keep a window above the
     // others (ADR 0507).
+    detached.click("own-more");
     if detached
         .cx
         .update(|_, cx| junto_client::window_level::offered(cx))
     {
-        let top = detached.cx.debug_bounds("call-on-top").unwrap();
-        detached.simulate(|cx| cx.simulate_click(top.center(), Modifiers::none()));
+        detached.click("more-on-top");
         window.until("topmost changes without leaving", |window| {
             window.state.read_with(&window.cx, |state, _| {
                 state.is_call_detached() && state.call_window_settings().keep_on_top
             })
         });
     } else {
-        assert!(detached.cx.debug_bounds("call-on-top").is_none());
+        assert!(!detached.shows("more-on-top"));
+        detached.press("escape");
     }
     assert_eq!(
         identity,
@@ -611,7 +613,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     // button opens the settings of the application at "Voice and video" in the main window,
     // which comes to the front (ADR 0772); a device chosen there is used by the call.
     assert!(!call.shows("call-tab-settings"));
-    call.click("open-call-settings");
+    call.click("own-devices");
     window.until("the main window shows the devices", |window| {
         window.shows("settings-page-settings-section-voice-and-video")
             && window.shows("input-device")

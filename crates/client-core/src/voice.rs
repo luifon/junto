@@ -373,6 +373,8 @@ pub struct VoiceSettings {
     /// Turning the sound off also mutes the microphone, and turning it on again returns
     /// the microphone to its state before.
     pub sound_off_mutes: bool,
+    /// A notice tells the person who talks while the microphone is muted.
+    pub muted_speech_notice: bool,
 }
 
 /// The levels that the sensitivity of voice activation can have, in dBFS: the range of the
@@ -402,6 +404,7 @@ impl Default for VoiceSettings {
             sounds: Sounds::default(),
             voice_threshold: None,
             sound_off_mutes: true,
+            muted_speech_notice: true,
         }
     }
 }
@@ -522,6 +525,9 @@ struct VoiceFile {
     /// Absent from the files of 0.1.0, which ignores it (ADR 0710).
     #[serde(default = "turned_on")]
     sound_off_mutes: bool,
+    /// Absent from the files of 0.2 and earlier, which ignore it.
+    #[serde(default = "turned_on")]
+    muted_speech_notice: bool,
 }
 
 fn turned_on() -> bool {
@@ -562,6 +568,7 @@ impl VoiceStore {
             sounds: file.sounds,
             voice_threshold: file.voice_threshold,
             sound_off_mutes: file.sound_off_mutes,
+            muted_speech_notice: file.muted_speech_notice,
         }
         .bounded())
     }
@@ -605,6 +612,7 @@ impl VoiceStore {
                 sounds: settings.sounds.clone(),
                 voice_threshold: settings.voice_threshold,
                 sound_off_mutes: settings.sound_off_mutes,
+                muted_speech_notice: settings.muted_speech_notice,
             },
         )?;
         Ok(settings)
@@ -648,18 +656,36 @@ mod tests {
             "sounds",
             "voice_threshold",
         ];
-        let new: Vec<&String> = value
+        let mut new: Vec<&String> = value
             .as_object()
             .unwrap()
             .keys()
             .filter(|key| !known_to_0_1_0.contains(&key.as_str()))
             .collect();
-        assert_eq!(new, ["sound_off_mutes"]);
+        new.sort();
+        assert_eq!(new, ["muted_speech_notice", "sound_off_mutes"]);
         // A file of 0.1.0 has no such field: the setting is on.
         let mut older = value.clone();
         older.as_object_mut().unwrap().remove("sound_off_mutes");
         fs::write(&file, serde_json::to_vec(&older).unwrap()).unwrap();
         assert!(store.load().unwrap().sound_off_mutes);
+    }
+
+    #[test]
+    fn the_muted_speech_notice_is_on_by_default_and_in_files_without_the_setting() {
+        let (_directory, data, store) = store();
+        assert!(store.load().unwrap().muted_speech_notice);
+        store
+            .update(|voice| voice.muted_speech_notice = false)
+            .unwrap();
+        assert!(!store.load().unwrap().muted_speech_notice);
+        let file = data.root().join(VOICE_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(value["format_version"], 8);
+        value.as_object_mut().unwrap().remove("muted_speech_notice");
+        fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(store.load().unwrap().muted_speech_notice);
     }
 
     #[test]

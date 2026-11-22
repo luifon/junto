@@ -48,6 +48,18 @@ pub(crate) fn channel_states(voice: &VoiceState) -> Vec<ChannelState> {
             strong: false,
         });
     }
+    // A request to join that waits keeps a short mark on the row, whatever channel the
+    // window shows; its state and its actions are in the header of the channel.
+    if matches!(
+        voice.entry,
+        Some(crate::state::view::EntryState::Asking | crate::state::view::EntryState::Waiting)
+    ) {
+        states.push(ChannelState::Marked {
+            icon: Icon::Clock,
+            text: text::ENTRY_WAITING_MARK.into(),
+            strong: false,
+        });
+    }
     // The count against a user limit, also before the channel is full (1 / 2).
     if let (Some(limit), false) = (voice.user_limit, voice.hidden) {
         states.push(ChannelState::Marked {
@@ -295,22 +307,19 @@ impl Shell {
         let colors = theme.colors;
         let workspace = lists.workspace.as_ref();
         let in_call = lists.call.is_some();
-        let (channels, entries) = match workspace {
+        let channels = match workspace {
             Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
-            None => (
-                vec![
-                    div()
-                        .flex_none()
-                        .px(u(14.0))
-                        .pt(u(12.0))
-                        .typeface(theme.types.small, theme)
-                        .ink(colors.ink_2)
-                        .debug_selector(|| "no-workspace-note".to_owned())
-                        .child(text::NO_WORKSPACES)
-                        .into_any_element(),
-                ],
-                Vec::new(),
-            ),
+            None => vec![
+                div()
+                    .flex_none()
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.ink_2)
+                    .debug_selector(|| "no-workspace-note".to_owned())
+                    .child(text::NO_WORKSPACES)
+                    .into_any_element(),
+            ],
         };
         let label: SharedString = match workspace {
             Some(workspace) => workspace.name.clone().into(),
@@ -349,19 +358,6 @@ impl Shell {
             .min_h_0()
             .child(server_part)
             .child(list)
-            // The entry boxes take their height from the end of the channel list, whose rows
-            // stay in place. They scroll only when the column has no room for them, so the
-            // action of a box stays in view at every width of the column (ADR 0739).
-            .child(
-                div()
-                    .id("channel-entry-notices")
-                    .debug_selector(|| "channel-entry-notices".to_owned())
-                    .flex_grow_0()
-                    .flex_shrink_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .children(entries),
-            )
     }
 
     fn open_channel_creation(
@@ -457,7 +453,7 @@ impl Shell {
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
+    ) -> Vec<AnyElement> {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
@@ -476,7 +472,6 @@ impl Shell {
             _ => None,
         };
         let mut rows: Vec<AnyElement> = Vec::new();
-        let mut entries = Vec::new();
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
             let title: SharedString = match &section.title {
@@ -1011,11 +1006,6 @@ impl Shell {
                         .into_any_element(),
                     );
                 }
-                if let (Some(server_id), Some(voice)) = (server_id, channel.voice.as_ref())
-                    && let Some(entry) = self.render_entry_box(server_id, channel, voice, theme, cx)
-                {
-                    entries.push(entry);
-                }
             }
         }
         if channel_index == 0 {
@@ -1069,7 +1059,7 @@ impl Shell {
                 );
             }
         }
-        (rows, entries)
+        rows
     }
 
     /// The row of a person in a voice channel of the channel list, at the place `seat` of

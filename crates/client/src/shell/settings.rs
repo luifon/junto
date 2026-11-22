@@ -18,7 +18,6 @@ use super::account::Surface;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::ProcessingPart;
-use crate::state::view::CallRoom;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
 use crate::ui::{
@@ -37,8 +36,6 @@ pub enum SettingsSection {
     Picture,
     Interface,
     VoiceAndVideo,
-    /// The settings of the room of the call of this device (ADR 0739).
-    Call,
     /// The key bindings (ADR 0777).
     Keybinds,
     Quiet,
@@ -50,12 +47,11 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::Profile,
         Self::Picture,
         Self::Interface,
         Self::VoiceAndVideo,
-        Self::Call,
         Self::Keybinds,
         Self::Quiet,
         Self::Notifications,
@@ -71,7 +67,6 @@ impl SettingsSection {
             Self::Picture => text::PICTURE,
             Self::Interface => text::INTERFACE,
             Self::VoiceAndVideo => text::VOICE_AND_VIDEO,
-            Self::Call => text::CALL_SECTION,
             Self::Keybinds => text::KEYBINDS,
             Self::Quiet => text::QUIET,
             Self::Notifications => text::NOTIFICATIONS,
@@ -88,7 +83,6 @@ impl SettingsSection {
             Self::Picture => Icon::Picture,
             Self::Interface => Icon::AppWindow,
             Self::VoiceAndVideo => Icon::Microphone,
-            Self::Call => Icon::Phone,
             Self::Keybinds => Icon::Keyboard,
             Self::Quiet => Icon::Clock,
             Self::Notifications => Icon::Bell,
@@ -106,7 +100,6 @@ impl SettingsSection {
             Self::Picture => "settings-section-picture",
             Self::Interface => "settings-section-interface",
             Self::VoiceAndVideo => "settings-section-voice-and-video",
-            Self::Call => "settings-section-call",
             Self::Keybinds => "settings-section-keybinds",
             Self::Quiet => "settings-section-quiet",
             Self::Notifications => "settings-section-notifications",
@@ -325,67 +318,65 @@ impl Shell {
         self.open_settings_section(SettingsSection::VoiceAndVideo, window, cx);
     }
 
-    /// Opens the settings of the application at "Call", the settings of the room of the
-    /// call. The call window opens them in the main window, as `open_voice_settings` does.
-    pub fn open_room_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.detached {
-            crate::app::in_main_window(
-                |shell, window, cx| shell.open_room_settings(window, cx),
-                cx,
-            );
-            return;
-        }
-        if !matches!(self.layer, Layer::Settings) {
-            self.open_settings(window, cx);
-        }
-        self.open_settings_section(SettingsSection::Call, window, cx);
-    }
-
-    /// The settings of the room of the call of this device: they apply to everyone in the
-    /// call, apart from the personal settings at "Voice and video" (ADR 0739). Without a call,
-    /// and in a call without a room, the section states it and shows no control.
-    fn render_call_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut parts = vec![group_label(text::CALL_SECTION, theme).into_any_element()];
-        let room = self.view.as_ref().and_then(|view| view.call_room.clone());
-        // The statement of each case has a name of its own, for a test.
-        let statement = |case: &'static str, sentence: &'static str| {
-            div()
-                .debug_selector(move || format!("call-section-statement:{case}"))
-                .child(help(sentence, theme))
-                .into_any_element()
+    /// The resolution and the frame rate of the next share, as Settings at "Your screen
+    /// share" and the dialog of a share show them: both read and write the one stored
+    /// setting (ADR 0738). `prefix` names the controls of the place.
+    pub(crate) fn share_quality_controls(
+        &mut self,
+        prefix: &'static str,
+        cx: &mut Context<Self>,
+    ) -> (Segmented, Segmented) {
+        let voice = self.state.read(cx).voice().clone();
+        let resolutions = [
+            ShareResolution::P720,
+            ShareResolution::P1080,
+            ShareResolution::Source,
+        ];
+        let (resolution_id, rate_id): (&'static str, &'static str) = match prefix {
+            "share" => ("share-resolution", "share-frame-rate"),
+            _ => ("share-dialog-resolution", "share-dialog-frame-rate"),
         };
-        match room {
-            None => parts.push(statement("no-call", text::CALL_SECTION_NO_CALL)),
-            Some(CallRoom::Direct) => parts.push(statement("no-room", text::CALL_SECTION_NO_ROOM)),
-            Some(CallRoom::Unknown) => {
-                parts.push(statement("not-read", text::CALL_SECTION_NOT_READ))
-            }
-            Some(CallRoom::Channel(room)) => {
-                parts.push(
-                    div()
-                        .debug_selector({
-                            let name = room.name.clone();
-                            move || format!("call-section-channel:{name}")
-                        })
-                        .mt(u(4.0))
-                        .typeface(theme.types.name, theme)
-                        .ink(theme.colors.ink)
-                        .child(text::call_section_heading(&room.name))
-                        .into_any_element(),
-                );
-                parts.push(help(text::CALL_SECTION_FOR_EVERYONE, theme).into_any_element());
-                parts.push(
-                    div()
-                        .debug_selector(|| "room-settings".to_owned())
-                        .mt(u(8.0))
-                        .flex()
-                        .flex_col()
-                        .children(self.render_room_settings(&room, theme, cx))
-                        .into_any_element(),
-                );
-            }
-        }
-        parts
+        let resolution = Segmented::new(
+            resolution_id,
+            text::RESOLUTION,
+            resolutions.map(|resolution| SharedString::from(text::share_resolution(resolution))),
+        )
+        .selected(
+            resolutions
+                .iter()
+                .position(|resolution| *resolution == voice.share_resolution),
+        )
+        .selector(resolution_id)
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(resolution) = resolutions.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        let frame_rate = Segmented::new(
+            rate_id,
+            text::FRAME_RATE,
+            SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
+        )
+        .selected(
+            SHARE_FRAME_RATES
+                .iter()
+                .position(|rate| *rate == voice.share_frame_rate),
+        )
+        .selector(rate_id)
+        .on_select({
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
+                    this.state
+                        .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        (resolution, frame_rate)
     }
 
     /// Whether this shell draws the call window (ADR 0772).
@@ -431,7 +422,6 @@ impl Shell {
                 parts.extend(self.render_share_and_view_settings(&theme, cx));
                 parts
             }
-            SettingsSection::Call => self.render_call_section(&theme, cx),
             SettingsSection::Keybinds => self.render_keybinds_section(&theme, cx),
             SettingsSection::Quiet => {
                 let quiet = self
@@ -932,11 +922,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let voice = self.state.read(cx).voice().clone();
-        let resolutions = [
-            ShareResolution::P720,
-            ShareResolution::P1080,
-            ShareResolution::Source,
-        ];
         let choice_row = |label: &'static str, control: Segmented| {
             div()
                 .flex()
@@ -947,46 +932,7 @@ impl Shell {
                 .child(control)
                 .into_any_element()
         };
-        let resolution = Segmented::new(
-            "share-resolution",
-            text::RESOLUTION,
-            resolutions.map(|resolution| SharedString::from(text::share_resolution(resolution))),
-        )
-        .selected(
-            resolutions
-                .iter()
-                .position(|resolution| *resolution == voice.share_resolution),
-        )
-        .selector("share-resolution")
-        .on_select({
-            let select = cx.listener(move |this, index: &usize, _, cx| {
-                if let Some(resolution) = resolutions.get(*index).copied() {
-                    this.state
-                        .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
-                }
-            });
-            move |index, window, cx| select(&index, window, cx)
-        });
-        let frame_rate = Segmented::new(
-            "share-frame-rate",
-            text::FRAME_RATE,
-            SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
-        )
-        .selected(
-            SHARE_FRAME_RATES
-                .iter()
-                .position(|rate| *rate == voice.share_frame_rate),
-        )
-        .selector("share-frame-rate")
-        .on_select({
-            let select = cx.listener(move |this, index: &usize, _, cx| {
-                if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
-                    this.state
-                        .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
-                }
-            });
-            move |index, window, cx| select(&index, window, cx)
-        });
+        let (resolution, frame_rate) = self.share_quality_controls("share", cx);
         let hide_without_video = voice.hide_people_without_video;
         let hide_own_camera = voice.hide_own_camera;
         vec![
@@ -1415,30 +1361,43 @@ impl Shell {
         if voice.input_mode == InputMode::VoiceActivation {
             rows.push(self.render_voice_threshold(voice.voice_threshold, theme, window, cx));
         }
+        #[derive(Clone, Copy)]
+        enum VoiceSwitch {
+            SoundOffMutes,
+            MutedSpeech,
+            Processing(ProcessingPart),
+        }
         for (part, on, title, sentence, selector) in [
             (
-                None,
+                VoiceSwitch::SoundOffMutes,
                 voice.sound_off_mutes,
                 text::SOUND_OFF_MUTES,
                 text::SOUND_OFF_MUTES_HELP,
                 "sound-off-mutes",
             ),
             (
-                Some(ProcessingPart::EchoCancellation),
+                VoiceSwitch::MutedSpeech,
+                voice.muted_speech_notice,
+                text::MUTED_SPEECH_SETTING,
+                text::MUTED_SPEECH_SETTING_HELP,
+                "muted-speech-notice",
+            ),
+            (
+                VoiceSwitch::Processing(ProcessingPart::EchoCancellation),
                 voice.echo_cancellation,
                 text::ECHO_CANCELLATION,
                 text::ECHO_CANCELLATION_HELP,
                 "echo-cancellation",
             ),
             (
-                Some(ProcessingPart::NoiseSuppression),
+                VoiceSwitch::Processing(ProcessingPart::NoiseSuppression),
                 voice.noise_suppression,
                 text::NOISE_SUPPRESSION,
                 text::NOISE_SUPPRESSION_HELP,
                 "noise-suppression",
             ),
             (
-                Some(ProcessingPart::AutomaticGain),
+                VoiceSwitch::Processing(ProcessingPart::AutomaticGain),
                 voice.automatic_gain,
                 text::AUTOMATIC_GAIN,
                 text::AUTOMATIC_GAIN_HELP,
@@ -1475,8 +1434,15 @@ impl Shell {
                             .selector(selector)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.state.update(cx, |state, cx| match part {
-                                    Some(part) => state.set_processing(part, !on, cx),
-                                    None => state.set_sound_off_mutes(!on, cx),
+                                    VoiceSwitch::Processing(part) => {
+                                        state.set_processing(part, !on, cx)
+                                    }
+                                    VoiceSwitch::SoundOffMutes => {
+                                        state.set_sound_off_mutes(!on, cx)
+                                    }
+                                    VoiceSwitch::MutedSpeech => {
+                                        state.set_muted_speech_notice(!on, cx)
+                                    }
                                 });
                             })),
                     )

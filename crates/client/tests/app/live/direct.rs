@@ -719,7 +719,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
 
     // The microphone, the speaker and the camera, in the settings of the application at
     // "Voice and video".
-    window.click("open-call-settings");
+    window.click("own-devices");
     window.until("the devices are listed", |window| {
         direct_panel(window)
             .is_some_and(|panel| panel.audio.inputs.len() == 2 && panel.audio.outputs.len() == 2)
@@ -799,7 +799,7 @@ fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a
             .is_some_and(|stage| stage.volume == 0)
             && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
     });
-    window.click("open-call-settings");
+    window.click("own-devices");
     window.click_in_settings("share-resolution-0");
     window.click_in_settings("share-frame-rate-0");
     window.press("escape");

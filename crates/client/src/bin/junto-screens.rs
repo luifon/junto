@@ -1075,6 +1075,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
         access: Some(MicrophoneAccess::Allowed),
         now: Some(at() + time::Duration::seconds(42 * 60 + 17)),
         can_share: true,
+        muted_speech: Default::default(),
     }
 }
 
@@ -2473,6 +2474,21 @@ fn draw_calls(studio: &mut Studio) -> Result<(), String> {
         Screen::call("call-own-microphone-and-sound-off", muted),
         show_daily_tab(CallTab::Members),
     )?;
+    // Speech while muted: the notice above the call bar, and the moment after its check box
+    // was unchecked (ADR 0735).
+    for (name, turned_off) in [
+        ("call-muted-speech", false),
+        ("call-muted-speech-turned-off", true),
+    ] {
+        let mut speaking = in_call(Phase::Connected);
+        speaking.calls.muted = true;
+        speaking.muted_speech = junto_client::state::view::MutedSpeechShown {
+            shown: true,
+            turned_off,
+            fading: false,
+        };
+        studio.draw(Screen::call(name, speaking), show_daily)?;
+    }
     studio.draw(
         Screen::call("call-reconnecting", in_call(Phase::Reconnecting)),
         show_daily,
@@ -2867,8 +2883,6 @@ fn draw_all(studio: &mut Studio) -> Result<(), String> {
         ("settings-picture", SettingsSection::Picture),
         ("settings-interface", SettingsSection::Interface),
         ("settings-voice", SettingsSection::VoiceAndVideo),
-        // Outside a call the section states what it holds (ADR 0739).
-        ("settings-call-without-a-call", SettingsSection::Call),
         ("settings-quiet", SettingsSection::Quiet),
         ("settings-notifications", SettingsSection::Notifications),
         ("settings-devices", SettingsSection::Devices),

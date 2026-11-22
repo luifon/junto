@@ -96,7 +96,7 @@ pub use search::FilterKind;
 pub use settings::{SettingsSection, sound_kind_selector};
 pub use transcript_edit::Incoming;
 
-use crate::state::view::ShellView;
+use crate::state::view::{CallRoom, ShellView};
 use crate::state::{AppState, KeybindChange, LevelsChanged, OpenAccount, OpenAdmin};
 use crate::text;
 use crate::theme::{self, theme};
@@ -166,6 +166,15 @@ pub(crate) enum Layer {
     /// The languages of the speech of a new recording, at the button that records
     /// (ADR 0616).
     RecordLanguage,
+    /// The menu of the arrow of a join control, with the device check (ADR 0735).
+    JoinMenu(Box<device_checks::JoinCheck>),
+    /// The settings of the room of the call, attached to the call bar (ADR 0739).
+    RoomSettings,
+    /// The menu of "View" in the row of own controls of a call (ADR 0735).
+    ViewMenu,
+    /// The controls of the row of own controls that a narrow stage leaves out, and the
+    /// window controls of the call window (ADR 0735, ADR 0772).
+    OwnControlsMore,
     /// The question before a recording is removed.
     ConfirmRemoveRecording(ServerId, junto_client_core::protocol::ids::RecordingId),
     /// The administration of a server, or the settings of a channel. The state of the
@@ -212,7 +221,11 @@ impl Layer {
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
             | Layer::RecordingParts(..)
-            | Layer::RecordLanguage => false,
+            | Layer::RecordLanguage
+            | Layer::JoinMenu(..)
+            | Layer::RoomSettings
+            | Layer::ViewMenu
+            | Layer::OwnControlsMore => false,
             Layer::Welcome
             | Layer::Settings
             | Layer::ReleaseNotes(..)
@@ -318,7 +331,7 @@ pub enum Open {
     RecordingDetails,
     /// The list of the members who can be invited into the call.
     MemberPicker,
-    /// The settings of the room of the call, in the settings section "Call".
+    /// The settings of the room of the call, in the window attached to the call bar.
     RoomSettings,
     /// The list of the choices of a filter of the search.
     SearchFilter(FilterKind),
@@ -330,6 +343,10 @@ const HOVER_MENU_LINGER: Duration = Duration::from_millis(220);
 
 pub struct Shell {
     detached: bool,
+    /// The focus of the check box of the notice of speech while muted, and whether the
+    /// pointer is over the notice and the check box has the focus (ADR 0735).
+    muted_speech_focus: FocusHandle,
+    muted_speech_held: (bool, bool),
     software_video: bool,
     camera_focus: bool,
     focused_camera: std::cell::Cell<Option<AccountId>>,
@@ -543,6 +560,12 @@ pub struct Shell {
     /// them again.
     pub(crate) recording_parts_closed_by_press: bool,
     pub(crate) record_language_closed_by_press: bool,
+    pub(crate) join_menu_closed_by_press: bool,
+    pub(crate) room_settings_closed_by_press: bool,
+    pub(crate) own_menu_closed_by_press: bool,
+    /// The menu of the shares of this device was opened from the row of own controls, and
+    /// is drawn there in place of the call bar.
+    pub(crate) share_menu_in_row: bool,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
     voice_status_field: Entity<InputState>,
@@ -666,7 +689,14 @@ impl Shell {
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
         let book = book::BookUi::new(window, cx);
         let arrange = arrange::ArrangeUi::new(window, cx);
+        let muted_speech_focus = cx.focus_handle().tab_stop(true);
         let mut subscriptions = vec![
+            cx.on_focus(&muted_speech_focus, window, |this, _, cx| {
+                this.hold_muted_speech(None, Some(true), cx);
+            }),
+            cx.on_blur(&muted_speech_focus, window, |this, _, cx| {
+                this.hold_muted_speech(None, Some(false), cx);
+            }),
             Field::observe(
                 &voice_status_field,
                 window,
@@ -953,6 +983,8 @@ impl Shell {
             reaction_menu: None,
             share_menu_closed_by_press: false,
             detached,
+            muted_speech_focus,
+            muted_speech_held: (false, false),
             software_video: window
                 .gpu_specs()
                 .is_some_and(|gpu| gpu.is_software_emulated),
@@ -1030,6 +1062,10 @@ impl Shell {
             recording_files_closed_by_press: false,
             recording_parts_closed_by_press: false,
             record_language_closed_by_press: false,
+            join_menu_closed_by_press: false,
+            room_settings_closed_by_press: false,
+            own_menu_closed_by_press: false,
+            share_menu_in_row: false,
             search_field,
             voice_status_field,
             search_from,
@@ -1547,7 +1583,14 @@ impl Shell {
                 self.recording_details_open = true;
                 cx.notify();
             }
-            Open::RoomSettings => self.open_room_settings(window, cx),
+            Open::RoomSettings => {
+                if matches!(
+                    self.view.as_ref().and_then(|view| view.call_room.as_ref()),
+                    Some(CallRoom::Channel(_))
+                ) {
+                    self.open_layer(Layer::RoomSettings, window, cx);
+                }
+            }
             Open::SearchFilter(kind) => {
                 self.open_layer(Layer::SearchFilter(kind), window, cx);
             }
@@ -2257,6 +2300,9 @@ impl Shell {
         self.recording_files_closed_by_press = false;
         self.recording_parts_closed_by_press = false;
         self.record_language_closed_by_press = false;
+        self.join_menu_closed_by_press = false;
+        self.room_settings_closed_by_press = false;
+        self.own_menu_closed_by_press = false;
     }
 
     fn drop_stale_layer(&mut self, view: &ShellView, window: &mut Window, cx: &mut Context<Self>) {
@@ -2369,6 +2415,13 @@ impl Shell {
             // The languages belong to the button that records, which a call of this
             // device without a recording shows to a person who may record.
             Layer::RecordLanguage => !self.records_now(view),
+            // The place of the join is gone, or the account of its server changed.
+            Layer::JoinMenu(check) => !check.current(self.state.read(cx)),
+            // The window belongs to the room of the call of this device, and the device
+            // has left it or is in a call without a room.
+            Layer::RoomSettings => !matches!(view.call_room, Some(CallRoom::Channel(_))),
+            // The menus of the row of own controls belong to the call of this device.
+            Layer::ViewMenu | Layer::OwnControlsMore => view.call.is_none(),
             // The menu lists the shares of this device, and every share has ended.
             Layer::ShareMenu => view
                 .call
@@ -2464,6 +2517,10 @@ impl Shell {
             | Layer::RecordingFiles(_)
             | Layer::RecordingParts(_)
             | Layer::RecordLanguage
+            | Layer::JoinMenu(_)
+            | Layer::RoomSettings
+            | Layer::ViewMenu
+            | Layer::OwnControlsMore
             | Layer::ShareMenu => div().into_any_element(),
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)

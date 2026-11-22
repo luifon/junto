@@ -93,6 +93,7 @@ mod member_search;
 mod messages;
 mod notice_settings;
 mod notices;
+mod own_controls;
 mod panel_widths;
 mod panics;
 mod people;

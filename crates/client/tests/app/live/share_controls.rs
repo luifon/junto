@@ -99,29 +99,25 @@ fn stopping_a_share_returns_to_people_and_either_window_can_watch_again(cx: &mut
 pub(super) fn share_sound_keyboard_paths(window: &mut Window) {
     let panel_was_open = window.shows("close-call-panel");
     for key in ["enter", "space"] {
-        window.tab_to("share-mute-tile");
+        window.tab_to("share-mute-header");
         window.press(key);
         window.until(
-            "the tile key mutes the share and keeps the picture",
+            "the key on the sound control mutes the share and keeps the picture",
             |window| {
                 window.shows("share-picture") && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
             },
         );
         assert!(!window.shows("account-menu"));
-        let members = if window.shows("open-call-members") {
-            "open-call-members"
-        } else {
-            "call-tab-members"
-        };
-        window.click(members);
-        window.tab_to("member-share-sound");
+        window.tab_to("share-mute-header");
         window.press(key);
-        window.until("the Members key restores share sound", |window| {
+        window.until("the key restores share sound", |window| {
             heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
         });
         assert!(!window.shows("account-menu"));
     }
-    window.click("close-call-panel");
+    if window.shows("close-call-panel") {
+        window.click("close-call-panel");
+    }
     let share = stage(window).unwrap().shares[0].clone();
     let before = share.sound_setting.volume;
     let server = window.view().call.unwrap().server_id;

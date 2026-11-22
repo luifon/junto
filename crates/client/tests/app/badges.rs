@@ -707,7 +707,7 @@ fn the_buttons_of_the_panel_in_a_narrow_window_draw_the_counts_of_their_tabs(
         |window| window.shows("open-call-chat"),
     );
     let size = window.cx.update(|window, _| window.viewport_size());
-    for name in ["open-call-chat", "open-call-members", "open-call-settings"] {
+    for name in ["open-call-chat", "open-call-members"] {
         let bounds = window.cx.debug_bounds(name).unwrap();
         assert!(
             bounds.right() <= size.width,

@@ -141,7 +141,7 @@ fn the_header_of_a_call_keeps_its_controls_in_the_window_with_the_panel_open_and
             window.shows("open-call-chat")
         });
         assert_inside(&mut window, &format!("{least:?}, call, panel closed"));
-        for selector in ["open-call-chat", "open-call-members", "open-call-settings"] {
+        for selector in ["open-call-chat", "open-call-members"] {
             assert!(
                 right_of(&mut window, selector) <= least.0,
                 "{selector} in {least:?}"

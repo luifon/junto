@@ -16,7 +16,7 @@ use junto_client_core::protocol::{
 
 impl Shell {
     pub(crate) fn render_conversation_call(
-        &self,
+        &mut self,
         server: ServerId,
         conversation: &crate::state::view::DirectRow,
         cx: &mut Context<Self>,
@@ -43,40 +43,44 @@ impl Shell {
                 .action(self.return_call_button(cx))
                 .into_any_element();
         }
-        div()
-            .flex_none()
-            .p(u(12.0))
-            .child(self.device_check_button(
-                junto_media::calls::CallTarget {
+        let call = Button::new("start-group-call")
+            .label(text::DIRECT_CALL)
+            .icon(Icon::Phone)
+            .kind(ButtonKind::Primary)
+            .selector("start-group-call")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if owner.is_some()
+                    && this
+                        .state
+                        .read(cx)
+                        .server(server)
+                        .and_then(|server| server.owner())
+                        == owner
+                {
+                    this.state
+                        .update(cx, |state, cx| state.start_group_call(server, id, cx));
+                }
+            }));
+        let control = self.join_control(
+            call,
+            ButtonKind::Primary,
+            super::device_checks::JoinCheck {
+                target: junto_media::calls::CallTarget {
                     server_id: server,
                     place: CallPlace::Group {
                         conversation_id: id,
                     },
                 },
-                None,
-                "check-group-devices",
-                cx,
-            ))
-            .child(
-                Button::new("start-group-call")
-                    .label(text::DIRECT_CALL)
-                    .icon(Icon::Phone)
-                    .kind(ButtonKind::Primary)
-                    .selector("start-group-call")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if owner.is_some()
-                            && this
-                                .state
-                                .read(cx)
-                                .server(server)
-                                .and_then(|server| server.owner())
-                                == owner
-                        {
-                            this.state
-                                .update(cx, |state, cx| state.start_group_call(server, id, cx));
-                        }
-                    })),
-            )
+                invitation: None,
+                arrow: "start-group-call-check",
+            },
+            cx,
+        );
+        div()
+            .flex()
+            .flex_none()
+            .p(u(12.0))
+            .child(control)
             .into_any_element()
     }
 
@@ -86,7 +90,7 @@ impl Shell {
     /// the last call with the person. The call of the conversation is drawn as the call of
     /// a voice channel is (ADR 0735).
     pub(crate) fn render_direct_call(
-        &self,
+        &mut self,
         server: ServerId,
         other: AccountId,
         cx: &mut Context<Self>,
@@ -109,6 +113,7 @@ impl Shell {
                 call.target.server_id == server
                     && matches!(call.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)
             });
+        let own = state.server(server).and_then(|server| server.account());
         let call = if separate {
             Notice::new(text::CALL_SEPARATE)
                 .selector("call-in-separate-window")
@@ -117,7 +122,7 @@ impl Shell {
         } else if incoming {
             div().into_any_element()
         } else {
-            Button::new("start-direct-call")
+            let start = Button::new("start-direct-call")
                 .label(text::DIRECT_CALL)
                 .icon(Icon::Phone)
                 .kind(ButtonKind::Primary)
@@ -125,32 +130,30 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state
                         .update(cx, |state, cx| state.start_direct_call(server, other, cx))
-                }))
-                .into_any_element()
+                }));
+            match own {
+                Some(own) => div()
+                    .flex()
+                    .child(self.join_control(
+                        start,
+                        ButtonKind::Primary,
+                        super::device_checks::JoinCheck {
+                            target: junto_media::calls::CallTarget {
+                                server_id: server,
+                                place: CallPlace::direct(own, other),
+                            },
+                            invitation: None,
+                            arrow: "start-direct-call-check",
+                        },
+                        cx,
+                    ))
+                    .into_any_element(),
+                None => start.into_any_element(),
+            }
         };
-        let check = (!incoming && !separate)
-            .then(|| {
-                self.state
-                    .read(cx)
-                    .server(server)
-                    .and_then(|server| server.account())
-            })
-            .flatten()
-            .map(|own| {
-                self.device_check_button(
-                    junto_media::calls::CallTarget {
-                        server_id: server,
-                        place: CallPlace::direct(own, other),
-                    },
-                    None,
-                    "check-direct-devices",
-                    cx,
-                )
-            });
         div()
             .flex_none()
             .p(u(12.0))
-            .children(check)
             .child(call)
             .child(
                 crate::ui::notice_slot("direct-notice-area").children(

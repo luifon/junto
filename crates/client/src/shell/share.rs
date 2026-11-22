@@ -98,15 +98,19 @@ pub(crate) enum Listed {
     Failed(CaptureError),
 }
 
-/// The dialog in which a person chooses what to share. Nothing is chosen at its start:
-/// the person chooses the picture and the sound of each share (ADR 0502).
+/// The dialog in which a person chooses what to share. "No sound" is chosen at its start,
+/// and the screen when the system lists one screen, so that one screen is shared with two
+/// clicks; a sound that can hold something private is chosen by the person (ADR 0502).
 pub(crate) struct SharePicker {
     pub access: ScreenAccess,
     pub listed: Listed,
     /// The tab that the dialog shows. It opens on the screens.
     pub tab: ShareTab,
     pub picture: Option<PictureSource>,
-    pub sound: Option<SoundKind>,
+    pub sound: SoundKind,
+    /// The person chose the sound. A sound that the dialog chose follows the picture: the
+    /// sound of a shared application, and "No sound" for every other picture.
+    pub sound_chosen: bool,
     /// The application whose sound is shared with a screen.
     pub application: Option<ApplicationId>,
     scroll: ScrollHandle,
@@ -127,7 +131,8 @@ impl SharePicker {
             listed,
             tab: ShareTab::Screen,
             picture: None,
-            sound: None,
+            sound: SoundKind::None,
+            sound_chosen: false,
             application: None,
             scroll: ScrollHandle::new(),
             read,
@@ -159,18 +164,44 @@ impl SharePicker {
     /// (ADR 0502). An application that is shared has the sound of that application when the
     /// person has chosen no sound yet.
     pub(crate) fn pick_picture(&mut self, picture: PictureSource) {
-        if self.picture != Some(picture) && self.sound == Some(SoundKind::Application) {
-            self.sound = None;
-            self.application = None;
+        if self.picture != Some(picture) && self.sound == SoundKind::Application {
+            self.forget_application_sound();
         }
         self.tab = ShareTab::of(picture);
         self.picture = Some(picture);
         // Junto itself has no sound to share, so its application gets none by default.
         if matches!(picture, PictureSource::Application(_))
-            && self.sound.is_none()
+            && !self.sound_chosen
             && !self.shows_the_client()
         {
-            self.sound = Some(SoundKind::Application);
+            self.sound = SoundKind::Application;
+        }
+    }
+
+    /// The sound of one application named the application of the picture that ends: the
+    /// dialog returns to "No sound" until the person chooses again.
+    fn forget_application_sound(&mut self) {
+        self.sound = SoundKind::None;
+        self.sound_chosen = false;
+        self.application = None;
+    }
+
+    /// The person chose a sound.
+    pub(crate) fn pick_sound(&mut self, sound: SoundKind) {
+        self.sound = sound;
+        self.sound_chosen = true;
+    }
+
+    /// Takes what the system listed, and chooses the screen when it lists one screen and
+    /// nothing else of the tab of the screens.
+    pub(crate) fn take_listed(&mut self, listed: Listed) {
+        self.listed = listed;
+        let only = self.sources().and_then(|sources| match sources.displays.as_slice() {
+            [display] if sources.portal.is_empty() => Some(display.id),
+            _ => None,
+        });
+        if let (Some(id), None, ShareTab::Screen) = (only, self.picture, self.tab) {
+            self.pick_picture(PictureSource::Display(id));
         }
     }
 
@@ -193,9 +224,8 @@ impl SharePicker {
             .picture
             .is_some_and(|picture| ShareTab::of(picture) != tab)
         {
-            if self.sound == Some(SoundKind::Application) {
-                self.sound = None;
-                self.application = None;
+            if self.sound == SoundKind::Application {
+                self.forget_application_sound();
             }
             self.picture = None;
         }
@@ -236,23 +266,22 @@ impl SharePicker {
         let whole_application = matches!(self.picture, Some(PictureSource::Application(_)));
         let client = self.shows_the_client();
         match (self.sound, shared) {
-            (None | Some(SoundKind::Application), _) if client => {
+            (SoundKind::None | SoundKind::Application, _) if client => {
                 text::SOUND_OF_JUNTO_NOT_SHARED.into()
             }
-            (None, _) => text::SOUND_CHOICE_HELP.into(),
-            (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
-            (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
-            (Some(SoundKind::Application), _) if sources.creators_unknown => {
+            (SoundKind::None, _) => text::SOUND_NONE_HELP.into(),
+            (SoundKind::System, _) => text::SOUND_SYSTEM_HELP.into(),
+            (SoundKind::Application, _) if sources.creators_unknown => {
                 text::SOUND_CREATORS_UNKNOWN.into()
             }
-            (Some(SoundKind::Application), Some((_, name))) if started_the_client => {
+            (SoundKind::Application, Some((_, name))) if started_the_client => {
                 text::sound_includes_junto(name).into()
             }
-            (Some(SoundKind::Application), Some((_, name))) if whole_application => {
+            (SoundKind::Application, Some((_, name))) if whole_application => {
                 text::sound_of_shared_application(name).into()
             }
-            (Some(SoundKind::Application), Some((_, name))) => text::sound_of_window(name).into(),
-            (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
+            (SoundKind::Application, Some((_, name))) => text::sound_of_window(name).into(),
+            (SoundKind::Application, None) => text::SOUND_APPLICATION_HELP.into(),
         }
     }
 
@@ -300,7 +329,7 @@ impl SharePicker {
         if !listed || ShareTab::of(picture) != self.tab {
             return None;
         }
-        let sound = match (self.sound?, picture) {
+        let sound = match (self.sound, picture) {
             (SoundKind::None, _) => SoundChoice::None,
             (SoundKind::System, _) if sources.system_sound => SoundChoice::System,
             (SoundKind::System, _) => return None,
@@ -702,15 +731,19 @@ impl Shell {
                         } else {
                             another.into_any_element()
                         })
-                        .child(
-                            MenuItem::new("share-stop-all", text::STOP_ALL_SHARES)
-                                .icon(Icon::Stop)
-                                .selector("share-stop-all")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.state.update(cx, |state, _| state.stop_share(None));
-                                    this.close_layer(window, cx);
-                                })),
-                        )
+                        // "Stop all shares" only where it stops more than the item of the one
+                        // share does.
+                        .when(shares.len() > 1, |menu| {
+                            menu.child(
+                                MenuItem::new("share-stop-all", text::STOP_ALL_SHARES)
+                                    .icon(Icon::Stop)
+                                    .selector("share-stop-all")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.state.update(cx, |state, _| state.stop_share(None));
+                                        this.close_layer(window, cx);
+                                    })),
+                            )
+                        })
                         .child(div().h(u(4.0))),
                 ),
             ))
@@ -787,10 +820,10 @@ impl Shell {
                     if picker.read != read {
                         return false;
                     }
-                    picker.listed = match listed {
+                    picker.take_listed(match listed {
                         Ok(sources) => Listed::Sources(sources),
                         Err(error) => Listed::Failed(error),
-                    };
+                    });
                     picker.previews = wanted
                         .iter()
                         .map(|source| (*source, Preview::Loading))
@@ -961,7 +994,7 @@ impl Shell {
     /// Chooses the sound of the share in its dialog, as a click on its control does.
     pub fn pick_share_sound(&mut self, sound: SoundKind, cx: &mut Context<Self>) {
         if let Some(picker) = self.picker() {
-            picker.sound = Some(sound);
+            picker.pick_sound(sound);
             cx.notify();
         }
     }
@@ -1213,6 +1246,7 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        let quality = self.share_quality_controls("share-dialog", cx);
         let Layer::SharePicker(picker) = &self.layer else {
             return div().into_any_element();
         };
@@ -1575,7 +1609,7 @@ impl Shell {
             picker.sound_help(&sources)
         };
         let applications: Vec<AnyElement> =
-            if sound == Some(SoundKind::Application) && window_application.is_none() {
+            if sound == SoundKind::Application && window_application.is_none() {
                 let mut listed: Vec<AnyElement> = sources
                     .applications
                     .iter()
@@ -1664,18 +1698,14 @@ impl Shell {
             .child(
                 div().flex().child(
                     Segmented::new("share-sound", text::SHARE_SOUND, kinds)
-                        .selected(
-                            sound.and_then(|sound| {
-                                sound_kinds.iter().position(|kind| *kind == sound)
-                            }),
-                        )
+                        .selected(sound_kinds.iter().position(|kind| *kind == sound))
                         .selector("share-sound")
                         .on_select({
                             let select = cx.listener(|this, index: &usize, _, cx| {
                                 if let Some(picker) = this.picker()
                                     && let Some(kind) = picker.sound_kinds().get(*index).copied()
                                 {
-                                    picker.sound = Some(kind);
+                                    picker.pick_sound(kind);
                                     cx.notify();
                                 }
                             });
@@ -1693,6 +1723,20 @@ impl Shell {
             .when(!applications.is_empty(), |dialog| {
                 dialog.child(div().mt(u(8.0)).child(list_frame(applications)))
             })
+            // The quality of this share, which is the stored setting of the next share
+            // (Settings, "Your screen share").
+            .child(div().mt(u(14.0)).child(label(text::SHARE_QUALITY)))
+            .child(
+                div()
+                    .id("share-quality")
+                    .debug_selector(|| "share-quality".to_owned())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(quality.0)
+                    .child(quality.1),
+            )
             .child(dialog_footer([
                 cancel(cx),
                 Button::new("start-share")
@@ -1754,19 +1798,12 @@ impl Shell {
     ) -> AnyElement {
         let id = share.id;
         let muted = share.sound_setting.muted;
-        let level = format!("{}%", share.sound_setting.volume);
-        let label = if muted {
-            format!("{} · {level}", text::SHARE_MUTED)
-        } else {
-            level
-        };
         let button = Button::new(format!("{selector}:{id:?}"))
             .icon(if muted {
                 Icon::PhonesOff
             } else {
                 Icon::Speaker
             })
-            .label(label)
             .accessible_label(format!(
                 "{} at {}%",
                 if muted {
@@ -1969,8 +2006,17 @@ impl Shell {
                                     }
                                 }),
                         )
-                        .when(id.person != Person::Own, |card| {
-                            card.child(self.share_mute_button(share, "share-mute-tile", cx))
+                        // The sound of a share that is not watched is set in its menu; the
+                        // card shows only that it is muted (ADR 0738).
+                        .when(id.person != Person::Own && share.sound_setting.muted, |card| {
+                            card.child(
+                                div()
+                                    .id("share-muted-mark")
+                                    .debug_selector(|| "share-muted-mark".to_owned())
+                                    .flex_none()
+                                    .tooltip(tooltip(text::SHARE_MUTED))
+                                    .child(icon(Icon::PhonesOff, 14.0, colors.bone_2)),
+                            )
                         })
                         .map(|frame| self.call_share_frame(frame, share, false, cx))
                 });
@@ -2054,12 +2100,8 @@ impl Shell {
             } else if muted {
                 Some((text::SHARE_SOUND_OFF_FOR_YOU.into(), false))
             } else if several && !own {
-                text::watched_sound(share.sound).map(|heard| {
-                    (
-                        format!("{heard} {}", text::SOUND_FOLLOWS).into(),
-                        share.sound != Some(ShareAudio::None),
-                    )
-                })
+                text::watched_sound(share.sound)
+                    .map(|heard| (heard.into(), share.sound != Some(ShareAudio::None)))
             } else {
                 text::share_sound(share.sound)
                     .map(|sound| (sound.into(), share.sound != Some(ShareAudio::None)))
@@ -2182,7 +2224,20 @@ impl Shell {
                         ),
                     )
                 })
-                .child(share_action_button(
+                // The own share has "Stop sharing", which ends the share; watching another
+                // share ends with "Stop watching" (ADR 0738).
+                .child(share_action_button(if own {
+                    let slot = share.id.slot;
+                    Button::new("stop-sharing")
+                        .kind(ButtonKind::CallLeave)
+                        .icon(Icon::ScreenOff)
+                        .label(text::STOP_SHARING)
+                        .selector("stop-sharing")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, _| state.stop_share(Some(slot)));
+                        }))
+                } else {
                     Button::new("stop-watching")
                         .label(text::STOP_WATCHING)
                         .selector("stop-watching")
@@ -2192,8 +2247,8 @@ impl Shell {
                                 this.state
                                     .update(cx, |state, _| state.stop_watching_share(id));
                             }
-                        })),
-                ))
+                        }))
+                }))
                 .map(|header| self.call_share_frame(header, share, true, cx))
         });
 
@@ -2554,26 +2609,51 @@ mod tests {
         assert!(!picker.belongs_to(&CallsView::default()));
     }
 
+    /// One screen and no portal: the dialog chooses the screen when the list arrives, so
+    /// "Share" is the second click. With two screens the person chooses.
     #[test]
-    fn a_share_needs_a_picture_and_a_sound_that_the_person_chose() {
+    fn the_only_screen_is_chosen_when_the_list_arrives() {
         let mut picker = picker();
-        // Nothing is chosen at the start, and nothing is chosen for the person.
-        assert_eq!(picker.chosen(), None);
-        picker.tab = ShareTab::of(PictureSource::Display(1));
-        picker.picture = Some(PictureSource::Display(1));
-        assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::None);
+        let listed = std::mem::replace(&mut picker.listed, Listed::Reading);
+        picker.take_listed(listed.clone());
+        assert_eq!(picker.picture, Some(PictureSource::Display(1)));
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Display(1), SoundChoice::None))
         );
-        picker.sound = Some(SoundKind::System);
+        let mut two = self::picker();
+        let Listed::Sources(mut sources) = listed else {
+            unreachable!()
+        };
+        sources.displays.push(DisplaySource {
+            id: 2,
+            width: 1280,
+            height: 720,
+        });
+        two.picture = None;
+        two.take_listed(Listed::Sources(sources));
+        assert_eq!((two.picture, two.chosen()), (None, None));
+    }
+
+    #[test]
+    fn a_share_needs_a_picture_and_starts_without_sound() {
+        let mut picker = picker();
+        // "No sound" is chosen at the start, and the picture is chosen by the person.
+        assert_eq!((picker.sound, picker.sound_chosen), (SoundKind::None, false));
+        assert_eq!(picker.chosen(), None);
+        picker.tab = ShareTab::of(PictureSource::Display(1));
+        picker.picture = Some(PictureSource::Display(1));
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Display(1), SoundChoice::None))
+        );
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Display(1), SoundChoice::System))
         );
         // The sound of one application with a screen needs the application.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
         picker.application = Some(player());
         assert_eq!(
@@ -2596,7 +2676,7 @@ mod tests {
         let mut picker = picker();
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(
             picker.chosen(),
             Some((
@@ -2623,10 +2703,10 @@ mod tests {
         }
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
         // The other choices of sound stay.
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(11), SoundChoice::System))
@@ -2641,9 +2721,9 @@ mod tests {
         }
         picker.tab = ShareTab::of(PictureSource::Window(11));
         picker.picture = Some(PictureSource::Window(11));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(11), SoundChoice::System))
@@ -2666,26 +2746,32 @@ mod tests {
         // The person chose the sound of "Other" with the screen, and then picks a window
         // of "Player". The sound of "Player" was not chosen: the sound is asked again.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.application = Some(other);
         picker.pick_picture(PictureSource::Window(11));
-        assert_eq!((picker.sound, picker.application.clone()), (None, None));
-        assert_eq!(picker.chosen(), None);
+        assert_eq!(
+            (picker.sound, picker.application.clone()),
+            (SoundKind::None, None)
+        );
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(11), SoundChoice::None))
+        );
         // The same holds from a window to a screen.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_some());
         picker.pick_picture(PictureSource::Display(1));
-        assert_eq!(picker.sound, None);
+        assert_eq!(picker.sound, SoundKind::None);
         // The choices that name no application hold for every picture, and so does the
         // same picture picked again.
         for kind in [SoundKind::None, SoundKind::System] {
-            picker.sound = Some(kind);
+            picker.pick_sound(kind);
             picker.pick_picture(PictureSource::Window(11));
-            assert_eq!(picker.sound, Some(kind));
+            assert_eq!(picker.sound, kind);
         }
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.pick_picture(PictureSource::Window(11));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
     }
     /// The dialog opens on the screens. A picture belongs to the tab that lists it: another
     /// tab ends the choice of the picture and of the sound of its application, and "Share"
@@ -2700,21 +2786,18 @@ mod tests {
         );
         picker.pick_picture(PictureSource::Window(11));
         assert_eq!(picker.tab, ShareTab::Window);
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_some());
         picker.pick_tab(ShareTab::Window);
         assert!(picker.chosen().is_some());
         picker.pick_tab(ShareTab::Screen);
-        assert_eq!((picker.picture, picker.sound), (None, None));
+        assert_eq!((picker.picture, picker.sound), (None, SoundKind::None));
         assert_eq!(picker.chosen(), None);
         // A sound that names no application holds in every tab.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         picker.pick_tab(ShareTab::Application);
-        assert_eq!(
-            (picker.picture, picker.sound),
-            (None, Some(SoundKind::System))
-        );
+        assert_eq!((picker.picture, picker.sound), (None, SoundKind::System));
 
         // A system without the capture of an application offers no Application tab.
         if let Listed::Sources(sources) = &mut picker.listed {
@@ -2722,7 +2805,7 @@ mod tests {
         }
         assert_eq!(picker.tabs(), [ShareTab::Screen, ShareTab::Window]);
         picker.pick_picture(PictureSource::Application(7));
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         assert_eq!(picker.chosen(), None);
     }
 
@@ -2733,7 +2816,7 @@ mod tests {
         let mut picker = picker();
         picker.pick_tab(ShareTab::Application);
         picker.pick_picture(PictureSource::Application(7));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(
             picker.chosen(),
             Some((
@@ -2748,7 +2831,7 @@ mod tests {
         );
 
         let mut picker = self::picker();
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         picker.pick_picture(PictureSource::Application(7));
         assert_eq!(
             picker.chosen(),
@@ -2762,9 +2845,9 @@ mod tests {
             sources.started_the_client.push(player());
         }
         picker.pick_picture(PictureSource::Application(7));
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Application(7), SoundChoice::System))
@@ -2820,41 +2903,42 @@ mod tests {
             picker.sound_help(&sources),
             SharedString::from(text::SOUND_OF_JUNTO_NOT_SHARED)
         );
-        assert_eq!(picker.chosen(), None);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(12), SoundChoice::None))
+        );
         // A choice of "This application" from before is never shared.
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(12), SoundChoice::System))
         );
-        picker.sound = Some(SoundKind::None);
+        picker.pick_sound(SoundKind::None);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Window(12), SoundChoice::None))
         );
 
         // The application of Junto gets no sound by default; another application does.
-        picker.sound = None;
+        (picker.sound, picker.sound_chosen) = (SoundKind::None, false);
         picker.pick_picture(PictureSource::Application(100));
-        assert_eq!(picker.sound, None);
-        assert_eq!(picker.chosen(), None);
-        picker.sound = Some(SoundKind::None);
+        assert_eq!(picker.sound, SoundKind::None);
         assert_eq!(
             picker.chosen(),
             Some((PictureSource::Application(100), SoundChoice::None))
         );
-        picker.sound = None;
+        (picker.sound, picker.sound_chosen) = (SoundKind::None, false);
         picker.pick_picture(PictureSource::Application(7));
         assert!(!picker.shows_the_client());
-        assert_eq!(picker.sound, Some(SoundKind::Application));
+        assert_eq!(picker.sound, SoundKind::Application);
         assert_eq!(picker.sound_kinds(), every_kind);
 
         // The application of Junto is never among the applications whose sound goes with a
         // screen: the list of the system leaves it out, and a choice of it is not shared.
         picker.pick_picture(PictureSource::Display(1));
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         picker.application = Some(junto);
         assert_eq!(picker.chosen(), None);
     }
@@ -2890,14 +2974,17 @@ mod tests {
             seat(),
         );
         picker.pick_picture(PictureSource::Portal(ShareKind::Window));
-        assert!(picker.chosen().is_none());
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Portal(ShareKind::Window), SoundChoice::None))
+        );
         assert_eq!(
             picker.sound_kinds(),
             [SoundKind::None, SoundKind::Application]
         );
-        picker.sound = Some(SoundKind::System);
+        picker.pick_sound(SoundKind::System);
         assert!(picker.chosen().is_none());
-        picker.sound = Some(SoundKind::Application);
+        picker.pick_sound(SoundKind::Application);
         assert!(picker.chosen().is_none());
         picker.application = Some(second.clone());
         assert_eq!(

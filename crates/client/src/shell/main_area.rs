@@ -520,8 +520,6 @@ impl Shell {
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
             }
-            // The settings of the application at "Voice and video", in every width.
-            after.push(self.render_call_settings_button(cx));
         } else {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));
@@ -859,24 +857,24 @@ impl Shell {
                     compact,
                     theme,
                 )];
-                if control.may_record {
-                    shown.push(
-                        labelled(
-                            Button::new("cancel-recording"),
-                            text::transcripts::CANCEL_RECORDING,
-                        )
-                        .icon(Icon::Stop)
-                        .icon_colour(colors.cinnabar)
-                        .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
-                        .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
-                        .disabled(control.busy)
-                        .selector("cancel-recording")
-                        .on_click(self.call_listener(cx, |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.stop_recording(cx));
-                        }))
-                        .into_any_element(),
-                    );
-                }
+                // The control looks the same for everyone in the call and acts for a
+                // person with "record calls" (ADR 0735).
+                shown.push(
+                    labelled(
+                        Button::new("cancel-recording"),
+                        text::transcripts::CANCEL_RECORDING,
+                    )
+                    .icon(Icon::Stop)
+                    .icon_colour(colors.cinnabar)
+                    .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
+                    .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
+                    .disabled(control.busy || !control.may_record)
+                    .selector("cancel-recording")
+                    .on_click(self.call_listener(cx, |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.stop_recording(cx));
+                    }))
+                    .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Running { elapsed, stopping } => {
@@ -885,22 +883,20 @@ impl Shell {
                     None => text::RECORDING_MARK.into(),
                 };
                 let mut shown = vec![recording_mark_reserved(mark, compact, theme)];
-                if control.may_record {
-                    let (label, help) = stop_action(*stopping);
-                    shown.push(
-                        labelled(Button::new("stop-recording"), label)
-                            .icon(Icon::Stop)
-                            .icon_colour(colors.cinnabar)
-                            .tooltip(help)
-                            .accessible_label(help)
-                            .disabled(*stopping || control.busy)
-                            .selector("stop-recording")
-                            .on_click(self.call_listener(cx, |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| state.stop_recording(cx));
-                            }))
-                            .into_any_element(),
-                    );
-                }
+                let (label, help) = stop_action(*stopping);
+                shown.push(
+                    labelled(Button::new("stop-recording"), label)
+                        .icon(Icon::Stop)
+                        .icon_colour(colors.cinnabar)
+                        .tooltip(help)
+                        .accessible_label(help)
+                        .disabled(*stopping || control.busy || !control.may_record)
+                        .selector("stop-recording")
+                        .on_click(self.call_listener(cx, |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.stop_recording(cx));
+                        }))
+                        .into_any_element(),
+                );
                 shown
             }
             RecordingShown::Failed(problem) => {

@@ -475,7 +475,7 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     // application at "Voice and video". Their input level is the level of the call's own
     // microphone, they open no test, and a device chosen there is used by the call at once
     // (ADR 0735).
-    window.click("open-call-settings");
+    window.click("own-devices");
     assert!(window.shows("settings-page-settings-section-voice-and-video"));
     window.until(
         "the settings show the level of the call's microphone",
@@ -948,7 +948,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     });
 
     // The settings of a share and of the view are stored, and the strip hides the people.
-    window.click("open-call-settings");
+    window.click("own-devices");
     window.click_in_settings("share-resolution-0");
     window.click_in_settings("share-frame-rate-0");
     window.click_in_settings("hide-without-video");
@@ -972,7 +972,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     // opens the camera that the call holds (ADR 0735).
     let (started, active) = (window.camera.started(), window.camera.active());
     assert_eq!(active, 1, "the call holds one capture");
-    window.click("open-call-settings");
+    window.click("own-devices");
     window.until("the settings show the picture of the call", |window| {
         window.shows("camera-preview-picture")
     });
@@ -1610,7 +1610,7 @@ fn try_again_opens_a_microphone_that_was_refused_or_that_failed(cx: &mut TestApp
 
     // The device stops, and it cannot be opened again by itself: the settings at "Voice and
     // video" state it with "Try again".
-    window.click("open-call-settings");
+    window.click("own-devices");
     assert!(!window.shows("retry-microphone"));
     let opened = window.sound.opened_inputs().len();
     let unplugged = AudioError::Failed("the device was disconnected".to_owned());
