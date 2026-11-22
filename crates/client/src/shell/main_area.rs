@@ -707,36 +707,36 @@ impl Shell {
             .when(
                 view.lists().is_some() && conversation.is_none() && call.is_none(),
                 |header| {
-                header.child(
-                    Button::new("members")
-                        .icon(Icon::People)
-                        .tooltip(if members_open {
-                            text::CLOSE_MEMBERS
-                        } else {
-                            text::SHOW_MEMBERS
-                        })
-                        .accessible_label(text::MEMBERS)
-                        .selector("members-button")
-                        .when(members_open, |button| {
-                            button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.members_open = !this.members_open;
-                            if this.members_open {
-                                // The side panel shows one thing.
-                                this.state.update(cx, |state, cx| {
-                                    state.close_thread(cx);
-                                    state.close_pins(cx);
-                                    state.close_notices(cx);
-                                    state.hide_search(cx);
-                                    state.close_transcript(cx);
-                                    state.close_followed_threads(cx);
-                                });
-                            }
-                            cx.notify();
-                        })),
-                )
-            },
+                    header.child(
+                        Button::new("members")
+                            .icon(Icon::People)
+                            .tooltip(if members_open {
+                                text::CLOSE_MEMBERS
+                            } else {
+                                text::SHOW_MEMBERS
+                            })
+                            .accessible_label(text::MEMBERS)
+                            .selector("members-button")
+                            .when(members_open, |button| {
+                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.members_open = !this.members_open;
+                                if this.members_open {
+                                    // The side panel shows one thing.
+                                    this.state.update(cx, |state, cx| {
+                                        state.close_thread(cx);
+                                        state.close_pins(cx);
+                                        state.close_notices(cx);
+                                        state.hide_search(cx);
+                                        state.close_transcript(cx);
+                                        state.close_followed_threads(cx);
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                    )
+                },
             )
             // The activity of the server, beside the search of the server (ADR 0742).
             .when_some(view.lists().filter(|_| call.is_none()), |header, lists| {
@@ -1565,7 +1565,11 @@ impl Shell {
     /// The member list of a shown channel asks for the people who can see the channel, which
     /// only the server knows (ADR 0790).
     pub(crate) fn members_follow(&mut self, view: &ShellView, cx: &mut Context<Self>) {
-        if !self.members_open || view.lists().is_some_and(|lists| lists.conversation.is_some()) {
+        if !self.members_open
+            || view
+                .lists()
+                .is_some_and(|lists| lists.conversation.is_some())
+        {
             return;
         }
         let Some(server_id) = view.selected.as_ref().map(|server| server.id) else {
@@ -1577,7 +1581,7 @@ impl Shell {
         let Some(channel_id) = workspace.channel.as_ref().map(|channel| channel.id) else {
             return;
         };
-        if workspace.viewers.is_none() {
+        if workspace.viewers.is_none() || workspace.viewers_stale {
             let state = self.state.clone();
             cx.defer(move |cx| {
                 state.update(cx, |state, cx| {

@@ -192,6 +192,9 @@ pub struct Known {
     pub members_failed: Vec<(ServerId, WorkspaceId)>,
     /// The members who can see a channel, as the server listed them (ADR 0790).
     pub viewers: HashMap<(ServerId, ChannelId), Viewers>,
+    /// The lists of `viewers` that a change may have made old: each stays shown and is
+    /// read again when the member list of its channel is shown.
+    pub viewers_stale: HashSet<(ServerId, ChannelId)>,
     /// The name of the profile preset.
     pub preset_name: String,
     /// The picture of the profile preset, as an image of the window.
@@ -1453,6 +1456,8 @@ pub struct WorkspaceView {
     pub followed: Option<FollowedPanel>,
     /// The members who can see the shown channel, while they were asked for.
     pub viewers: Option<Viewers>,
+    /// A change may have made `viewers` old: they stay shown and are read again.
+    pub viewers_stale: bool,
     /// Present when the shown channel is archived (ADR 0762): it is read and takes no
     /// message.
     pub archived: Option<ArchivedState>,
@@ -2829,7 +2834,9 @@ fn directs(
             .account_ids
             .iter()
             .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
-            .filter_map(|id| name_of(server_id, *id, workspace, model, known).map(|name| (*id, name)))
+            .filter_map(|id| {
+                name_of(server_id, *id, workspace, model, known).map(|name| (*id, name))
+            })
             .collect();
         // A group without a name shows the names of its members, computed when shown
         // (ADR 0302).
@@ -3454,8 +3461,10 @@ fn workspace_view(
     let notices_wanted = selection.notices == Some(server_id);
     let in_call = call.is_some() || conversation.is_some_and(|shown| shown.in_call);
     let (no_thread, no_pins) = (thread.is_none(), pins.is_none());
-    let channel_viewers = shown
-        .and_then(|channel_id| known.viewers.get(&(server_id, channel_id)).cloned());
+    let channel_viewers =
+        shown.and_then(|channel_id| known.viewers.get(&(server_id, channel_id)).cloned());
+    let viewers_stale =
+        shown.is_some_and(|channel_id| known.viewers_stale.contains(&(server_id, channel_id)));
     let followed = (selection.threads == Some((server_id, workspace.workspace.id))
         && no_thread
         && no_pins
@@ -3493,6 +3502,7 @@ fn workspace_view(
         transcript,
         followed,
         viewers: channel_viewers,
+        viewers_stale,
         archived: archived
             .filter(|held| workspace.channel(held.channel.id).is_none())
             .map(|held| ArchivedState {

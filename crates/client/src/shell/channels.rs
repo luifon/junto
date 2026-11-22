@@ -334,12 +334,12 @@ impl Shell {
             .pb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
-            .children(
-                lists
-                    .workspace
-                    .as_ref()
-                    .map(|workspace| self.render_threads_row(workspace, cx)),
-            )
+            // "Threads" belongs to a workspace. Without one its height stays, so that the
+            // direct part does not move when the last workspace goes (ADR 0730).
+            .child(match lists.workspace.as_ref() {
+                Some(workspace) => self.render_threads_row(workspace, cx),
+                None => div().flex_none().h(u(row)).into_any_element(),
+            })
             .children(self.direct_rows(server.id, lists, theme, cx));
         let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
             ScrollArea::new("channel-list", &self.channels_scroll, label)

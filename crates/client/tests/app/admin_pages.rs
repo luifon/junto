@@ -1409,7 +1409,9 @@ fn a_member_who_manages_a_channel_cannot_allow_or_restore_what_the_member_does_n
         |model| model.channel(plans).is_some(),
     );
 
-    // A member without "manage channel" has no page of the permissions.
+    // A member who may export the channel and does not hold "manage channel" opens its
+    // settings from the channel menu and has no page of the permissions (ADR 0761).
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "plans", plans);
     window.until("the settings have no page of the permissions", |window| {
         window.shows("channel-nav-archive") && !window.shows("channel-nav-permissions")
@@ -2126,8 +2128,8 @@ fn tab_reaches_each_archived_channel_of_a_member_who_may_not_restore(cx: &mut Te
     });
 }
 
-/// The settings of a channel that a member opens without "manage channel" show the page
-/// "Archive", the only one. When the role arrives, the pages of the channel
+/// The settings of a channel that a member who may export it opens without "manage channel"
+/// show the page "Archive", the only one. When the role arrives, the pages of the channel
 /// are offered, and the page that is shown stays (ADR 0761).
 #[gpui::test]
 fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
@@ -2139,7 +2141,8 @@ fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut Tes
     let default = default_workspace(&world, &admin.handle);
     let notes = text_channel(&world, &admin.handle, default, "notes");
 
-    // The gear asks for the overview, which the member may not use.
+    // "Channel settings" asks for the overview, which the member may not use.
+    admin.allow_everyone(&world, &[WorkspacePermission::ExportChannel]);
     open_channel_settings(&mut window, "notes", notes);
     let unmanaged = ArchivePage {
         permanent: false,

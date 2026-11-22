@@ -1237,3 +1237,23 @@ fn leaving_a_group_or_losing_contact_withdraws_cached_messages_before_a_reload()
         assert!(model.named(message.id).is_none());
     }
 }
+
+/// A group without a name is kept, and a name with a control character is not (ADR 0302).
+#[test]
+fn a_group_without_a_name_is_kept() {
+    let scene = scene();
+    let mut model = scene.model();
+    let group = |name: &str| junto_protocol::message::GroupConversation {
+        id: ConversationId::generate(),
+        name: name.to_owned(),
+        account_ids: vec![scene.account_id, AccountId::generate()],
+    };
+    let unnamed = group("");
+    model.apply(&Event::GroupConversationChanged {
+        group: unnamed.clone(),
+    });
+    model.apply(&Event::GroupConversationChanged {
+        group: group("bad\u{7}name"),
+    });
+    assert_eq!(model.group_conversations, vec![unnamed]);
+}

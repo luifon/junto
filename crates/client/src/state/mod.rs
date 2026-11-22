@@ -50,11 +50,11 @@ pub mod switcher;
 mod target_links;
 pub use target_links::OpenFileLink;
 mod threads;
-mod viewers;
 pub mod transcript_work;
 mod tray;
 pub mod update_install;
 pub mod view;
+mod viewers;
 
 pub use messages::{AttachRefusal, Measured, measure};
 pub use notifying::MentionSwitch;
@@ -2304,7 +2304,10 @@ impl AppState {
             self.invalidate_switcher(server_id, cx);
             self.presence_invalidated(server_id, true, cx);
             self.invalidate_profiles(server_id, cx);
-            self.forget_channel_viewers(server_id, cx);
+            // A name or a picture does not change who can see a channel.
+            if !matches!(event.as_ref(), Event::AccountProfileUpdated { .. }) {
+                self.forget_channel_viewers(server_id, cx);
+            }
         }
         // Who can see which channel can differ after a change of roles, members or rules.
         if matches!(

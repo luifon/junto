@@ -138,7 +138,12 @@ fn group_filter_controls_authors_files_and_jumps_keep_their_current_scope(cx: &m
         window.toggle_search_filter(selector);
         window.until_searched();
     }
-    window.search_for("quartz");
+    // "Direct messages" and "the whole server" in the In chip replaced the group: the chip
+    // chooses the group again, and its authors are the people of the group.
+    window.click("search-in");
+    window.click_named(format!("search-in:conversation:{}", group.id));
+    window.until_searched();
+    window.search_here_for("quartz");
     let panel = window.until_searched();
     let mut authors: Vec<_> = panel.authors.iter().map(|(id, _)| *id).collect();
     authors.sort();

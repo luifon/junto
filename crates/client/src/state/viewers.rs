@@ -40,9 +40,16 @@ impl AppState {
                     return;
                 }
                 let viewers = match read {
-                    Ok(accounts) => Viewers::Read(Arc::new(accounts.into_iter().collect::<HashSet<_>>())),
-                    Err(_) => Viewers::Failed,
+                    Ok(accounts) => {
+                        Viewers::Read(Arc::new(accounts.into_iter().collect::<HashSet<_>>()))
+                    }
+                    // A refused read after an earlier answer keeps that answer shown.
+                    Err(_) => match this.known.viewers.get(&key) {
+                        Some(Viewers::Read(held)) => Viewers::Read(held.clone()),
+                        _ => Viewers::Failed,
+                    },
                 };
+                this.known.viewers_stale.remove(&key);
                 this.known.viewers.insert(key, viewers);
                 this.changed(cx);
             });
@@ -51,11 +58,18 @@ impl AppState {
     }
 
     /// Something changed on a server after which other people can see other channels: what
-    /// was read is read again when the member list of a channel asks for it.
+    /// was read stays shown and is read again when the member list of its channel is shown.
     pub(super) fn forget_channel_viewers(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
-        let before = self.known.viewers.len();
-        self.known.viewers.retain(|(server, _), _| *server != server_id);
-        if self.known.viewers.len() != before {
+        let held: Vec<_> = self
+            .known
+            .viewers
+            .keys()
+            .filter(|(server, _)| *server == server_id)
+            .copied()
+            .collect();
+        let before = self.known.viewers_stale.len();
+        self.known.viewers_stale.extend(held);
+        if self.known.viewers_stale.len() != before {
             self.changed(cx);
         }
     }

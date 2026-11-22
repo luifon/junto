@@ -107,6 +107,13 @@ impl Window {
         self.press_as_drawn(selector(format!("{action}:{message_id}")));
         self.settle();
     }
+
+    /// Pins or unpins a message through its menu, where Pin is offered (ADR 0740).
+    fn pin_from_menu(&mut self, message_id: MessageId) {
+        self.right_click_message(message_id);
+        self.click("message-pin");
+        self.settle();
+    }
 }
 
 #[gpui::test]
@@ -522,12 +529,12 @@ fn the_pin_after_the_hundredth_of_a_channel_is_refused_with_its_reason(cx: &mut 
     };
 
     // The 100th pin is taken.
-    window.act_on(hundredth, "pin");
+    window.pin_from_menu(hundredth);
     window.until("the 100th pin", |window| pinned_at(window, hundredth));
     assert!(!window.shows("compose-problem"));
 
     // The 101st is refused, and the composer tells why.
-    window.act_on(refused, "pin");
+    window.pin_from_menu(refused);
     window.until("the refusal of the 101st pin", |window| {
         window.in_shell(|shell, _, cx| shell.state().read(cx).message_refusal().map(str::to_owned))
             == Some(text::PIN_LIMIT.to_owned())
@@ -726,7 +733,7 @@ fn permanent_message_pin_controls(cx: &mut TestAppContext, in_thread: bool) {
                 .find(|row| row.message.id == target)
         }
     };
-    window.act_on(target, "pin");
+    window.pin_from_menu(target);
     window.until("the permanent message is pinned", |window| {
         drawn(window).is_some_and(|row| row.message.permanent && row.message.pinned)
     });
@@ -739,7 +746,7 @@ fn permanent_message_pin_controls(cx: &mut TestAppContext, in_thread: bool) {
             .collect::<Vec<_>>(),
         [target]
     );
-    window.act_on(target, "pin");
+    window.pin_from_menu(target);
     window.until(
         "the permanent message is unpinned and remains drawn",
         |window| drawn(window).is_some_and(|row| row.message.permanent && !row.message.pinned),

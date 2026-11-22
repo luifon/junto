@@ -334,22 +334,12 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
     let luca_id = window.view().person.account_id.unwrap();
     let default = default_workspace(&world, &admin.handle);
 
-    // Luca reads the conversation that Ada started, with the member list beside it.
+    // Luca reads the conversation that Ada started.
     let with_ada = write_to(&world, &admin.handle, luca_id, "Hello from Ada");
     let row = crate::harness::selector(format!("direct-row:{with_ada}"));
     window.until("the conversation is listed", |window| window.shows(row));
     window.click(row);
     window.until_message("Hello from Ada");
-    window.click("members-button");
-    window.until("the member list is beside the conversation", |window| {
-        window.shows("side-panel")
-            && window.view().workspace().is_some_and(|workspace| {
-                matches!(
-                    workspace.members,
-                    junto_client::state::view::Members::Loaded(_)
-                )
-            })
-    });
     let parts = [
         "activity-button",
         "new-direct",
@@ -359,7 +349,6 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
         "conversation-profile",
         "message-list",
         "composer",
-        "side-panel",
     ];
     let before = window.bounds_of(&parts);
     assert!(
@@ -367,8 +356,8 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
         "{before:?}"
     );
 
-    // The last workspace goes: the direct section, the conversation, its header and the
-    // side panel stay where they are (ADR 0730). The person reads the conversation, with
+    // The last workspace goes: the direct section, the conversation and its header stay
+    // where they are (ADR 0730). The person reads the conversation, with
     // the pointer on its list: the notice of the removal waits until the pointer leaves it.
     // A change waits for the pointer in the active window only (ADR 0730).
     let list = window.cx.debug_bounds("message-list").unwrap();
