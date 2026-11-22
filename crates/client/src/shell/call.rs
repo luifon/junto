@@ -1558,9 +1558,12 @@ impl Shell {
             .typeface(theme.types.control, theme)
             .text_size(u(13.5))
             .line_height(u(18.0))
+            // A direct-message call has no voice channel: the telephone of a direct call.
             .child(icon(
                 if interrupted {
                     Icon::Retry
+                } else if strip.channel_id.is_none() {
+                    Icon::Phone
                 } else {
                     Icon::Speaker
                 },
@@ -1763,6 +1766,7 @@ impl Shell {
                     |row| {
                         row.child(
                             Button::new("detach-call")
+                                .kind(ButtonKind::Call)
                                 .icon(Icon::Detach)
                                 .accessible_label(text::DETACH_CALL)
                                 .tooltip(text::DETACH_CALL)

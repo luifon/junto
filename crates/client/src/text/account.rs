@@ -163,8 +163,10 @@ pub const fn invalid_name(invalid: &InvalidName) -> &'static str {
 /// Why a file is not sent as a picture.
 pub const fn invalid_picture(invalid: InvalidAvatar) -> &'static str {
     match invalid {
-        InvalidAvatar::TooLarge => "The picture is larger than 2 MiB. Choose a smaller picture.",
-        InvalidAvatar::Unsupported => "The file is not a PNG, JPEG or WebP image.",
+        InvalidAvatar::TooLarge => {
+            "After cutting, the picture is larger than 2 MiB. Choose a smaller zoom or another file."
+        }
+        InvalidAvatar::Unsupported => "The file is not a PNG, JPEG, WebP or GIF image.",
     }
 }
 

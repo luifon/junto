@@ -87,7 +87,7 @@ impl Shell {
                                         .child(
                                             Button::new(("open-listed-file", index))
                                                 .kind(ButtonKind::Ghost)
-                                                .label("Open file")
+                                                .label(text::OPEN_FILE)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     let address = this
                                                         .state

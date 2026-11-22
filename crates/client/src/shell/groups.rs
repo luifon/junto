@@ -366,7 +366,7 @@ impl Shell {
         }
         dialog
             .child(dialog_footer([Button::new("group-close")
-                .label(text::CANCEL)
+                .label(text::CLOSE)
                 .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
                 .into_any_element()]))
             .into_any_element()

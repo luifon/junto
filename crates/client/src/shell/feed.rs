@@ -3575,15 +3575,30 @@ impl Shell {
                 } else {
                     None
                 };
-                row.child(
-                    div()
-                        .id(("download-failed", index))
-                        .tooltip(tooltip(sentence))
-                        .child(icon(Icon::Warning, 14.0, colors.cinnabar)),
-                )
-                .children(permission)
-                .child(forget("retry-download", text::TRY_AGAIN, cx))
-                .into_any_element()
+                // The reason is a text beside the warning, and "Try again" downloads again.
+                let attachment = attachment.clone();
+                row.child(icon(Icon::Warning, 14.0, colors.cinnabar))
+                    .child(
+                        div()
+                            .id(("download-failed", index))
+                            .tooltip(tooltip(sentence.clone()))
+                            .child(small(sentence.into(), colors.cinnabar_ink)),
+                    )
+                    .children(permission)
+                    .child(named(
+                        "retry-download",
+                        Button::new(("retry-download", index))
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Retry)
+                            .tooltip(text::TRY_AGAIN)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.forget_download(server_id, attachment_id, cx);
+                                    state.download(server_id, &attachment, cx);
+                                });
+                            })),
+                    ))
+                    .into_any_element()
             }
             Some((DownloadStage::Cancelled, _)) => row.child(start(cx)).into_any_element(),
         }

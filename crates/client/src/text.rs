@@ -34,6 +34,7 @@ pub mod people;
 pub mod permissions;
 pub mod presence;
 pub mod profile;
+pub mod search;
 pub mod switcher;
 pub mod transcripts;
 pub mod tray;
@@ -281,7 +282,6 @@ pub const MICROPHONE_PAUSED: &str = "Your microphone is paused until the call re
 pub const LEAVE_CALL: &str = "Leave call";
 pub const SHOW_CALL: &str = "Show the call";
 pub const CALL_TIME: &str = "Call time";
-pub const CAMERA_NOT_AVAILABLE: &str = "Camera. Cameras are not in this version.";
 pub const RAISE_HAND: &str = "Raise your hand";
 pub const LOWER_HAND: &str = "Lower hand";
 pub const TURN_ON_CAMERA: &str = "Turn on camera";
@@ -1995,11 +1995,11 @@ pub const MESSAGES: &str = "Messages";
 pub const MESSAGES_LOADING: &str = "Reading the messages…";
 pub const MESSAGES_FAILED_TITLE: &str = "The messages could not be read";
 pub const MESSAGES_FAILED: &str = "The server did not answer, or it refused the request.";
-pub const MESSAGES_GONE: &str = "The server does not give this place to your account.";
+pub const MESSAGES_GONE: &str = "Your account cannot open this channel or conversation.";
 pub const MESSAGES_STALE: &str = "These messages may miss recent changes.";
 pub const READ_AGAIN: &str = "Try again";
 pub const NO_MESSAGES_TITLE: &str = "No messages yet";
-pub const NO_MESSAGES: &str = "Write the first message of this place.";
+pub const NO_MESSAGES: &str = "No messages yet. Write the first one.";
 pub const HISTORY_START: &str = "This is the start of the history.";
 pub const EARLIER_MESSAGES: &str = "Earlier messages";
 pub const READING_EARLIER: &str = "Reading earlier messages…";
@@ -2108,7 +2108,6 @@ pub const THREAD_GONE_TITLE: &str = "This thread does not exist any more";
 pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is not open to you.";
 pub const THREAD_FAILED: &str = "The thread could not be read.";
 pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
-pub const THREADS_OF_CHANNEL: &str = "Threads with something new";
 pub const THREAD_IN_CALL: &str = "This thread opens after you leave the call of its channel.";
 pub const FORK_THREAD: &str = "Fork thread into…";
 pub const FORK_COPIES: &str = "replies are copied to it";
@@ -2129,6 +2128,11 @@ pub const FORK_NAME_REFUSED: &str =
     "The server does not take this name. A name has 1 to 64 characters.";
 pub const FORKED_INTO: &str = "Forked into";
 pub const PINS: &str = "Pins";
+pub const OPEN_FILE: &str = "Open file";
+pub const MOVED_TO_AFK: &str = "You were moved to AFK after being inactive.";
+pub const REJOIN_PREVIOUS_CHANNEL: &str = "Rejoin previous channel";
+pub const NO_ANSWER: &str = "No answer";
+pub const FIRST_CAMERA: &str = "First available camera";
 pub const FILES: &str = "Files";
 pub const SHOW_PINS: &str = "Show the pinned messages";
 pub const CLOSE_PINS: &str = "Close the pinned messages";
@@ -2653,8 +2657,8 @@ pub const CLOSE_NOTIFICATIONS: &str = "Close the notifications";
 pub const MARK_ALL_READ: &str = "Mark all as read";
 pub const MARKING_ALL_READ: &str = "Marking…";
 pub const NO_NOTICES_TITLE: &str = "No notifications";
-pub const NO_NOTICES: &str =
-    "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
+pub const NO_NOTICES: &str = "Mentions, direct messages, replies in threads that you wrote in, new messages in \
+     places that notify you of every message, and missed calls are listed here.";
 pub const NOTICES_READING: &str = "Reading the notifications…";
 /// The archived list of a workspace could not be read (ADR 0762).
 pub const ARCHIVED_NOTICES_NOT_READ: &str =
@@ -3338,7 +3342,7 @@ pub const DO_NOT_DISTURB: &str = "Do not disturb";
 pub const DO_NOT_DISTURB_HELP: &str =
     "No notification of the system is shown. Unread signs still follow new messages.";
 pub const DAILY_QUIET: &str = "Daily quiet time";
-pub const DAILY_QUIET_HELP: &str = "The same as \"do not disturb\", every day between the two times. The times keep the distance from UTC of the day on which they were set.";
+pub const DAILY_QUIET_HELP: &str = "Every day between the two times, notifications are held back. The times follow the chosen time zone.";
 pub const QUIET_FROM: &str = "From";
 pub const QUIET_UNTIL: &str = "Until";
 pub const QUIET_SET: &str = "Set";

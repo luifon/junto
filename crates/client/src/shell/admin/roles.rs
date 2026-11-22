@@ -929,8 +929,17 @@ impl Shell {
                     }
                     None => {}
                 }
+                // The actions wrap as one group: one action alone on a second line read as
+                // an action of the next role.
                 content
-                    .children(self.render_role_actions(view, row, expanded, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(u(6.))
+                            .children(self.render_role_actions(view, row, expanded, cx)),
+                    )
                     .into_any_element()
             }
         };

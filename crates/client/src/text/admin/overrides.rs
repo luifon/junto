@@ -367,7 +367,7 @@ pub fn member_help(workspace: &str) -> String {
 }
 pub const MEMBER_CHANNELS: &str = "The server also checks each channel: a choice that gives the member a permission in a \
      channel where you do not hold it is refused.";
-pub const ACCESS: &str = "What this person can use";
+pub const ACCESS: &str = "Access by channel";
 pub fn access_help(workspace: &str) -> String {
     format!(
         "The permissions that this member holds in each channel of the workspace “{workspace}” \

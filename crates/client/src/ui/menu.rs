@@ -191,12 +191,17 @@ impl Menu {
 
     /// Floats beside its target, within the window, above scrolled content.
     pub fn popup(self, offset: Point<Pixels>) -> AnyElement {
-        self.floating(gpui::anchored().offset(offset))
+        self.floating(gpui::anchored().offset(offset - Self::edge()))
     }
 
     /// Floats at a position in window coordinates, such as an input's caret.
     pub fn popup_at(self, position: Point<Pixels>) -> AnyElement {
-        self.floating(gpui::anchored().position(position))
+        self.floating(gpui::anchored().position(position - Self::edge()))
+    }
+
+    /// The least distance between a floating menu and the edges of the window.
+    fn edge() -> Point<Pixels> {
+        gpui::point(gpui::px(8.0), gpui::px(8.0))
     }
 
     /// Keeps the first painted origin while contents change. Supply a fresh placement for each opening.
@@ -229,8 +234,13 @@ impl Menu {
         .into_any_element()
     }
 
+    // gpui moves an anchored element only when it passes an edge of the window, and adds its
+    // margin after such a move: a menu that ended inside the margin stayed there, and the kept
+    // place of a stable menu then cut its last item (`thread-message-menu`). The menu lies in
+    // a transparent box with the margin around it, and the box is kept inside the window.
     fn floating(self, anchor: gpui::Anchored) -> AnyElement {
-        gpui::deferred(anchor.snap_to_window_with_margin(gpui::px(8.0)).child(self))
+        let edge = Self::edge().x;
+        gpui::deferred(anchor.snap_to_window().child(div().p(edge).child(self)))
             .with_priority(1)
             .into_any_element()
     }

@@ -1533,11 +1533,11 @@ impl Shell {
         }
         if self.state.read(cx).afk_notice() {
             notices.push(wrap(
-                Notice::new("You were moved to AFK after being inactive.")
+                Notice::new(text::MOVED_TO_AFK)
                     .selector("afk-notice")
                     .action(
                         Button::new("afk-return")
-                            .label("Rejoin previous channel")
+                            .label(text::REJOIN_PREVIOUS_CHANNEL)
                             .selector("afk-return")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.state

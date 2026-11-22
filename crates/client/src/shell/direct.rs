@@ -169,7 +169,7 @@ fn history_label(
         Some(RingOutcome::Missed)
             if finished.is_some() || latest.is_none_or(|(_, incoming)| !incoming) =>
         {
-            Some("No answer")
+            Some(text::NO_ANSWER)
         }
         Some(RingOutcome::Missed) => Some(text::MISSED_CALL),
         Some(RingOutcome::Declined) => Some(text::DIRECT_CALL_DECLINED),
@@ -189,7 +189,7 @@ mod tests {
     fn no_answer_uses_the_current_call_direction_even_after_an_older_incoming_call() {
         assert_eq!(
             history_label(Some(RingOutcome::Missed), Some((RingOutcome::Missed, true))),
-            Some("No answer")
+            Some(text::NO_ANSWER)
         );
         assert_eq!(
             history_label(None, Some((RingOutcome::Cancelled, true))),

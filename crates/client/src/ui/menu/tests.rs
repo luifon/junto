@@ -1,7 +1,7 @@
 use gpui::{
     Context, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
-    ParentElement, Render, StatefulInteractiveElement, Styled, TestAppContext, VisualTestContext,
-    Window, div, px,
+    ParentElement, Pixels, Render, StatefulInteractiveElement, Styled, TestAppContext,
+    VisualTestContext, Window, div, px,
 };
 
 use crate::assets::Icon;
@@ -543,4 +543,68 @@ fn the_press_of_the_menu_button_does_not_reach_its_row(cx: &mut TestAppContext) 
         host.read_with(cx, |host, _| (host.pressed, host.opened)),
         (1, 1)
     );
+}
+
+struct MarginPopup {
+    focus: FocusHandle,
+    placement: std::rc::Rc<super::MenuPlacement>,
+    top: Pixels,
+}
+
+impl Render for MarginPopup {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let menu = Menu::new("margin", "Actions", &self.focus)
+            .selector("margin")
+            .children((0_usize..4).map(|index| {
+                MenuItem::new(("margin-action", index), format!("Action {index}")).selector(
+                    if index == 3 {
+                        "margin-last"
+                    } else {
+                        "margin-action"
+                    },
+                )
+            }));
+        div().relative().size_full().child(
+            div()
+                .absolute()
+                .left(px(20.0))
+                .top(self.top)
+                .size(px(20.0))
+                .child(menu.popup_stable(point(px(0.0), px(0.0)), self.placement.clone())),
+        )
+    }
+}
+
+/// A stable menu that would end inside the margin of the window opens higher at its first
+/// frame, so that its kept place does not cut its last item (`thread-message-menu`).
+#[gpui::test]
+fn a_stable_menu_that_would_end_inside_the_margin_opens_higher_and_shows_its_last_item(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| MarginPopup {
+        focus: cx.focus_handle(),
+        placement: Default::default(),
+        top: px(0.0),
+    });
+    settle(cx);
+    let height = cx.debug_bounds("margin").unwrap().size.height;
+    let viewport = cx.update(|window, _| window.viewport_size());
+    // The menu would end 2 pixels inside the edge of the window: inside its margin.
+    host.update(cx, |host, cx| {
+        host.top = viewport.height - height - px(2.0);
+        host.placement = Default::default();
+        cx.notify();
+    });
+    settle(cx);
+    let menu = cx.debug_bounds("margin").unwrap();
+    assert!(
+        menu.bottom() <= viewport.height - px(8.0),
+        "{menu:?} in {viewport:?}"
+    );
+    let last = cx.debug_bounds("margin-last").unwrap();
+    assert!(last.bottom() <= menu.bottom(), "{last:?} {menu:?}");
 }

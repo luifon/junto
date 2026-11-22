@@ -355,7 +355,7 @@ impl Shell {
         let options: [(&'static str, &'static str, bool, Filters); 5] = [
             (
                 "search-has-file",
-                "Has a file",
+                text::search::HAS_FILE,
                 filters.has_file,
                 Filters {
                     has_file: !filters.has_file,
@@ -364,7 +364,7 @@ impl Shell {
             ),
             (
                 "search-has-link",
-                "Has a link",
+                text::search::HAS_LINK,
                 filters.has_link,
                 Filters {
                     has_link: !filters.has_link,
@@ -373,7 +373,7 @@ impl Shell {
             ),
             (
                 "search-has-picture",
-                "Has a picture",
+                text::search::HAS_PICTURE,
                 filters.has_picture,
                 Filters {
                     has_picture: !filters.has_picture,
@@ -382,7 +382,7 @@ impl Shell {
             ),
             (
                 "search-mentions-me",
-                "Mentions me",
+                text::search::MENTIONS_ME,
                 filters.mentions_me,
                 Filters {
                     mentions_me: !filters.mentions_me,
@@ -391,7 +391,7 @@ impl Shell {
             ),
             (
                 "search-direct",
-                "Direct messages",
+                text::search::DIRECT_MESSAGES,
                 filters.direct,
                 Filters {
                     direct: !filters.direct,
@@ -407,25 +407,25 @@ impl Shell {
                     .justify_between()
                     .child(title)
                     .child(
-                    Toggle::new(selector, title, on, (text::ON, text::OFF))
-                        .held(match panel.capabilities {
-                            Some(supported)
-                                if supported.filters
-                                    && (!panel.text.is_empty() || supported.filter_only) =>
-                            {
-                                None
-                            }
-                            Some(supported) if supported.filters => Some(
-                                "Enter text: this server does not support filter-only searches.",
-                            ),
-                            Some(_) => Some("This server does not support these search filters."),
-                            None => Some("Server search support has not been confirmed."),
-                        })
-                        .selector(selector)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_search_filters(next, cx);
-                        })),
-                ),
+                        Toggle::new(selector, title, on, (text::ON, text::OFF))
+                            .held(match panel.capabilities {
+                                Some(supported)
+                                    if supported.filters
+                                        && (!panel.text.is_empty() || supported.filter_only) =>
+                                {
+                                    None
+                                }
+                                Some(supported) if supported.filters => {
+                                    Some(text::search::FILTERS_NEED_TEXT)
+                                }
+                                Some(_) => Some(text::search::FILTERS_UNSUPPORTED),
+                                None => Some(text::search::SUPPORT_UNKNOWN),
+                            })
+                            .selector(selector)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_search_filters(next, cx);
+                            })),
+                    ),
             );
         }
         content = content
@@ -434,17 +434,17 @@ impl Shell {
                     .flex()
                     .gap(u(6.0))
                     .child(
-                        div().flex_1().min_w_0().child("From").child(
+                        div().flex_1().min_w_0().child(text::search::FROM).child(
                             Field::new(&self.search_from, "From date").selector("search-from"),
                         ),
                     )
-                    .child(div().flex_1().min_w_0().child("Through").child(
+                    .child(div().flex_1().min_w_0().child(text::search::THROUGH).child(
                         Field::new(&self.search_through, "Through date").selector("search-through"),
                     )),
             )
             .child(
                 Button::new("search-apply-dates")
-                    .label("Apply date range")
+                    .label(text::search::APPLY_DATES)
                     .selector("search-apply-dates")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let format = time::macros::format_description!("[year]-[month]-[day]");
@@ -474,7 +474,7 @@ impl Shell {
             content = content.child(
                 div()
                     .debug_selector(|| "search-date-invalid".to_owned())
-                    .child("Enter dates as YYYY-MM-DD, with From on or before Through."),
+                    .child(text::search::DATES_HELP),
             );
         }
         div()
@@ -697,27 +697,34 @@ impl Shell {
             _ if files => format!("{found} files").into(),
             _ => text::results_for(found, panel.more, &panel.text).into(),
         };
-        let header = SideHeader::new(if files { "Files" } else { text::SEARCH })
-            .title_bar()
-            .icon(if files {
-                Icon::FolderOpen
-            } else {
-                Icon::Search
-            })
-            .note(note)
-            .trailing(
-                Button::new("close-search")
-                    .kind(ButtonKind::Ghost)
-                    .icon(Icon::X)
-                    .tooltip(text::CLOSE_SEARCH)
-                    .selector("close-search")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
-            );
+        let header = SideHeader::new(if files {
+            text::search::FILES
+        } else {
+            text::SEARCH
+        })
+        .title_bar()
+        .icon(if files {
+            Icon::FolderOpen
+        } else {
+            Icon::Search
+        })
+        .note(note)
+        .trailing(
+            Button::new("close-search")
+                .kind(ButtonKind::Ghost)
+                .icon(Icon::X)
+                .tooltip(text::CLOSE_SEARCH)
+                .selector("close-search")
+                .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+        );
         let filters = (!files).then(|| self.render_filters(panel, &theme, cx));
-        let unsupported = panel.capabilities.filter(|supported| !files && !supported.filters).map(|_| {
-            Notice::new("This server does not support content, mention or direct-message filters. Text search and its channel, author and date filters remain available.")
-                .selector("search-filters-unsupported")
-        });
+        let unsupported = panel
+            .capabilities
+            .filter(|supported| !files && !supported.filters)
+            .map(|_| {
+                Notice::new(text::search::SOME_FILTERS_UNSUPPORTED)
+                    .selector("search-filters-unsupported")
+            });
         let again = |cx: &mut Context<Self>| {
             Button::new("search-again")
                 .icon(Icon::Retry)
@@ -772,20 +779,20 @@ impl Shell {
             SearchShown::Nothing => {
                 let empty = StatePanel::new(
                     if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose search filters"
+                        text::search::CHOOSE_FILTERS
                     } else if files && panel.previous_files {
-                        "No older files"
+                        text::search::NO_OLDER_FILES
                     } else if files {
-                        "No files"
+                        text::search::NO_FILES
                     } else {
                         text::SEARCH_NOTHING_TITLE
                     },
                     if !files && panel.text.is_empty() && panel.filters == Filters::default() {
-                        "Choose a filter or enter text to search."
+                        text::search::CHOOSE_FILTERS_HELP
                     } else if files && panel.previous_files {
-                        "No older files are available. You can return to newer files."
+                        text::search::NO_OLDER_FILES_HELP
                     } else if files {
-                        "Files shared here will appear in this list."
+                        text::search::NO_FILES_HELP
                     } else {
                         text::SEARCH_NOTHING
                     },
@@ -795,7 +802,7 @@ impl Shell {
                     empty
                         .action(
                             Button::new("previous-files")
-                                .label("Newer files")
+                                .label(text::search::NEWER_FILES)
                                 .selector("previous-files")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.search_scroll.set_offset(gpui::Point::default());
@@ -844,7 +851,7 @@ impl Shell {
                             text::READING_MORE_RESULTS
                         } else {
                             if files {
-                                "Older files"
+                                text::search::OLDER_FILES
                             } else {
                                 text::SHOW_MORE_RESULTS
                             }
@@ -862,7 +869,7 @@ impl Shell {
                 let previous = files.then(|| {
                     div().flex().flex_none().px(u(14.0)).child(
                         Button::new("previous-files")
-                            .label("Newer files")
+                            .label(text::search::NEWER_FILES)
                             .selector("previous-files")
                             .disabled(!panel.previous_files || panel.reading_more)
                             .on_click(cx.listener(|this, _, _, cx| {

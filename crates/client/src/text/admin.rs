@@ -608,3 +608,11 @@ pub mod done {
         format!("{name} can use the new device now.")
     }
 }
+
+// The AFK voice channel of a workspace (ADR 0523).
+pub const AFK_LOADING: &str = "Loading AFK settings";
+pub const AFK_RETRY: &str = "Retry AFK settings";
+pub const AFK_AFTER: &str =
+    "Move people after no microphone speech and no keyboard or mouse input for:";
+pub const AFK_EXEMPT: &str =
+    "Meeting mode, direct calls and group calls are exempt. The AFK channel allows listening only.";
