@@ -25,8 +25,8 @@ use crate::text::book as txt;
 use crate::theme::{Theme, u};
 use crate::ui::{
     Badge, Button, ButtonKind, ContextMenuExt, CornerCount, Dialog, Field, Menu, MenuItem,
-    StyleExt, dialog_footer, focus_ring_inside, icon, menu_label, menu_separator, selection_mark,
-    tooltip, unread_dot,
+    StyleExt, dialog_footer, focus_ring_inside, icon, menu_separator, selection_mark, tooltip,
+    unread_dot,
 };
 
 /// A server that is dragged in the server book.
@@ -753,7 +753,9 @@ impl Shell {
                     && !matches!(server.content, crate::state::view::Content::State)
             });
         let mut items: Vec<AnyElement> = Vec::new();
-        if has_content {
+        // "Arrange ›" of the row opens its moves in the place of the menu (ADR 0780).
+        let arranging = at == MenuAt::Row && self.menu_arranging;
+        if has_content && !arranging {
             items.push(
                 MenuItem::new(
                     "workspace-notifications",
@@ -773,7 +775,7 @@ impl Shell {
             );
         }
         // Shown only while something is unread.
-        if unread {
+        if unread && !arranging {
             items.push(
                 MenuItem::new("mark-workspace-read", txt::MARK_WORKSPACE_READ)
                     .icon(Icon::CheckDouble)
@@ -787,7 +789,7 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if has_content {
+        if has_content && !arranging {
             items.push(
                 MenuItem::new("workspace-settings", txt::WORKSPACE_SETTINGS)
                     .icon(Icon::Gear)
@@ -798,9 +800,16 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if at == MenuAt::Row {
+        if at == MenuAt::Row && !arranging {
             items.push(menu_separator(cx).into_any_element());
-            items.push(menu_label(txt::ARRANGE, false, cx).into_any_element());
+            items.push(super::server_menu::arrange_open(
+                "menu-workspace-arrange",
+                cx,
+            ));
+        }
+        if arranging {
+            items.push(super::server_menu::arrange_back(cx));
+            items.push(menu_separator(cx).into_any_element());
             for (step, item, at_end) in [
                 (Step::Up, "workspace-move-up", position == 0),
                 (Step::Down, "workspace-move-down", position + 1 >= count),
@@ -821,7 +830,7 @@ impl Shell {
         }
         // Leaving a workspace opens the page of the account that states what stays and what
         // ends (ADR 0121).
-        if has_content {
+        if has_content && !arranging {
             items.push(menu_separator(cx).into_any_element());
             items.push(
                 MenuItem::new("leave-workspace", crate::text::account::LEAVE_WORKSPACE)

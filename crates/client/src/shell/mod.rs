@@ -401,6 +401,8 @@ pub struct Shell {
     /// The press of the pointer that closed the menu of the server was on the button of
     /// that menu: the click that follows does not open the menu again.
     pub(crate) server_menu_closed_by_press: bool,
+    /// The open menu of a server or a workspace shows its submenu "Arrange" (ADR 0780).
+    pub(crate) menu_arranging: bool,
     /// The person expanded the server book while the window is narrow.
     expanded_while_narrow: bool,
     /// The width of the server book as it was drawn last, in design pixels.
@@ -967,6 +969,7 @@ impl Shell {
             hover_menu_pointer: (None, false),
             hover_menu_pressed: None,
             server_menu_closed_by_press: false,
+            menu_arranging: false,
             expanded_while_narrow: false,
             rail_width: 0.0,
             edge_drag: None,
@@ -1600,6 +1603,7 @@ impl Shell {
     }
 
     pub(crate) fn open_layer(&mut self, layer: Layer, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_arranging = false;
         if matches!(layer, Layer::MessageMenu(_)) {
             self.message_menu_placement = Default::default();
         }
@@ -1673,6 +1677,7 @@ impl Shell {
     }
 
     pub(crate) fn close_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_arranging = false;
         if matches!(self.layer, Layer::GroupMemberships) {
             self.memberships.reset();
         }

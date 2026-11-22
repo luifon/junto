@@ -338,6 +338,7 @@ fn a_server_is_moved_in_the_server_book_and_a_second_start_shows_the_same_order(
 
     // The menu of the selected server has the two items. The second server is the last.
     window.open_server_menu();
+    window.click("menu-arrange");
     assert!(window.shows("menu-move-up") && window.shows("menu-move-down"));
     // "Move down" does nothing at the end.
     window.click("menu-move-down");
@@ -744,6 +745,7 @@ fn the_server_menu_has_no_empty_space_after_its_move_items(cx: &mut TestAppConte
     let admin = world.owner(&server);
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Ana");
     window.open_server_menu();
+    window.click("menu-arrange");
     // The item after the move items is the choice of the group of the server (ADR 0775).
     window.until("the menu offers the group of the server", |window| {
         window.shows("menu-move-down") && window.shows("menu-server-group")

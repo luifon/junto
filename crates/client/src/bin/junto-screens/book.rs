@@ -272,16 +272,20 @@ fn draw_book(studio: &mut Studio) -> Result<(), String> {
         |shell, _, cx| select(shell, QUARRY, cx),
     )?;
 
-    // The menu of a server with the two items that move it.
+    // The submenu "Arrange" of the menu of a server, with the items that move it.
     studio.draw(
         Screen::new("book-menu-move-first", three_servers(0)),
-        |shell, window, cx| shell.open(Open::ServerMenu, window, cx),
+        |shell, window, cx| {
+            shell.open(Open::ServerMenu, window, cx);
+            shell.show_arrange_items(cx);
+        },
     )?;
     studio.draw(
         Screen::new("book-menu-move-middle", three_servers(0)),
         |shell, window, cx| {
             select(shell, HARBOR, cx);
             shell.open(Open::ServerMenu, window, cx);
+            shell.show_arrange_items(cx);
         },
     )?;
     studio.draw(
@@ -289,6 +293,7 @@ fn draw_book(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| {
             select(shell, QUARRY, cx);
             shell.open(Open::ServerMenu, window, cx);
+            shell.show_arrange_items(cx);
         },
     )?;
     studio.draw(
@@ -296,6 +301,7 @@ fn draw_book(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| {
             select(shell, HARBOR, cx);
             shell.open(Open::ServerMenu, window, cx);
+            shell.show_arrange_items(cx);
             // The opening of the menu puts a failure of before away.
             shell.state().clone().update(cx, |state, cx| {
                 state.show_move_failure_fixture(id(HARBOR), text::book::MOVE_SERVER_GONE, cx);

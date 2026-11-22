@@ -5,7 +5,7 @@
 use std::ops::Not as _;
 
 use gpui::{
-    Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
+    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
     prelude::FluentBuilder,
 };
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
@@ -400,7 +400,7 @@ impl Shell {
             );
         }
         let separated = !items.is_empty();
-        Menu::new(
+        let menu = Menu::new(
             "server-menu",
             text::book::server_menu_of(&server.name),
             self.layer_focus(),
@@ -410,17 +410,25 @@ impl Shell {
             this.server_menu_closed_by_press = window.last_input_was_keyboard().not();
             this.close_layer(window, cx);
         }))
-        .child(header)
-        .children(items)
-        .when(separated, |menu| menu.child(menu_separator(cx)))
-        .child(menu_label(text::book::ARRANGE, false, cx))
-        .children(arrange)
-        .child(menu_separator(cx))
-        .child(menu_label(text::book::ON_THIS_DEVICE, false, cx))
-        .children(device)
-        .child(self.render_move_error(&view, cx))
-        .child(div().h(u(4.0)))
-        .into_any_element()
+        .child(header);
+        // "Arrange ›" opens its items in the place of the menu, with a way back (ADR 0780).
+        if self.menu_arranging {
+            return menu
+                .child(arrange_back(cx))
+                .child(menu_separator(cx))
+                .children(arrange)
+                .child(self.render_move_error(&view, cx))
+                .child(div().h(u(4.0)))
+                .into_any_element();
+        }
+        menu.children(items)
+            .when(separated, |menu| menu.child(menu_separator(cx)))
+            .child(arrange_open("menu-arrange", cx))
+            .child(menu_separator(cx))
+            .child(menu_label(text::book::ON_THIS_DEVICE, false, cx))
+            .children(device)
+            .child(div().h(u(4.0)))
+            .into_any_element()
     }
 
     fn render_question(
@@ -575,4 +583,37 @@ fn server_name(view: &ShellView, server_id: ServerId) -> String {
         .find(|row| row.id == server_id)
         .map(|row| row.name.clone())
         .unwrap_or_default()
+}
+
+/// The item "Arrange ›" of the menu of a server or of a workspace.
+pub(super) fn arrange_open(selector: &'static str, cx: &mut Context<Shell>) -> AnyElement {
+    MenuItem::new(selector, text::book::ARRANGE)
+        .icon(Icon::Grip)
+        .end_icon(Icon::ChevronRight)
+        .selector(selector)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.menu_arranging = true;
+            cx.notify();
+        }))
+        .into_any_element()
+}
+
+/// The first item of the submenu "Arrange", which returns to the menu.
+pub(super) fn arrange_back(cx: &mut Context<Shell>) -> AnyElement {
+    MenuItem::new("menu-arrange-back", text::book::ARRANGE)
+        .icon(Icon::ChevronLeft)
+        .selector("menu-arrange-back")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.menu_arranging = false;
+            cx.notify();
+        }))
+        .into_any_element()
+}
+
+impl Shell {
+    /// Shows the submenu "Arrange" of the open menu. The screen tool uses it.
+    pub fn show_arrange_items(&mut self, cx: &mut Context<Self>) {
+        self.menu_arranging = true;
+        cx.notify();
+    }
 }

@@ -879,6 +879,7 @@ impl Window {
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {
         self.reveal_nav_row(selector);
+        self.open_arrange_for(selector);
         self.settle();
         let bounds = self.cx.debug_bounds(selector).unwrap_or_else(|| {
             let mut names = vec![
@@ -1137,6 +1138,27 @@ impl Window {
     #[track_caller]
     pub fn wheel_up_to(&mut self, list: &'static str, target: &'static str) {
         self.wheel_until(list, target, 300.0);
+    }
+
+    /// The moves of a server and of a workspace are items of the submenu "Arrange" of their
+    /// menu (ADR 0780): a press on one opens that submenu first, as a person does.
+    fn open_arrange_for(&mut self, selector: &'static str) {
+        const ARRANGE: [&str; 5] = [
+            "menu-move-up",
+            "menu-move-down",
+            "menu-server-group",
+            "workspace-move-up",
+            "workspace-move-down",
+        ];
+        if !ARRANGE.contains(&selector) || self.shows(selector) {
+            return;
+        }
+        for opener in ["menu-arrange", "menu-workspace-arrange"] {
+            if self.shows(opener) {
+                self.click(opener);
+                return;
+            }
+        }
     }
 
     /// Brings a row of the list of pages of Server settings into the visible part of that

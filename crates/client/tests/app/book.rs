@@ -693,9 +693,7 @@ fn the_server_menu_and_the_workspace_menu_each_hold_the_items_of_their_scope(
         "menu-join-with-invite",
         "menu-administration",
         "menu-account",
-        "menu-move-up",
-        "menu-move-down",
-        "menu-server-group",
+        "menu-arrange",
         "keep-connected",
         "keep-connected-checked",
         "menu-log-out",
@@ -712,6 +710,19 @@ fn the_server_menu_and_the_workspace_menu_each_hold_the_items_of_their_scope(
     ] {
         assert!(!window.shows(item), "the menu of the server has {item}");
     }
+    // "Arrange ›" shows the moves in the place of the menu, and returns from them.
+    window.click("menu-arrange");
+    for item in [
+        "menu-arrange-back",
+        "menu-move-up",
+        "menu-move-down",
+        "menu-server-group",
+    ] {
+        assert!(window.shows(item), "Arrange has no {item}");
+    }
+    assert!(!window.shows("menu-log-out"));
+    window.click("menu-arrange-back");
+    assert!(window.shows("menu-log-out") && !window.shows("menu-move-up"));
     window.press("escape");
     assert!(!window.shows("server-menu"));
 
@@ -733,6 +744,7 @@ fn the_server_menu_and_the_workspace_menu_each_hold_the_items_of_their_scope(
         "keep-connected",
         "menu-remove-server",
         "workspace-move-up",
+        "menu-workspace-arrange",
     ] {
         assert!(!window.shows(item), "the menu of the workspace has {item}");
     }
@@ -742,7 +754,9 @@ fn the_server_menu_and_the_workspace_menu_each_hold_the_items_of_their_scope(
     let row = window.workspace_row(&workspace);
     window.right_click_named(row);
     assert!(window.shows("workspace-menu"));
-    assert!(window.shows("workspace-move-up") && window.shows("menu-workspace-settings"));
+    assert!(window.shows("menu-workspace-arrange") && window.shows("menu-workspace-settings"));
+    window.click("menu-workspace-arrange");
+    assert!(window.shows("workspace-move-up") && !window.shows("menu-workspace-settings"));
     window.press("escape");
 
     // The menu of Harbor, which is not selected, acts on Harbor and keeps Acme Studio shown.
