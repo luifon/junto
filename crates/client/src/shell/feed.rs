@@ -40,10 +40,9 @@ use crate::state::feed::{
 use crate::state::view::{DraftFile, ServerLists, ShellView, Writing};
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::OwnPress as _;
 use crate::ui::{
     Avatar, Button, ButtonKind, ContextMenuExt, Menu, MenuItem, Notice, StatePanel, StyleExt,
-    focus_ring_inside, icon, ledge, tooltip,
+    focus_ring_inside, icon, tooltip,
 };
 
 /// The side of a picture of an author in the thread line of a message, in pixels of the
@@ -3730,8 +3729,18 @@ impl Shell {
                         .pr(u(9.0))
                         .rounded(u(theme.metrics.radius))
                         .border_1()
-                        .border_color(Hsla::from(colors.rule))
-                        .bg(Hsla::from(colors.travertine_hi))
+                        // The chip of the thread that the side panel shows is drawn in the
+                        // selected style, as a selected row is (ADR 0741).
+                        .border_color(Hsla::from(if mark.open {
+                            colors.terracotta_deep
+                        } else {
+                            colors.rule
+                        }))
+                        .bg(Hsla::from(if mark.open {
+                            colors.limestone_lo
+                        } else {
+                            colors.travertine_hi
+                        }))
                         .text_size(u(13.0))
                         // A thread whose replies the person may not read shows its count
                         // without an act (ADR 0790).
@@ -3846,16 +3855,6 @@ impl Shell {
                                     .font_weight(FontWeight::BOLD)
                                     .ink(colors.on_terracotta)
                                     .child(SharedString::from(unread)),
-                            )
-                        })
-                        .when(mark.open, |chip| {
-                            chip.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(u(12.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .ink(colors.terracotta_deep)
-                                    .child(text::SHOWN_IN_PANEL),
                             )
                         })
                         .map(|chip| self.thread_chip_menu(chip, feed, row, window, cx)),

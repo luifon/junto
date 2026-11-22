@@ -483,7 +483,7 @@ fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &m
     // search does not return into the side panel.
     window.search_for("paged");
     assert_eq!(window.until_searched().messages().len(), 50);
-    window.click("notices-row");
+    window.click("activity-button");
     assert!(window.shows("notices-panel") && !window.shows("search-panel"));
     mute(&mut window, Some(MuteFor::OneHour));
     assert!(window.shows("notices-panel") && !window.shows("search-panel"));
@@ -723,7 +723,7 @@ fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
     // The notices state the same failure, with the same retry.
     window.click("close-search");
     fail_once(&proxy);
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the notices state the failed archived list", |window| {
         window.shows("notices-archive-failed")
     });

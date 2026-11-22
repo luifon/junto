@@ -223,6 +223,7 @@ impl Shell {
         let failed = state.thread_menu_read_failed(open.owner, open.root_id);
         let busy = control.as_ref().is_none_or(|control| control.busy);
         let following = control.as_ref().is_some_and(|control| control.following);
+        let setting = control.as_ref().map(|control| control.setting);
         let refused = control.as_ref().and_then(|control| control.refused.clone());
         let title = entry
             .title
@@ -291,6 +292,10 @@ impl Shell {
             })
             .child(
                 MenuItem::new("thread-follow", text::followed::action(following))
+                    .icon(if following { Icon::BellOff } else { Icon::Bell })
+                    .when_some(setting, |item, setting| {
+                        item.detail(text::followed::state(following, setting))
+                    })
                     .selector("thread-follow")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -311,6 +316,27 @@ impl Shell {
                         }
                     })),
             )
+            // The same words as the follow control of the thread panel (ADR 0741).
+            .when(setting.flatten().is_some(), |menu| {
+                menu.child(
+                    MenuItem::new("thread-follow-default", text::followed::USE_DEFAULT)
+                        .detail(text::followed::USE_DEFAULT_HELP)
+                        .selector("thread-follow-default")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.thread_menu_current(open, cx)
+                                && this.state.update(cx, |state, cx| {
+                                    state.clear_thread_menu_follow(open.owner, open.root_id, cx)
+                                })
+                            {
+                                if let Layer::ThreadMenu(open) = &mut this.layer {
+                                    open.waiting = true;
+                                }
+                                cx.notify();
+                            }
+                        })),
+                )
+            })
             .child(
                 MenuItem::new("thread-copy-link", text::COPY_TARGET_LINK)
                     .selector("thread-copy-link")

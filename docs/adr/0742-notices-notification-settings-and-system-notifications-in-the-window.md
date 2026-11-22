@@ -12,6 +12,8 @@ The server marks every notice up to a time as read with one request, and states 
 
 ## Decision
 
+- The list of the notices of a server is named "Activity", as in Slack and Teams; "Notifications" names only the settings and the notifications of the system. A bell beside the search field of the main header, with the tooltip "Activity" and the count of the notices that the person has not read, opens it in the side panel; in a call it stands at the top of the right column of the call, beside its tabs, and opens the list in that column. The entry "Notifications" at the top of the channel column is removed: it looked like a channel. The header of the list has "Mark all as read", a settings button that opens the notification settings of the server, and the close button. Reason: the row read as a chat named "Notifications", and the word named five places of settings. Tests: `notices::` and `call_notices::` of the window tests press the bell.
+
 List of notices:
 
 - The channel column has an entry "Notifications" above the channels, with the count of the notices that the person has not read. It opens the notices of the shown server in the side panel. The panel shows one list: opening the notices closes a thread, the pinned messages and a transcript, and takes a search out of the panel.

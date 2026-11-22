@@ -48,6 +48,7 @@ impl AppState {
     /// Shows the notices of a server in the side panel.
     pub fn open_notices(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         self.selection.notices = Some(server_id);
+        self.selection.threads = None;
         self.selection.thread = None;
         self.selection.pins = None;
         self.selection.transcript = None;
@@ -256,6 +257,7 @@ impl AppState {
                 self.selection.conversations.remove(&server_id);
                 if let Some(root_id) = jump.thread_root {
                     self.selection.thread = Some((server_id, channel_id, root_id));
+                    self.selection.threads = None;
                     self.selection.pins = None;
                     self.known.fork = None;
                 }

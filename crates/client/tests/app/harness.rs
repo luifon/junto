@@ -1041,6 +1041,29 @@ impl Window {
         self.settle();
     }
 
+    /// Presses an item of the menu of the thread in the header of the thread panel.
+    #[track_caller]
+    pub fn thread_menu_action(&mut self, item: &str) {
+        self.click("thread-more");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// Presses an item of the menu of the follow control of the thread panel.
+    #[track_caller]
+    pub fn follow_menu_action(&mut self, item: &str) {
+        self.click("thread-follow-button");
+        self.click(selector(format!("context-action:{item}")));
+    }
+
+    /// True when the menu of the follow control of the thread panel offers this item. The
+    /// menu is closed again.
+    pub fn follow_menu_offers(&mut self, item: &str) -> bool {
+        self.click("thread-follow-button");
+        let offered = self.shows(selector(format!("context-action:{item}")));
+        self.press("escape");
+        offered
+    }
+
     /// Opens "Who reacted" of a message from the menu of the message, once the menu offers it:
     /// the message holds a reaction that the window shows.
     #[track_caller]

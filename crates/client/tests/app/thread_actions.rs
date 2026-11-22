@@ -126,20 +126,20 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     window.until("the follow state is read", |window| {
         window.follow_state() == Some((false, None))
     });
-    assert!(!window.shows("thread-follow-default"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
     // The member follows by choice. "Use the default" removes the choice: the rule
     // decides again, and the member follows the thread no longer.
-    window.click("thread-follow");
+    window.follow_menu_action("Follow");
     window.until("the choice to follow", |window| {
         window.follow_state() == Some((true, Some(true)))
     });
-    window.click("thread-follow-default");
+    window.follow_menu_action("Use the default");
     window.until("the choice is removed", |window| {
         window.follow_state() == Some((false, None))
     });
     assert_eq!(stored(&world), (false, None));
-    assert!(!window.shows("thread-follow-default"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
     // The member writes in the thread and follows it by the rule, then chooses not to
     // follow it. "Use the default" gives the thread back to the rule: the member follows
@@ -148,12 +148,12 @@ fn use_the_default_gives_the_following_of_a_thread_back_to_the_rule_of_the_serve
     window.until("the member follows by the rule", |window| {
         window.follow_state() == Some((true, None))
     });
-    window.click("thread-follow");
+    window.follow_menu_action("Stop following");
     window.until("the choice not to follow", |window| {
         window.follow_state() == Some((false, Some(false)))
     });
     assert_eq!(stored(&world), (false, Some(false)));
-    window.click("thread-follow-default");
+    window.follow_menu_action("Use the default");
     window.until("the rule decides again", |window| {
         window.follow_state() == Some((true, None))
     });
@@ -273,9 +273,10 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
             .is_some_and(|thread| thread.may_fork)
     });
 
-    // "Voice" opens the dialog for a voice channel, and the fork is made.
-    window.click("fork-voice");
+    // "Fork into a channel…" opens the dialog; its kind is Voice, and the fork is made.
+    window.thread_menu_action("Fork into a channel…");
     assert!(window.shows("fork-dialog"));
+    window.click("fork-kind-1");
     window.type_into("fork-name", "listening room");
     window.click("create-fork");
     window.until("the voice channel of the fork", |window| {
@@ -314,7 +315,10 @@ fn a_thread_is_forked_into_a_voice_channel(cx: &mut TestAppContext) {
     );
 
     // The link of the thread shows the chat of the voice channel with the copies.
-    assert!(window.shows("fork-link") && !window.shows("fork-voice"));
+    assert!(window.shows("fork-link") && window.shows("thread-forks"));
+    window.click("thread-more");
+    assert!(!window.shows("context-action:Fork into a channel…"));
+    window.press("escape");
     window.click("fork-link");
     window.until("the copies in the chat of the voice channel", |window| {
         window

@@ -19,7 +19,7 @@ Panes:
 Threads:
 
 - "Reply in thread" in the actions and in the menu of a message opens the thread of that message, for an authored message of a channel that is no reply of a thread. The panel shows the root, the count of the replies, the replies and the composer. The replies start under the root; the list names a day only when it differs from the day of the root.
-- A message with replies shows their count, the author and the time of the last reply, "Shown in panel" while its thread is open, and what the person has not read in the thread. The last reply is read from the open thread, or by the read of quoted messages of ADR 0740.
+- A message with replies shows their count, the author and the time of the last reply, and what the person has not read in the thread; while its thread is open, the chip is drawn in the selected style. The last reply is read from the open thread, or by the read of quoted messages of ADR 0740.
 - The channel column lists under a channel its threads with something unread, by the start of the text of their root, and the thread of the side panel.
 - The read position of a thread follows what the panel shows, by the rule of ADR 0740 for a list.
 - "Also send to the channel" is not drawn.
@@ -28,9 +28,9 @@ Threads:
 
 Fork:
 
-- The panel offers the fork into a text channel and into a voice channel. The roles of the person predict the permission; without "manage channel" the two controls are disabled and say why. The server decides.
-- A dialog takes the name of the new channel. It stays while the request is on its way, and states a refusal in words: no permission, the thread has a fork already, the name is refused, the thread is gone, and every other answer by the sentence of its error code. A changed name ends the statement.
-- After the server made the channel, the dialog closes, and the panel names the fork channels in place of the two controls. A press on one shows that channel.
+- The header of the thread has the follow control (ADR 0796), a menu button with vertical dots and the close button. Its menu holds "Fork into a channel…", "Copy link" and the read item of ADR 0741's unread signs ("Mark as read", or "Mark as unread" for a thread with replies and nothing unread). "Fork into a channel…" is present only with "manage channel" and while the thread has no fork; without the permission it is absent, not disabled (ADR 0790). The server decides. Reason: a fork bar of two rows stood in every thread, also for people who could not use it.
+- A dialog takes the kind of the new channel, text or voice, and its name. It stays while the request is on its way, and states a refusal in words: no permission, the thread has a fork already, the name is refused, the thread is gone, and every other answer by the sentence of its error code. A changed name ends the statement.
+- After the server made the channel, the dialog closes, and one line under the header, "Forked into", names the fork channels. A press on one shows that channel.
 
 Pins:
 

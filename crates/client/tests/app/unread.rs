@@ -304,7 +304,7 @@ fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppConte
             .and_then(|thread| thread.feed.as_ref())
             .is_some_and(|feed| feed.unread == 1)
     });
-    window.click("thread-mark-as-read");
+    window.thread_menu_action("Mark as read");
     window.until("the thread is explicitly read", |window| {
         window
             .view()

@@ -88,7 +88,7 @@ impl Window {
     }
 
     pub(crate) fn open_notices(&mut self) {
-        self.click("notices-row");
+        self.click("activity-button");
         self.until("the notices are listed", |window| {
             window
                 .notices()

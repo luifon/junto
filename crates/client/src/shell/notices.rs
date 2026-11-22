@@ -407,39 +407,57 @@ impl Shell {
         cx.notify();
     }
 
-    /// The entry of the channel column that opens the notices of the server, with the
-    /// count of the notices that the person has not read. `in_call`: the main area shows
-    /// the call of this device, whose side panel is the panel of the call: the notices
-    /// open there (ADR 0742).
-    pub(crate) fn render_notices_row(
+    /// The bell beside the search field that opens the activity of the shown server in the
+    /// side panel, with the count of the notices that the person has not read (ADR 0742).
+    /// `in_call`: the button stands at the top of the panel of the call, whose side panel
+    /// the list opens in.
+    pub(crate) fn render_activity_button(
         &mut self,
         lists: &ServerLists,
         in_call: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let unread = lists.unread_notices;
-        let sign = (unread > 0).then(|| UnreadSign {
-            mentions: Some(text::unread_count(unread as u64).into()),
-            label: text::unread_notices(unread).into(),
-        });
+        let open = if in_call {
+            self.call_notices_open(cx)
+        } else {
+            lists.notices.is_some()
+        };
+        let label: SharedString = if unread > 0 {
+            format!("{}, {}", text::ACTIVITY, text::unread_notices(unread)).into()
+        } else {
+            text::ACTIVITY.into()
+        };
+        let colors = theme(cx).colors;
         div()
             .flex_none()
-            .debug_selector(|| "notices-row".to_owned())
+            .debug_selector(|| "activity".to_owned())
             .child(
-                ChannelRow::new("notices-row", Icon::Bell, text::NOTIFICATIONS)
-                    .selected(lists.notices.is_some())
-                    .unread(sign)
+                Button::new("activity-button")
+                    .icon(Icon::Bell)
+                    .tooltip(text::ACTIVITY)
+                    .accessible_label(label)
+                    .count((unread > 0).then(|| text::unread_count(unread as u64)))
+                    .selector("activity-button")
+                    .when(open, |button| {
+                        button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_notices(cx);
-                        // A narrow window draws the panel of the call over the stage
-                        // only while it is open.
                         if in_call {
-                            this.open_call_panel(cx);
+                            if this.call_notices_open(cx) {
+                                this.close_call_notices(cx);
+                            } else {
+                                this.open_call_notices(cx);
+                                this.open_call_panel(cx);
+                            }
+                            cx.notify();
+                        } else {
+                            this.toggle_notices(cx);
                         }
                     })),
             )
-            .when(unread > 0, |row| {
-                row.child(
+            .when(unread > 0, |button| {
+                button.child(
                     div()
                         .absolute()
                         .size_0()
@@ -511,7 +529,7 @@ impl Shell {
                     });
                 }))
         });
-        let header = SideHeader::new(text::NOTIFICATIONS)
+        let header = SideHeader::new(text::ACTIVITY)
             .title_bar()
             .icon(Icon::Bell)
             .note(if panel.unread > 0 {
@@ -525,11 +543,28 @@ impl Shell {
                     .items_center()
                     .gap(u(4.0))
                     .children(mark_all)
+                    // The notification settings of the server (ADR 0742).
+                    .child(
+                        Button::new("activity-settings")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::Gear)
+                            .tooltip(text::SERVER_NOTIFICATIONS)
+                            .accessible_label(text::SERVER_NOTIFICATIONS)
+                            .selector("activity-settings")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_notify_settings(
+                                    server_id,
+                                    SettingsScope::Account,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
                     .child(
                         Button::new("close-notices")
                             .kind(ButtonKind::Ghost)
                             .icon(Icon::X)
-                            .tooltip(text::CLOSE_NOTIFICATIONS)
+                            .tooltip(text::CLOSE_ACTIVITY)
                             .selector("close-notices")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if in_call {
@@ -613,7 +648,7 @@ impl Shell {
                     div()
                         .id("notice-list")
                         .role(Role::List)
-                        .aria_label(text::NOTIFICATIONS)
+                        .aria_label(text::ACTIVITY)
                         .debug_selector(|| "notice-list".to_owned())
                         .size_full()
                         .child(list(state.clone(), render).size_full().pb(u(6.0))),
@@ -632,7 +667,7 @@ impl Shell {
         } else {
             side_panel(
                 &theme,
-                text::NOTIFICATIONS,
+                text::ACTIVITY,
                 "notices-panel",
                 self.panel_width(Panel::Notices, theme.metrics.side_panel_width, cx),
             )
@@ -804,7 +839,7 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        self.row_menu("notice-menu", text::NOTIFICATIONS.to_owned(), items, cx)
+        self.row_menu("notice-menu", text::ACTIVITY.to_owned(), items, cx)
     }
 
     /// The control above the oldest listed notice that reads the older ones.

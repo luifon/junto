@@ -72,6 +72,14 @@ impl Shell {
                 }
                 let thread = shown.and_then(|shown| shown.thread.as_ref());
                 let pins = shown.and_then(|shown| shown.pins.as_ref());
+                // The followed threads of the workspace lie under a thread and the pinned
+                // messages, and over the notices and a search (ADR 0741).
+                if thread.is_none()
+                    && pins.is_none()
+                    && let Some(followed) = shown.and_then(|shown| shown.followed.as_ref())
+                {
+                    return Some((Panel::Notices, this.render_followed_panel(followed, cx)));
+                }
                 let search = shown
                     .and_then(|shown| shown.search.as_ref())
                     .or(lists.search.as_ref());
@@ -178,6 +186,7 @@ impl Shell {
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
         let notices_open = lists.is_some_and(|lists| lists.notices.is_some());
         let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
+        let followed_open = workspace.is_some_and(|workspace| workspace.followed.is_some());
         let search_open = workspace.is_some_and(|workspace| workspace.search.is_some())
             || lists.is_some_and(|lists| lists.search.is_some());
         let split = div()
@@ -246,6 +255,9 @@ impl Shell {
                             } else if transcript_open {
                                 this.state
                                     .update(cx, |state, cx| state.close_transcript(cx));
+                            } else if followed_open {
+                                this.state
+                                    .update(cx, |state, cx| state.close_followed_threads(cx));
                             } else if notices_open {
                                 this.state.update(cx, |state, cx| state.close_notices(cx));
                             } else {
@@ -514,6 +526,10 @@ impl Shell {
             // window, and in a wide window while the person closed it.
             if narrow || !self.call_panel_shown(false, cx) {
                 after.extend(self.render_call_panel_buttons(cx));
+                // The activity opens in the panel of the call (ADR 0742).
+                if let Some(lists) = view.lists() {
+                    after.push(self.render_activity_button(lists, true, cx));
+                }
             }
             // The settings of the application at "Voice and video", in every width.
             after.push(self.render_call_settings_button(cx));
@@ -712,11 +728,16 @@ impl Shell {
                                     state.close_notices(cx);
                                     state.hide_search(cx);
                                     state.close_transcript(cx);
+                                    state.close_followed_threads(cx);
                                 });
                             }
                             cx.notify();
                         })),
                 )
+            })
+            // The activity of the server, beside the search of the server (ADR 0742).
+            .when_some(view.lists().filter(|_| call.is_none()), |header, lists| {
+                header.child(self.render_activity_button(lists, false, cx))
             })
             .when(view.lists().is_some() && call.is_none(), |header| {
                 header.child(self.render_search_field(compact, cx))

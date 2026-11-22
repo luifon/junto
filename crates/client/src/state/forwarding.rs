@@ -536,6 +536,7 @@ impl AppState {
                 self.selection.conversations.remove(&destination.server_id);
                 if let PlaceId::Thread { root_id, .. } = destination.place {
                     self.selection.thread = Some((destination.server_id, channel_id, root_id));
+                    self.selection.threads = None;
                 }
             }
         }

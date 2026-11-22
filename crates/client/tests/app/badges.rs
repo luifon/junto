@@ -487,17 +487,17 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
     let (general, own) = (window.selected_channel(), window.own_account());
     let random = admin.text_channel(&world, &mut window, "random");
     voice_channel(&world, &admin, &mut window, "Daily");
-    assert!(window.drawn_number("notices-row").is_none());
+    assert!(window.drawn_number("activity").is_none());
 
     admin.mention(&world, random, "first, ", own);
     admin.mention(&world, random, "second, ", own);
     window.until("the row of the notices counts two", |window| {
-        window.drawn_number("notices-row").as_deref() == Some("2")
+        window.drawn_number("activity").as_deref() == Some("2")
     });
     window.open_notices();
     window.click("mark-all-read");
     window.until("the notices are read", |window| {
-        window.unread_notices() == 0 && window.drawn_number("notices-row").is_none()
+        window.unread_notices() == 0 && window.drawn_number("activity").is_none()
     });
     window.click("close-notices");
 
@@ -514,7 +514,7 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
         window.drawn_number("open-call-notices-count").as_deref() == Some("1")
     });
     window.until("the row of the notices counts the notice", |window| {
-        window.drawn_number("notices-row").as_deref() == Some("1")
+        window.drawn_number("activity").as_deref() == Some("1")
     });
     detached.click("open-call-notices");
     detached.until("the notices are listed in the call window", |window| {
@@ -527,7 +527,7 @@ fn the_unread_notices_are_counted_on_their_row_and_on_the_bell_of_the_call_windo
             && window.drawn_number("open-call-notices-count").is_none()
     });
     window.until("the row of the notices counts nothing", |window| {
-        window.drawn_number("notices-row").is_none()
+        window.drawn_number("activity").is_none()
     });
 }
 

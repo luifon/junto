@@ -215,7 +215,7 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     assert!(window.shows("notices-count"));
 
     // The row opens the notices in the panel of the call, beside the stage.
-    window.click("notices-row");
+    window.click("activity-button");
     window.until(
         "the notices are listed in the panel of the call",
         |window| {
@@ -237,7 +237,7 @@ fn the_notices_open_in_the_panel_of_the_call(cx: &mut TestAppContext) {
     window.settle();
     window.click("close-call-panel");
     assert!(!window.shows("call-panel") && window.shows("notices-count"));
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the notices are listed over the stage", |window| {
         window.shows("call-panel") && window.shows("notices-panel")
     });

@@ -142,6 +142,8 @@ pub struct Selection {
     pub transcript: Option<(ServerId, ChannelId, RecordingId)>,
     /// The server whose notices the side panel shows.
     pub notices: Option<ServerId>,
+    /// The workspace whose followed threads the side panel shows (ADR 0741).
+    pub threads: Option<(ServerId, WorkspaceId)>,
     /// The scope whose notification settings the dialog shows.
     pub notify: Option<(ServerId, SettingsScope)>,
 }
@@ -1445,9 +1447,33 @@ pub struct WorkspaceView {
     pub search: Option<SearchPanel>,
     /// The transcript of a recording that the side panel shows.
     pub transcript: Option<TranscriptPanel>,
+    /// The followed threads of the workspace that the side panel shows (ADR 0741).
+    pub followed: Option<FollowedPanel>,
     /// Present when the shown channel is archived (ADR 0762): it is read and takes no
     /// message.
     pub archived: Option<ArchivedState>,
+}
+
+/// The threads of the shown workspace that the account follows, unread ones first, as the
+/// side panel "Threads" shows them (ADR 0741).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedPanel {
+    pub rows: Vec<FollowedRow>,
+    /// The server lists more followed threads after the listed ones.
+    pub more: bool,
+    /// A read of the list is on its way.
+    pub reading: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedRow {
+    pub root_id: MessageId,
+    pub channel_id: ChannelId,
+    pub channel_name: String,
+    /// The start of the text of the root. Absent while the root was not read.
+    pub title: Option<String>,
+    pub unread: u64,
+    pub mentions: u64,
 }
 
 /// The transcript of one recording of the shown voice channel, as the side panel shows it
@@ -2409,6 +2435,54 @@ fn channel_row(
     }
 }
 
+/// The followed threads of a workspace as the server listed them, with the names of their
+/// channels and the titles of their roots that the window holds.
+fn followed_panel(
+    server_id: ServerId,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> FollowedPanel {
+    let names = Names::default();
+    let list = &known.followed.workspace;
+    let held = list
+        .held()
+        .filter(|(scope, _)| *scope == (server_id, workspace.workspace.id))
+        .map(|(_, threads)| threads)
+        .unwrap_or_default();
+    let rows = held
+        .iter()
+        .filter_map(|state| {
+            let channel_id = *known
+                .followed
+                .workspace_channels
+                .get(&(server_id, state.root_id))?;
+            let channel = workspace.channel(channel_id)?;
+            // The state of the server holds the newest counts of an unread thread.
+            let (unread, mentions) = match model.thread_state(state.root_id) {
+                Some(held) => (held.unread, held.mentions),
+                None => (state.unread, state.mentions),
+            };
+            Some(FollowedRow {
+                root_id: state.root_id,
+                channel_id,
+                channel_name: channel.channel.name.clone(),
+                title: held_root(model, channel_id, state.root_id)
+                    .or_else(|| known.followed.roots.get(server_id, state.root_id))
+                    .and_then(|root| root.document.as_ref())
+                    .map(|document| feed::plain_text(document, &names, THREAD_TITLE_CHARACTERS)),
+                unread,
+                mentions,
+            })
+        })
+        .collect();
+    FollowedPanel {
+        rows,
+        more: list.has_more(),
+        reading: list.is_reading(),
+    }
+}
+
 /// The characters of the root of a thread that the channel column shows.
 const THREAD_TITLE_CHARACTERS: usize = 48;
 
@@ -3365,6 +3439,11 @@ fn workspace_view(
     let notices_wanted = selection.notices == Some(server_id);
     let in_call = call.is_some() || conversation.is_some_and(|shown| shown.in_call);
     let (no_thread, no_pins) = (thread.is_none(), pins.is_none());
+    let followed = (selection.threads == Some((server_id, workspace.workspace.id))
+        && no_thread
+        && no_pins
+        && transcript.is_none())
+    .then(|| followed_panel(server_id, workspace, model, known));
     let view = WorkspaceView {
         role_colors: workspace
             .roles
@@ -3387,9 +3466,15 @@ fn workspace_view(
         thread,
         pins,
         search: super::search::search_panel(server_id, workspace, model, known).filter(|_| {
-            no_thread && no_pins && transcript.is_none() && !notices_wanted && !in_call
+            no_thread
+                && no_pins
+                && transcript.is_none()
+                && !notices_wanted
+                && !in_call
+                && followed.is_none()
         }),
         transcript,
+        followed,
         archived: archived
             .filter(|held| workspace.channel(held.channel.id).is_none())
             .map(|held| ArchivedState {

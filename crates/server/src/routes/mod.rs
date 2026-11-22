@@ -158,6 +158,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         routes!(threads::set_follow, threads::remove_follow)
     });
     add(&mut router, || routes!(threads::followed));
+    add(&mut router, || routes!(threads::workspace_followed));
     add(&mut router, || routes!(pins::list));
     add(&mut router, || routes!(pins::pin, pins::unpin));
     add(&mut router, || routes!(search::search));

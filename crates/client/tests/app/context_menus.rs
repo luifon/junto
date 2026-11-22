@@ -1190,7 +1190,7 @@ fn search_and_notice_author_targets_have_account_menus_that_end_with_their_panel
     window.until("closing search ends the author menu", |window| {
         !window.shows("account-menu")
     });
-    window.click("notices-row");
+    window.click("activity-button");
     window.until("the mention is in the notice list", |window| {
         window
             .view()

@@ -10,6 +10,8 @@ ADR 0405 and ADR 0409 define the search and the threads. A search result named i
 
 ## Decision
 
+- `GET /api/v1/workspaces/{workspace_id}/threads` lists the threads of a workspace that the caller follows, in the channels whose history it reads, in pages: the threads with unread replies first, then the others, each group with the newest reply first (`WorkspaceThreads`, each thread with its channel). Its continuation names the group, the newest reply and the root of the last thread. A workspace of which the caller is no member is not found. The client shows the list in the side panel "Threads" (ADR 0796). Test: `thread_requests::the_followed_threads_of_a_workspace_list_unread_ones_first`.
+
 Search results:
 
 - A result for a message states `position`, the position of the message in its channel or conversation, and `thread_root`, the root of its thread when the message is a reply.

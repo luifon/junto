@@ -10,6 +10,7 @@ pub const FOLLOWING_BY_RULE: &str =
     "You follow this thread because you wrote in it or were named in it.";
 pub const NOT_FOLLOWING: &str = "You do not follow this thread.";
 pub const FOLLOW: &str = "Follow";
+pub const FOLLOWING: &str = "Following";
 pub const STOP_FOLLOWING: &str = "Stop following";
 pub const USE_DEFAULT: &str = "Use the default";
 pub const USE_DEFAULT_HELP: &str =

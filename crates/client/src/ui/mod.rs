@@ -45,7 +45,8 @@ use std::sync::Arc;
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
 pub use action_menu::{
-    RowAction, RowMenu, RowMenuPlace, bind_action_menu, bind_lazy_action_menu,
+    ButtonMenu, RowAction, RowMenu, RowMenuPlace, bind_action_menu, bind_button_menu,
+    bind_lazy_action_menu,
     bind_lazy_row_action_menu, bind_row_action_menu, collect_actions, row_focus,
 };
 pub use area::{CENTRED, COVER, KEPT, area, cover};

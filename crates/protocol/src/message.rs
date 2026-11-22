@@ -481,6 +481,25 @@ pub struct FollowedThreads {
     pub next: Option<String>,
 }
 
+/// One page of the threads of a workspace that the caller follows, unread ones first
+/// (ADR 0413).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceThreads {
+    pub threads: Vec<WorkspaceThread>,
+    pub more: bool,
+    /// Pass as `before` to read the next page. Absent on the last page.
+    pub next: Option<String>,
+}
+
+/// One followed thread of a workspace, with its channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceThread {
+    pub channel_id: ChannelId,
+    pub state: ThreadState,
+}
+
 /// One page of threads with unread replies or mentions, newest first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

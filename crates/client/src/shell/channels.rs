@@ -295,7 +295,6 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let workspace = lists.workspace.as_ref();
-        let in_call = lists.call.is_some();
         let (channels, entries) = match workspace {
             Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
             None => (
@@ -335,7 +334,12 @@ impl Shell {
             .pb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
-            .child(self.render_notices_row(lists, in_call, cx))
+            .children(
+                lists
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| self.render_threads_row(workspace, cx)),
+            )
             .children(self.direct_rows(server.id, lists, theme, cx));
         let list = div().flex().flex_col().flex_1().min_h(u(row)).child(
             ScrollArea::new("channel-list", &self.channels_scroll, label)

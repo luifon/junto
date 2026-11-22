@@ -399,13 +399,13 @@ impl Shell {
     ) -> AnyElement {
         let unread = view.lists().map_or(0, |lists| lists.unread_notices);
         let label: SharedString = if unread > 0 {
-            format!("{}, {}", text::NOTIFICATIONS, text::unread_notices(unread)).into()
+            format!("{}, {}", text::ACTIVITY, text::unread_notices(unread)).into()
         } else {
-            text::NOTIFICATIONS.into()
+            text::ACTIVITY.into()
         };
         Button::new("open-call-notices")
             .icon(Icon::Bell)
-            .tooltip(text::NOTIFICATIONS)
+            .tooltip(text::ACTIVITY)
             .accessible_label(label)
             .count((unread > 0).then(|| text::unread_count(unread as u64)))
             .selector("open-call-notices")
@@ -434,6 +434,11 @@ impl Shell {
             self.state
                 .update(cx, |state, cx| state.open_notices(server_id, cx));
         }
+    }
+
+    /// The panel of the call shows the notices of the server of the call.
+    pub(crate) fn call_notices_open(&self, cx: &gpui::App) -> bool {
+        self.state.read(cx).view().lists().is_some_and(|lists| lists.notices.is_some())
     }
 
     /// The panel of the call shows a tab again in place of the notices.
@@ -974,6 +979,15 @@ impl Shell {
                         cx,
                     )),
             )
+            // The activity of the server of the call opens in place of the tab (ADR 0742).
+            .children(view.lists().map(|lists| {
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(self.render_activity_button(lists, true, cx))
+                    .into_any_element()
+            }))
             // The panel closes in every window, as the server book does; the stage then
             // takes its width (round 2 item 16).
             .child(
@@ -1032,7 +1046,7 @@ impl Shell {
             div()
                 .id("call-panel")
                 .role(Role::Complementary)
-                .aria_label(text::NOTIFICATIONS)
+                .aria_label(text::ACTIVITY)
                 .debug_selector(|| "call-panel".to_owned())
                 .flex()
                 .flex_col()

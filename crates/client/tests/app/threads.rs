@@ -290,9 +290,13 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
             .is_some_and(|thread| thread.may_fork)
     };
 
-    // The roles of a new member hold no "manage channel": the controls say so, and the
-    // server refuses the request.
+    // The roles of a new member hold no "manage channel": the menu of the thread has no
+    // fork, and the server refuses the request.
     assert!(!may_fork(&mut window));
+    window.click("thread-more");
+    assert!(window.shows("context-action:Copy link"));
+    assert!(!window.shows("context-action:Fork into a channel…"));
+    window.press("escape");
     window.in_shell(|shell, window, cx| {
         shell.open_fork_dialog(root_id, ChannelKind::Text, window, cx);
     });
@@ -312,7 +316,7 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
     // With the permission the button opens the dialog, and the fork is made.
     admin.allow_everyone(&world, &[WorkspacePermission::ManageChannel]);
     window.until("the permission", may_fork);
-    window.click("fork-text");
+    window.thread_menu_action("Fork into a channel…");
     assert!(window.shows("fork-dialog"));
     // A dialog without a name sends nothing.
     window.in_shell(|shell, window, cx| shell.submit_fork(window, cx));
@@ -348,7 +352,7 @@ fn a_fork_tells_each_refusal_and_shows_the_new_channel(cx: &mut TestAppContext) 
                     })
         },
     );
-    assert!(window.shows("fork-link") && !window.shows("fork-text"));
+    assert!(window.shows("fork-link") && window.shows("thread-forks"));
 
     // A thread has one fork: the server refuses a second one.
     window.in_shell(|shell, window, cx| {
@@ -948,11 +952,11 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         "You do not follow this thread."
     );
     assert_eq!(text::followed::action(control.following), "Follow");
-    assert!(window.shows("thread-follow-state") && window.shows("thread-follow"));
-    assert!(!window.shows("thread-follow-default") && !window.shows("thread-follow-refused"));
+    assert!(window.shows("thread-follow-button") && !window.shows("thread-follow-refused"));
+    assert!(!window.follow_menu_offers("Use the default"));
 
-    // The member presses "Follow": the server stores the choice.
-    window.click("thread-follow");
+    // The member chooses "Follow" in the menu of the bell: the server stores the choice.
+    window.follow_menu_action("Follow");
     window.until("the choice to follow", |window| {
         follow(window).is_some_and(|control| {
             control.following && control.setting == Some(true) && !control.busy
@@ -964,7 +968,7 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         "You follow this thread."
     );
     assert_eq!(control.refused, None);
-    assert!(window.shows("thread-follow-default"));
+    assert!(window.follow_menu_offers("Use the default"));
 
     // The panel is closed. A thread without a reply is in no list.
     window.click("close-thread");
@@ -1029,7 +1033,7 @@ fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
         follow(window).is_some_and(|control| control.following && control.setting == Some(true))
     });
     assert_eq!(text::followed::action(true), "Stop following");
-    window.click("thread-follow");
+    window.follow_menu_action("Stop following");
     window.until("the choice not to follow", |window| {
         follow(window).is_some_and(|control| {
             !control.following && control.setting == Some(false) && !control.busy
@@ -1368,4 +1372,57 @@ fn an_inline_thread_preview_reads_and_toggles_follow_without_opening_the_thread(
     window.until("the removed preview closes its menu", |window| {
         !window.shows("thread-menu")
     });
+}
+
+/// The entry "Threads" of the channel column lists the threads of the workspace that the
+/// person follows, unread ones first, and a row opens its thread (ADR 0796).
+#[gpui::test]
+fn the_threads_entry_lists_the_followed_threads_of_the_workspace(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel, root) = with_root(cx, &world);
+    let other = admin.text_channel(&world, &mut window, "mixing");
+    let other_root = admin.send(&world, other, document("Which compressor?")).id;
+    let own = window.own_account();
+    let api = window.handle().api();
+    // The person follows the first thread by choice and has read it; the other one names
+    // the person in a reply, so it is followed by the rule and unread.
+    admin.reply(&world, root, document("Tracks."));
+    world.run(api.set_thread_follow(root, true)).unwrap();
+    admin.reply(&world, other_root, crate::notices::mention("Asking ", own));
+    window.until("the other thread is unread under its channel", |window| {
+        window
+            .channels()
+            .iter()
+            .flat_map(|row| &row.threads)
+            .any(|thread| thread.root_id == other_root && thread.unread > 0)
+    });
+
+    window.click("threads-row");
+    window.until("the panel lists both threads, the unread one first", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.followed.clone())
+            .is_some_and(|panel| {
+                panel
+                    .rows
+                    .iter()
+                    .map(|row| (row.root_id, row.channel_id))
+                    .collect::<Vec<_>>()
+                    == [(other_root, other), (root, channel)]
+            })
+    });
+    assert!(window.shows("followed-panel"));
+    assert_eq!(window.selected_channel(), channel);
+
+    window.click_named(format!("followed-thread:{other_root}"));
+    window.until("the row opens its thread in its channel", |window| {
+        window.selected_channel() == other
+            && window
+                .view()
+                .workspace()
+                .and_then(|workspace| workspace.thread.as_ref())
+                .is_some_and(|thread| thread.root_id == other_root)
+    });
+    assert!(!window.shows("followed-panel"));
 }

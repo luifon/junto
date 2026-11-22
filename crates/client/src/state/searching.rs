@@ -152,6 +152,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.selection.thread = None;
+        self.selection.threads = None;
         self.selection.pins = None;
         self.selection.notices = None;
         self.selection.transcript = None;

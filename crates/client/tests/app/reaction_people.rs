@@ -190,7 +190,7 @@ fn reaction_people_switch_emoji_and_work_in_conversations_and_threads(cx: &mut T
     // The follow state of the thread arrives from the server after the replies, and its bar
     // above the root moves the replies down: the press waits until the panel is complete.
     window.until("the thread shows its follow state and its root", |window| {
-        window.shows("follow-bar") && window.shows("thread-root")
+        window.shows("thread-follow-control") && window.shows("thread-root")
     });
     window.open_who_reacted(reply);
     window.until("the thread roster is shown", |window| {

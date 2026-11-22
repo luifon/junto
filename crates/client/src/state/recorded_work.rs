@@ -585,6 +585,7 @@ impl AppState {
             self.selection.conversations.remove(&server_id);
         }
         self.selection.transcript = Some((server_id, channel_id, recording_id));
+        self.selection.threads = None;
         self.selection.thread = None;
         self.selection.pins = None;
         self.known.fork = None;

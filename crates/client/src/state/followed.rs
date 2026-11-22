@@ -17,7 +17,7 @@ use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::Notice;
 use junto_client_core::model::{self as core_model, Named, PlaceId, ServerModel};
 use junto_client_core::protocol::events::Event;
-use junto_client_core::protocol::ids::{AccountId, ChannelId, MessageId, ServerId};
+use junto_client_core::protocol::ids::{AccountId, ChannelId, MessageId, ServerId, WorkspaceId};
 use junto_client_core::protocol::message::{FollowedThreads, Message, ThreadState};
 use junto_client_core::{Owner, ServerHandle};
 
@@ -296,12 +296,12 @@ impl Seen {
     }
 }
 
-/// A read of the followed threads of a channel.
+/// A read of the followed threads of a channel, or of a workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListRead {
+pub struct ListRead<K = ChannelId> {
     pub number: u64,
     pub server_id: ServerId,
-    pub channel_id: ChannelId,
+    pub channel_id: K,
     /// The continuation of the page before. Absent: the list is read from its start.
     pub before: Option<String>,
     pub limit: u32,
@@ -317,10 +317,11 @@ struct ListReading {
 }
 
 /// The threads of the shown channel that the account follows, as far as their pages were
-/// read (ADR 0413).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FollowedList {
-    channel: Option<(ServerId, ChannelId)>,
+/// read (ADR 0413). The list of the followed threads of a workspace, which the side panel
+/// "Threads" shows, is the same list with the workspace in place of the channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedList<K = ChannelId> {
+    channel: Option<(ServerId, K)>,
     /// In the order of the server: the thread with the newest reply first.
     threads: Vec<ThreadState>,
     /// The server lists more followed threads after the held ones.
@@ -340,26 +341,53 @@ pub struct FollowedList {
 
 /// The threads that a read of the list from its start asks for: as many pages as are
 /// held, so that a list that the person read further stays as long as it was.
+impl<K> Default for FollowedList<K> {
+    fn default() -> Self {
+        Self {
+            channel: None,
+            threads: Vec::new(),
+            more: false,
+            next: None,
+            expanded: false,
+            reading: None,
+            wanted: false,
+            wanted_further: false,
+            seen: Seen::default(),
+            reads: 0,
+        }
+    }
+}
+
 fn refresh_limit(held: usize) -> u32 {
     let pages = u32::try_from(held).unwrap_or(LARGEST_PAGE).div_ceil(PAGE);
     pages.saturating_mul(PAGE).clamp(PAGE, LARGEST_PAGE)
 }
 
-impl FollowedList {
+impl<K: Copy + PartialEq> FollowedList<K> {
     /// The held followed threads with their channel, as far as their pages were read.
-    pub fn held(&self) -> Option<((ServerId, ChannelId), &[ThreadState])> {
+    pub fn held(&self) -> Option<((ServerId, K), &[ThreadState])> {
         Some((self.channel?, &self.threads))
+    }
+
+    /// The server lists more followed threads after the held ones.
+    pub fn has_more(&self) -> bool {
+        self.more
+    }
+
+    /// A read of the list is on its way.
+    pub fn is_reading(&self) -> bool {
+        self.reading.is_some()
     }
 
     /// The channel that is shown now, or none. With another channel the list starts
     /// empty and is read, and the answer of a read that is on its way is not used.
-    pub fn show(&mut self, channel: Option<(ServerId, ChannelId)>) {
+    pub fn show(&mut self, channel: Option<(ServerId, K)>) {
         if self.channel != channel {
             self.start(channel);
         }
     }
 
-    fn start(&mut self, channel: Option<(ServerId, ChannelId)>) {
+    fn start(&mut self, channel: Option<(ServerId, K)>) {
         *self = Self {
             channel,
             reading: self.reading.map(|reading| ListReading {
@@ -441,7 +469,7 @@ impl FollowedList {
 
     /// The read to send now. One read is on its way at a time; the list from its start
     /// comes before a further page.
-    pub fn next_read(&mut self) -> Option<ListRead> {
+    pub fn next_read(&mut self) -> Option<ListRead<K>> {
         let (server_id, channel_id) = self.channel?;
         if self.reading.is_some() {
             return None;
@@ -507,7 +535,7 @@ impl FollowedList {
     /// side panel, which has a row of its own when it is not among the listed ones.
     pub fn listed(
         &self,
-        channel: (ServerId, ChannelId),
+        channel: (ServerId, K),
         listed: &[MessageId],
         open: Option<MessageId>,
     ) -> (Vec<&ThreadState>, Option<MoreFollowed>) {
@@ -755,6 +783,8 @@ enum ThreadMenuAction {
     Read,
     /// Mark the thread unread from its newest reply (ADR 0741).
     Unread,
+    /// Remove the choice of the account: the rule of the server decides again.
+    UseDefault,
 }
 
 /// What the window holds about followed threads.
@@ -762,6 +792,10 @@ enum ThreadMenuAction {
 pub struct Followed {
     pub thread: ThreadFollow,
     pub list: FollowedList,
+    /// The followed threads of the workspace that the side panel "Threads" shows.
+    pub workspace: FollowedList<WorkspaceId>,
+    /// The channel of each thread of the workspace list, as the server stated it.
+    pub workspace_channels: HashMap<(ServerId, MessageId), ChannelId>,
     pub roots: Roots,
     menu: ThreadMenu,
     /// The account that the entries of a server were read for.
@@ -773,6 +807,8 @@ impl Followed {
     pub fn retain(&mut self, servers: &HashSet<ServerId>) {
         self.owners
             .retain(|server_id, _| servers.contains(server_id));
+        self.workspace_channels
+            .retain(|(server_id, _), _| servers.contains(server_id));
         self.roots.retain(servers);
         if self
             .menu
@@ -790,6 +826,7 @@ impl Followed {
         if before.is_some_and(|before| before != account_id) {
             self.thread.forget(server_id);
             self.list.forget(server_id);
+            self.workspace.forget(server_id);
             self.roots.forget(server_id);
             if self
                 .menu
@@ -811,11 +848,12 @@ impl Followed {
     ) -> bool {
         let thread = self.thread.told(server_id, root_id, following, setting);
         let list = self.list.told(server_id, root_id, following);
+        let workspace = self.workspace.told(server_id, root_id, following);
         let menu = self
             .menu
             .follow
             .told(server_id, root_id, following, setting);
-        thread || list || menu
+        thread || list || workspace || menu
     }
 
     /// An event of a server that tells nothing about a followed thread. `changed`: the
@@ -832,9 +870,10 @@ impl Followed {
     pub fn missed(&mut self, server_id: ServerId) -> bool {
         let thread = self.thread.stale(server_id);
         let list = self.list.trigger(server_id);
+        let workspace = self.workspace.trigger(server_id);
         let roots = self.roots.stale(server_id);
         let menu = self.menu.follow.stale(server_id);
-        thread || list || roots || menu
+        thread || list || workspace || roots || menu
     }
 
     /// The answer to a change of the thread of the side panel. The list of the channel
@@ -872,12 +911,15 @@ impl Followed {
             // order with it: it does not state what the list holds. The list is read.
             Some(_) if overtaken && followed == core_model::Followed::Unknown => {
                 self.list.trigger(ask.server_id);
+                self.workspace.trigger(ask.server_id);
             }
             Some(Some((following, _))) => {
                 self.list.told(ask.server_id, ask.root_id, following);
+                self.workspace.told(ask.server_id, ask.root_id, following);
             }
             Some(None) => {
                 self.list.trigger(ask.server_id);
+                self.workspace.trigger(ask.server_id);
             }
             None => {}
         }
@@ -1089,6 +1131,15 @@ impl AppState {
         self.change_thread_menu(owner, root, ThreadMenuAction::Read, cx)
     }
 
+    pub fn clear_thread_menu_follow(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.change_thread_menu(owner, root, ThreadMenuAction::UseDefault, cx)
+    }
+
     pub fn mark_thread_menu_unread(
         &mut self,
         owner: Owner,
@@ -1138,6 +1189,17 @@ impl AppState {
                             .await
                             .map_err(|error| change_refusal(&error))?;
                         (changed, None)
+                    }
+                    ThreadMenuAction::UseDefault => {
+                        let receipt = api
+                            .clear_thread_follow(root)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        let state = api
+                            .thread_state(root)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        (state, Some(receipt))
                     }
                     ThreadMenuAction::Unread => {
                         let page = api
@@ -1211,6 +1273,7 @@ impl AppState {
                 .map(|(server_id, (_, root_id))| (server_id, root_id)),
         );
         followed.list.show(shown.server.zip(shown.channel));
+        followed.workspace.show(self.selection.threads);
         self.read_followed(cx);
         self.read_thread_menu(cx);
     }
@@ -1239,6 +1302,7 @@ impl AppState {
         let followed = &mut self.known.followed;
         followed.belongs(server_id, model.account.id);
         followed.list.observe(Seen::of(&model, shown.thread));
+        followed.workspace.observe(Seen::of(&model, shown.thread));
         if let Some(ask) = followed.thread.next_read() {
             let api = server.api();
             cx.spawn(async move |this, cx| {
@@ -1266,11 +1330,63 @@ impl AppState {
             })
             .detach();
         }
+        if let Some(read) = followed.workspace.next_read()
+            && read.server_id == server_id
+        {
+            let api = server.api();
+            cx.spawn(async move |this, cx| {
+                let page = api
+                    .workspace_followed_threads(
+                        read.channel_id,
+                        read.before.as_deref(),
+                        Some(read.limit),
+                    )
+                    .await
+                    .ok();
+                let _ = this.update(cx, |this, cx| {
+                    let followed = &mut this.known.followed;
+                    let page = page.map(|page| {
+                        for thread in &page.threads {
+                            followed
+                                .workspace_channels
+                                .insert((read.server_id, thread.state.root_id), thread.channel_id);
+                        }
+                        FollowedThreads {
+                            threads: page.threads.into_iter().map(|thread| thread.state).collect(),
+                            more: page.more,
+                            next: page.next,
+                        }
+                    });
+                    if followed.workspace.answered(read.number, page) {
+                        this.followed_changed(cx);
+                    }
+                });
+            })
+            .detach();
+        }
         let open = shown.thread.map(|(_, root_id)| root_id);
         let missing = shown
             .channel
             .map(|channel_id| followed.missing_roots(&model, (server_id, channel_id), open))
             .unwrap_or_default();
+        // The roots of the followed threads of the workspace list that the state does not
+        // hold, for their titles.
+        let mut missing = missing;
+        if let Some(((held_server, _), threads)) = followed.workspace.held()
+            && held_server == server_id
+        {
+            for state in threads {
+                let channel = followed
+                    .workspace_channels
+                    .get(&(server_id, state.root_id))
+                    .copied();
+                if channel.is_some_and(|channel| held_root(&model, channel, state.root_id).is_none())
+                    && !missing.contains(&state.root_id)
+                {
+                    missing.push(state.root_id);
+                }
+            }
+        }
         for read in followed.roots.next_reads(server_id, &missing) {
             let api = server.api();
             cx.spawn(async move |this, cx| {

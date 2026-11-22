@@ -2098,10 +2098,22 @@ pub const OPENS_IN_BROWSER: &str = "Opens in your browser";
 
 // Threads, pins, permanent messages and direct conversations (ADR 0741).
 pub const THREAD: &str = "Thread";
+pub const THREADS: &str = "Threads";
+pub const CLOSE_THREADS: &str = "Close the followed threads";
+pub const NO_FOLLOWED_THREADS_TITLE: &str = "No followed threads";
+pub const NO_FOLLOWED_THREADS: &str =
+    "The threads that you follow in the channels of this workspace are listed here, unread ones first.";
+pub const FOLLOWED_THREADS_READING: &str = "Reading the followed threads…";
+/// The accessible name of the row of the side panel "Threads".
+pub fn followed_thread_label(title: &str, channel: &str, unread: u64) -> String {
+    match unread {
+        0 => format!("{title}, #{channel}"),
+        unread => format!("{title}, #{channel}, {}", unread_count(unread)),
+    }
+}
 pub const CLOSE_THREAD: &str = "Close the thread";
 pub const REPLY_IN_THREAD: &str = "Reply in thread";
 pub const OPEN_THREAD: &str = "Open the thread";
-pub const SHOWN_IN_PANEL: &str = "Shown in panel";
 pub const THREAD_LOADING: &str = "Reading the thread…";
 pub const THREAD_GONE_TITLE: &str = "This thread does not exist any more";
 pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is not open to you.";
@@ -2109,8 +2121,8 @@ pub const THREAD_FAILED: &str = "The thread could not be read.";
 pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
 pub const THREADS_OF_CHANNEL: &str = "Threads with something new";
 pub const THREAD_IN_CALL: &str = "This thread opens after you leave the call of its channel.";
-pub const FORK_THREAD: &str = "Fork thread into…";
-pub const FORK_COPIES: &str = "replies are copied to it";
+pub const FORK_INTO_CHANNEL: &str = "Fork into a channel…";
+pub const FORK_KIND: &str = "Kind of the new channel";
 pub const FORK_TEXT: &str = "Text channel";
 pub const FORK_VOICE: &str = "Voice channel";
 pub const FORK_TITLE: &str = "Fork this thread into a channel";
@@ -2647,14 +2659,14 @@ fn sentence(reason: &str) -> String {
 
 // Notices, notification settings and system notifications (ADR 0742).
 pub const NOTIFICATIONS: &str = "Notifications";
-pub const SHOW_NOTIFICATIONS: &str = "Show your notifications on this server";
-pub const CLOSE_NOTIFICATIONS: &str = "Close the notifications";
+/// The list of the mentions, replies, direct messages and missed calls of a server (ADR 0742).
+pub const ACTIVITY: &str = "Activity";
+pub const CLOSE_ACTIVITY: &str = "Close the activity";
 pub const MARK_ALL_READ: &str = "Mark all as read";
 pub const MARKING_ALL_READ: &str = "Marking…";
-pub const NO_NOTICES_TITLE: &str = "No notifications";
-pub const NO_NOTICES: &str =
-    "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
-pub const NOTICES_READING: &str = "Reading the notifications…";
+pub const NO_NOTICES_TITLE: &str = "No activity";
+pub const NO_NOTICES: &str = "Mentions, direct messages, replies in threads, new messages of the places that notify you, and missed calls on this server are listed here.";
+pub const NOTICES_READING: &str = "Reading the activity…";
 /// The archived list of a workspace could not be read (ADR 0762).
 pub const ARCHIVED_NOTICES_NOT_READ: &str =
     "The archived channels could not be read, so their notifications are not listed.";

@@ -536,6 +536,7 @@ pub struct Shell {
     /// title of the main window show (ADR 0741).
     badge: Option<u64>,
     pub(crate) search_scroll: ScrollHandle,
+    pub(crate) followed_scroll: ScrollHandle,
     pub(crate) transcript_list: recorded::TranscriptList,
     /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
     pub(crate) transcript_edit: transcript_edit::TranscriptEdit,
@@ -1030,6 +1031,7 @@ impl Shell {
             notice_list: notices::NoticeList::new(),
             badge: None,
             search_scroll: ScrollHandle::new(),
+            followed_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
             transcript_edit,
             recording_files_closed_by_press: false,

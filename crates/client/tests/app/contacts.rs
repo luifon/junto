@@ -252,7 +252,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
             .is_some_and(|lists| lists.workspace.is_none())
             && window.shows("no-workspace")
     });
-    assert!(window.shows("no-workspace-note") && window.shows("notices-row"));
+    assert!(window.shows("no-workspace-note") && window.shows("activity-button"));
 
     // He writes to an administrator from "New message", whose name the window reads
     // from the profile.
@@ -351,7 +351,7 @@ fn the_direct_part_keeps_its_place_when_the_last_workspace_goes_and_comes_back(
             })
     });
     let parts = [
-        "notices-row",
+        "activity-button",
         "new-direct",
         row,
         "channel-title",
