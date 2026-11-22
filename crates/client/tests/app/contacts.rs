@@ -253,7 +253,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     });
     assert!(window.shows("no-workspace-note") && window.shows("notices-row"));
 
-    // He writes to an administrator from "New direct message", whose name the window reads
+    // He writes to an administrator from "New message", whose name the window reads
     // from the profile.
     window.search_contacts("Ada");
     window.choose_contact(ada_id);
@@ -269,7 +269,7 @@ fn an_account_without_a_workspace_keeps_its_direct_conversations(cx: &mut TestAp
     assert_eq!(message_count(&world, &admin.handle, with_ada[0].id), 1);
 
     // The other administrator writes to him: the conversation is listed with its unread
-    // sign, the server and the notices count it, and "New direct message" stays where it
+    // sign, the server and the notices count it, and "New message" stays where it
     // is (ADR 0730).
     window.run_tasks();
     let new_direct = window.cx.debug_bounds("new-direct");
@@ -666,7 +666,7 @@ fn a_contact_identity_menu_keeps_its_chooser_and_ends_with_a_replaced_result(
     window.until_offered(account);
     assert!(!window.shows("row-context-menu"));
     window.right_click_named(format!("contact-{account}"));
-    window.click_named("context-action:Write a direct message to Ada".to_owned());
+    window.click_named("context-action:Message".to_owned());
     window.until("the captured person's conversation opens", |window| {
         window
             .conversation_with()

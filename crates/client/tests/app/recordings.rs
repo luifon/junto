@@ -248,7 +248,7 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
         .map(|(position, file)| (position, file.clone()))
         .unwrap();
     window.right_click_named(format!("recorded-file-{position}"));
-    window.click("context-action:Copy name");
+    window.click("context-action:Copy file name");
     assert!(window.shows("recording-files"));
     assert!(
         window

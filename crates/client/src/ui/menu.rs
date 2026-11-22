@@ -399,6 +399,27 @@ impl RenderOnce for Menu {
     }
 }
 
+/// The key bindings that menu items show beside their actions (ADR 0777). The state
+/// replaces them at the start and at each change of a binding.
+#[derive(Default)]
+pub struct BoundKeys(junto_client_core::keybinds::Keybinds);
+impl gpui::Global for BoundKeys {}
+
+pub fn set_bound_keys(bindings: &junto_client_core::keybinds::Keybinds, cx: &mut App) {
+    cx.set_global(BoundKeys(bindings.clone()));
+}
+
+/// The keys of an action as a menu shows them: none when the action has no keys or when an
+/// earlier action of the list has the same keys, so that a press does what the item names.
+pub(crate) fn shown_keys(
+    action: junto_client_core::keybinds::KeyAction,
+    cx: &App,
+) -> Option<SharedString> {
+    let bindings = &cx.try_global::<BoundKeys>()?.0;
+    let keys = bindings.get(action).keys?;
+    (bindings.action_for(&keys) == Some(action)).then(|| crate::text::key_combo(&keys).into())
+}
+
 /// One action of a menu on stone.
 pub struct MenuItem {
     id: ElementId,
@@ -409,6 +430,7 @@ pub struct MenuItem {
     swatch: Option<Hsla>,
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
+    shortcut: Option<junto_client_core::keybinds::KeyAction>,
     disabled: bool,
     selector: Option<SharedString>,
     on_click: Option<ClickHandler>,
@@ -425,6 +447,7 @@ impl MenuItem {
             swatch: None,
             end_icon: None,
             trailing: None,
+            shortcut: None,
             disabled: false,
             selector: None,
             on_click: None,
@@ -435,6 +458,14 @@ impl MenuItem {
     /// does not leave an item that an action disabled; its second line says why.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Draws the item as `offer` states (ADR 0790): disabled with its reason on the second
+    /// line. The caller draws no item for `Offer::Absent`.
+    pub fn offer(mut self, offer: &super::Offer) -> Self {
+        self.disabled = offer.disabled();
+        self.detail = offer.reason();
         self
     }
 
@@ -473,6 +504,13 @@ impl MenuItem {
         self
     }
 
+    /// The key binding of the same action, shown at the end of the item with the keys that
+    /// the person bound to it.
+    pub fn shortcut(mut self, action: junto_client_core::keybinds::KeyAction) -> Self {
+        self.shortcut = Some(action);
+        self
+    }
+
     pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
         self.selector = Some(selector.into());
         self
@@ -499,6 +537,7 @@ impl IntoElement for MenuItem {
                 icon: self.icon,
                 disabled: self.disabled,
                 detail: self.detail.clone(),
+                shortcut: self.shortcut,
                 handler: self.on_click.clone(),
             })
         });
@@ -512,9 +551,12 @@ impl RenderOnce for MenuItem {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let keys = self.shortcut.and_then(|action| shown_keys(action, cx));
+        let keys_selector = self.selector.clone();
         div()
             .id(self.id)
             .role(Role::MenuItem)
+            .when_some(keys.clone(), |item, keys| item.aria_keyshortcuts(keys))
             .aria_label(self.title.clone())
             .aria_disabled(self.disabled)
             .when_some(self.detail.clone(), |item, detail| {
@@ -619,6 +661,19 @@ impl RenderOnce for MenuItem {
                         .line_height(u(19.0))
                         .ink(colors.ink_2)
                         .child(text),
+                )
+            })
+            .when_some(keys, |item, keys| {
+                item.child(
+                    div()
+                        .flex_none()
+                        .when_some(keys_selector, |text, selector| {
+                            text.debug_selector(move || format!("{selector}-keys"))
+                        })
+                        .typeface(theme.types.small, &theme)
+                        .line_height(u(19.0))
+                        .ink(colors.ink_2)
+                        .child(keys),
                 )
             })
     }

@@ -61,8 +61,8 @@ fn every_control_follows_a_rule_and_a_role_that_change_while_the_window_is_open(
         WorkspacePermission::ReadMessageHistory,
     ];
     rule(&world, &admin, plans, role, &[], &taken);
-    window.until("every control is not available", |window| {
-        window.shows("read-only-bar") && window.shows("pins-button-refused")
+    window.until("every control is absent", |window| {
+        window.shows("read-only-bar") && !window.shows("pins-button")
     });
     // The window keeps only the messages of its connection, and says that earlier
     // messages are not available.
@@ -76,8 +76,8 @@ fn every_control_follows_a_rule_and_a_role_that_change_while_the_window_is_open(
     let id = admin.send(&world, plans, document("During the rule")).id;
     window.until_message("During the rule");
     window.hover_message(id);
-    assert!(window.shows_named(format!("react-refused:{id}")));
-    assert!(window.shows_named(format!("thread-refused:{id}")));
+    assert!(!window.shows_named(format!("react:{id}")));
+    assert!(!window.shows_named(format!("thread:{id}")));
     assert!(!window.shows_named(format!("reply:{id}")));
 
     // The rule is removed: each control returns.
@@ -120,7 +120,7 @@ fn every_control_follows_a_rule_and_a_role_that_change_while_the_window_is_open(
     });
     window.click_channel("Standup");
     window.until("the join follows the role", |window| {
-        window.shows("join-call-refused")
+        !window.shows("join-call") && window.shows("channel-title")
     });
     // A rule of the voice channel gives "connect" back there.
     rule(

@@ -2051,32 +2051,12 @@ impl Shell {
                         )),
                     )
                     .child(divider())
-                    .child(if writing.attach {
-                        tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
-                            .on_click(
+                    .when(writing.attach, |tools| {
+                        tools.child(
+                            tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip)).on_click(
                                 cx.listener(move |this, _, _, cx| this.choose_files(pane, cx)),
-                            )
-                            .into_any_element()
-                    } else {
-                        // Not available: the control states why (ADR 0790).
-                        let refused = text::not_permitted(WorkspacePermission::AttachFiles);
-                        div()
-                            .id("attach-file-refused")
-                            .role(Role::Button)
-                            .aria_label(text::ATTACH_FILE)
-                            .aria_description(refused)
-                            .debug_selector(move || pane.id("attach-file-refused").to_owned())
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .w(u(26.0))
-                            .h(u(22.0))
-                            .rounded(u(radius_small))
-                            .cursor_not_allowed()
-                            .tooltip(tooltip(refused))
-                            .child(icon(Icon::Clip, 15.0, colors.ink_3))
-                            .into_any_element()
+                            ),
+                        )
                     })
                     .child(
                         tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(

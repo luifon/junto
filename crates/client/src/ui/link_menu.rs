@@ -219,7 +219,7 @@ impl Render for Popup {
                 div()
                     .debug_selector(move || format!("link-copy:{index}"))
                     .child(
-                        MenuItem::new(("link-copy", index), text::COPY_TARGET_LINK).on_click(
+                        MenuItem::new(("link-copy", index), text::COPY_LINK_ADDRESS).on_click(
                             cx.listener(move |this, _, window, cx| {
                                 if this.choose(&copied, window, cx) {
                                     window.dispatch_action(

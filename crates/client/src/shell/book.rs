@@ -5,7 +5,7 @@
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use gpui_base::input::InputState;
 use junto_client_core::version::Incompatibility;
@@ -204,7 +204,9 @@ impl Shell {
         .into_iter()
         .map(|(step, id, selector, at_end)| {
             MenuItem::new(id, txt::move_title(step))
-                .detail(txt::server_move_help(step, at_end, in_group))
+                .when(at_end, |item| {
+                    item.detail(txt::server_move_end(step, in_group))
+                })
                 .disabled(at_end)
                 .selector(selector)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -217,7 +219,6 @@ impl Shell {
         items.push(
             MenuItem::new("server-group", txt::MOVE_TO_GROUP)
                 .icon(Icon::FolderOpen)
-                .detail(txt::MOVE_TO_GROUP_HELP)
                 .end_icon(Icon::ChevronRight)
                 .selector("menu-server-group")
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -241,11 +242,6 @@ impl Shell {
                 } else {
                     Icon::ChevronRight
                 })
-                .detail(if collapsed {
-                    txt::EXPAND_WORKSPACES_HELP
-                } else {
-                    txt::COLLAPSE_WORKSPACES_HELP
-                })
                 .selector("menu-server-workspaces")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
@@ -262,23 +258,23 @@ impl Shell {
             );
         }
         let unread = row.unread.any();
-        items.push(
-            MenuItem::new("mark-server-read", txt::MARK_SERVER_READ)
-                .icon(Icon::CheckDouble)
-                .detail(if unread {
-                    txt::MARK_SERVER_READ_HELP
-                } else {
-                    txt::NOTHING_UNREAD
-                })
-                .disabled(!unread)
-                .selector("menu-mark-server-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.state
-                        .update(cx, |state, _| state.mark_server_read(server_id, None));
-                    this.close_layer(window, cx);
-                }))
-                .into_any_element(),
-        );
+        // Shown only while something is unread.
+        if unread {
+            items.push(
+                MenuItem::new("mark-server-read", txt::MARK_SERVER_READ)
+                    .icon(Icon::CheckDouble)
+                    .when(row.selected, |item| {
+                        item.shortcut(junto_client_core::keybinds::KeyAction::MarkServerRead)
+                    })
+                    .selector("menu-mark-server-read")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, _| state.mark_server_read(server_id, None));
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         items
     }
 
@@ -544,14 +540,25 @@ impl Shell {
                 .child(txt::VERSION)
                 .into_any_element(),
             div()
+                .flex()
                 .flex_none()
-                .typeface(theme.types.control, theme)
-                .font_weight(FontWeight::SEMIBOLD)
-                .ink(colors.ink)
-                .debug_selector(|| "version-build".to_owned())
-                .child(crate::selectable::SelectableText::value(
-                    txt::this_build(version.build),
-                    version.build.to_string(),
+                .items_center()
+                .gap(u(6.0))
+                .child(
+                    div()
+                        .typeface(theme.types.control, theme)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .ink(colors.ink)
+                        .debug_selector(|| "version-build".to_owned())
+                        .child(txt::this_build(version.build)),
+                )
+                .child(div().debug_selector(|| "copy-version".to_owned()).child(
+                    Self::value_copy_button(
+                        "copy-version",
+                        crate::text::COPY_VERSION,
+                        version.build.to_string(),
+                        cx,
+                    ),
                 ))
                 .into_any_element(),
             crate::ui::notice_slot("version-state-slot")

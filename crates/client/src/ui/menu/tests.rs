@@ -1,6 +1,7 @@
 use gpui::{
     Context, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
-    ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div, px,
+    ParentElement, Render, StatefulInteractiveElement, Styled, TestAppContext, VisualTestContext,
+    Window, div, px,
 };
 
 use crate::assets::Icon;
@@ -415,4 +416,131 @@ fn menu_arrows_reach_an_explicit_volume_focus_handle(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("left");
     settle(cx);
     assert_eq!(state.read_with(cx, |state, _| state.value().end()), 90.0);
+}
+
+struct KeysHost {
+    focus: FocusHandle,
+}
+
+impl Render for KeysHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(400.0)).child(
+            Menu::new("keys-menu", "Keys", &self.focus).child(
+                MenuItem::new("mark", "Mark as read")
+                    .selector("mark")
+                    .shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                    .on_click(|_, _, _| {}),
+            ),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_menu_item_shows_the_keys_bound_to_its_action_and_follows_a_change(cx: &mut TestAppContext) {
+    use junto_client_core::keybinds::{KeyAction, Keybinds};
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let mut bindings = Keybinds::default();
+    cx.update(|cx| super::set_bound_keys(&bindings, cx));
+    let (_host, cx) = cx.add_window_view(|_, cx| KeysHost {
+        focus: cx.focus_handle(),
+    });
+    settle(cx);
+    let shown = cx.update(|_, cx| super::shown_keys(KeyAction::MarkChannelRead, cx));
+    let default = KeyAction::MarkChannelRead
+        .default_keys(cfg!(target_os = "macos"))
+        .unwrap();
+    assert_eq!(
+        shown.as_deref(),
+        Some(crate::text::key_combo(&default).as_str())
+    );
+    assert!(cx.debug_bounds("mark-keys").is_some());
+
+    let changed: junto_client_core::global_keys::KeyCombo = "control+alt+r".parse().unwrap();
+    bindings
+        .set(KeyAction::MarkChannelRead, Some(changed.clone()))
+        .unwrap();
+    cx.update(|window, cx| {
+        super::set_bound_keys(&bindings, cx);
+        window.refresh();
+    });
+    settle(cx);
+    let shown = cx.update(|_, cx| super::shown_keys(KeyAction::MarkChannelRead, cx));
+    assert_eq!(
+        shown.as_deref(),
+        Some(crate::text::key_combo(&changed).as_str())
+    );
+
+    bindings.set(KeyAction::MarkChannelRead, None).unwrap();
+    cx.update(|window, cx| {
+        super::set_bound_keys(&bindings, cx);
+        window.refresh();
+    });
+    settle(cx);
+    assert!(cx.debug_bounds("mark-keys").is_none());
+}
+
+struct RowHost {
+    pressed: usize,
+    opened: usize,
+}
+
+impl Render for RowHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let open = cx.listener(|this, _: &(), _, _| this.opened += 1);
+        div().size(px(400.0)).child(
+            div()
+                .id("row")
+                .debug_selector(|| "row".to_owned())
+                .group(crate::ui::MENU_ROW)
+                .flex()
+                .w(px(300.0))
+                .h(px(30.0))
+                .on_click(cx.listener(|this, _, _, _| this.pressed += 1))
+                .child(div().flex_1())
+                .child(
+                    crate::ui::MenuButton::new("more")
+                        .selector("more")
+                        .on_open(move |window, cx| open(&(), window, cx)),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn the_press_of_the_menu_button_does_not_reach_its_row(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        crate::theme::install(crate::theme::Theme::stone(), cx);
+    });
+    let (host, cx) = cx.add_window_view(|_, _| RowHost {
+        pressed: 0,
+        opened: 0,
+    });
+    settle(cx);
+    let button = cx.debug_bounds("more").unwrap().center();
+    // Over the row the button is drawn, and its press opens the menu alone.
+    cx.simulate_mouse_move(button, None::<MouseButton>, Modifiers::none());
+    settle(cx);
+    cx.simulate_mouse_down(button, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(button, MouseButton::Left, Modifiers::none());
+    settle(cx);
+    assert_eq!(
+        host.read_with(cx, |host, _| (host.pressed, host.opened)),
+        (0, 1)
+    );
+    // A press beside it is the row's.
+    let row = cx.debug_bounds("row").unwrap();
+    let beside = gpui::point(row.left() + px(10.0), row.center().y);
+    cx.simulate_mouse_move(beside, None::<MouseButton>, Modifiers::none());
+    settle(cx);
+    cx.simulate_mouse_down(beside, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(beside, MouseButton::Left, Modifiers::none());
+    settle(cx);
+    assert_eq!(
+        host.read_with(cx, |host, _| (host.pressed, host.opened)),
+        (1, 1)
+    );
 }

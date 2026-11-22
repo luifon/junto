@@ -670,6 +670,7 @@ impl Shell {
             .collect();
         let another = MenuItem::new("share-another", text::SHARE_ANOTHER)
             .icon(Icon::Screen)
+            .shortcut(junto_client_core::keybinds::KeyAction::ShareScreen)
             .disabled(full)
             .selector("share-another")
             .on_click(cx.listener(|this, _, window, cx| {

@@ -7,7 +7,6 @@ use gpui::{
     Role, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
     prelude::FluentBuilder, px,
 };
-use junto_client_core::protocol::WorkspacePermission;
 use std::rc::Rc;
 
 use junto_client_core::protocol::ids::{AccountId, ServerId};
@@ -635,27 +634,26 @@ impl Shell {
                     .and_then(|lists| lists.feed.as_ref())
                     .map(|feed| (feed.server_id, feed.place)),
                 |header, (server_id, place)| {
+                    // The files are read from the history (ADR 0790).
                     let refused = channel.is_some_and(|channel| !channel.allowed.read_history);
-                    header.child(
-                        Button::new("place-files")
-                            .icon(Icon::FolderOpen)
-                            .tooltip("Files")
-                            .accessible_label("Files")
-                            .selector("place-files")
-                            .disabled(refused)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show_place_files(server_id, place, window, cx)
-                            })),
-                    )
+                    header.when(!refused, |header| {
+                        header.child(
+                            Button::new("place-files")
+                                .icon(Icon::FolderOpen)
+                                .tooltip(text::FILES)
+                                .selector("place-files")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_place_files(server_id, place, window, cx)
+                                })),
+                        )
+                    })
                 },
             )
             .when(call.is_none() && unread, |header| {
                 header.child(
                     Button::new("mark-as-read")
                         .icon(Icon::CheckDouble)
-                        .when(!compact, |button| button.label(text::MARK_AS_READ))
-                        .accessible_label(text::MARK_AS_READ)
-                        .tooltip(text::MARK_AS_READ_HELP)
+                        .tooltip(text::MARK_AS_READ)
                         .selector("mark-as-read")
                         .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
                 )
@@ -666,36 +664,30 @@ impl Shell {
                     .filter(|_| call.is_none()),
                 |header, (server_id, channel_id)| {
                     // The pinned messages are read from the history (ADR 0790).
-                    let refused = channel
-                        .filter(|channel| !channel.allowed.read_history)
-                        .map(|_| text::not_permitted(WorkspacePermission::ReadMessageHistory));
-                    header.child(
-                        Button::new("pins")
-                            .icon(Icon::Pin)
-                            .when(!compact, |button| button.label(text::PINS))
-                            .tooltip(match refused {
-                                Some(reason) => reason,
-                                None if pins_open => text::CLOSE_PINS,
-                                None => text::SHOW_PINS,
-                            })
-                            .accessible_label(text::PINS)
-                            .disabled(refused.is_some())
-                            .selector(if refused.is_some() {
-                                "pins-button-refused"
-                            } else {
-                                "pins-button"
-                            })
-                            .when(pins_open, |button| {
-                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if pins_open {
-                                    this.state.update(cx, |state, cx| state.close_pins(cx));
+                    let refused = channel.is_some_and(|channel| !channel.allowed.read_history);
+                    header.when(!refused, |header| {
+                        header.child(
+                            Button::new("pins")
+                                .icon(Icon::Pin)
+                                .tooltip(if pins_open {
+                                    text::CLOSE_PINS
                                 } else {
-                                    this.open_pins(server_id, channel_id, cx);
-                                }
-                            })),
-                    )
+                                    text::SHOW_PINS
+                                })
+                                .accessible_label(text::PINS)
+                                .selector("pins-button")
+                                .when(pins_open, |button| {
+                                    button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if pins_open {
+                                        this.state.update(cx, |state, cx| state.close_pins(cx));
+                                    } else {
+                                        this.open_pins(server_id, channel_id, cx);
+                                    }
+                                })),
+                        )
+                    })
                 },
             )
             .when(
@@ -729,7 +721,6 @@ impl Shell {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
-                        .when(!compact, |button| button.label(text::MEMBERS))
                         .tooltip(if members_open {
                             text::CLOSE_MEMBERS
                         } else {
@@ -845,31 +836,16 @@ impl Shell {
                 .children(languages)
                 .into_any_element()
         };
-        let why = |sentence: &'static str| {
-            div()
-                .id("no-record-permission")
-                .debug_selector(|| "no-record-permission".to_owned())
-                .min_w_0()
-                .truncate()
-                .typeface(theme.types.small, theme)
-                .text_size(u(13.0))
-                .ink(if self.detached {
-                    colors.bone_2
-                } else {
-                    colors.ink_2
-                })
-                .child(sentence)
-                .into_any_element()
-        };
+        // The record control is the same for every person in the call: disabled without
+        // "record calls", without a sentence about the permission (ADR 0790).
         let forbidden = || {
             vec![
                 labelled(Button::new("start-recording"), text::RECORD)
                     .icon(Icon::Record)
-                    .tooltip(text::NO_RECORD_PERMISSION)
-                    .disabled(true)
+                    .tooltip(text::START_RECORDING)
+                    .offer(&crate::ui::Offer::same_for_everyone(false))
                     .selector("start-recording")
                     .into_any_element(),
-                why(text::NO_RECORD_PERMISSION),
             ]
         };
         match &control.state {
@@ -952,40 +928,63 @@ impl Shell {
                     )
                     .when(open, |details| {
                         let line = format!("{strong}{rest}");
+                        let copy = Self::value_copy_button(
+                            "copy-recording-details",
+                            text::COPY_DETAILS,
+                            line.clone(),
+                            cx,
+                        );
                         details.child(
+                            // The details stay inside the window at its least width
+                            // (ADR 0731).
                             div().absolute().left_0().top(u(32.0)).child(deferred(
-                                div()
-                                    .id("recording-details-text")
-                                    .role(Role::Status)
-                                    .aria_label(line.clone())
-                                    .debug_selector(|| "recording-details-text".to_owned())
-                                    .occlude()
-                                    .w(u(340.0))
-                                    .pt(u(8.0))
-                                    .px(u(10.0))
-                                    .pb(u(9.0))
-                                    .rounded(u(theme.metrics.radius))
-                                    .border_1()
-                                    .border_color(Hsla::from(colors.rule))
-                                    .bg(Hsla::from(colors.travertine_hi))
-                                    .shadow(float_shadow(colors.shadow, 6.0, 16.0))
-                                    .typeface(theme.types.small, theme)
-                                    .line_height(u(17.0))
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .ink(colors.ink_2)
-                                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                        this.recording_details_open = false;
-                                        this.recording_details_closed_by_press = true;
-                                        cx.notify();
-                                    }))
-                                    .child(StyledText::new(line).with_highlights([(
-                                        0..strong.len(),
-                                        gpui::HighlightStyle {
-                                            font_weight: Some(gpui::FontWeight::BOLD),
-                                            color: Some(Hsla::from(colors.ink)),
-                                            ..gpui::HighlightStyle::default()
-                                        },
-                                    )])),
+                                gpui::anchored().snap_to_window_with_margin(px(8.0)).child(
+                                    div()
+                                        .id("recording-details-text")
+                                        .role(Role::Status)
+                                        .aria_label(line.clone())
+                                        .debug_selector(|| "recording-details-text".to_owned())
+                                        .occlude()
+                                        .w(u(340.0))
+                                        .pt(u(8.0))
+                                        .px(u(10.0))
+                                        .pb(u(9.0))
+                                        .rounded(u(theme.metrics.radius))
+                                        .border_1()
+                                        .border_color(Hsla::from(colors.rule))
+                                        .bg(Hsla::from(colors.travertine_hi))
+                                        .shadow(float_shadow(colors.shadow, 6.0, 16.0))
+                                        .typeface(theme.types.small, theme)
+                                        .line_height(u(17.0))
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .ink(colors.ink_2)
+                                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                            this.recording_details_open = false;
+                                            this.recording_details_closed_by_press = true;
+                                            cx.notify();
+                                        }))
+                                        .flex()
+                                        .items_start()
+                                        .gap(u(6.0))
+                                        .child(div().flex_1().min_w_0().child(
+                                            StyledText::new(line).with_highlights([(
+                                                0..strong.len(),
+                                                gpui::HighlightStyle {
+                                                    font_weight: Some(gpui::FontWeight::BOLD),
+                                                    color: Some(Hsla::from(colors.ink)),
+                                                    ..gpui::HighlightStyle::default()
+                                                },
+                                            )]),
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .debug_selector(|| {
+                                                    "copy-recording-details".to_owned()
+                                                })
+                                                .child(copy),
+                                        ),
+                                ),
                             )),
                         )
                     })
@@ -1447,7 +1446,7 @@ impl Shell {
                 )
                 .icon(Icon::Clock)
                 .selector("waiting-for-approval")
-                .action(check(text::CHECK_AGAIN, cx))
+                .action(check(text::TRY_AGAIN, cx))
                 .action(
                     Button::new("cancel-request")
                         .label(text::CANCEL_REQUEST)
@@ -1486,7 +1485,7 @@ impl Shell {
             )
             .icon(Icon::Clock)
             .selector("waiting-for-link")
-            .action(check(text::CHECK_AGAIN, cx))
+            .action(check(text::TRY_AGAIN, cx))
             .action(forget(cx)),
             ServerStatus::NoAccount(notice) => {
                 let (title, sentence) = text::no_account(*notice);
@@ -1506,7 +1505,7 @@ impl Shell {
             ServerStatus::Banned => StatePanel::new(text::BANNED_TITLE, text::BANNED)
                 .icon(Icon::Warning)
                 .selector("banned")
-                .action(check(text::CHECK_AGAIN, cx))
+                .action(check(text::TRY_AGAIN, cx))
                 .action(forget(cx))
                 .action(remove(cx)),
             ServerStatus::Inactive => StatePanel::new(text::INACTIVE_TITLE, text::INACTIVE)
@@ -1531,14 +1530,14 @@ impl Shell {
                 StatePanel::new(title, detail)
                     .icon(Icon::Warning)
                     .selector("incompatible")
-                    .action(check(text::CHECK_AGAIN, cx))
+                    .action(check(text::TRY_AGAIN, cx))
                     .action(remove(cx))
             }
             ServerStatus::OtherServer => {
                 StatePanel::new(text::OTHER_SERVER_TITLE, text::OTHER_SERVER)
                     .icon(Icon::Warning)
                     .selector("other-server")
-                    .action(check(text::CHECK_AGAIN, cx))
+                    .action(check(text::TRY_AGAIN, cx))
                     .action(remove(cx))
             }
         };
@@ -1841,6 +1840,12 @@ impl Shell {
                     super::account_menus::AccountSource::Members(workspace),
                 )
             });
+        let focus = crate::ui::row_focus(
+            SharedString::from(format!("member-actions:{owner:?}:{account_id}")),
+            window,
+            cx,
+        );
+        let focused = focus.is_focused(window);
         let (row, mut actions) = crate::ui::collect_actions(|| {
             if let Some(open) = &context {
                 self.register_identity_actions(open, cx);
@@ -1855,8 +1860,8 @@ impl Shell {
                         )))
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::Chat)
-                        .tooltip(text::message_person(&member.name))
-                        .accessible_label(text::message_person(&member.name))
+                        .tooltip(text::MESSAGE_PERSON)
+                        .accessible_label(text::MESSAGE_PERSON)
                         .disabled(asked == Some(account_id))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let Some(server_id) = server_id else {
@@ -1961,12 +1966,12 @@ impl Shell {
         }
         let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let row = row
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring));
-        crate::ui::bind_action_menu(
+        crate::ui::bind_row_action_menu(
             row,
             SharedString::from(format!("member-actions:{owner:?}:{account_id}")),
+            crate::ui::RowMenu::end(focused),
             actions,
             window,
             cx,
@@ -2015,7 +2020,7 @@ fn stop_action(stopping: bool) -> (&'static str, &'static str) {
     if stopping {
         (text::STOPPING, text::RECORDING_STOPS)
     } else {
-        (text::STOP, text::STOP_RECORDING)
+        (text::STOP_RECORDING, text::STOP_RECORDING)
     }
 }
 
@@ -2279,7 +2284,10 @@ mod tests {
 
     #[test]
     fn the_stop_action_of_a_stopping_recording_states_that_it_stops() {
-        assert_eq!(stop_action(false), (text::STOP, text::STOP_RECORDING));
+        assert_eq!(
+            stop_action(false),
+            (text::STOP_RECORDING, text::STOP_RECORDING)
+        );
         assert_eq!(stop_action(true), (text::STOPPING, text::RECORDING_STOPS));
     }
 }

@@ -223,8 +223,9 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
             WorkspacePermission::CreateThreads,
         ],
     );
-    window.until("the attach control is not available", |window| {
-        window.shows("attach-file-refused") && !window.shows("attach-file")
+    // Without the permission the control is absent (ADR 0790).
+    window.until("the attach control is absent", |window| {
+        !window.shows("attach-file") && window.shows("composer")
     });
 
     // A dropped file and a pasted picture are refused with the same reason.
@@ -245,11 +246,10 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
     assert_eq!(window.problem(Pane::Main).as_deref(), Some(NO_ATTACH));
     assert_eq!(window.draft_len(), 0);
 
-    // Reacting is not available; the own reaction can still be removed.
+    // Reacting is absent; the own reaction can still be removed.
     window.hover_message(reacted);
-    assert!(window.shows_named(format!("react-refused:{reacted}")));
     assert!(!window.shows_named(format!("react:{reacted}")));
-    assert!(window.shows_named(format!("add-reaction-refused:{reacted}")));
+    assert!(!window.shows_named(format!("add-reaction:{reacted}")));
     window.click_named(format!("reaction:{reacted}:1"));
     window.settle();
     assert!(!window.row(reacted).message.reactions[1].own);
@@ -260,7 +260,6 @@ fn attach_react_and_create_threads_are_refused_with_their_reason(cx: &mut TestAp
 
     // A thread is not created; an existing thread opens.
     window.hover_message(plain);
-    assert!(window.shows_named(format!("thread-refused:{plain}")));
     assert!(!window.shows_named(format!("thread:{plain}")));
     window.click_named(format!("thread-chip:{threaded}"));
     window.until("the existing thread takes a reply", |window| {

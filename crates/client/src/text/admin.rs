@@ -25,7 +25,6 @@ pub const TITLE: &str = "Administration";
 pub const CHANNEL_SETTINGS: &str = "Channel settings";
 pub const PAGES: &str = "Pages";
 pub const OPEN_ADMINISTRATION: &str = "Administration";
-pub const OPEN_ADMINISTRATION_HELP: &str = "Workspaces, channels, members and exports";
 pub const NAME_FIELD: &str = "Name";
 pub const READING: &str = "Reading…";
 pub const CREATE: &str = "Create";
@@ -74,7 +73,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::ServerRoles => "Server roles",
         AdminPage::Channels => "Channels",
         AdminPage::Roles => "Roles",
-        AdminPage::Archive => "Archive and retention",
+        AdminPage::Archive => "Archive",
         AdminPage::Members => "Members",
         AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
@@ -143,7 +142,7 @@ pub const fn channel_page_name(page: ChannelPage) -> &'static str {
     match page {
         ChannelPage::Overview => "Overview",
         ChannelPage::Permissions => "Permissions",
-        ChannelPage::Archive => "Archive and deletion",
+        ChannelPage::Archive => "Archive",
     }
 }
 
@@ -224,9 +223,6 @@ pub const DEFAULT_WORKSPACE_HELP: &str = "The default workspace is the one that 
      cannot be deleted.";
 pub const SHOWN_WORKSPACE: &str = "Shown in the window";
 pub const NOT_A_MEMBER: &str = "You are not a member";
-pub const CREATE_WORKSPACE_NEEDS: &str = "You do not have the “create workspace” permission.";
-pub const MANAGE_WORKSPACE_NEEDS: &str =
-    "Only an administrator can rename or delete a workspace, or set its logo.";
 pub const WORKSPACE_LOGO: &str = "Logo";
 pub const REMOVE_LOGO: &str = "Remove logo";
 pub const ENTER_CODE: &str = "Enter an invite code";
@@ -336,7 +332,7 @@ pub const PRIVATE_CHANNEL_HELP: &str =
     "Only the roles that the Permissions page allows “view channel” can see the channel.";
 pub const PRIVATE_UNKNOWN: &str = "The permissions of the channel are not read yet.";
 pub const CALL_CONTROLS_HELP: &str =
-    "“Lock room” and “Meeting mode” are controls of a running call, in the header of the call.";
+    "“Lock call” and “Meeting mode” are controls of a running call, in the header of the call.";
 pub const ARCHIVED_NO_CHANGE: &str =
     "The channel is archived. Its name, its category and its rules cannot be changed.";
 
@@ -352,11 +348,8 @@ pub const EXPORT: &str = "Export";
 pub const EXPORT_HELP: &str = "The server writes one file with the messages, files, recordings and transcripts that \
      your account can read. The file is under “Exports” for 7 days.";
 pub const EXPORT_CONVERSATION: &str = "Export this conversation";
-pub const EXPORT_NEEDS: &str = "You do not have the “export channel” permission.";
 pub const EXPORT_ASKED: &str = "The export was asked for. Its state is on the page “Exports”.";
 pub const SHOW_EXPORTS: &str = "Show exports";
-pub const OWNER_DELETES: &str =
-    "The channel has permanent messages. Only the server owner can delete it.";
 pub const DELETE_CHANNEL: &str = "Delete channel";
 pub const DELETE_CHANNEL_HELP: &str = "The channel is removed with its messages, files and recordings. Export it first to keep \
      a copy.";

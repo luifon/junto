@@ -387,9 +387,7 @@ impl Shell {
                         Button::new("detached-microphone")
                             .kind(ButtonKind::SquareHeld)
                             .icon(crate::assets::Icon::MicrophoneHeld)
-                            .tooltip(text::not_permitted(
-                                junto_client_core::protocol::WorkspacePermission::Speak,
-                            ))
+                            .tooltip(text::MICROPHONE_CLOSED_IN_CALL)
                             .disabled(true)
                     }
                 }

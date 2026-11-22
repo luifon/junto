@@ -123,12 +123,8 @@ fn servers_are_grouped_by_dragging_and_by_their_menus_and_a_second_start_shows_t
     // The menu of the group from the secondary press: a name and a colour.
     window.right_click_named("group-0".to_owned());
     assert!(window.shows("group-menu"));
-    // A second line longer than the menu is wide wraps inside the menu.
-    let menu = window.cx.debug_bounds("group-menu").unwrap();
-    let long = window.cx.debug_bounds("dissolve-group-detail").unwrap();
-    let short = window.cx.debug_bounds("group-move-down-detail").unwrap();
-    assert!(long.right() <= menu.right(), "{long:?} {menu:?}");
-    assert!(long.size.height > short.size.height, "{long:?} {short:?}");
+    // Items whose label says enough have no second line (ADR 0775).
+    assert!(!window.shows("dissolve-group-detail") && !window.shows("rename-group-detail"));
     window.click("rename-group");
     assert!(window.shows("rename-group-dialog"));
     window.type_into("group-name", "Work");
@@ -457,7 +453,8 @@ fn the_collapsed_server_book_orders_collapses_and_marks_the_workspaces_of_a_serv
     let row = window.workspace_row(&last);
     window.right_click_named(row);
     assert!(window.shows("workspace-menu"));
-    assert!(window.shows("mark-workspace-read"));
+    // Nothing is unread there, so the menu has no "Mark workspace as read" (ADR 0775).
+    assert!(!window.shows("mark-workspace-read"));
     window.click("workspace-move-down");
     window.until("the workspace moved one place down", |window| {
         window.workspaces_of_first()[1] == last

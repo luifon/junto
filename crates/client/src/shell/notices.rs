@@ -590,20 +590,19 @@ impl Shell {
             let items = Rc::clone(&self.notice_list.items);
             // The list lays out each entry as a root: the block gives it the width of the
             // list, so that its text wraps.
-            let render =
-                cx.processor(move |this: &mut Self, index: usize, _window, cx| {
-                    match items.get(index) {
-                        Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
-                        Some(NoticeItem::Notice(row)) => {
-                            let below_a_notice = index
-                                .checked_sub(1)
-                                .and_then(|above| items.get(above))
-                                .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
-                            this.render_notice_row(server_id, below_a_notice, row, cx)
-                        }
-                        None => div().into_any_element(),
-                    }
-                });
+            let render = cx.processor(move |this: &mut Self, index: usize, window, cx| match items
+                .get(index)
+            {
+                Some(NoticeItem::Older) => this.render_older_notices(server_id, cx),
+                Some(NoticeItem::Notice(row)) => {
+                    let below_a_notice = index
+                        .checked_sub(1)
+                        .and_then(|above| items.get(above))
+                        .is_some_and(|above| matches!(above, NoticeItem::Notice(_)));
+                    this.render_notice_row(server_id, below_a_notice, row, window, cx)
+                }
+                None => div().into_any_element(),
+            });
             div()
                 .relative()
                 .flex()
@@ -655,6 +654,7 @@ impl Shell {
         server_id: ServerId,
         below_a_notice: bool,
         row: &NoticeRow,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -708,6 +708,11 @@ impl Shell {
         let menu = matches!(self.layer, Layer::NoticeMenu(server, notice)
             if server == server_id && notice == notice_id)
         .then(|| self.render_notice_menu(server_id, row, cx));
+        let focus = crate::ui::row_focus(("notice", notice_id.as_u128() as u64), window, cx);
+        let focused = focus.is_focused(window) || menu.is_some();
+        let open_menu = Self::handler(cx, move |this, window, cx| {
+            this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
+        });
         div()
             .relative()
             .w_full()
@@ -717,8 +722,9 @@ impl Shell {
                     .role(Role::ListItem)
                     .aria_label(label)
                     .debug_selector(move || format!("notice:{notice_id}"))
-                    .focusable()
-                    .tab_stop(true)
+                    .relative()
+                    .group(crate::ui::MENU_ROW)
+                    .track_focus(&focus)
                     .focus_visible(move |style| style.shadow(ring))
                     .on_context_menu(Self::handler(cx, move |this, window, cx| {
                         this.open_layer(Layer::NoticeMenu(server_id, notice_id), window, cx);
@@ -736,7 +742,16 @@ impl Shell {
                                 this.go_to_notice(&held, cx);
                             }))
                     })
-                    .child(shown.element(&theme, cx)),
+                    .child(shown.element(&theme, cx))
+                    .child(
+                        div().absolute().top(u(6.0)).right(u(6.0)).child(
+                            crate::ui::MenuButton::new("notice-more")
+                                .selector(format!("menu-button:notice:{notice_id}"))
+                                .shown(focused)
+                                .ground(colors.row_hover)
+                                .on_open(open_menu),
+                        ),
+                    ),
             )
             .children(menu)
             .into_any_element()
@@ -906,23 +921,31 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let channel_id = channel.id;
-        let mut items = vec![
-            MenuItem::new("channel-files", "Files")
-                .icon(Icon::FolderOpen)
-                .disabled(!channel.allowed.read_history)
-                .selector("channel-files")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.show_place_files(
-                        server_id,
-                        junto_client_core::model::PlaceId::Channel(channel_id),
-                        window,
-                        cx,
-                    );
-                }))
-                .into_any_element(),
+        let mut items = Vec::new();
+        // The files are read from the history (ADR 0790).
+        if channel.allowed.read_history {
+            items.push(
+                MenuItem::new("channel-files", text::FILES)
+                    .icon(Icon::FolderOpen)
+                    .selector("channel-files")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.show_place_files(
+                            server_id,
+                            junto_client_core::model::PlaceId::Channel(channel_id),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
+        items.push(
             MenuItem::new("channel-mark-read", text::MARK_AS_READ)
                 .icon(Icon::CheckDouble)
+                .when(channel.selected, |item| {
+                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                })
                 .selector("channel-mark-read")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_layer(window, cx);
@@ -934,7 +957,7 @@ impl Shell {
                     });
                 }))
                 .into_any_element(),
-        ];
+        );
         if let Some(status) = self.voice_status_item(server_id, channel, cx) {
             items.push(status);
         }
@@ -1027,7 +1050,7 @@ impl Shell {
         let account_id = direct.account_id;
         let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
         let mut items = vec![
-            MenuItem::new("direct-files", "Files")
+            MenuItem::new("direct-files", text::FILES)
                 .icon(Icon::FolderOpen)
                 .selector("direct-files")
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1042,6 +1065,9 @@ impl Shell {
                 .into_any_element(),
             MenuItem::new("direct-mark-read", text::MARK_AS_READ)
                 .icon(Icon::CheckDouble)
+                .when(direct.selected, |item| {
+                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                })
                 .selector("direct-mark-read")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_layer(window, cx);

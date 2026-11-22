@@ -723,18 +723,8 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
     // larger; the person moves the pointer to the notice before the press.
     let told = scene.window.cx.debug_bounds("call-told").unwrap();
     scene.window.move_pointer(told.center());
-    let copy = scene.window.cx.debug_bounds("copy-text-value");
-    let dismiss = scene.window.cx.debug_bounds("dismiss-call-told");
     scene.window.click("dismiss-call-told");
-    assert!(
-        !scene.window.shows("call-told"),
-        "copy {copy:?}; dismiss {dismiss:?}; clipboard {:?}",
-        scene
-            .window
-            .cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-    );
+    assert!(!scene.window.shows("call-told"));
 
     // The person presents: Ada stops sharing, the person shares and turns meeting mode
     // on. The server accepts it when its check has seen the share; a refusal before
@@ -3010,8 +3000,8 @@ fn the_own_tile_menu_controls_media_and_hand_and_respects_camera_permissions(
         })
     });
     show(&mut scene.window);
-    scene.window.click("call-menu-camera");
-    assert!(scene.window.shows("account-menu"));
+    // Without "video" the menu has no camera item (ADR 0790).
+    assert!(scene.window.shows("account-menu") && !scene.window.shows("call-menu-camera"));
     assert_eq!(
         scene
             .window

@@ -840,36 +840,6 @@ impl Window {
     }
 
     /// True when an element with this name is drawn now.
-    /// The nodes of the accessibility tree with this label, as JSON (`Window::debug_a11y_tree_json`
-    /// of gpui), after a frame of a window whose accessibility a screen reader activated.
-    pub fn a11y_nodes(&mut self, label: &str) -> Vec<serde_json::Value> {
-        let tree = self.a11y_tree();
-        tree["nodes"]
-            .as_object()
-            .into_iter()
-            .flat_map(|nodes| nodes.values())
-            .filter(|node| node["aria"]["label"] == label)
-            .cloned()
-            .collect()
-    }
-
-    /// The accessibility node that has the focus of the window.
-    pub fn a11y_focused(&mut self) -> serde_json::Value {
-        let tree = self.a11y_tree();
-        let focus = tree["gpui_focus"].as_str().unwrap_or_default().to_owned();
-        tree["nodes"][focus].clone()
-    }
-
-    fn a11y_tree(&mut self) -> serde_json::Value {
-        let handle = self.cx.update(|window, _| window.window_handle());
-        self.cx.cx.test_window(handle).simulate_a11y_activation();
-        self.cx.update(|window, _| window.refresh());
-        self.settle();
-        let json = self.cx.update(|window, _| window.debug_a11y_tree_json());
-        json.and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-            .unwrap_or_default()
-    }
-
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.settle();
         self.cx.debug_bounds(selector).is_some()
@@ -968,6 +938,64 @@ impl Window {
         let scroll = self.in_shell(|shell, _, _| shell.settings_scroll_handle());
         self.reveal(&scroll, selector);
         self.click(selector);
+    }
+
+    /// True when the shown call offers "Record": its control is drawn for every person, and
+    /// is disabled without "record calls" (ADR 0790).
+    pub fn may_record(&mut self) -> bool {
+        self.view()
+            .lists()
+            .and_then(|lists| lists.call.as_ref())
+            .is_some_and(|call| {
+                matches!(
+                    &call.place,
+                    junto_client::state::view::PanelPlace::Channel(channel)
+                        if channel.recording.may_record
+                )
+            })
+    }
+
+    /// Presses a control placed on a row or on another clickable element, as a person does
+    /// with a small move of the pointer between the press and the release, and checks that
+    /// the press did only the control's own action (ADR 0731): the shown server, workspace
+    /// and place stay, no drag starts, and no text is selected.
+    #[track_caller]
+    pub fn press_alone(&mut self, control: &'static str) {
+        fn shown(view: &ShellView) -> String {
+            format!(
+                "{:?} {:?} {:?}",
+                view.selected.as_ref().map(|server| server.id),
+                view.workspace().map(|workspace| workspace.id),
+                view.lists()
+                    .and_then(|lists| lists.feed.as_ref())
+                    .map(|feed| feed.place),
+            )
+        }
+        let before = shown(&self.view());
+        let bounds = self
+            .cx
+            .debug_bounds(control)
+            .unwrap_or_else(|| panic!("{control} is not drawn"));
+        let start = bounds.center();
+        let moved = start + gpui::point(gpui::px(4.0), gpui::px(0.0));
+        self.press_down_at(start, gpui::MouseButton::Left);
+        self.move_pointer_pressed(moved, gpui::MouseButton::Left);
+        let dragging = self.cx.update(|_, cx| cx.has_active_drag());
+        self.release_at(moved, gpui::MouseButton::Left);
+        self.settle();
+        assert!(!dragging, "a press on {control} started a drag of its row");
+        assert_eq!(
+            shown(&self.view()),
+            before,
+            "a press on {control} changed the shown place"
+        );
+        let selected = self
+            .shell
+            .read_with(&self.cx, |shell, _| shell.selected_readonly_text());
+        assert!(
+            selected.is_empty(),
+            "a press on {control} selected text: {selected:?}"
+        );
     }
 
     /// Clicks the element with this name when it is drawn now. A test uses it for an

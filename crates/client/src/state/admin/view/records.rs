@@ -2284,15 +2284,11 @@ mod tests {
                 ]
             );
         }
-        // The page says that the list holds the own tokens, and why no token is created.
+        // The page says that the list holds the own tokens.
         assert_eq!(txt::tokens_help(false), txt::OWN_TOKENS_HELP);
         assert!(txt::OWN_TOKENS_HELP.contains("that your account created"));
         assert_eq!(txt::tokens_label(false), "Your access tokens");
         assert_eq!(txt::no_tokens(false), "Your account has no access token.");
-        assert_eq!(
-            txt::TOKEN_NEEDS,
-            "Only an administrator creates an access token."
-        );
     }
 
     #[test]

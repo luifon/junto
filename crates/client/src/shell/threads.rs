@@ -109,12 +109,18 @@ impl Shell {
                 writing: thread.writing,
                 live_only: thread.live_only,
             };
-            vec![
-                self.render_fork_bar(thread, &theme, cx),
-                self.render_follow_bar(thread, &theme, cx),
-                self.render_thread_root(thread, &theme, window, cx),
-                self.render_pane(Pane::Thread, &shown, Vec::new(), window, cx),
-            ]
+            // Without "manage channel" the fork bar is absent; the channels that the
+            // thread was forked into stay listed (ADR 0790).
+            let fork_bar = (thread.may_fork || !thread.forks.is_empty())
+                .then(|| self.render_fork_bar(thread, &theme, cx));
+            fork_bar
+                .into_iter()
+                .chain([
+                    self.render_follow_bar(thread, &theme, cx),
+                    self.render_thread_root(thread, &theme, window, cx),
+                    self.render_pane(Pane::Thread, &shown, Vec::new(), window, cx),
+                ])
+                .collect()
         };
         div()
             .id("side-panel")
@@ -160,12 +166,7 @@ impl Shell {
                     ChannelKind::Voice => Icon::Speaker,
                 })
                 .label(kind_name(kind))
-                .tooltip(if thread.may_fork {
-                    text::FORK_TITLE
-                } else {
-                    text::FORK_NEEDS_PERMISSION
-                })
-                .disabled(!thread.may_fork)
+                .tooltip(text::FORK_TITLE)
                 .selector(id)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_fork_dialog(root_id, kind, window, cx);
@@ -427,6 +428,8 @@ impl Shell {
         let theme = theme(cx);
         let ring =
             crate::ui::focus_ring_inside(theme.colors.terracotta_deep, theme.metrics.focus_ring);
+        let focus = crate::ui::row_focus(key.clone(), window, cx);
+        let focused = focus.is_focused(window);
         let frame = div()
             .id(key.clone())
             .relative()
@@ -435,11 +438,18 @@ impl Shell {
             .flex_none()
             .role(Role::Group)
             .aria_label(text::ROW_ACTIONS)
-            .focusable()
-            .tab_stop(true)
+            .track_focus(&focus)
             .focus_visible(move |style| style.shadow(ring))
             .child(content);
-        crate::ui::bind_action_menu(frame, key, actions, window, cx).into_any_element()
+        crate::ui::bind_row_action_menu(
+            frame,
+            key,
+            crate::ui::RowMenu::overlay(focused),
+            actions,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     /// The first message of the thread and the count of its replies, above the replies.

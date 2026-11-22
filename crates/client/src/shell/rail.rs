@@ -4,8 +4,8 @@
 
 use gpui::{
     AnyElement, AppContext, ClickEvent, Context, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
-    prelude::FluentBuilder, px,
+    MouseButton, ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window,
+    deferred, div, prelude::FluentBuilder, px,
 };
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
 
@@ -885,7 +885,18 @@ impl Shell {
                         .bg(Hsla::from(colors.ochre)),
                 )
             });
-        let icon = self.bind_server_context(icon, "server-icon", server_id, window, cx);
+        let icon = self
+            .bind_server_context(icon, "server-icon", server_id, window, cx)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| this.open_server_icon_context(server_id, cx)),
+            )
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let keys = &event.keystroke;
+                if keys.key == "menu" || (keys.key == "f10" && keys.modifiers.shift) {
+                    this.open_server_icon_context(server_id, cx);
+                }
+            }));
         let icon = self.drop_target(icon, DropTarget::Server(server_id), theme, cx);
         // The menu of a workspace that the hover menu opened stays at the tile of its server.
         let workspace_menu = match &self.layer {

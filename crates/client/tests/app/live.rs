@@ -1033,7 +1033,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     // The recording: the roles of the person do not allow it, until an administrator
     // gives "record calls" to every member. This server has no recorder, and the refusal
     // of the request is told.
-    assert!(window.shows("no-record-permission"));
+    assert!(window.shows("start-recording") && !window.may_record());
     let roles = world
         .run(admin.handle.api().workspace_roles(workspace_id))
         .unwrap();
@@ -1052,9 +1052,7 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
             },
         ))
         .unwrap();
-    window.until("the person may record", |window| {
-        !window.shows("no-record-permission")
-    });
+    window.until("the person may record", |window| window.may_record());
     // "Record" opens the languages of the speech; a choice sends the request (ADR 0616).
     window.click("start-recording");
     window.click("record-language:auto");

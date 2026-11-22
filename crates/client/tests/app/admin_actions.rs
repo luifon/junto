@@ -258,7 +258,7 @@ fn an_override_can_allow_a_permission_and_be_removed_as_a_whole(cx: &mut TestApp
     reveal_in_page(&mut window, "override-manage_messages-neutral");
     assert_drawn_label(&mut window, "Manage messages: Neutral, chosen");
     reveal_in_page(&mut window, "override-lock_room-neutral");
-    assert_drawn_label(&mut window, "Lock room: Neutral, chosen");
+    assert_drawn_label(&mut window, "Lock call: Neutral, chosen");
     assert!(!window.shows(sel("override-clear", role_of(&row))));
     assert!(
         world

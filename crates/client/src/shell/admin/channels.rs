@@ -1075,10 +1075,6 @@ impl Shell {
                             &theme,
                         ))
                         .child(this.render_afk_settings(&view, &page, cx))
-                        .children(
-                            (!page.may_manage)
-                                .then(|| sentence(text::MANAGE_NO_PERMISSION, &theme)),
-                        )
                         .into_any_element(),
                     Line::Category(index) => {
                         let group = &page.groups[index];

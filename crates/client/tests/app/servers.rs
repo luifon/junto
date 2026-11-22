@@ -834,7 +834,7 @@ fn a_member_reads_the_recordings_of_a_workspace_that_has_none_and_a_read_that_fa
     window.until("the administration is open", |window| {
         window.shows("admin") && window.shows("admin-nav-recordings")
     });
-    // The first read gets no answer: the page states the failure with "Read again".
+    // The first read gets no answer: the page states the failure with "Try again".
     proxy.fail(&path, [Fault::Cut; 8]);
     window.click("admin-nav-recordings");
     window.until("the read failed", |window| {
@@ -872,7 +872,7 @@ fn a_member_reads_the_recordings_of_a_workspace_that_has_none_and_a_read_that_fa
             .all(|seen| seen.path == path && seen.method == "GET")
     );
 
-    // "Read again" reads the list again.
+    // "Try again" reads the list again.
     let reads = proxy.seen(&path).len();
     window.click("recordings-reload");
     window.until("the list was read again", |window| {

@@ -119,8 +119,8 @@ impl Shell {
                 .is_none()
         {
             for (id, label, call) in [
-                ("account-message", text::message_person(&person.name), false),
-                ("account-call", text::DIRECT_CALL.to_owned(), true),
+                ("account-message", text::MESSAGE_PERSON, false),
+                ("account-call", text::DIRECT_CALL, true),
             ] {
                 let open = open.clone();
                 let account = person.account_id;

@@ -123,12 +123,9 @@ impl Shell {
                                     .line_height(u(16.0))
                                     .ink(colors.ink_2)
                                     .truncate()
-                                    .child(crate::selectable::SelectableText::value(
-                                        paint_text(
-                                            text::book::server_version(&release.version).into(),
-                                            None,
-                                        ),
-                                        release.version.to_string(),
+                                    .child(paint_text(
+                                        text::book::server_version(&release.version).into(),
+                                        None,
                                     )),
                             )
                             .when_some(release.newer, |column, newer| {
@@ -215,7 +212,6 @@ impl Shell {
                     .child(
                         MenuItem::new("keep-connected", text::KEEP_CONNECTED)
                             .icon(Icon::Plug)
-                            .detail(text::KEEP_CONNECTED_HELP)
                             .trailing(if keep { text::ON } else { text::OFF })
                             .selector("keep-connected")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -255,7 +251,9 @@ impl Shell {
                         menu.child(
                             MenuItem::new("administration", text::admin::OPEN_ADMINISTRATION)
                                 .icon(Icon::Gear)
-                                .detail(text::admin::OPEN_ADMINISTRATION_HELP)
+                                .shortcut(
+                                    junto_client_core::keybinds::KeyAction::OpenAdministration,
+                                )
                                 .selector("menu-administration")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.state
@@ -273,7 +271,6 @@ impl Shell {
                         menu.child(
                             MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
                                 .icon(Icon::Account)
-                                .detail(text::account::OPEN_ACCOUNT_HELP)
                                 .selector("menu-account")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.state
@@ -294,7 +291,6 @@ impl Shell {
                             menu.child(
                                 MenuItem::new("leave-workspace", text::account::LEAVE_WORKSPACE)
                                     .icon(Icon::Leave)
-                                    .detail(text::account::LEAVE_WORKSPACE_HELP)
                                     .selector("menu-leave-workspace")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.state.update(cx, |state, cx| {
@@ -311,23 +307,19 @@ impl Shell {
                     .child(
                         MenuItem::new("log-out", text::LOG_OUT)
                             .icon(Icon::Leave)
-                            .detail(if can_log_out {
-                                text::LOG_OUT_HELP
-                            } else {
-                                text::LOG_OUT_UNAVAILABLE
-                            })
-                            .disabled(!can_log_out)
+                            .offer(&crate::ui::Offer::now(
+                                (!can_log_out).then_some(text::LOG_OUT_UNAVAILABLE),
+                            ))
                             .selector("menu-log-out")
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.log_out(server_id, cx));
-                                this.close_layer(window, cx);
+                                this.layer = Layer::ConfirmLogOut(server_id);
+                                this.layer_focus().clone().focus(window, cx);
+                                cx.notify();
                             })),
                     )
                     .child(
                         MenuItem::new("remove-server", text::REMOVE_SERVER)
                             .icon(Icon::Trash)
-                            .detail(text::REMOVE_SERVER_HELP)
                             .selector("menu-remove-server")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.layer = Layer::ConfirmRemove(server_id);
@@ -424,6 +416,30 @@ impl Shell {
             move |this, window, cx| {
                 this.state
                     .update(cx, |state, cx| state.remove_server(server_id, cx));
+                this.close_layer(window, cx);
+            },
+        )
+    }
+
+    /// The question before a logout, with what the logout ends and what stays (ADR 0730).
+    pub(crate) fn render_confirm_log_out(
+        &mut self,
+        server_id: ServerId,
+        view: &ShellView,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.render_question(
+            Question {
+                title: text::LOG_OUT_TITLE,
+                sentence: text::LOG_OUT_CONFIRM,
+                confirm: text::LOG_OUT,
+                selector: "confirm-log-out",
+            },
+            server_name(view, server_id),
+            cx,
+            move |this, window, cx| {
+                this.state
+                    .update(cx, |state, cx| state.log_out(server_id, cx));
                 this.close_layer(window, cx);
             },
         )

@@ -1627,7 +1627,7 @@ fn the_owner_exports_a_channel_saves_the_file_and_removes_the_export(cx: &mut Te
         });
     });
 
-    // The page "Archive and deletion" of the settings of the channel asks for the export.
+    // The page "Archive" of the settings of the channel asks for the export.
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
         matches!(
@@ -1991,7 +1991,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     }
 }
 
-/// What the open page "Archive and deletion" of a channel states.
+/// What the open page "Archive" of a channel states.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ArchivePage {
     /// The messages of the channel are permanent.
@@ -2065,7 +2065,7 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     window.until("the settings are closed", |window| !window.shows("admin"));
 
     // The deletion of a channel with permanent messages is the owner's: the action is
-    // drawn, and a click opens no question.
+    // absent for another person (ADR 0790).
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
         let permanent = ArchivePage {
@@ -2075,10 +2075,8 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
         };
         archive_page_of(window, plans) == Some(permanent)
     });
-    click_in_page(&mut window, "channel-delete");
     window.settle();
-    assert!(!window.shows("channel-delete-confirm"));
-    assert!(window.shows("channel-delete"));
+    assert!(!window.shows("channel-delete"));
 }
 
 /// Tab reaches "Open" and "Settings" of each archived channel for a member who may not
@@ -2128,7 +2126,7 @@ fn tab_reaches_each_archived_channel_of_a_member_who_may_not_restore(cx: &mut Te
 }
 
 /// The settings of a channel that a member opens without "manage channel" show the page
-/// "Archive and deletion", the only one. When the role arrives, the pages of the channel
+/// "Archive", the only one. When the role arrives, the pages of the channel
 /// are offered, and the page that is shown stays (ADR 0761).
 #[gpui::test]
 fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
@@ -2849,6 +2847,14 @@ fn a_token_form_that_a_lost_permission_puts_away_holds_its_row_until_a_release(
     };
     let role = world.run(api.create_server_role(&role)).unwrap();
     world.run(api.assign_server_role(own, role.id)).unwrap();
+    // The role adds "Invite people" to the menu of the server: the menu opens after it, so
+    // that the item does not move "Administration" between the press and the release.
+    window.until("the menu offers the invite of the role", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.may_invite_people)
+    });
     window.open_administration();
     TOKENS.open(&mut window);
     window.until("the account may create a token", |window| {
@@ -3506,7 +3512,7 @@ fn the_audit_log_goes_on_after_the_most_entries_that_the_page_keeps(cx: &mut Tes
     assert_eq!(end.passed + end.loaded, total);
     reveal_in_page(&mut window, "audit-count");
 
-    // "Read again" returns to the newest entries.
+    // "Try again" returns to the newest entries.
     click_in_page(&mut window, "audit-reload");
     let newest = awaited(&mut window, "the newest entries again", |window| {
         server_page!(window, AuditLog)

@@ -325,7 +325,6 @@ impl Shell {
             CameraAction,
             view::{MicrophoneAction, MicrophoneButton},
         };
-        use junto_client_core::protocol::WorkspacePermission;
         let Some(AccountSource::CallOccupant {
             seat, account_id, ..
         }) = &open.source
@@ -364,15 +363,11 @@ impl Shell {
             },
             CallMenuAction::Microphone(controls.microphone_action),
         );
-        microphone.disabled = controls.microphone == MicrophoneButton::NotPermitted;
         microphone.detail = match controls.microphone {
             MicrophoneButton::Held => Some(text::MICROPHONE_HELD.to_owned()),
-            MicrophoneButton::NotPermitted => {
-                Some(text::not_permitted(WorkspacePermission::Speak).to_owned())
-            }
             _ => None,
         };
-        let mut camera = make(
+        let camera = make(
             "call-menu-camera",
             if camera_on {
                 text::TURN_OFF_CAMERA
@@ -381,24 +376,21 @@ impl Shell {
             },
             CallMenuAction::Camera(camera),
         );
-        camera.disabled = call.withheld.camera;
-        camera.detail = call
-            .withheld
-            .camera
-            .then(|| text::not_permitted(WorkspacePermission::Video).to_owned());
-        let mut items = vec![
-            microphone,
-            make(
-                "call-menu-sound",
-                if controls.sound_off {
-                    text::SOUND_OUTPUT_OFF
-                } else {
-                    text::SOUND_OUTPUT_ON
-                },
-                CallMenuAction::Sound(!controls.sound_off),
-            ),
-            camera,
-        ];
+        // An action that the permissions of the channel do not allow is absent (ADR 0790).
+        let speaks = controls.microphone != MicrophoneButton::NotPermitted;
+        let mut items: Vec<_> = speaks.then_some(microphone).into_iter().collect();
+        items.push(make(
+            "call-menu-sound",
+            if controls.sound_off {
+                text::SOUND_OUTPUT_OFF
+            } else {
+                text::SOUND_OUTPUT_ON
+            },
+            CallMenuAction::Sound(!controls.sound_off),
+        ));
+        if !call.withheld.camera {
+            items.push(camera);
+        }
         if camera_on {
             let hidden = self.state.read(cx).voice().hide_own_camera;
             items.push(make(
@@ -613,12 +605,12 @@ impl Shell {
         else {
             return Vec::new();
         };
-        let make = |id, label, action, detail: &str| CallControl {
+        let make = |id, label, action| CallControl {
             id,
             label,
             action: CallMenuAction::Participant(action),
             disabled: false,
-            detail: Some(detail.to_owned()),
+            detail: None,
         };
         let mut items = Vec::new();
         if !menu.destinations.is_empty() {
@@ -626,7 +618,6 @@ impl Shell {
                 "call-menu-move",
                 text::MOVE_TO,
                 ParticipantAction::Move,
-                text::PERMISSION_MOVE,
             ));
         }
         if menu.allow_to_speak {
@@ -634,7 +625,6 @@ impl Shell {
                 "call-menu-allow-speak",
                 text::ALLOW_TO_SPEAK,
                 ParticipantAction::AllowSpeak,
-                &text::allow_help(menu.name.as_deref().unwrap_or(text::UNKNOWN_PERSON)),
             ));
         } else if let Some(blocked) = menu.microphone_blocked {
             items.push(make(
@@ -645,7 +635,6 @@ impl Shell {
                     text::MUTE_FOR_EVERYONE
                 },
                 ParticipantAction::Microphone(!blocked),
-                text::PERMISSION_MUTE,
             ));
         }
         if let Some(blocked) = menu.sound_blocked {
@@ -657,7 +646,6 @@ impl Shell {
                     text::BLOCK_SOUND
                 },
                 ParticipantAction::Sound(!blocked),
-                text::PERMISSION_DEAFEN,
             ));
         }
         if let Some(raised) = menu.hand_raised {
@@ -665,13 +653,9 @@ impl Shell {
                 "call-menu-lower-hand",
                 text::LOWER_HAND_OF_PERSON,
                 ParticipantAction::LowerHand,
-                if raised {
-                    text::LOWER_HAND_HELP
-                } else {
-                    text::NO_RAISED_HAND
-                },
             );
             item.disabled = !raised;
+            item.detail = (!raised).then(|| text::NO_RAISED_HAND.to_owned());
             items.push(item);
         }
         if menu.disconnect {
@@ -679,7 +663,6 @@ impl Shell {
                 "call-menu-disconnect",
                 text::DISCONNECT,
                 ParticipantAction::Disconnect,
-                text::PERMISSION_DISCONNECT,
             ));
         }
         self.call_controls(open, items, cx)

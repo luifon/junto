@@ -5,7 +5,6 @@ use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
     StatefulInteractiveElement, Styled, Window, anchored, deferred, div,
 };
-use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::ServerId;
 
 use super::notices::{Excerpt, place_icon, side_panel};
@@ -180,22 +179,9 @@ impl Shell {
                     cx,
                 )];
                 for (index, (channel_id, name, _)) in panel.channels.iter().enumerate() {
+                    // A channel whose history the person may not read is no filter
+                    // (ADR 0790).
                     if panel.unreadable.contains(channel_id) {
-                        let selector = format!("search-channel-refused:{channel_id}");
-                        items.push(
-                            div()
-                                .flex_none()
-                                .debug_selector(move || selector.clone())
-                                .child(
-                                    MenuItem::new(("filter", index + 1), name.clone())
-                                        .icon(Icon::Lock)
-                                        .disabled(true)
-                                        .detail(text::not_permitted(
-                                            WorkspacePermission::ReadMessageHistory,
-                                        )),
-                                )
-                                .into_any_element(),
-                        );
                         continue;
                     }
                     items.push(item(
@@ -575,6 +561,16 @@ impl Shell {
             .server(server_id)
             .and_then(|server| server.owner());
         let copied = row.text.clone();
+        let id: SharedString = format!(
+            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
+            panel.text,
+            panel.channel.as_ref().map(|(id, _)| id),
+            panel.author.as_ref().map(|(id, _)| id),
+            panel.filters
+        )
+        .into();
+        let focus = crate::ui::row_focus(id.clone(), window, cx);
+        let focused = focus.is_focused(window);
         let (frame, actions) = crate::ui::collect_actions(|| {
             crate::ui::RowAction::new(
                 action.clone(),
@@ -621,8 +617,7 @@ impl Shell {
                 .border_t_1()
                 .border_color(Hsla::from(colors.rule_soft))
                 .cursor_pointer()
-                .focusable()
-                .tab_stop(true)
+                .track_focus(&focus)
                 .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
                 .focus_visible(move |style| style.shadow(ring))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -630,15 +625,15 @@ impl Shell {
                 }))
                 .child(shown.element(theme, cx))
         });
-        let id: SharedString = format!(
-            "search-actions:{owner:?}:{target:?}:{}:{:?}:{:?}:{:?}",
-            panel.text,
-            panel.channel.as_ref().map(|(id, _)| id),
-            panel.author.as_ref().map(|(id, _)| id),
-            panel.filters
+        crate::ui::bind_row_action_menu(
+            frame,
+            id,
+            crate::ui::RowMenu::overlay(focused),
+            actions,
+            window,
+            cx,
         )
-        .into();
-        crate::ui::bind_action_menu(frame, id, actions, window, cx).into_any_element()
+        .into_any_element()
     }
 
     /// Goes to what a result of a search names.

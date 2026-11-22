@@ -32,7 +32,7 @@ fn a_file_row_has_copy_and_download_actions_without_the_message_menu(cx: &mut Te
     );
     assert!(window.shows("copied-confirmation"));
     window.right_click_named("file:0".to_owned());
-    window.click_named("context-action:Copy link".to_owned());
+    window.click_named("context-action:Copy link to file".to_owned());
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(
         matches!(parse(&copied), Some(AppLink::File { id, .. }) if id == message.attachments[0].id)
@@ -84,7 +84,7 @@ fn a_picture_menu_opens_the_viewer_and_its_menu_tracks_the_shown_picture(cx: &mu
         !window.shows("row-context-menu")
     });
     window.right_click_named("viewer-picture".to_owned());
-    window.click_named("context-action:Copy link".to_owned());
+    window.click_named("context-action:Copy link to file".to_owned());
     let copied = window.cx.read_from_clipboard().unwrap().text().unwrap();
     assert!(matches!(parse(&copied), Some(AppLink::File { id, .. }) if id == second));
     window.press("escape");

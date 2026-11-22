@@ -24,4 +24,4 @@ pub const MINIMIZE: &str = "Minimize";
 pub const ZOOM: &str = "Zoom";
 pub const BRING_ALL_TO_FRONT: &str = "Bring All to Front";
 pub const HELP: &str = "Help";
-pub const KEYBOARD_SHORTCUTS: &str = "Keyboard Shortcuts";
+pub const KEYBOARD_SHORTCUTS: &str = "Keyboard shortcuts";

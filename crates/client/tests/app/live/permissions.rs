@@ -65,10 +65,8 @@ fn the_sources_of_a_call_follow_the_rules_of_the_voice_channel(cx: &mut TestAppC
         &[WorkspacePermission::SetCallUserLimit],
         &[WorkspacePermission::Speak, WorkspacePermission::Video],
     );
-    window.until("the camera stops and is not available", |window| {
-        camera(window) == Some(CameraState::Off)
-            && window.shows("call-camera-refused")
-            && !window.shows("call-camera")
+    window.until("the camera stops and its control is absent", |window| {
+        camera(window) == Some(CameraState::Off) && !window.shows("call-camera")
     });
     window.until("the administrator hears nothing", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) < ABSENT_DBFS
@@ -99,8 +97,8 @@ fn the_sources_of_a_call_follow_the_rules_of_the_voice_channel(cx: &mut TestAppC
             WorkspacePermission::ShareScreen,
         ],
     );
-    window.until("the share is not available", |window| {
-        window.shows("call-share-refused") && !window.shows("call-share")
+    window.until("the share control is absent", |window| {
+        !window.shows("call-share")
     });
     window.until("the strip states push-to-talk", |window| {
         window.shows("input-mode-mark")
@@ -153,7 +151,7 @@ fn the_sources_of_a_call_follow_the_rules_of_the_voice_channel(cx: &mut TestAppC
         &[WorkspacePermission::ShareScreen],
     );
     window.until("the share stops", |window| {
-        own_share(window) == OwnShare::Off && window.shows("call-share-refused")
+        own_share(window) == OwnShare::Off && !window.shows("call-share")
     });
     window.click("leave-call");
     window.until("the call has ended", |window| window.view().call.is_none());

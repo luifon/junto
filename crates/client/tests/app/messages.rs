@@ -2446,7 +2446,7 @@ fn pending_message_and_file_menus_copy_retry_and_expire_with_the_outbox(cx: &mut
         "Keep these notes"
     );
     window.right_click_named(format!("waiting-file:{id}:0"));
-    window.click("context-action:Copy name");
+    window.click("context-action:Copy file name");
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "notes.txt"
@@ -2503,7 +2503,7 @@ fn a_file_waiting_for_upload_has_a_copy_and_discard_menu(cx: &mut TestAppContext
     let id = pending_id(&mut window);
     window.right_click_named(format!("waiting-file:{id}:0"));
     assert!(!window.shows("context-action:Send again"));
-    window.click("context-action:Copy name");
+    window.click("context-action:Copy file name");
     assert_eq!(
         window.cx.read_from_clipboard().unwrap().text().unwrap(),
         "waiting.txt"

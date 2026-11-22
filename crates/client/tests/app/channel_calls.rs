@@ -37,10 +37,8 @@ fn without_connect_the_join_of_a_voice_channel_is_not_available(cx: &mut TestApp
         &[],
         &[WorkspacePermission::Connect],
     );
-    window.until("the join is not available", |window| {
-        window.shows("join-call-refused") && !window.shows("join-call")
-    });
-    window.click("join-call-refused");
+    // Without "connect" the channel offers no join (ADR 0790).
+    window.until("the join is absent", |window| !window.shows("join-call"));
     window.settle();
     assert!(window.view().call.is_none());
     assert!(
@@ -52,6 +50,6 @@ fn without_connect_the_join_of_a_voice_channel_is_not_available(cx: &mut TestApp
     // The rule is removed: the join is offered again.
     rule(&world, &admin, voice, role, &[], &[]);
     window.until("the join is offered again", |window| {
-        window.shows("join-call") && !window.shows("join-call-refused")
+        window.shows("join-call")
     });
 }

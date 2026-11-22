@@ -549,7 +549,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
 
     // The recording control changes when the person may record: the header keeps its
     // height, and the panel under it does not move (ADR 0730).
-    assert!(call.shows("no-record-permission"));
+    assert!(call.shows("start-recording") && !call.may_record());
     let before = (
         call.cx.debug_bounds("call-panel").unwrap(),
         call.cx.debug_bounds("close-call-panel").unwrap(),
@@ -572,7 +572,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
         ))
         .unwrap();
     call.until("the person may record", |call| {
-        !call.shows("no-record-permission") && call.shows("start-recording")
+        call.may_record() && call.shows("start-recording")
     });
     assert_eq!(
         before,

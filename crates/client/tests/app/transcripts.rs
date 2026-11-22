@@ -680,7 +680,7 @@ fn a_recording_starts_in_a_chosen_language_and_is_cancelled_while_the_recorder_s
     let seat = world.run(server.enter(voice, &luca, false));
     show_own_call(&mut window, &seat, workspace_id, voice);
     window.until("the person may record", |window| {
-        window.shows("start-recording") && !window.shows("no-record-permission")
+        window.shows("start-recording") && window.may_record()
     });
 
     // "Record" opens the languages; the choice of one starts the recording with it.
@@ -1022,14 +1022,13 @@ const CALL_WINDOW_SIZES: [(f32, u32); 3] = [(480.0, 100), (480.0, 150), (800.0, 
 
 /// The parts of the recording control of a call. Each one that is drawn lies inside the
 /// window, apart from the window controls, the buttons of the panel and the other parts.
-const RECORDING_PARTS: [&str; 7] = [
+const RECORDING_PARTS: [&str; 6] = [
     "recording-indicator",
     "start-recording",
     "cancel-recording",
     "stop-recording",
     "recording-failed",
     "recording-details",
-    "no-record-permission",
 ];
 
 const HEADER_BUTTONS: [&str; 7] = [
@@ -1129,7 +1128,7 @@ fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_sta
     let mut panels = HashMap::new();
 
     call.until("the person may not record", |call| {
-        call.shows("no-record-permission")
+        call.shows("start-recording") && !call.may_record()
     });
     recording_control_fits("no permission", &mut window, &mut call, &mut panels);
 
@@ -1140,7 +1139,7 @@ fn the_recording_control_of_the_call_window_fits_beside_its_buttons_in_every_sta
         WorkspacePermission::RecordCalls,
     );
     call.until("the person may record", |call| {
-        call.shows("start-recording") && !call.shows("no-record-permission")
+        call.shows("start-recording") && call.may_record()
     });
     recording_control_fits("may record", &mut window, &mut call, &mut panels);
 

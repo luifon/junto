@@ -16,8 +16,6 @@ use crate::state::linking::LinkRole;
 // The layer.
 pub const TITLE: &str = "Your account";
 pub const OPEN_ACCOUNT: &str = "Your account";
-pub const OPEN_ACCOUNT_HELP: &str =
-    "Your name, your picture, your devices and the recoveries on this server";
 pub const PAGES: &str = "Pages";
 pub const ON_THIS_SERVER: &str = "On this server";
 pub const READING: &str = "Reading…";
@@ -26,7 +24,7 @@ pub const SENDING: &str = "Sending…";
 pub const fn page_name(page: AccountPage) -> &'static str {
     match page {
         AccountPage::Profile => "Profile",
-        AccountPage::Devices => "Devices",
+        AccountPage::Devices => "Linked devices",
         AccountPage::Recoveries => "Recoveries",
         AccountPage::Departure => "Leave or delete",
     }
@@ -87,7 +85,6 @@ pub const WORKSPACES: &str = "Workspaces";
 pub const NO_WORKSPACE: &str = "Your account is a member of no workspace on this server.";
 pub const LEAVE: &str = "Leave";
 pub const LEAVE_WORKSPACE: &str = "Leave workspace";
-pub const LEAVE_WORKSPACE_HELP: &str = "Shows what stays and what ends before you leave.";
 pub const LEAVING: &str = "Leaving…";
 pub const DELETE_ACCOUNT_GROUP: &str = "Your account";
 pub const DELETE_ACCOUNT: &str = "Delete account";
@@ -264,7 +261,7 @@ pub const LINK_CODE_EMPTY: &str = "Type the link code that the new device shows.
 pub const LINK_CODE_TOO_LONG: &str = "A link code has 8 symbols.";
 pub const COMPARE_KEY: &str = "Compare this key with the key that the new device shows. Approve only when every \
      group is the same.";
-pub const KEY_OF_NEW_DEVICE: &str = "Key of the new device";
+pub const KEY_OF_NEW_DEVICE: &str = "Device code";
 pub const APPROVE: &str = "Approve";
 pub const APPROVING: &str = "Approving…";
 pub const DEVICE_LINKED: &str = "Device linked";
@@ -300,7 +297,7 @@ pub const LINK_THIS_DEVICE_HELP: &str = "This device gets a link code. You type 
 pub const REQUEST_LINK: &str = "Link this device";
 pub const REQUESTING_LINK: &str = "Asking for a code…";
 pub const LINK_CODE: &str = "Link code";
-pub const KEY_OF_THIS_DEVICE: &str = "Key of this device";
+pub const KEY_OF_THIS_DEVICE: &str = "Device code";
 pub const LINK_WAIT_HELP: &str = "On a device that is logged in to your account, open “Your account”, then “Devices”, \
      and type this code under “Link a new device”. That device shows a key: approve only \
      when it is the key shown here. This device logs in by itself after the approval.";
@@ -313,7 +310,7 @@ pub const NEW_CODE: &str = "New code";
 pub const CANCEL_LINK: &str = "Cancel";
 
 // The link on all servers.
-pub const DEVICES_SECTION: &str = "Devices";
+pub const DEVICES_SECTION: &str = "Linked devices";
 pub const DEVICES_SECTION_HELP: &str = "A second installation of Junto gets access to your accounts on all your servers with \
      two texts that you carry between the two devices.";
 pub const LINK_ALL_FIRST: &str = "Link a new device to all my servers";
@@ -337,7 +334,7 @@ pub const REQUEST_EMPTY: &str = "Put the request text of the new device into the
 pub const CONFIRM_TITLE: &str = "3. Compare and approve";
 pub const CONFIRM_HELP: &str = "The new device shows a fingerprint. Approve only when it is the same as this one. \
      Nothing is approved before you press “Approve”.";
-pub const FINGERPRINT: &str = "Fingerprint";
+pub const FINGERPRINT: &str = "Device code";
 pub const USE_THIS_ACCOUNT: &str = "Use this account";
 pub const ALL_APPROVED: &str =
     "The new device is approved on every server of the request. It logs in by itself.";

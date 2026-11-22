@@ -518,13 +518,6 @@ fn a_verified_local_forward_author_opens_its_profile_and_loses_the_target_with_i
         window.shows_named(format!("forward-author-profile:{}", source.id)),
         "a verified local forward author has a profile control"
     );
-    window.hover_named(format!("forward-author-profile:{}", source.id));
-    window.click("copy-text-value");
-    let address = window.cx.read_from_clipboard().unwrap().text().unwrap();
-    assert!(matches!(
-        junto_client_core::links::parse(&address),
-        Some(junto_client_core::links::AppLink::Message { id, .. }) if id == source.id
-    ));
     window.click_named(format!("forward-author-profile:{}", source.id));
     window.until("the source author's profile is read", |window| {
         window

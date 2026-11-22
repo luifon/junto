@@ -27,6 +27,9 @@ const EDGE: f32 = 2.0;
 const CENTRE_TOLERANCE: f32 = 2.0;
 /// The largest difference of a colour channel from the ground that is still the ground.
 const TOLERANCE: u8 = 6;
+/// The greatest distance in logical pixels at which the shadow of a layer is drawn beside it
+/// (the blur of `ui::float_shadow` of a menu).
+const LAYER_SHADOW: f32 = 28.0;
 
 /// The empty bands of one drawn screen. `window_width` is the width of the window in
 /// pixels of the window and `scale` its interface scale in percent.
@@ -41,10 +44,12 @@ pub fn empty_bands(
     let most = (MOST_GAP * design).round() as u32;
     let mut found = Vec::new();
     // An area drawn before a layer that covers it is not seen; the areas of the layer are
-    // drawn after its cover.
+    // drawn after its cover. The shadow of the layer lies over the area too: read as a part,
+    // it made the empty end of a list under a menu a band between two parts.
     let covered = |index: usize, bounds: &Bounds<Pixels>| {
         areas[index + 1..].iter().any(|(name, cover)| {
-            name.as_ref() == junto_client::ui::COVER && cover.intersects(bounds)
+            name.as_ref() == junto_client::ui::COVER
+                && cover.dilate(gpui::px(LAYER_SHADOW)).intersects(bounds)
         })
     };
     for (index, (name, bounds)) in areas.iter().enumerate() {
@@ -212,6 +217,23 @@ mod tests {
         let found = empty_bands(&image, &area(), 200.0, 100);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("40 design px of empty space between two parts"));
+    }
+
+    /// A layer whose shadow reaches the end of a list covers that list: the shadow is not a
+    /// part of the list.
+    #[test]
+    fn an_area_under_the_shadow_of_a_layer_is_not_measured() {
+        let image = screen(&[(10, 30), (380, 400)]);
+        let mut areas = area();
+        areas.push((
+            junto_client::ui::COVER.into(),
+            Bounds::new(point(px(0.0), px(420.0)), size(px(200.0), px(60.0))),
+        ));
+        assert_eq!(
+            empty_bands(&image, &areas, 200.0, 100),
+            Vec::<String>::new()
+        );
+        assert_eq!(empty_bands(&image, &area(), 200.0, 100).len(), 1);
     }
 
     /// The frame of a kept result that is much taller than its sentence is an empty band
