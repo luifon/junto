@@ -93,7 +93,7 @@ Composer:
 Unread signs:
 
 - A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n". ADR 0741 makes both follow the notification settings of the person. A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
-- The read position moves to the last loaded message when the window is active, draws the list, and the list shows its end. The chat of a call is not drawn while the panel shows the members or the settings, and its messages stay unread until the chat tab is shown. "Mark as read" in the header moves the position to the latest one of the channel.
+- The read position moves to the last loaded message when the window is active, draws the list, and the list shows its end. The chat of a call is not drawn while the panel shows the members or the settings, and its messages stay unread until the chat tab is shown. "Mark as read" in the menu of the place and its key move the position to the latest one of the place (ADR 0741).
 
 Places:
 
@@ -156,9 +156,10 @@ The picture viewer belongs to the entry and logged-in account that opened it. It
 - Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already. The `image` crate of the client has its `gif` feature for the GIF pictures of messages; gpui builds the same decoder, so no crate was added.
 
-Message context menus include Mark unread. It uses the server's explicit backward read
+Message context menus include Mark unread, from this message onwards, and no read item of
+the whole place (ADR 0741). It uses the server's explicit backward read
 boundary, including for thread replies. Both windows pause automatic reading of an
-open place after its unread event; the header's Mark as read control or reopening the
+open place after its unread event; "Mark as read" of the place, its key or reopening the
 place resumes reading. Thread headers provide the same explicit read control.
 
 Reaction chips show live reactor names on hover. Who reacted beside the chips and in

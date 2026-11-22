@@ -457,7 +457,7 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
     let sent = admin.send(&world, channel, document("a plan to confirm"));
     window.until_message("a plan to confirm");
     window.right_click_message(sent.id);
-    let before = window.cx.debug_bounds("message-mark-read").unwrap();
+    let before = window.cx.debug_bounds("message-mark-unread").unwrap();
     assert!(!window.shows("message-reaction-people"));
     world
         .run(admin.handle.api().add_reaction(sent.id, "👍"))
@@ -468,7 +468,7 @@ fn the_first_reaction_that_arrives_while_a_message_menu_is_open_moves_no_item(
             .iter()
             .any(|row| row.message.id == sent.id && !row.message.reactions.is_empty())
     });
-    assert_eq!(window.cx.debug_bounds("message-mark-read"), Some(before));
+    assert_eq!(window.cx.debug_bounds("message-mark-unread"), Some(before));
     window.until("the item comes with the first reaction", |window| {
         window.shows("message-reaction-people")
     });

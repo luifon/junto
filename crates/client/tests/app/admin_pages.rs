@@ -531,7 +531,7 @@ pub(crate) fn open_page(
     });
 }
 
-/// Shows a channel of the channel list and opens its settings with the gear of its header.
+/// Shows a channel of the channel list and opens its settings from the menu of its row.
 #[track_caller]
 pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId) {
     window.until("the channel is in the channel list", |window| {
@@ -551,8 +551,8 @@ pub(crate) fn open_channel_settings(window: &mut Window, name: &str, channel_id:
             .workspace()
             .and_then(|workspace| workspace.channel.as_ref())
             .is_some_and(|channel| channel.id == channel_id);
-        if shown {
-            window.click_if_shown("channel-settings");
+        if shown && !window.shows("admin") {
+            window.open_settings_from_channel_menu(channel_id);
         }
         false
     });

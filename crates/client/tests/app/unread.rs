@@ -236,7 +236,7 @@ fn manual_unread_stays_unread_in_active_windows_and_on_the_other_device(
         window.unread_of(channel) == (2, 0)
     });
     first.click_channel("general");
-    first.click("mark-as-read");
+    first.mark_shown_as_read();
     for window in [&mut first, &mut second] {
         window.until(
             "an explicit read clears the unread signs on both devices",
@@ -280,7 +280,7 @@ fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppConte
             .last_read,
         sent.position - 1
     );
-    window.click("mark-as-read");
+    window.mark_shown_as_read();
     window.until("the direct message is explicitly read", |window| {
         window.feed().is_some_and(|feed| feed.unread == 0)
     });
@@ -315,9 +315,9 @@ fn manual_unread_works_in_direct_conversations_and_threads(cx: &mut TestAppConte
 }
 
 /// An unread count that arrives while the menu of a message is open moves no item of the
-/// menu: "Mark as read" stays in it while nothing is unread, disabled (ADR 0730). In the
-/// parallel runs of the thread tests the item came with the count of a message that had just
-/// arrived and moved "Reply in thread" under the press, so the press opened nothing.
+/// menu: the menu of a message has no read item that follows the count (ADR 0730, ADR 0740).
+/// In the parallel runs of the thread tests such an item came with the count of a message that
+/// had just arrived and moved "Reply in thread" under the press, so the press opened nothing.
 #[gpui::test]
 fn an_unread_count_that_arrives_while_a_message_menu_is_open_moves_no_item(
     cx: &mut TestAppContext,
@@ -334,11 +334,11 @@ fn an_unread_count_that_arrives_while_a_message_menu_is_open_moves_no_item(
     assert_eq!(window.unread_of(channel), (0, 0));
     window.right_click_message(own);
     let before = window.cx.debug_bounds("message-thread").unwrap();
-    assert!(window.shows("message-mark-read"));
+    assert!(!window.shows("message-mark-read"));
     admin.send(&world, channel, document("a message that is not read"));
     window.until("the channel counts the new message", |window| {
         window.unread_of(channel) == (1, 0)
     });
-    assert!(window.shows("message-mark-read"));
+    assert!(!window.shows("message-mark-read"));
     assert_eq!(window.cx.debug_bounds("message-thread"), Some(before));
 }

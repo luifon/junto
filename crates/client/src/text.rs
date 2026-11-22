@@ -2008,7 +2008,6 @@ pub const READING_LATER: &str = "Reading later messages…";
 pub const GO_TO_END: &str = "Go to newest messages";
 pub const NEW_MESSAGES: &str = "New";
 pub const MARK_AS_READ: &str = "Mark as read";
-pub const EDIT_CHANNEL: &str = "Channel settings";
 pub const EDITED: &str = "edited";
 pub const DELETED_MESSAGE: &str = "This message was deleted.";
 pub const QUOTE_DELETED: &str = "Deleted message";
@@ -3483,6 +3482,7 @@ pub const FORWARD_THREAD_LINK: &str = "Use thread link";
 pub const VIEW_ORIGINAL: &str = "Go to message";
 
 pub const MARK_UNREAD: &str = "Mark unread";
+pub const MARK_AS_UNREAD: &str = "Mark as unread";
 
 pub const WHO_REACTED: &str = "Who reacted";
 pub const REACTION_PEOPLE_LOADING: &str = "Reading the people who reacted…";

@@ -440,11 +440,6 @@ impl Shell {
         let pins_open = view
             .workspace()
             .is_some_and(|workspace| workspace.pins.is_some());
-        let unread = match (conversation, channel) {
-            (Some(conversation), _) => conversation.unread.unread(),
-            (None, Some(channel)) => channel.unread.unread(),
-            (None, None) => false,
-        };
         let permanent = channel.is_some_and(|channel| channel.permanent) && call.is_none();
         let voice = channel.and_then(|channel| channel.voice.as_ref());
         // What follows the title: for a voice channel that this device is not in, the
@@ -649,15 +644,6 @@ impl Shell {
                     })
                 },
             )
-            .when(call.is_none() && unread, |header| {
-                header.child(
-                    Button::new("mark-as-read")
-                        .icon(Icon::CheckDouble)
-                        .tooltip(text::MARK_AS_READ)
-                        .selector("mark-as-read")
-                        .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
-                )
-            })
             .when_some(
                 server_id
                     .zip(channel.map(|channel| channel.id))
@@ -688,21 +674,6 @@ impl Shell {
                                 })),
                         )
                     })
-                },
-            )
-            .when(
-                channel.is_some() && conversation.is_none() && call.is_none(),
-                |header| {
-                    header.child(
-                        Button::new("channel-settings")
-                            .icon(Icon::Gear)
-                            .tooltip(text::admin::CHANNEL_SETTINGS)
-                            .accessible_label(text::admin::CHANNEL_SETTINGS)
-                            .selector("channel-settings")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_shown_channel_settings(window, cx);
-                            })),
-                    )
                 },
             )
             .when(conversation.is_some() && call.is_none(), |header| {

@@ -82,7 +82,7 @@ fn the_header_keeps_its_controls_in_the_window_at_its_least_width_without_a_call
     for least in MAIN_SIZES {
         resize(&mut window, least);
         assert_inside(&mut window, &format!("{least:?}, text channel"));
-        for selector in ["members-button", "search-field", "channel-settings"] {
+        for selector in ["members-button", "search-field", "pins-button"] {
             assert!(
                 right_of(&mut window, selector) <= least.0,
                 "{selector} in {least:?}"

@@ -4844,29 +4844,13 @@ impl Shell {
             let place = PlaceId::of_message(&row.message);
             items.push(
                 MenuItem::new("message-mark-unread", text::MARK_UNREAD)
+                    .icon(Icon::Unread)
                     .selector("message-mark-unread")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);
                         this.state.update(cx, |state, cx| {
                             state.mark_message_unread(server_id, message_id, place, cx)
                         });
-                    }))
-                    .into_any_element(),
-            );
-        }
-        // The item stays while nothing is unread, disabled, as in the menu of a notice: an
-        // unread count that arrives while the menu is open would otherwise insert it and move
-        // every item under it, also the one under the pointer (ADR 0730).
-        {
-            let place = PlaceId::of_message(&row.message);
-            items.push(
-                MenuItem::new("message-mark-read", text::MARK_AS_READ)
-                    .selector("message-mark-read")
-                    .disabled(feed.unread == 0)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_layer(window, cx);
-                        this.state
-                            .update(cx, |state, _| state.mark_place_as_read(server_id, place));
                     }))
                     .into_any_element(),
             );

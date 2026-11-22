@@ -8,6 +8,7 @@ use junto_client_core::{
 
 use super::{Layer, Shell};
 use crate::{
+    assets::Icon,
     state::{
         AppState,
         view::{ShellView, ThreadEntry},
@@ -119,6 +120,7 @@ impl ThreadMenuOpen {
                     mentions: mark.mentions,
                     open: mark.open,
                     available: row.can_thread && row.thread_refused.is_none(),
+                    has_replies: mark.replies > 0,
                 })
             })
         })
@@ -257,14 +259,26 @@ impl Shell {
                         );
                     })),
             )
-            .child(
-                MenuItem::new("thread-read", text::MARK_AS_READ)
-                    .selector("thread-read")
-                    .disabled(busy || !unread)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+            .when(entry.has_replies, |menu| {
+                // One read item that follows the state (ADR 0741).
+                let item = if unread {
+                    MenuItem::new("thread-read", text::MARK_AS_READ)
+                        .icon(Icon::CheckDouble)
+                        .selector("thread-read")
+                } else {
+                    MenuItem::new("thread-unread", text::MARK_AS_UNREAD)
+                        .icon(Icon::Unread)
+                        .selector("thread-unread")
+                };
+                menu.child(item.disabled(busy).on_click(cx.listener(
+                    move |this, _, _, cx| {
                         if this.thread_menu_current(open, cx)
                             && this.state.update(cx, |state, cx| {
-                                state.mark_thread_menu_read(open.owner, open.root_id, cx)
+                                if unread {
+                                    state.mark_thread_menu_read(open.owner, open.root_id, cx)
+                                } else {
+                                    state.mark_thread_menu_unread(open.owner, open.root_id, cx)
+                                }
                             })
                         {
                             if let Layer::ThreadMenu(open) = &mut this.layer {
@@ -272,8 +286,9 @@ impl Shell {
                             }
                             cx.notify();
                         }
-                    })),
-            )
+                    },
+                )))
+            })
             .child(
                 MenuItem::new("thread-follow", text::followed::action(following))
                     .selector("thread-follow")

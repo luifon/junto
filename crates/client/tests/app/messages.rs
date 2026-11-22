@@ -585,9 +585,7 @@ fn the_unread_signs_follow_other_channels_and_end_when_the_messages_are_read(
             .any(|row| row.message.id == last && row.mentions_own)
     );
     window.until("the messages are read", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window, voice.id) == (0, 0)
     });
     let view = window.view();
@@ -661,9 +659,7 @@ fn a_new_account_can_mark_positions_seen_by_the_previous_account(cx: &mut TestAp
     window.until("the unread sign", |window| unread(window) == 3);
     window.click_channel(&voice.name);
     window.until("the chat is read by the first account", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window) == 0
     });
 
@@ -682,9 +678,7 @@ fn a_new_account_can_mark_positions_seen_by_the_previous_account(cx: &mut TestAp
     });
     window.click_channel(&voice.name);
     window.until("the chat is read by the new account", |window| {
-        if window.shows("mark-as-read") {
-            window.click("mark-as-read");
-        }
+        window.mark_shown_as_read();
         unread(window) == 0
     });
 }

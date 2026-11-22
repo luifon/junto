@@ -384,7 +384,11 @@ const MOST_COUNTED: u64 = 100;
 /// What each place of a server holds unread, made once for a derivation of the window.
 /// The summaries of a server are a list without an order; a search of the list for each
 /// row would cost the square of its length.
-pub(super) struct Unreads(HashMap<PlaceId, Unread>);
+pub(super) struct Unreads {
+    unread: HashMap<PlaceId, Unread>,
+    /// The places whose history holds at least one message.
+    held: std::collections::HashSet<PlaceId>,
+}
 
 // How many indexes of summaries the derivations of this thread made. A test counts them.
 #[cfg(test)]
@@ -396,33 +400,44 @@ impl Unreads {
     pub(super) fn of(model: &ServerModel) -> Self {
         #[cfg(test)]
         SUMMARIES_READ.with(|read| read.set(read.get() + 1));
-        Self(
-            model
-                .message_states
-                .iter()
-                .filter(|state| match state.place {
-                    MessagePlace::Direct {
-                        conversation_id, ..
-                    }
-                    | MessagePlace::Group { conversation_id } => {
-                        !model.hidden_conversations.contains(&conversation_id)
-                    }
-                    _ => true,
-                })
+        let shown = model
+            .message_states
+            .iter()
+            .filter(|state| match state.place {
+                MessagePlace::Direct {
+                    conversation_id, ..
+                }
+                | MessagePlace::Group { conversation_id } => {
+                    !model.hidden_conversations.contains(&conversation_id)
+                }
+                _ => true,
+            });
+        Self {
+            unread: shown
+                .clone()
                 .map(|state| (PlaceId::of(&state.place), Unread::of_state(state)))
                 .collect(),
-        )
+            held: shown
+                .filter(|state| state.latest > 0)
+                .map(|state| PlaceId::of(&state.place))
+                .collect(),
+        }
     }
 
     pub(super) fn at(&self, place: PlaceId) -> Unread {
-        self.0.get(&place).copied().unwrap_or_default()
+        self.unread.get(&place).copied().unwrap_or_default()
+    }
+
+    /// The history of the place holds at least one message.
+    pub(super) fn holds_messages(&self, place: PlaceId) -> bool {
+        self.held.contains(&place)
     }
 
     /// The unread messages for the person alone in the places that `counted` names: the
     /// mentions of a channel, and every unread message of a direct conversation that shows
     /// its sign. A muted place counts nothing.
     fn for_person(&self, counted: impl Fn(PlaceId) -> bool) -> u64 {
-        self.0
+        self.unread
             .iter()
             .filter(|(place, unread)| counted(**place) && unread.any() && !unread.muted)
             .map(|(place, unread)| match place {
@@ -435,7 +450,7 @@ impl Unreads {
     /// Every place of the server together.
     pub(super) fn total(&self) -> Unread {
         let mut unread = Unread::default();
-        for held in self.0.values() {
+        for held in self.unread.values() {
             unread.add(*held);
         }
         unread
@@ -457,6 +472,8 @@ pub struct ThreadEntry {
     /// False for a thread of the voice channel of the call of this device: the view of
     /// that channel is the call, which shows no thread (ADR 0741).
     pub available: bool,
+    /// The thread has at least one reply.
+    pub has_replies: bool,
 }
 
 /// The row under the shown channel that offers its further followed threads (ADR 0413).
@@ -494,6 +511,8 @@ pub struct DirectRow {
     pub name: Option<String>,
     pub selected: bool,
     pub unread: Unread,
+    /// The history of the conversation holds at least one message.
+    pub holds_messages: bool,
     /// The mute of the conversation as the person set it (ADR 0515).
     pub mute: Mute,
     /// The other account left the server or was deleted: the conversation is read only
@@ -871,6 +890,8 @@ pub struct ChannelRow {
     pub more_followed: Option<MoreFollowed>,
     /// What the person holds in the channel, as the server stated it (ADR 0310).
     pub allowed: Allowed,
+    /// The history of the channel holds at least one message.
+    pub holds_messages: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -978,6 +999,17 @@ pub struct Allowed {
     /// Send the microphone without the push-to-talk key.
     pub voice_activity: bool,
     pub set_user_limit: bool,
+    pub export: bool,
+}
+
+impl Allowed {
+    /// The person may use at least one part of the settings of a channel of this kind: the
+    /// whole of them, the export, or the user limit of a voice channel (ADR 0761).
+    pub fn channel_settings(&self, kind: ChannelKind) -> bool {
+        self.manage
+            || (self.export && self.read_history)
+            || (kind == ChannelKind::Voice && self.set_user_limit)
+    }
 }
 
 /// What the person may put into the next message of a place (ADR 0790). A direct
@@ -2373,6 +2405,7 @@ fn channel_row(
         mute: Mute::of_channel(channel.channel.id, model, known),
         more_followed: None,
         allowed: allowed(workspace.permissions_in(channel.channel.id)),
+        holds_messages: unreads.holds_messages(PlaceId::Channel(channel.channel.id)),
     }
 }
 
@@ -2415,6 +2448,7 @@ fn thread_entries(
                     mentions: state.mentions,
                     open: open == Some(state.root_id),
                     available: true,
+                    has_replies: state.latest > 0,
                 })
             }
             _ => None,
@@ -2442,6 +2476,7 @@ fn thread_entries(
                 mentions,
                 open: open == Some(state.root_id),
                 available: true,
+                has_replies: state.latest > 0,
             });
         }
     }
@@ -2462,6 +2497,12 @@ fn thread_entries(
             mentions: 0,
             open: true,
             available: true,
+            has_replies: model
+                .thread_state(root_id)
+                .is_some_and(|state| state.latest > 0)
+                || model
+                    .timeline(place)
+                    .is_some_and(|timeline| timeline.messages.iter().any(|reply| !reply.deleted)),
         });
     }
     (entries, more)
@@ -2691,6 +2732,7 @@ fn directs(
                 name: name_of(server_id, other, workspace, model, known),
                 selected: selected == Some(conversation.id),
                 unread: unreads.at(PlaceId::Direct(conversation.id)),
+                holds_messages: unreads.holds_messages(PlaceId::Direct(conversation.id)),
                 mute: Mute::of_direct(other, model, known),
                 departure: known.people.departure(server_id, other),
             }
@@ -2711,6 +2753,7 @@ fn directs(
             name: Some(crate::text::label(&group.name)),
             selected: selected == Some(group.id),
             unread: unreads.at(PlaceId::Direct(group.id)),
+            holds_messages: unreads.holds_messages(PlaceId::Direct(group.id)),
             mute: Mute::of_group(group.id, model, known),
             departure: None,
         }
@@ -3077,6 +3120,7 @@ fn workspace_view(
             // No snapshot states the list of an archived channel: nothing is offered
             // until its own read answered (ADR 0310).
             allowed: allowed(model.permissions_in(channel_id).unwrap_or_default()),
+            holds_messages: unreads.holds_messages(PlaceId::Channel(channel_id)),
         });
     }
     let call = channel
@@ -3892,6 +3936,7 @@ fn allowed(held: &[WorkspacePermission]) -> Allowed {
         share_screen: may(WorkspacePermission::ShareScreen),
         voice_activity: may(WorkspacePermission::UseVoiceActivity),
         set_user_limit: may(WorkspacePermission::SetCallUserLimit),
+        export: may(WorkspacePermission::ExportChannel),
     }
 }
 

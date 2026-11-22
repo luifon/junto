@@ -32,7 +32,7 @@ What is removed:
 
 The window:
 
-- A control of one channel reads the list of that channel: the deletion and the pin of the message of another person, the fork of a thread, the gear and the pages of the settings of a channel, the restore and the export of a channel, the choices of the overrides page, `@everyone` in the composer, the recording control, the lock, meeting mode, and the menu of a person in a voice channel. A move of a person is offered into a voice channel in which the account holds "move members" too (ADR 0511).
+- A control of one channel reads the list of that channel: the deletion and the pin of the message of another person, the fork of a thread, "Channel settings" in the menu of a channel and the pages of its settings, the restore and the export of a channel, the choices of the overrides page, `@everyone` in the composer, the recording control, the lock, meeting mode, and the menu of a person in a voice channel. A move of a person is offered into a voice channel in which the account holds "move members" too (ADR 0511).
 - A control of a workspace reads the list of the workspace: the pages "Channels" and "Roles", the audit log of the workspace, a new channel and a new category, and the restore and the deletion in the list of archived channels.
 - A row of the page "Channels" reads the list of its channel: "Move to…" needs "manage channel" in the channel, and a move by one place needs it in every channel whose position the move changes.
 - The server permissions of the account are in the account of the snapshot, as before.

@@ -145,6 +145,7 @@ icons! {
     Ticket => "lucide/ticket",
     Trash => "lucide/trash",
     Unlock => "lucide/lock-open",
+    Unread => "lucide/message-square-dot",
     UserCheck => "lucide/user-check",
     Warning => "lucide/triangle-alert",
     WindowClose => "winclose",

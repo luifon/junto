@@ -748,6 +748,8 @@ impl ThreadMenu {
 enum ThreadMenuAction {
     Follow(bool),
     Read,
+    /// Mark the thread unread from its newest reply (ADR 0741).
+    Unread,
 }
 
 /// What the window holds about followed threads.
@@ -1082,6 +1084,15 @@ impl AppState {
         self.change_thread_menu(owner, root, ThreadMenuAction::Read, cx)
     }
 
+    pub fn mark_thread_menu_unread(
+        &mut self,
+        owner: Owner,
+        root: MessageId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.change_thread_menu(owner, root, ThreadMenuAction::Unread, cx)
+    }
+
     fn change_thread_menu(
         &mut self,
         owner: Owner,
@@ -1122,6 +1133,28 @@ impl AppState {
                             .await
                             .map_err(|error| change_refusal(&error))?;
                         (changed, None)
+                    }
+                    ThreadMenuAction::Unread => {
+                        let page = api
+                            .thread(
+                                root,
+                                &junto_client_core::api::PageQuery {
+                                    limit: Some(super::messages::NEWEST_PAGE),
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        let reply = super::messages::newest_markable(&page.replies.messages)
+                            .ok_or_else(|| text::followed::THREAD_GONE.to_owned())?;
+                        api.mark_unread(reply)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        let state = api
+                            .thread_state(root)
+                            .await
+                            .map_err(|error| change_refusal(&error))?;
+                        (state, None)
                     }
                 };
                 if state.root_id != root {

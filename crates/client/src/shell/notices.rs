@@ -940,24 +940,15 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        items.push(
-            MenuItem::new("channel-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .when(channel.selected, |item| {
-                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
-                })
-                .selector("channel-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
-                            server_id,
-                            junto_client_core::model::PlaceId::Channel(channel_id),
-                        );
-                    });
-                }))
-                .into_any_element(),
-        );
+        items.extend(self.read_item(
+            "channel",
+            server_id,
+            junto_client_core::model::PlaceId::Channel(channel_id),
+            channel.holds_messages,
+            channel.unread.unread(),
+            channel.selected,
+            cx,
+        ));
         if let Some(status) = self.voice_status_item(server_id, channel, cx) {
             items.push(status);
         }
@@ -989,19 +980,16 @@ impl Shell {
                 }))
                 .into_any_element(),
         );
-        if channel.allowed.manage {
+        if channel.allowed.channel_settings(channel.kind) {
             items.push(
-                MenuItem::new("channel-edit", text::EDIT_CHANNEL)
+                MenuItem::new("channel-settings", text::admin::CHANNEL_SETTINGS)
                     .icon(Icon::Gear)
-                    .selector("channel-edit")
+                    .selector("channel-settings")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_admin(
-                            crate::state::admin::AdminOpen::Channel {
-                                server_id,
-                                workspace_id,
-                                channel_id,
-                                page: crate::state::admin::ChannelPage::Overview,
-                            },
+                        this.open_settings_of_channel(
+                            server_id,
+                            workspace_id,
+                            channel_id,
                             window,
                             cx,
                         );
@@ -1063,24 +1051,17 @@ impl Shell {
                     );
                 }))
                 .into_any_element(),
-            MenuItem::new("direct-mark-read", text::MARK_AS_READ)
-                .icon(Icon::CheckDouble)
-                .when(direct.selected, |item| {
-                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
-                })
-                .selector("direct-mark-read")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.state.update(cx, |state, _| {
-                        state.mark_place_as_read(
-                            server_id,
-                            junto_client_core::model::PlaceId::Direct(conversation_id),
-                        );
-                    });
-                }))
-                .into_any_element(),
-            menu_separator(cx).into_any_element(),
         ];
+        items.extend(self.read_item(
+            "direct",
+            server_id,
+            junto_client_core::model::PlaceId::Direct(conversation_id),
+            direct.holds_messages,
+            direct.unread.unread(),
+            direct.selected,
+            cx,
+        ));
+        items.push(menu_separator(cx).into_any_element());
         items.insert(
             1,
             MenuItem::new("direct-copy-link", text::COPY_TARGET_LINK)
@@ -1233,6 +1214,48 @@ impl Shell {
             items,
             cx,
         )
+    }
+
+    /// The one read item of a channel or a conversation (ADR 0742): "Mark as read" while the
+    /// place has unread messages, "Mark as unread" while it has none, and no item for a place
+    /// without messages. `prefix` names the selectors, such as `channel-mark-read`.
+    #[allow(clippy::too_many_arguments)]
+    fn read_item(
+        &mut self,
+        prefix: &'static str,
+        server_id: ServerId,
+        place: junto_client_core::model::PlaceId,
+        holds_messages: bool,
+        unread: bool,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !holds_messages {
+            return None;
+        }
+        let item = if unread {
+            MenuItem::new("mark-read", text::MARK_AS_READ)
+                .icon(Icon::CheckDouble)
+                .when(shown, |item| {
+                    item.shortcut(junto_client_core::keybinds::KeyAction::MarkChannelRead)
+                })
+                .selector(format!("{prefix}-mark-read"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state
+                        .update(cx, |state, _| state.mark_place_as_read(server_id, place));
+                }))
+        } else {
+            MenuItem::new("mark-unread", text::MARK_AS_UNREAD)
+                .icon(Icon::Unread)
+                .selector(format!("{prefix}-mark-unread"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_layer(window, cx);
+                    this.state
+                        .update(cx, |state, cx| state.mark_place_unread(server_id, place, cx));
+                }))
+        };
+        Some(item.into_any_element())
     }
 
     fn row_menu(

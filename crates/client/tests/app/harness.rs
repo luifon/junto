@@ -10,7 +10,7 @@ use junto_client::app::{self, WindowStart};
 use junto_client::shell::Shell;
 use junto_client::state::view::{ChannelRow, Members, ServerStatus, ShellView};
 use junto_client::state::{AppState, Timing};
-use junto_client_core::protocol::ids::MessageId;
+use junto_client_core::protocol::ids::{ChannelId, MessageId};
 use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
@@ -1033,6 +1033,26 @@ impl Window {
             .unwrap_or_else(|| panic!("{name} is not drawn"));
         self.press_on(Some(name), bounds.center(), gpui::MouseButton::Right, 1);
         self.settle();
+    }
+
+    /// Marks the place of the main area as read, as the key of "Mark as read" does.
+    pub fn mark_shown_as_read(&mut self) {
+        self.in_shell(|shell, _, cx| shell.mark_shown_as_read(cx));
+        self.settle();
+    }
+
+    /// Opens the menu of a channel row and presses its "Channel settings" item when the menu
+    /// offers it; otherwise closes the menu. Returns whether it pressed the item.
+    #[track_caller]
+    pub fn open_settings_from_channel_menu(&mut self, channel: ChannelId) -> bool {
+        self.right_click_named(format!("channel-row:{channel}"));
+        if self.click_if_shown("channel-settings") {
+            return true;
+        }
+        if self.shows("channel-menu") {
+            self.press("escape");
+        }
+        false
     }
 
     /// Opens a message menu outside its account, link and attachment targets.

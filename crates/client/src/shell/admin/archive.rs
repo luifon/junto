@@ -121,21 +121,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Opens the settings of the channel that the main area shows.
-    pub(crate) fn open_shown_channel_settings(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let target = self.view.as_ref().and_then(|view| {
-            let workspace = view.workspace()?;
-            Some((workspace.id, workspace.channel.as_ref()?.id))
-        });
-        if let Some((workspace_id, channel_id)) = target {
-            self.open_channel_settings(workspace_id, channel_id, ChannelPage::Overview, window, cx);
-        }
-    }
-
     /// Asks for an export of the direct conversation that the main area shows, and opens
     /// the page of the exports, which shows its state.
     pub(crate) fn export_shown_conversation(

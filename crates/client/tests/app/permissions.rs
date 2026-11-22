@@ -51,8 +51,8 @@ fn settings_pages(window: &mut Window) -> Option<Vec<ChannelPage>> {
     }
 }
 
-/// Opens the settings of the shown channel with the gear of its header, reads their
-/// pages, and closes them.
+/// Opens the settings of the shown channel from the menu of its row, reads their pages,
+/// and closes them.
 fn pages_of_the_shown_channel(window: &mut Window) -> Vec<ChannelPage> {
     let mut pages = None;
     window.until("the settings of the channel are open", |window| {
@@ -60,7 +60,11 @@ fn pages_of_the_shown_channel(window: &mut Window) -> Vec<ChannelPage> {
         if pages.is_some() {
             return true;
         }
-        window.click_if_shown("channel-settings");
+        if let Some(channel) = shown_channel(window)
+            && !window.shows("admin")
+        {
+            window.open_settings_from_channel_menu(channel);
+        }
         false
     });
     window.press("escape");
@@ -153,8 +157,8 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
     window.until("the administration is closed", |window| {
         !window.shows("admin")
     });
-    // The gear of the channel opens every page of its settings for a person who holds
-    // "manage channel" in it.
+    // "Channel settings" in the menu of the channel opens every page of its settings for a
+    // person who holds "manage channel" in it.
     assert_eq!(
         pages_of_the_shown_channel(&mut window),
         [
@@ -232,7 +236,7 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
         .run(api.update_workspace_role(workspace_id, stewards.id, &fewer))
         .unwrap();
     window.until(
-        "the gear of the settings leads to no page of a manager",
+        "the settings of the channel have no page of a manager",
         |window| {
             let held = allowed(window);
             !held.manage && !held.mute && held.record
@@ -246,10 +250,13 @@ fn the_controls_of_a_window_follow_a_role_and_an_override_that_change_while_it_i
     window.until("the administration is closed again", |window| {
         !window.shows("admin")
     });
-    assert_eq!(
-        pages_of_the_shown_channel(&mut window),
-        [ChannelPage::Archive]
-    );
+    // Without a part of the settings that the person may use, the menu of the channel has
+    // no "Channel settings".
+    let shown = shown_channel(&mut window).unwrap();
+    window.right_click_named(format!("channel-row:{shown}"));
+    assert!(window.shows("channel-menu"));
+    assert!(!window.shows("channel-settings"));
+    window.press("escape");
 
     // The role is taken: nothing of it is left.
     world
