@@ -347,6 +347,13 @@ impl Streams {
         }
     }
 
+    /// The status text of an account changed. Everyone who watches the account reads it
+    /// again, whether the account is connected or not: the text is shown in both cases
+    /// (ADR 0401).
+    pub fn status_text_changed_for(&self, account: AccountId) {
+        self.presence_changed(account, true);
+    }
+
     pub fn set_visible(&self, account: AccountId, visible: bool) {
         let registry = lock(&self.registry);
         let mut changed = false;

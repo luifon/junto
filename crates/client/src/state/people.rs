@@ -124,6 +124,8 @@ pub struct ServerFaces {
     own: Option<(AccountId, Option<Face>)>,
     others: Arc<HashMap<AccountId, Face>>,
     presence: Arc<HashMap<AccountId, junto_client_core::protocol::presence::Presence>>,
+    /// The status texts that the server returned with the presence (ADR 0401).
+    status_texts: Arc<HashMap<AccountId, junto_client_core::protocol::presence::StatusText>>,
     channel_workspaces: Arc<
         HashMap<
             junto_client_core::protocol::ids::ChannelId,
@@ -171,6 +173,13 @@ impl ServerFaces {
         self.presence.get(&account).copied().unwrap_or_default()
     }
 
+    /// The status text of an account, without its end.
+    pub fn status_text(&self, account: AccountId) -> Option<&str> {
+        self.status_texts
+            .get(&account)
+            .map(|status| status.text.as_str())
+    }
+
     /// The picture of an account. Absent for an account without an avatar, and for an
     /// account whose profile was not read.
     pub fn face(&self, account_id: AccountId) -> Option<&Face> {
@@ -196,6 +205,7 @@ impl Faces {
     pub(super) fn with_presence(mut self, presence: &super::presence::KnownPresence) -> Self {
         for (server, faces) in &mut self.servers {
             faces.presence = presence.values(*server);
+            faces.status_texts = presence.texts(*server);
         }
         self
     }
@@ -1025,6 +1035,7 @@ pub(super) fn faces(servers: &[ServerSnapshot], people: &People) -> Faces {
                         own: Some((account.id, own)),
                         others: people.faces(server.id),
                         presence: Arc::default(),
+                        status_texts: Arc::default(),
                         channel_workspaces: Arc::new(
                             model
                                 .workspaces

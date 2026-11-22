@@ -12,7 +12,10 @@ use junto_client_core::{
     live::StreamStatus,
     protocol::{
         ids::{AccountId, ServerId},
-        presence::{PRESENCE_PAGE, Presence, PresenceChoice, ReadPresence, SetPresence},
+        presence::{
+            PRESENCE_PAGE, Presence, PresenceChoice, ReadPresence, SetPresence, SetStatusText,
+            StatusText,
+        },
     },
 };
 
@@ -20,6 +23,53 @@ use super::{AppState, people::Wanted, view::shown_model};
 use crate::text;
 
 const READS: usize = 4;
+
+/// When a status text ends (ADR 0401).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusTextEnd {
+    #[default]
+    Never,
+    HalfHour,
+    Hour,
+    FourHours,
+    /// At the end of the day on the clock of the person.
+    Today,
+    /// At the end of Sunday on the clock of the person.
+    ThisWeek,
+    /// At a date and a time that the person types, on the clock of the person.
+    Custom,
+}
+
+impl StatusTextEnd {
+    /// The near ends, and the later ones with the choice of a date and a time.
+    pub const NEAR: [Self; 4] = [Self::Never, Self::HalfHour, Self::Hour, Self::FourHours];
+    pub const LATER: [Self; 3] = [Self::Today, Self::ThisWeek, Self::Custom];
+
+    /// The end of a status text that is set at `now`. Absent: it stays until it is changed,
+    /// and for `Custom`, whose end the person types.
+    pub fn until(
+        self,
+        now: time::OffsetDateTime,
+        zone: super::feed::Zone,
+    ) -> Option<time::OffsetDateTime> {
+        let midnight_after = |days: i64| {
+            let local = zone.local(now);
+            let midnight = local.replace_time(time::Time::MIDNIGHT) + time::Duration::days(days);
+            crate::moment::in_utc(midnight)
+        };
+        match self {
+            Self::Never | Self::Custom => None,
+            Self::HalfHour => Some(now + time::Duration::minutes(30)),
+            Self::Hour => Some(now + time::Duration::hours(1)),
+            Self::FourHours => Some(now + time::Duration::hours(4)),
+            Self::Today => Some(midnight_after(1)),
+            Self::ThisWeek => {
+                let weekday = zone.local(now).weekday().number_days_from_monday();
+                Some(midnight_after(7 - i64::from(weekday)))
+            }
+        }
+    }
+}
 const REFRESH: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +82,43 @@ pub struct ServerPresence {
     pub read_failed: Option<String>,
     pub reading: bool,
     values: Arc<HashMap<AccountId, Presence>>,
+    /// The status texts of the accounts that the server returned (ADR 0401).
+    texts: Arc<HashMap<AccountId, StatusText>>,
+    /// The server takes a status text: `capabilities.status_text`.
+    pub takes_text: bool,
+    /// A change of the own status text is on its way.
+    pub text_changing: bool,
+    /// Why the last change of the own status text failed.
+    pub text_failed: Option<String>,
+}
+
+impl ServerPresence {
+    fn empty(owner: Owner, takes_text: bool) -> Self {
+        Self {
+            owner,
+            choice: None,
+            connected: true,
+            changing: false,
+            failed: None,
+            read_failed: None,
+            reading: false,
+            values: Arc::default(),
+            texts: Arc::default(),
+            takes_text,
+            text_changing: false,
+            text_failed: None,
+        }
+    }
+
+    /// The account of this device on the server whose presence this is.
+    pub fn owner(&self) -> Owner {
+        self.owner
+    }
+
+    /// The status text of the account of this device on the server.
+    pub fn own_text(&self) -> Option<&StatusText> {
+        self.texts.get(&self.owner.account_id)
+    }
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownPresence {
@@ -47,6 +134,17 @@ impl KnownPresence {
     }
     pub fn server(&self, server: ServerId) -> Option<&ServerPresence> {
         self.servers.get(&server)
+    }
+    pub fn text(&self, server: ServerId, account: AccountId) -> Option<&StatusText> {
+        self.servers
+            .get(&server)
+            .and_then(|server| server.texts.get(&account))
+    }
+    pub(crate) fn texts(&self, server: ServerId) -> Arc<HashMap<AccountId, StatusText>> {
+        self.servers
+            .get(&server)
+            .map(|server| server.texts.clone())
+            .unwrap_or_default()
     }
     pub(crate) fn values(&self, server: ServerId) -> Arc<HashMap<AccountId, Presence>> {
         self.servers
@@ -130,20 +228,75 @@ impl AppState {
         values: HashMap<AccountId, Presence>,
         cx: &mut Context<Self>,
     ) {
-        self.known.presence.servers.insert(
-            owner.entry.server_id,
-            ServerPresence {
-                owner,
-                choice: None,
-                connected: true,
-                changing: false,
-                failed: None,
-                read_failed: None,
-                reading: false,
-                values: Arc::new(values),
-            },
-        );
+        let mut shown = ServerPresence::empty(owner, true);
+        shown.choice = Some(PresenceChoice::Online);
+        shown.values = Arc::new(values);
+        self.known
+            .presence
+            .servers
+            .insert(owner.entry.server_id, shown);
         cx.notify();
+    }
+
+    /// Shows these status texts on a server that a presence fixture shows.
+    #[cfg(feature = "test-support")]
+    pub fn show_status_text_fixture(
+        &mut self,
+        server: ServerId,
+        texts: HashMap<AccountId, StatusText>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(shown) = self.known.presence.servers.get_mut(&server) {
+            shown.texts = Arc::new(texts);
+        }
+        cx.notify();
+    }
+
+    /// The end of a status text that is set now.
+    pub fn status_text_until(&self, end: StatusTextEnd) -> Option<time::OffsetDateTime> {
+        end.until(time::OffsetDateTime::now_utc(), self.known.zone)
+    }
+
+    /// The end that the person typed as a date (`2026-11-30`) and a time (`18:00` or
+    /// `6:00 PM`) on the clock of the person. It must be later than now.
+    pub fn status_text_custom_until(
+        &self,
+        date: &str,
+        clock: &str,
+    ) -> Result<time::OffsetDateTime, &'static str> {
+        let format = time::macros::format_description!("[year]-[month]-[day]");
+        let date =
+            time::Date::parse(date.trim(), format).map_err(|_| text::presence::END_NOT_READ)?;
+        let minute = super::notices::parse_clock(clock).ok_or(text::presence::END_NOT_READ)?;
+        let until = self
+            .known
+            .zone
+            .at(date, minute)
+            .ok_or(text::presence::END_NOT_READ)?;
+        if until <= time::OffsetDateTime::now_utc() {
+            return Err(text::presence::END_PASSED);
+        }
+        Ok(crate::moment::in_utc(until))
+    }
+
+    /// A status text in words, with its end on the clock of the person.
+    pub fn status_text_words(&self, status: &StatusText) -> String {
+        match status.until {
+            Some(until) => text::presence::with_end(
+                &status.text,
+                &text::time_and_day(
+                    self.known.zone.local(until),
+                    self.known.today,
+                    self.known.hour_cycle,
+                ),
+            ),
+            None => status.text.clone(),
+        }
+    }
+
+    /// The status text of an account, as the server of the account returned it.
+    pub fn status_text(&self, server: ServerId, account: AccountId) -> Option<&StatusText> {
+        self.known.presence.text(server, account)
     }
     pub fn presence(&self, server: ServerId, account: AccountId) -> Presence {
         self.known.presence.get(server, account)
@@ -273,6 +426,7 @@ impl AppState {
                     known.connected = false;
                     known.reading = false;
                     known.values = Arc::default();
+                    known.texts = Arc::default();
                 }
             }
         }
@@ -312,23 +466,20 @@ impl AppState {
                 .entry(server)
                 .or_insert_with(|| Reader::new(owner));
             reader.want(wanted.remove(&server).unwrap_or_default());
+            let takes_text = self
+                .client
+                .server(server)
+                .is_some_and(|handle| handle.entry().capabilities.status_text);
             let known = self
                 .known
                 .presence
                 .servers
                 .entry(server)
-                .or_insert_with(|| ServerPresence {
-                    owner,
-                    connected: true,
-                    choice: None,
-                    changing: false,
-                    failed: None,
-                    read_failed: None,
-                    reading: false,
-                    values: Arc::default(),
-                });
+                .or_insert_with(|| ServerPresence::empty(owner, takes_text));
             known.connected = true;
+            known.takes_text = takes_text;
             Arc::make_mut(&mut known.values).retain(|id, _| reader.wanted.contains(id));
+            Arc::make_mut(&mut known.texts).retain(|id, _| reader.wanted.contains(id));
         }
         self.read_presence(cx);
     }
@@ -347,6 +498,7 @@ impl AppState {
                 reader.failed_read = false;
                 if let Some(known) = self.known.presence.servers.get_mut(&server) {
                     known.values = Arc::default();
+                    known.texts = Arc::default();
                     known.reading = false;
                     known.read_failed = None;
                 }
@@ -446,11 +598,16 @@ impl AppState {
                                     known.choice = Some(page.own);
                                     known.read_failed = None;
                                     let values = Arc::make_mut(&mut known.values);
+                                    let texts = Arc::make_mut(&mut known.texts);
                                     for row in page.accounts.into_iter().take(PRESENCE_PAGE) {
                                         if body.accounts.contains(&row.account_id)
                                             && reader.wanted.contains(&row.account_id)
                                         {
                                             values.insert(row.account_id, row.presence);
+                                            match row.status_text {
+                                                Some(text) => texts.insert(row.account_id, text),
+                                                None => texts.remove(&row.account_id),
+                                            };
                                         }
                                     }
                                 }
@@ -551,6 +708,63 @@ impl AppState {
         cx.notify();
     }
 
+    /// Sets or removes the own status text on one server (ADR 0401). The people who watch
+    /// the account read it again; this device shows it at once.
+    pub fn set_status_text(
+        &mut self,
+        server: ServerId,
+        text: Option<StatusText>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((owner, handle)) = self
+            .presence_scopes()
+            .into_iter()
+            .find(|(owner, _)| owner.entry.server_id == server)
+        else {
+            return;
+        };
+        let Some(known) = self
+            .known
+            .presence
+            .servers
+            .get_mut(&server)
+            .filter(|known| known.takes_text && !known.text_changing)
+        else {
+            return;
+        };
+        known.text_changing = true;
+        known.text_failed = None;
+        let api = handle.api_for(owner.account_id);
+        let body = SetStatusText { status_text: text };
+        cx.spawn(async move |this, cx| {
+            let answer = api
+                .set_status_text(&body)
+                .await
+                .map_err(|error| text::flow_error(&FlowError::from(&error)));
+            let _ = this.update(cx, |this, cx| {
+                if this.owner(server) != Some(owner) {
+                    return;
+                }
+                if let Some(known) = this.known.presence.servers.get_mut(&server) {
+                    known.text_changing = false;
+                    match answer {
+                        Ok(stored) => {
+                            let texts = Arc::make_mut(&mut known.texts);
+                            match stored.status_text {
+                                Some(text) => texts.insert(owner.account_id, text),
+                                None => texts.remove(&owner.account_id),
+                            };
+                        }
+                        Err(reason) => known.text_failed = Some(reason),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub fn retry_presence(&mut self, server: ServerId, cx: &mut Context<Self>) {
         if let Some(reader) = self.presence.readers.get_mut(&server) {
             reader.failed_read = false;
@@ -592,6 +806,32 @@ impl AppState {
 mod tests {
     use super::*;
     use junto_client_core::EntryKey;
+
+    #[test]
+    fn a_status_text_ends_at_its_time_on_the_clock_of_the_person() {
+        use time::macros::datetime;
+        // A Wednesday, 15:10 in UTC, on a clock two hours ahead.
+        let now = datetime!(2026-10-07 15:10 UTC);
+        let zone = super::super::feed::Zone::Fixed(time::UtcOffset::from_hms(2, 0, 0).unwrap());
+        assert_eq!(StatusTextEnd::Never.until(now, zone), None);
+        assert_eq!(
+            StatusTextEnd::HalfHour.until(now, zone),
+            Some(datetime!(2026-10-07 15:40 UTC))
+        );
+        assert_eq!(
+            StatusTextEnd::FourHours.until(now, zone),
+            Some(datetime!(2026-10-07 19:10 UTC))
+        );
+        // Midnight on that clock is 22:00 in UTC.
+        assert_eq!(
+            StatusTextEnd::Today.until(now, zone),
+            Some(datetime!(2026-10-07 22:00 UTC))
+        );
+        assert_eq!(
+            StatusTextEnd::ThisWeek.until(now, zone),
+            Some(datetime!(2026-10-11 22:00 UTC))
+        );
+    }
     fn reader() -> Reader {
         Reader::new(Owner {
             entry: EntryKey {

@@ -60,6 +60,29 @@ impl Zone {
         crate::moment::in_offset(at, offset)
     }
 
+    /// The moment that the clock of the zone shows as `minute` of `date`. Absent for a time
+    /// that the clock skips; the earlier of two moments for a time that it shows twice.
+    pub fn at(self, date: Date, minute: u16) -> Option<OffsetDateTime> {
+        let (hour, minute) = (
+            u8::try_from(minute / 60).ok()?,
+            u8::try_from(minute % 60).ok()?,
+        );
+        match self {
+            Self::Fixed(offset) => Some(date.with_hms(hour, minute, 0).ok()?.assume_offset(offset)),
+            Self::Named(zone) => {
+                use chrono::TimeZone as _;
+                let local = chrono::NaiveDate::from_ymd_opt(
+                    date.year(),
+                    u32::from(u8::from(date.month())),
+                    u32::from(date.day()),
+                )?
+                .and_hms_opt(u32::from(hour), u32::from(minute), 0)?;
+                let first = zone.from_local_datetime(&local).earliest()?;
+                OffsetDateTime::from_unix_timestamp(first.timestamp()).ok()
+            }
+        }
+    }
+
     /// The first moment of a date on the clock of the zone. On a date whose clock skips
     /// midnight, the first hour that the clock shows.
     pub fn start_of(self, date: Date) -> OffsetDateTime {

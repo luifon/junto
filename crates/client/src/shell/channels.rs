@@ -1363,72 +1363,72 @@ impl Shell {
             Some(account_id) => self.shown_faces().image(account_id),
             None => view.preset_picture.clone(),
         };
+        // The own menu of the status and the status text (ADR 0401), for an account on a
+        // server that tells presence.
+        // The presence of a server is held for the current account of this device only.
+        let menu_owner = view.selected.as_ref().and_then(|server| {
+            self.state
+                .read(cx)
+                .presence_server(server.id)
+                .map(crate::state::presence::ServerPresence::owner)
+        });
+        let status_line: Option<SharedString> = menu_owner.map(|owner| {
+            let state = self.state.read(cx);
+            let server = owner.entry.server_id;
+            match state.status_text(server, owner.account_id) {
+                Some(status) => state.status_text_words(status).into(),
+                None => text::presence::label(state.presence(server, owner.account_id)).into(),
+            }
+        });
         let identity = div()
             .id("profile-identity")
+            .debug_selector(|| "profile-identity".to_owned())
             .flex()
             .flex_1()
             .min_w_0()
             .items_center()
             .gap(u(9.0))
-            .child(Avatar::new(seed, 30.0).image(picture).when_some(
-                view.person.account_id,
-                |avatar, account| {
-                    avatar
-                        .presence(self.shown_faces().presence(account))
-                        .when_some(self.shown_faces().server_id(), |avatar, server| {
-                            avatar.profile(crate::ui::OpenProfile { server, account })
-                        })
-                },
-            ))
+            .child(
+                Avatar::new(seed, 30.0)
+                    .image(picture)
+                    .when_some(view.person.account_id, |avatar, account| {
+                        avatar.presence(self.shown_faces().presence(account))
+                    }),
+            )
             .child(
                 div()
-                    .id("profile-name")
-                    .debug_selector(|| "profile-name".to_owned())
-                    .aria_label(name.clone())
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .typeface(theme.types.name, theme)
-                    .ink(colors.ink)
-                    .truncate()
-                    .child(match view.person.account_id {
-                        Some(account) => super::people::person_name(
-                            &self.shown_faces(),
-                            account,
-                            name,
-                            "own-profile-name",
-                        ),
-                        None => name.into_any_element(),
-                    })
-                    .when_some(
-                        view.selected
-                            .as_ref()
-                            .and_then(|server| self.state.read(cx).owner(server.id))
-                            .filter(|owner| {
-                                self.state
-                                    .read(cx)
-                                    .presence_server(owner.entry.server_id)
-                                    .is_some()
-                            }),
-                        |name, owner| {
-                            name.child(
-                                Button::new("presence-open")
-                                    .kind(ButtonKind::Ghost)
-                                    .label(text::presence::label(
-                                        self.state
-                                            .read(cx)
-                                            .presence(owner.entry.server_id, owner.account_id),
-                                    ))
-                                    .tooltip(text::presence::TITLE)
-                                    .selector("presence-open")
-                                    .h(u(19.))
-                                    .px(u(0.))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_layer(super::Layer::Presence(owner), window, cx)
-                                    })),
-                            )
-                        },
-                    ),
-            );
+                    .child(
+                        div()
+                            .id("profile-name")
+                            .debug_selector(|| "profile-name".to_owned())
+                            .aria_label(name.clone())
+                            .typeface(theme.types.name, theme)
+                            .ink(colors.ink)
+                            .truncate()
+                            .child(name.clone()),
+                    )
+                    .when_some(status_line, |column, line| {
+                        column.child(
+                            div()
+                                .debug_selector(|| "own-status-line".to_owned())
+                                .typeface(theme.types.small, theme)
+                                .ink(colors.ink_2)
+                                .truncate()
+                                .child(line),
+                        )
+                    }),
+            )
+            .when_some(menu_owner, |identity, owner| {
+                identity
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_layer(super::Layer::Presence(owner), window, cx);
+                    }))
+            });
         let owner = view
             .selected
             .as_ref()

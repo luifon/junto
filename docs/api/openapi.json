@@ -1138,6 +1138,59 @@
         ]
       }
     },
+    "/api/v1/account/status-text": {
+      "put": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Sets or removes the status text of the caller's account. The people who watch the\naccount read its presence again.",
+        "operationId": "set_status_text",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetStatusText"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetStatusText"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/accounts": {
       "get": {
         "tags": [
@@ -15333,6 +15386,17 @@
           },
           "presence": {
             "$ref": "#/components/schemas/Presence"
+          },
+          "status_text": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusText",
+                "description": "The status text of the account, for a caller who may see the account. Absent when\nthe account has none or its end time has passed."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -15477,6 +15541,19 @@
             "type": "boolean"
           }
         }
+      },
+      "AnswerRelay": {
+        "type": "object",
+        "description": "What the new device writes: its answer to the offer, which replaces an earlier one.",
+        "required": [
+          "answer"
+        ],
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/Sealed"
+          }
+        },
+        "additionalProperties": false
       },
       "ApplyStructureChanges": {
         "type": "object",
@@ -18448,6 +18525,10 @@
           },
           "search": {
             "$ref": "#/components/schemas/SearchCapabilities"
+          },
+          "status_text": {
+            "type": "boolean",
+            "description": "The account has a status text with an end time (`PUT /api/v1/account/status-text`)."
           }
         }
       },
@@ -22020,6 +22101,63 @@
           }
         }
       },
+      "RelayAnswer": {
+        "type": "object",
+        "description": "What the approving device reads: the answer of the new device, when it wrote one.",
+        "required": [
+          "new_device_id",
+          "new_public_key",
+          "expires_at"
+        ],
+        "properties": {
+          "answer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sealed"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "new_device_id": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "new_public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "RelayOffer": {
+        "type": "object",
+        "description": "What the new device reads: the offer of the device that approved it.",
+        "required": [
+          "old_device_id",
+          "old_public_key",
+          "offer",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "offer": {
+            "$ref": "#/components/schemas/Sealed"
+          },
+          "old_device_id": {
+            "$ref": "#/components/schemas/DeviceId",
+            "description": "The device that approved this one; its key on this server sealed the offer."
+          },
+          "old_public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
       "RenameDevice": {
         "type": "object",
         "required": [
@@ -22427,6 +22565,13 @@
             "format": "date-time"
           }
         }
+      },
+      "Sealed": {
+        "type": "string",
+        "description": "1 to 65536 bytes in base64url without padding, sealed by the sending device",
+        "maxLength": 87384,
+        "minLength": 2,
+        "pattern": "^[A-Za-z0-9_-]+$"
       },
       "SearchCapabilities": {
         "type": "object",
@@ -23050,6 +23195,23 @@
           }
         }
       },
+      "SetStatusText": {
+        "type": "object",
+        "description": "The new status text of the caller's account, or `null` to remove it.",
+        "properties": {
+          "status_text": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StatusText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "SetThreadFollow": {
         "type": "object",
         "description": "The choice of an account to follow a thread or not.",
@@ -23347,6 +23509,27 @@
           },
           "sha256": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StatusText": {
+        "type": "object",
+        "description": "A short text that an account shows with its status, with an optional end time after\nwhich the server removes it.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "One line of 1 to 100 characters without control characters."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         },
         "additionalProperties": false

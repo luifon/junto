@@ -25,14 +25,17 @@ fn the_status_picker_writes_all_choices_and_invisible_is_private(cx: &mut TestAp
     window.until("own presence is online", |window| {
         value(window, server_id, own) == Presence::Online
     });
-    window.click("presence-open");
     for (index, choice, shown) in [
         (1, PresenceChoice::Idle, Presence::Idle),
         (2, PresenceChoice::DoNotDisturb, Presence::DoNotDisturb),
         (3, PresenceChoice::Invisible, Presence::Invisible),
         (0, PresenceChoice::Online, Presence::Online),
     ] {
+        // A press on the own avatar or name opens the own menu (ADR 0401).
+        window.click("profile-identity");
+        assert!(window.shows("own-menu"));
         window.click_named(format!("presence-choice:{index}"));
+        assert!(!window.shows("own-menu"));
         window.until("the status change is saved", |window| {
             window.state.read_with(&window.cx, |state, _| {
                 state
@@ -40,13 +43,10 @@ fn the_status_picker_writes_all_choices_and_invisible_is_private(cx: &mut TestAp
                     .is_some_and(|view| !view.changing && view.choice == Some(choice))
             }) && value(window, server_id, own) == shown
         });
-        window.until("the status and notification preference agree", |window| {
-            window.view().quiet.do_not_disturb
-                == Some(junto_client::state::notices::Agreement::All(
-                    choice == PresenceChoice::DoNotDisturb,
-                ))
+        // "Do not disturb" holds the notifications of the server back (ADR 0404).
+        window.until("the status and the quiet time agree", |window| {
+            window.view().quiet.quiet_now == (choice == PresenceChoice::DoNotDisturb)
         });
-        assert!(window.shows("presence-dialog"));
         let page = world
             .run(admin.handle.api().presence(&ReadPresence {
                 accounts: vec![own],
@@ -62,9 +62,81 @@ fn the_status_picker_writes_all_choices_and_invisible_is_private(cx: &mut TestAp
             }
         );
     }
-    window.press("escape");
-    assert!(!window.shows("presence-dialog"));
     assert!(window.shows_named(format!("presence:{}", own.as_uuid().as_u128())));
+}
+
+#[gpui::test]
+fn a_status_text_is_set_with_an_end_shown_to_others_and_cleared(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let server_id = window.view().selected.unwrap().id;
+    let own = window.own_account();
+    window.until("own presence is read", |window| {
+        value(window, server_id, own) == Presence::Online
+    });
+    let text_of = |window: &mut Window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .status_text(server_id, own)
+                .map(|status| (status.text.clone(), status.until.is_some()))
+        })
+    };
+
+    window.click("profile-identity");
+    assert!(!window.shows("own-status-text"));
+    window.click("status-text-open");
+    assert!(window.shows("status-text-dialog") && !window.shows("own-menu"));
+    // An empty text is not sent.
+    window.click("status-text-save");
+    assert!(window.shows("status-text-refusal"));
+    window.in_shell(|shell, window, cx| shell.type_status_text("  On holiday  ", window, cx));
+    // A chosen end that has passed is refused.
+    window.click("status-text-end-later-2");
+    assert!(window.shows("status-text-date") && window.shows("status-text-time"));
+    window.in_shell(|shell, window, cx| {
+        shell.type_status_text_end("2020-01-01", "10:00", window, cx);
+    });
+    window.click("status-text-save");
+    assert!(window.shows("status-text-refusal"));
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.status_text_refusal()),
+        Some(junto_client::text::presence::END_PASSED)
+    );
+    window.click("status-text-end-later-0");
+    window.click("status-text-save");
+    assert!(!window.shows("status-text-dialog"));
+    window.until("the status text is stored", |window| {
+        text_of(window) == Some(("On holiday".to_owned(), true))
+    });
+    assert!(window.shows("own-status-line"));
+
+    // Other people read it with the status.
+    let read = |world: &World| {
+        world
+            .run(admin.handle.api().presence(&ReadPresence {
+                accounts: vec![own],
+                idle: false,
+            }))
+            .unwrap()
+            .accounts[0]
+            .status_text
+            .clone()
+    };
+    assert_eq!(
+        read(&world).map(|status| status.text),
+        Some("On holiday".to_owned())
+    );
+
+    // The own menu shows it with "Clear status text".
+    window.click("profile-identity");
+    assert!(window.shows("own-status-text"));
+    window.click("status-text-clear");
+    window.until("the status text is cleared", |window| {
+        text_of(window).is_none()
+    });
+    assert_eq!(read(&world), None);
 }
 
 #[gpui::test]
@@ -140,7 +212,7 @@ fn system_idle_and_remote_presence_update_people_and_both_windows(cx: &mut TestA
     });
     assert_eq!(value(&mut window, server_id, other), Presence::Online);
     detached.press("escape");
-    window.click("presence-open");
+    window.click("profile-identity");
     window.click_named("presence-choice:2".to_owned());
     window.until("both windows share the account choice", |window| {
         value(window, server_id, own) == Presence::DoNotDisturb
@@ -150,7 +222,7 @@ fn system_idle_and_remote_presence_update_people_and_both_windows(cx: &mut TestA
     window.state.update(&mut window.cx, |state, cx| {
         state.use_activity_reader(|| ActivityState::Unavailable, cx)
     });
-    window.click("presence-open");
+    window.click("profile-identity");
     assert!(window.shows("presence-activity-unavailable"));
 }
 
@@ -168,11 +240,18 @@ fn failed_status_changes_can_retry_and_logout_discards_held_presence(cx: &mut Te
         value(window, server_id, own) == Presence::Online
     });
     proxy.fail_ending("/account/presence", [Fault::Refused]);
-    window.click("presence-open");
+    window.click("profile-identity");
     window.click_named("presence-choice:3".to_owned());
-    window.until("the failed write is visible", |window| {
-        window.shows("presence-write-failed")
+    window.until("the failed write is stored", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .presence_server(server_id)
+                .is_some_and(|view| view.failed.is_some())
+        })
     });
+    // The own menu states the failure with "Try again".
+    window.click("profile-identity");
+    assert!(window.shows("presence-write-failed"));
     assert_eq!(value(&mut window, server_id, own), Presence::Online);
     window.click("presence-write-retry");
     window.until("retry saves invisible", |window| {
@@ -199,5 +278,5 @@ fn failed_status_changes_can_retry_and_logout_discards_held_presence(cx: &mut Te
         })
     });
     assert_eq!(value(&mut window, server_id, own), Presence::Offline);
-    assert!(!window.shows("presence-dialog"));
+    assert!(!window.shows("own-menu"));
 }

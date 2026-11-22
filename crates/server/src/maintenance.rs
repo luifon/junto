@@ -83,6 +83,10 @@ pub async fn run_once(app: &AppState) -> ApiResult<()> {
         pass.ran("expired rows", in_batches(app, statement, now).await);
     }
     pass.ran("expired sessions", expire_sessions(app, now).await);
+    pass.ran(
+        "status texts",
+        crate::routes::presence::expire_status_texts(app, now).await,
+    );
     let notice_start = now - crate::routes::moderation_notices::RETENTION;
     pass.ran(
         "private moderation notices",

@@ -41,6 +41,36 @@ fn presence(
         state.show_presence_fixture(owner(), values, cx)
     });
 }
+/// Status texts of two people and of the own account (ADR 0401).
+fn texts(
+    shell: &mut junto_client::shell::Shell,
+    cx: &mut gpui::Context<junto_client::shell::Shell>,
+) {
+    use junto_client_core::protocol::presence::StatusText;
+    let texts: HashMap<_, _> = [
+        ("Ana", "On holiday until Monday", None),
+        (
+            "Luca",
+            "Out of office",
+            Some(super::at() + time::Duration::hours(4)),
+        ),
+        ("Bruno", "Working from the train, slow answers", None),
+    ]
+    .into_iter()
+    .map(|(name, text, until)| {
+        (
+            person(name),
+            StatusText {
+                text: text.to_owned(),
+                until,
+            },
+        )
+    })
+    .collect();
+    shell.state().clone().update(cx, |state, cx| {
+        state.show_status_text_fixture(id(1), texts, cx)
+    });
+}
 fn card(many: bool) -> ProfileRead {
     let roles = if many {
         (0..140)
@@ -111,6 +141,66 @@ pub fn draw(studio: &mut Studio) -> Result<(), String> {
                     window,
                     cx,
                 );
+            },
+        )?;
+    }
+    // The status text (ADR 0401): on the profile card, in the members list, in the user
+    // bar, in the own menu, and in its dialog.
+    studio.draw(
+        Screen::new("profile-card-status-text", vec![acme(), harbor()]),
+        |shell, window, cx| {
+            presence(shell, cx);
+            texts(shell, cx);
+            shell.show_profile_fixture(
+                ProfileView {
+                    owner: owner(),
+                    account: person("Ana"),
+                    read: card(false),
+                },
+                window,
+                cx,
+            );
+        },
+    )?;
+    studio.draw(
+        Screen::new("members-status-text", vec![acme(), harbor()]),
+        |shell, window, cx| {
+            presence(shell, cx);
+            texts(shell, cx);
+            shell.open(Open::Members, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("own-menu", vec![acme(), harbor()]),
+        |shell, window, cx| {
+            presence(shell, cx);
+            shell.open_own_menu(window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("own-menu-status-text", vec![acme(), harbor()]),
+        |shell, window, cx| {
+            presence(shell, cx);
+            texts(shell, cx);
+            shell.open_own_menu(window, cx);
+        },
+    )?;
+    for (name, end) in [
+        (
+            "status-text-dialog",
+            junto_client::state::presence::StatusTextEnd::Today,
+        ),
+        (
+            "status-text-dialog-custom",
+            junto_client::state::presence::StatusTextEnd::Custom,
+        ),
+    ] {
+        studio.draw(
+            Screen::new(name, vec![acme(), harbor()]),
+            move |shell, window, cx| {
+                presence(shell, cx);
+                texts(shell, cx);
+                shell.open_status_text_dialog(end, window, cx);
             },
         )?;
     }

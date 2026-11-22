@@ -113,7 +113,10 @@ pub(crate) enum Layer {
     Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
     ServerMenu,
+    /// The own menu of the user bar: the status and the status text (ADR 0401).
     Presence(junto_client_core::Owner),
+    /// The dialog of the own status text.
+    StatusText(junto_client_core::Owner),
     Profile,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
@@ -212,13 +215,14 @@ impl Layer {
             | Layer::SearchFilter(..)
             | Layer::RecordingFiles(..)
             | Layer::RecordingParts(..)
+            | Layer::Presence(..)
             | Layer::RecordLanguage => false,
             Layer::Welcome
             | Layer::Settings
             | Layer::ReleaseNotes(..)
             | Layer::Prejoin(..)
             | Layer::Join(..)
-            | Layer::Presence(..)
+            | Layer::StatusText(..)
             | Layer::Profile
             | Layer::ConfirmRemove(..)
             | Layer::ConfirmForget(..)
@@ -546,6 +550,12 @@ pub struct Shell {
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
     voice_status_field: Entity<InputState>,
+    /// The field of the own status text, and its end (ADR 0401).
+    pub(crate) status_text_field: Entity<InputState>,
+    pub(crate) status_text_end: crate::state::presence::StatusTextEnd,
+    pub(crate) status_text_refusal: Option<&'static str>,
+    pub(crate) status_text_date: Entity<InputState>,
+    pub(crate) status_text_time: Entity<InputState>,
     search_from: Entity<InputState>,
     search_through: Entity<InputState>,
     search_date_invalid: bool,
@@ -642,6 +652,9 @@ impl Shell {
         let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let voice_status_field = Field::state("Status", window, cx);
+        let status_text_field = Field::state(text::presence::STATUS_TEXT_PLACEHOLDER, window, cx);
+        let status_text_date = Field::state(text::presence::END_DATE_PLACEHOLDER, window, cx);
+        let status_text_time = Field::state(text::presence::END_TIME_PLACEHOLDER, window, cx);
         let search_from = Field::state("YYYY-MM-DD", window, cx);
         let search_through = Field::state("YYYY-MM-DD", window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
@@ -667,6 +680,15 @@ impl Shell {
         let book = book::BookUi::new(window, cx);
         let arrange = arrange::ArrangeUi::new(window, cx);
         let mut subscriptions = vec![
+            Field::observe(
+                &status_text_field,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Submitted => this.save_status_text(window, cx),
+                    FieldEvent::Changed => cx.notify(),
+                },
+            ),
             Field::observe(
                 &voice_status_field,
                 window,
@@ -1032,6 +1054,11 @@ impl Shell {
             record_language_closed_by_press: false,
             search_field,
             voice_status_field,
+            status_text_field,
+            status_text_end: crate::state::presence::StatusTextEnd::Never,
+            status_text_refusal: None,
+            status_text_date,
+            status_text_time,
             search_from,
             search_through,
             search_date_invalid: false,
@@ -2380,8 +2407,12 @@ impl Shell {
                 .as_ref()
                 .is_none_or(|strip| strip.own_shares.is_empty()),
             Layer::Profile => self.state.read(cx).profile_view(cx.entity_id()).is_none(),
-            Layer::Presence(owner) => {
-                self.state.read(cx).owner(owner.entry.server_id) != Some(*owner)
+            Layer::Presence(owner) | Layer::StatusText(owner) => {
+                self.state
+                    .read(cx)
+                    .presence_server(owner.entry.server_id)
+                    .map(crate::state::presence::ServerPresence::owner)
+                    != Some(*owner)
             }
             Layer::NewDirect => {
                 self.state.read(cx).contacts_view().is_none()
@@ -2502,7 +2533,8 @@ impl Shell {
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::Profile => self.render_profile(cx),
-            Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
+            Layer::Presence(owner) => self.render_presence(*owner, cx),
+            Layer::StatusText(_) => self.render_status_text(cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::NewDirect => self.render_new_direct(window, cx),
             Layer::GroupConversation => self.render_group_details(cx),

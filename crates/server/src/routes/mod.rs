@@ -259,6 +259,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || routes!(account_cards::get_card));
     add(&mut router, || routes!(presence::read_presence));
     add(&mut router, || routes!(presence::set_presence));
+    add(&mut router, || routes!(presence::set_status_text));
     add(&mut router, || routes!(device_relay::read_offer));
     add(&mut router, || routes!(device_relay::write_answer));
     add(&mut router, || {

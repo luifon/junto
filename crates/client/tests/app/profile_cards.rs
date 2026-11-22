@@ -17,6 +17,13 @@ fn open_avatar(window: &mut Window, account: AccountId) {
     window.click_named(format!("presence:{}", account.as_uuid().as_u128()));
 }
 
+/// The own card opens from a message or the members list; the own avatar of the user bar
+/// opens the own menu (ADR 0401).
+fn open_own_card(window: &mut Window, account: AccountId) {
+    let server = window.view().selected.unwrap().id;
+    window.in_shell(|shell, window, cx| shell.open_profile_card(server, account, window, cx));
+}
+
 #[gpui::test]
 fn pressing_a_message_avatar_opens_the_persons_profile_card(cx: &mut TestAppContext) {
     let world = World::new();
@@ -72,7 +79,7 @@ fn the_own_card_shows_roles_and_has_no_self_message_or_call(cx: &mut TestAppCont
     world
         .run(admin.handle.api().assign_server_role(own, role.id))
         .unwrap();
-    open_avatar(&mut window, own);
+    open_own_card(&mut window, own);
     window.until("the role is drawn in the own card", |window| {
         ready(window, own) && window.shows_named(format!("profile-role:{}", role.id))
     });
@@ -98,7 +105,7 @@ fn profile_retry_closed_reads_unavailable_and_logout_keep_the_current_identity(
     let server_id = window.view().selected.unwrap().id;
     let own = window.own_account();
     proxy.fail_ending("/card", [Fault::Refused]);
-    open_avatar(&mut window, own);
+    open_own_card(&mut window, own);
     window.until("a read failure is visible", |window| {
         window.shows("profile-failed")
     });
@@ -106,7 +113,7 @@ fn profile_retry_closed_reads_unavailable_and_logout_keep_the_current_identity(
     window.until("retry reads the card", |window| ready(window, own));
     window.press("escape");
     proxy.hold_request("GET", "/card");
-    open_avatar(&mut window, own);
+    open_own_card(&mut window, own);
     window.until("the held read started", |_| {
         proxy
             .all()
@@ -130,7 +137,7 @@ fn profile_retry_closed_reads_unavailable_and_logout_keep_the_current_identity(
     assert!(!profile(&mut window).unwrap().can_contact());
     window.press("escape");
     proxy.hold_request("GET", "/card");
-    open_avatar(&mut window, own);
+    open_own_card(&mut window, own);
     window
         .state
         .update(&mut window.cx, |state, cx| state.log_out(server_id, cx));
