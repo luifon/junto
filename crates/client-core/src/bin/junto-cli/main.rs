@@ -1349,10 +1349,18 @@ async fn approve_device(client: &Client, arguments: &Arguments) -> Result<(), Fa
     )? {
         return Err(Failure::Failed("not approved".to_owned()));
     }
+    // The events of the first server tell when the new device answers. They are taken
+    // before the approval, so that an answer that comes before its return is not missed.
+    let mut relay_notices = client.server(first).map(|server| {
+        let notices = server.live().notices();
+        let _ = client.start_event_streams();
+        client.select(Some(first));
+        notices
+    });
     let approved = flow.dispatch(LinkNewDeviceAction::Approve).await;
     all_notices(client);
     let result = match approved {
-        Ok(()) => follow_approvals(client, &flow).await,
+        Ok(()) => follow_approvals(client, &flow, relay_notices.as_mut()).await,
         Err(error) => Err(failed(error)),
     };
     if let LinkNewDeviceState::Linking { servers, .. } = flow.view().state {
@@ -1364,10 +1372,17 @@ async fn approve_device(client: &Client, arguments: &Arguments) -> Result<(), Fa
     result
 }
 
-/// Follows the answers of the new device until no server waits for one.
-async fn follow_approvals(client: &Client, flow: &LinkNewDeviceFlow) -> Result<(), Failure> {
-    let started = tokio::time::Instant::now();
+/// Follows the answers of the new device until no server waits for one: it reads the
+/// relay once, and again at each change that the first server tells (ADR 0716).
+async fn follow_approvals(
+    client: &Client,
+    flow: &LinkNewDeviceFlow,
+    mut notices: Option<&mut junto_client_core::live::Notices>,
+) -> Result<(), Failure> {
+    let end = tokio::time::Instant::now() + LONGEST_LINK;
     loop {
+        let _ = flow.dispatch(LinkNewDeviceAction::Check).await;
+        all_notices(client);
         let LinkNewDeviceState::Linking { servers, .. } = flow.view().state else {
             return Ok(());
         };
@@ -1383,15 +1398,43 @@ async fn follow_approvals(client: &Client, flow: &LinkNewDeviceFlow) -> Result<(
                 Some(error) => Err(failed(error)),
             };
         }
-        if started.elapsed() >= LONGEST_LINK {
+        let Some(notices) = notices.as_deref_mut() else {
+            return Err(Failure::Failed(
+                "the first server is not saved on this device".to_owned(),
+            ));
+        };
+        if !relay_changed(notices, end).await {
             return Err(Failure::Failed(
                 "the new device did not answer within the life of the relay".to_owned(),
             ));
         }
-        tokio::time::sleep(WAIT_INTERVAL).await;
-        let _ = flow.dispatch(LinkNewDeviceAction::Check).await;
-        all_notices(client);
     }
+}
+
+/// Waits for a change of the relay of a link, or for a reload of the state after which
+/// changes may have been missed. False at `end`, or when the client ended.
+async fn relay_changed(
+    notices: &mut junto_client_core::live::Notices,
+    end: tokio::time::Instant,
+) -> bool {
+    use junto_client_core::live::Notice as LiveNotice;
+    use junto_client_core::protocol::events::Event;
+    let waiting = async {
+        loop {
+            match notices.next().await {
+                None => return false,
+                // A reader that was too slow may have missed the change.
+                Some(Err(_)) | Some(Ok(LiveNotice::Reloaded { .. })) => return true,
+                Some(Ok(LiveNotice::Event { event, .. }))
+                    if matches!(event.as_ref(), Event::DeviceLinkRelayChanged { .. }) =>
+                {
+                    return true;
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+    };
+    tokio::time::timeout_at(end, waiting).await.unwrap_or(false)
 }
 
 fn show_approvals(servers: &[ServerApproval]) {

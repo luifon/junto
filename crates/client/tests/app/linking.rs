@@ -323,6 +323,66 @@ fn a_second_installation_is_linked_on_two_servers_with_one_code(
     });
 }
 
+/// The new device can answer through the relay before the approval of the first server
+/// returns to the device of the account. The answer is read when the approval returns,
+/// without another change of the relay (ADR 0782).
+#[gpui::test]
+fn an_answer_that_arrives_before_the_approval_returns_is_read(
+    cx: &mut TestAppContext,
+    new_cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let acme = world.server("Acme Studio");
+    let harbor = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&harbor));
+    let (_directory, mut first) = named(cx, "Luca");
+    first.find_server(&acme.address());
+    first.join_with_code(&acme.owner_code().unwrap());
+    first.until_ready();
+    first.find_server(&proxy.address());
+    first.join_with_code(&harbor.owner_code().unwrap());
+    first.until_ready();
+
+    let new_directory = tempfile::tempdir().unwrap();
+    let mut new = open(new_cx, new_directory.path());
+    new.click("welcome-link");
+    new.in_shell(|shell, window, cx| shell.type_link_address(&harbor.address(), window, cx));
+    new.click("link-start");
+    new.until("the new device shows the code of Harbor", |new| {
+        new.layer_code().is_some()
+    });
+    let code = new.layer_code().unwrap();
+
+    first.open_link_settings("settings-link-first");
+    first.in_shell(|shell, window, cx| shell.type_link_code(&code, window, cx));
+    first.click("link-code-look-up");
+    first.until("the device code is shown", |first| {
+        first.shows("link-all-device-code")
+    });
+    proxy.hold_answer_ending("POST", "/device-links/approve");
+    let scroll = first.in_shell(|shell, _, _| shell.linking_scroll_handle());
+    first.reveal(&scroll, "link-all-approve");
+    first.click("link-all-approve");
+
+    // Harbor added the new device, which reads the offer and answers for Acme while the
+    // device of the account still waits for the answer of its approval.
+    new.until("the new device answered for Acme", |new| {
+        new.link_lines() == Some((vec![LinkShown::Waiting], false))
+    });
+    assert!(matches!(
+        first.link_all(),
+        Some(LinkAllView::First(view)) if matches!(view.step, FirstStep::Confirm { .. })
+    ));
+    proxy.release_answers();
+    first.until("both servers are approved", |first| {
+        let lines = first.approval_lines();
+        lines.len() == 2
+            && lines
+                .iter()
+                .all(|(_, progress)| *progress == ApprovalShown::Approved)
+    });
+}
+
 /// The page of the devices reads its list again at "Try again" (ADR 0781).
 #[gpui::test]
 fn a_device_list_that_was_not_read_is_read_again(cx: &mut TestAppContext) {

@@ -21,7 +21,7 @@ The relay:
 
 - The relay is a record of its own on the first server, keyed by the new device. It holds the account, the old device, the new device, the offer, the latest answer of the new device and a count of answers. It survives the approval, which deletes the waiting link, and ends when either device ends it or 15 minutes after the approval, whichever is first; the maintenance task removes it then (ADR 0009). A removal of either device removes it.
 - Only its two devices reach it, each with the session of its device; an access token does not. The new device reads the offer (`GET /api/v1/account/device-link-relay`) and writes its answer (`PUT /api/v1/account/device-link-relay/answer`); the old device reads the answer (`GET /api/v1/account/device-link-relays/{device_id}`); either ends it (`DELETE` on the same path). A message has at most 64 KiB, and the new device writes at most 256 answers.
-- The creation and each answer record `device_link_relay_changed` with the new device for the account (event revision 23), so the old device reads the answer when it changes and polls nothing. The new device reads the offer when its first server logged it in.
+- The creation and each answer record `device_link_relay_changed` with the new device for the account (event revision 23), so the old device reads the answer when it changes and polls nothing. The window and `junto-cli approve-device` read it once when the approval returns, since the new device can answer before that, and again at each change; a change that arrives while the approval or a read still runs is kept and read when it ends. The new device reads the offer when its first server logged it in.
 
 Sealed messages:
 

@@ -334,6 +334,9 @@ pub struct LinkingState {
     open: Option<LinkRole>,
     approving: Option<LinkNewDeviceFlow>,
     requesting: Option<LinkThisDeviceFlow>,
+    /// The relay of the approving flow changed, or the approval was sent, since its answer
+    /// was last read: it is read when the flow follows its answers and no action runs.
+    relay_changed: bool,
     #[cfg(feature = "test-support")]
     fixture: Option<LinkAllView>,
 }
@@ -375,6 +378,7 @@ impl AppState {
             open: Some(role),
             approving: first.then(|| self.client.link_new_device(only)),
             requesting: (!first).then(|| self.client.link_this_device()),
+            relay_changed: false,
             #[cfg(feature = "test-support")]
             fixture: None,
         };
@@ -438,9 +442,30 @@ impl AppState {
         self.run_approving(LinkNewDeviceAction::LookUp { code }, cx);
     }
 
-    /// Approves the new device on the first server, with the other checked servers.
+    /// Approves the new device on the first server, with the other checked servers. The
+    /// answer is read once as soon as the approval is done, since the new device can
+    /// answer before the approval returns.
     pub fn approve_new_device(&mut self, cx: &mut Context<Self>) {
+        self.linking.relay_changed = true;
         self.run_approving(LinkNewDeviceAction::Approve, cx);
+    }
+
+    /// Reads the answer of the new device when the relay changed and nothing runs; a change
+    /// during an action is read when the action ends.
+    fn follow_when_due(&mut self, cx: &mut Context<Self>) {
+        let Some(flow) = &self.linking.approving else {
+            return;
+        };
+        let view = flow.view();
+        if !self.linking.relay_changed
+            || view.in_progress.is_some()
+            || !matches!(view.state, LinkNewDeviceState::Linking { .. })
+            || !view.actions.contains(&LinkNewDeviceActionKind::Check)
+        {
+            return;
+        }
+        self.linking.relay_changed = false;
+        self.follow_new_device(cx);
     }
 
     /// Reads the answer of the new device and approves each link that it names.
@@ -473,6 +498,7 @@ impl AppState {
     /// Moves the flow of the new device on when the state of a server tells that it
     /// should: the first server linked this device, or a code of another server expired.
     pub(super) fn reconcile_linking(&mut self, cx: &mut Context<Self>) {
+        self.follow_when_due(cx);
         let Some(flow) = &self.linking.requesting else {
             return;
         };
@@ -519,11 +545,15 @@ impl AppState {
         if !matches!(event.as_ref(), Event::DeviceLinkRelayChanged { .. }) {
             return;
         }
+        // A change can arrive while the approval still waits for its answer, or while a
+        // read runs: it is kept and read when the flow can.
         if let Some(flow) = &self.linking.approving
-            && let LinkNewDeviceState::Linking { first, .. } = flow.view().state
+            && let LinkNewDeviceState::Confirm { first, .. }
+            | LinkNewDeviceState::Linking { first, .. } = flow.view().state
             && first == server_id
         {
-            self.follow_new_device(cx);
+            self.linking.relay_changed = true;
+            self.follow_when_due(cx);
         }
     }
 
