@@ -74,6 +74,9 @@ pub enum ErrorCode {
     /// The byte range of the request lies outside the file.
     RangeNotSatisfiable,
     MethodNotAllowed,
+    /// The route was retired: the server answers every request of it with this code, and the
+    /// message names the change (ADR 0201).
+    Retired,
     Timeout,
     Busy,
     Unavailable,
@@ -133,6 +136,7 @@ impl ErrorCode {
         Self::RecordingsFull,
         Self::RangeNotSatisfiable,
         Self::MethodNotAllowed,
+        Self::Retired,
         Self::Timeout,
         Self::Busy,
         Self::Unavailable,
@@ -171,7 +175,9 @@ impl ErrorCode {
             | Self::CallFull
             | Self::NotInCall
             | Self::SeatEnded => 409,
-            Self::InviteExpired | Self::InviteExhausted | Self::InviteRevoked => 410,
+            Self::InviteExpired | Self::InviteExhausted | Self::InviteRevoked | Self::Retired => {
+                410
+            }
             Self::TooManyAttempts
             | Self::RateLimited
             | Self::JoinRequestsFull

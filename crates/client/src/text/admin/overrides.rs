@@ -392,7 +392,6 @@ pub fn back_to(page: &str) -> String {
 
 pub const fn person_page_name(page: PersonPage) -> &'static str {
     match page {
-        PersonPage::Permissions(_) => MEMBER_PERMISSIONS,
         PersonPage::Access(_) => ACCESS,
         PersonPage::Server => SERVER_PERMISSIONS,
     }
@@ -400,7 +399,7 @@ pub const fn person_page_name(page: PersonPage) -> &'static str {
 
 pub const fn person_page_icon(page: PersonPage) -> Icon {
     match page {
-        PersonPage::Permissions(_) | PersonPage::Server => Icon::ShieldCheck,
+        PersonPage::Server => Icon::ShieldCheck,
         PersonPage::Access(_) => Icon::Hash,
     }
 }
@@ -408,7 +407,6 @@ pub const fn person_page_icon(page: PersonPage) -> Icon {
 /// The name of the row of a page of the settings of a person, for a test.
 pub const fn person_page_selector(page: PersonPage) -> &'static str {
     match page {
-        PersonPage::Permissions(_) => "person-nav-permissions",
         PersonPage::Access(_) => "person-nav-access",
         PersonPage::Server => "person-nav-server",
     }
@@ -434,6 +432,38 @@ pub const fn server_name(permission: ServerPermission) -> &'static str {
 /// What a server permission lets an account do.
 pub const fn server_help(permission: ServerPermission) -> &'static str {
     super::roles::server_permission_help(permission)
+}
+
+/// The fold of the full list of the rules of a channel.
+pub const ADVANCED: &str = "Advanced permissions";
+pub const WHO_SEES: &str = "Who can see this channel";
+pub const ADD_VIEWER: &str = "Add a role or person";
+pub const REMOVE_VIEWER: &str = "Remove";
+pub const DENIED_BY_ADVANCED: &str = "Denied by an advanced rule";
+pub const ONLY_ADMINISTRATORS_SEE: &str = "Only server administrators see it now.";
+
+/// The label of a group of permissions in a rule.
+pub const fn group_name(
+    group: crate::state::admin::view::overrides::PermissionGroup,
+) -> &'static str {
+    use crate::state::admin::view::overrides::PermissionGroup;
+    match group {
+        PermissionGroup::General => "General",
+        PermissionGroup::Messages => "Messages",
+        PermissionGroup::Calls => "Calls",
+        PermissionGroup::Moderation => "Moderation",
+        PermissionGroup::Recordings => "Recordings",
+    }
+}
+
+pub const STOP_SYNC_CONFIRM: &str = "Change";
+
+/// The question before the first change of who sees a channel that takes the rules of its
+/// category.
+pub fn stop_sync_question(category: &str) -> String {
+    format!(
+        "The channel takes the permissions of “{category}”. A change gives it permissions of its own, which no longer follow the category."
+    )
 }
 
 #[cfg(test)]

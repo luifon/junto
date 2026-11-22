@@ -213,6 +213,9 @@ pub const USES_PLACEHOLDER: &str = "1 to 10000";
 pub const USES_RANGE: &str = "Type a number of uses from 1 to 10000.";
 pub const WORKSPACES: &str = "Workspaces";
 pub const DEFAULT_WORKSPACE: &str = "Default workspace";
+/// Why the switch of the default workspace in the form of a new invite cannot be turned off.
+pub const DEFAULT_IN_EVERY_INVITE: &str =
+    "Every person who joins is a member of the default workspace.";
 pub const INVITE_GRANTS_HELP: &str =
     "A person who joins with the code becomes a member of these workspaces.";
 pub const CHOOSE_WORKSPACE: &str =
@@ -339,4 +342,23 @@ pub const COPY_APP_LINK: &str = "Copy app link";
 pub fn invite_creator_range(name: Option<&str>) -> std::ops::Range<usize> {
     let start = "Created by ".len();
     start..start + name.map_or(0, str::len)
+}
+
+// The items of the menu of an account on the page of the people, each naming its scope.
+pub const SERVER_ROLES: &str = "Server roles…";
+pub const SERVER_PERMISSIONS: &str = "Server permissions…";
+pub const REMOVE_FROM_SERVER: &str = "Remove from server…";
+pub const BAN_FROM_SERVER: &str = "Ban from server…";
+pub const RECOVER_MENU: &str = "Recover onto a new device…";
+pub const MEMBER_OF: &str = "Member of";
+
+/// The group of the menu of a person that holds the actions of the administration.
+pub const MANAGE: &str = "Manage";
+
+pub fn roles_in(workspace: &str) -> String {
+    format!("Roles in {workspace}…")
+}
+
+pub fn remove_from(workspace: &str) -> String {
+    format!("Remove from {workspace}…")
 }

@@ -385,11 +385,7 @@ impl Shell {
             "archive-footer",
             page.settings
                 .as_ref()
-                .is_some_and(|days| !matches!(days, Listed::Loading))
-                || page
-                    .direct_retention
-                    .as_ref()
-                    .is_some_and(|days| !matches!(days, Listed::Loading)),
+                .is_some_and(|days| !matches!(days, Listed::Loading)),
         )))
         .collect();
         self.admin.list.take(Some(view), list, window, cx);
@@ -477,29 +473,37 @@ impl Shell {
                 }
             }
         }
-        if let Some(direct) = &page.direct_retention {
-            let part = AdminPart::DirectRetention;
-            column = match direct {
-                Listed::Loading => {
-                    column.child(self.render_reading(server_id, part, None, &theme, cx))
-                }
-                Listed::Failed(failure) => {
-                    column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx))
-                }
-                Listed::Loaded(value) => column.child(self.render_days(
-                    view,
-                    None,
-                    AskKind::DirectRetention,
-                    text::admin::DIRECT_RETENTION,
-                    text::admin::DIRECT_RETENTION_HELP,
-                    "days-direct-retention",
-                    *value,
-                    &theme,
-                    cx,
-                )),
-            };
-        }
         column.into_any_element()
+    }
+
+    /// The retention of the files of direct messages, which holds for the whole server
+    /// (ADR 0406): a row of the overview of the server.
+    pub(super) fn render_direct_retention(
+        &mut self,
+        view: &AdminView,
+        direct: &Listed<Option<u32>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme(cx);
+        let server_id = view.server_id;
+        let part = AdminPart::DirectRetention;
+        match direct {
+            Listed::Loading => self.render_reading(server_id, part, None, &theme, cx),
+            Listed::Failed(failure) => {
+                self.render_reading(server_id, part, Some(*failure), &theme, cx)
+            }
+            Listed::Loaded(value) => self.render_days(
+                view,
+                None,
+                AskKind::DirectRetention,
+                text::admin::DIRECT_RETENTION,
+                text::admin::DIRECT_RETENTION_HELP,
+                "days-direct-retention",
+                *value,
+                &theme,
+                cx,
+            ),
+        }
     }
 
     fn render_archive_header(

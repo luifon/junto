@@ -40,11 +40,13 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
     );
 
     // Escape closes the dialog also while the code field holds the keyboard focus, and
-    // nothing was saved. Enter in the address field asks the server again.
+    // nothing was saved. Enter in the address field of "Add server or workspace", which
+    // keeps the address, asks the server again.
     assert!(window.in_shell(|shell, window, cx| shell.layer_holds_focus(window, cx)));
     window.press("escape");
     assert!(!window.shows("join-dialog"));
     assert!(window.view().servers.is_empty());
+    window.click("add-server");
     window.in_shell(|shell, window, cx| shell.focus_address(window, cx));
     window.press("enter");
     window.until("the join dialog opens again", |window| {
@@ -307,7 +309,7 @@ fn removing_a_waiting_server_withdraws_its_request(cx: &mut TestAppContext) {
     window.click("request-access");
     window.until("the request waits", |window| window.shows("cancel-request"));
     window.click("close-join");
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("the server is removed", |window| {
@@ -351,7 +353,7 @@ fn a_removal_that_meets_an_approval_keeps_the_server_and_tells_no_failure(cx: &m
     // The withdrawal of the removal waits at the proxy while the request is approved.
     proxy.hold_request("POST", "/join-requests/withdrawal");
     let server_id = window.view().servers[0].id;
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("the withdrawal waits", |_| {
@@ -630,14 +632,14 @@ fn a_second_server_has_its_own_row_its_own_state_and_can_be_removed(cx: &mut Tes
     assert_eq!(view.selected.as_ref().unwrap().name, "Acme Studio");
 
     // The menu of the server removes it from this device after a question.
-    window.click("server-menu-button");
+    window.open_server_menu();
     assert!(window.shows("server-menu"));
     window.click("menu-remove-server");
     assert!(window.shows("confirm-remove"));
     window.click("cancel");
     assert!(!window.shows("confirm-remove"));
     assert_eq!(window.view().servers.len(), 2);
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("one server is left", |window| {

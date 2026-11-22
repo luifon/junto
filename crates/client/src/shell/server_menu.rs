@@ -1,5 +1,6 @@
-//! The menu of the selected server, and the two questions that it and the state of a
-//! server lead to: removing the server from this device, and forgetting its account.
+//! The menu of a server, the menu under the name of the channel column, and the questions
+//! that the menu and the state of a server lead to: logging out, removing the server from this
+//! device, and forgetting its account.
 
 use std::ops::Not as _;
 
@@ -7,62 +8,160 @@ use gpui::{
     Context, Hsla, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
     prelude::FluentBuilder,
 };
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
-use super::{Layer, Shell};
+use super::{Layer, MenuAt, Shell};
 use crate::assets::Icon;
 use crate::state::view::{ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
     Button, ButtonKind, Dialog, Menu, MenuItem, Mosaic, MosaicKind, StyleExt, dialog_footer, icon,
-    menu_separator, paint_text,
+    menu_label, menu_separator, paint_text,
 };
 
 impl Shell {
-    fn open_invite_people(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_invite_people(
+        &mut self,
+        server_id: ServerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self
             .state
             .read(cx)
-            .view()
+            .view_for_server(server_id)
             .selected
             .is_some_and(|server| server.may_invite_people)
         {
             return;
         }
+        self.state
+            .update(cx, |state, cx| state.select_server(server_id, cx));
         self.open_server_admin(crate::state::admin::AdminPage::Invites, window, cx);
         self.set_people_open(Some(super::admin::people::Open::NewInvite), window, cx);
     }
 
+    /// Opens the menu of the selected server at its row in the server book.
     pub(crate) fn open_server_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(server_id) = self
+            .state
+            .read(cx)
+            .view()
+            .selected
+            .as_ref()
+            .map(|server| server.id)
+        {
+            self.open_server_menu_of(server_id, MenuAt::Row, window, cx);
+        }
+    }
+
+    /// Opens the menu of a server: from its row or icon in the server book, or from the
+    /// title of the channel column of a server that shows no workspace.
+    pub(crate) fn open_server_menu_of(
+        &mut self,
+        server_id: ServerId,
+        at: MenuAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.read(cx).server(server_id).is_none() {
+            return;
+        }
+        // A move of a server that failed is told in the menu that asked for it.
+        self.state
+            .update(cx, |state, cx| state.dismiss_move_failure(cx));
+        self.open_layer(Layer::ServerMenu(server_id, at), window, cx);
+    }
+
+    /// The arrow beside the name at the top of the channel column: the menu of the shown
+    /// workspace, or the menu of the server while the server shows no workspace.
+    pub(crate) fn open_header_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A click on the button of an open menu closes the menu: the press closed it, and
         // the click must not open it again.
         if std::mem::take(&mut self.server_menu_closed_by_press) {
             return;
         }
-        if self.state.read(cx).view().selected.is_some() {
-            // A move of a server that failed is told in the menu that asked for it.
-            self.state
-                .update(cx, |state, cx| state.dismiss_move_failure(cx));
-            self.open_layer(Layer::ServerMenu, window, cx);
+        let view = self.state.read(cx).view();
+        let Some(server_id) = view.selected.as_ref().map(|server| server.id) else {
+            return;
+        };
+        match view.workspace().map(|workspace| workspace.id) {
+            Some(workspace_id) => {
+                self.open_workspace_menu_at(server_id, workspace_id, MenuAt::Header, window, cx);
+            }
+            None => self.open_server_menu_of(server_id, MenuAt::Header, window, cx),
         }
     }
 
+    /// The menu that the arrow of the channel column opened, under the header.
+    pub(crate) fn render_header_menu(
+        &mut self,
+        server_id: Option<ServerId>,
+        workspace_id: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = theme(cx);
+        let menu = match (server_id, workspace_id) {
+            (Some(server_id), Some(workspace_id)) => {
+                let view = self.state.read(cx).view_for_server(server_id);
+                view.servers
+                    .iter()
+                    .find(|row| row.id == server_id)
+                    .cloned()
+                    .and_then(|row| {
+                        let position = row
+                            .workspaces
+                            .iter()
+                            .position(|workspace| workspace.id == workspace_id)?;
+                        Some(self.render_workspace_menu_items(&row, position, MenuAt::Header, cx))
+                    })
+            }
+            (Some(server_id), None) => Some(self.render_server_menu(server_id, cx)),
+            _ => None,
+        };
+        div()
+            .absolute()
+            .left(u(self.rail_width + 8.0))
+            .top(u(theme.metrics.header_height - 4.0))
+            .children(menu)
+            .into_any_element()
+    }
+
+    /// The menu of a server (ADR 0780): the notifications of the server, mark as read,
+    /// joining further workspaces, inviting people, Server settings and the account; the
+    /// items that arrange the server book; and the items that concern this device.
     pub(crate) fn render_server_menu(
         &mut self,
-        view: &ShellView,
-        _window: &mut Window,
+        server_id: ServerId,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> gpui::AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        let view = self.state.read(cx).view_for_server(server_id);
+        let shown = self
+            .state
+            .read(cx)
+            .view()
+            .selected
+            .as_ref()
+            .map(|server| server.id)
+            == Some(server_id);
         let Some(server) = &view.selected else {
             return div().into_any_element();
         };
-        let server_id = server.id;
         let keep = server.keep_connected;
         let can_log_out = server.can_log_out;
         let has_content = !matches!(server.content, crate::state::view::Content::State);
+        let forgettable = matches!(
+            server.status,
+            ServerStatus::WaitingForLink { .. } | ServerStatus::Banned
+        );
+        let unread = view
+            .servers
+            .iter()
+            .find(|row| row.id == server_id)
+            .is_some_and(|row| row.unread.any());
         let header = div()
             .flex()
             .flex_none()
@@ -160,13 +259,9 @@ impl Shell {
                             })
                     }),
             );
-        // The notification settings of the server and of the shown workspace, for a
-        // server that shows its lists.
-        let workspace_id = view.workspace().map(|workspace| workspace.id);
-        let mut notifications: Vec<gpui::AnyElement> = Vec::new();
+        let mut items: Vec<gpui::AnyElement> = Vec::new();
         if server.status.shows_content() {
-            notifications.push(menu_separator(cx).into_any_element());
-            notifications.push(
+            items.push(
                 MenuItem::new("server-notifications", text::SERVER_NOTIFICATIONS)
                     .icon(Icon::Bell)
                     .selector("server-notifications")
@@ -181,15 +276,33 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(workspace_id) = workspace_id {
-            notifications.push(
-                MenuItem::new("workspace-notifications", text::WORKSPACE_NOTIFICATIONS)
-                    .icon(Icon::Bell)
-                    .selector("workspace-notifications")
+        // Shown only while something is unread.
+        if unread {
+            items.push(
+                MenuItem::new("mark-server-read", text::book::MARK_SERVER_READ)
+                    .icon(Icon::CheckDouble)
+                    .when(shown, |item| {
+                        item.shortcut(junto_client_core::keybinds::KeyAction::MarkServerRead)
+                    })
+                    .selector("menu-mark-server-read")
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_notify_settings(
-                            server_id,
-                            junto_client_core::api::SettingsScope::Workspace(workspace_id),
+                        this.state
+                            .update(cx, |state, _| state.mark_server_read(server_id, None));
+                        this.close_layer(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        // An invite of the same server adds further workspaces to the account (ADR 0115).
+        if has_content {
+            items.push(
+                MenuItem::new("join-with-invite", text::JOIN_WITH_INVITE)
+                    .icon(Icon::Ticket)
+                    .selector("menu-join-with-invite")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_add_window(
+                            super::add_server::AddTab::Workspace,
+                            Some(server_id),
                             window,
                             cx,
                         );
@@ -197,140 +310,117 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        div()
-            .absolute()
-            .left(u(self.rail_width + 8.0))
-            .top(u(theme.metrics.header_height - 4.0))
-            .child(
-                Menu::new("server-menu", text::SERVER_MENU, self.layer_focus())
-                    .selector("server-menu")
-                    .on_close(Self::handler(cx, |this, window, cx| {
-                        this.server_menu_closed_by_press = window.last_input_was_keyboard().not();
-                        this.close_layer(window, cx);
+        if server.may_invite_people {
+            items.push(
+                MenuItem::new("invite-people", text::INVITE_PEOPLE)
+                    .icon(Icon::Invite)
+                    .selector("menu-invite-people")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_invite_people(server_id, window, cx)
                     }))
-                    .child(header)
-                    .child(
-                        MenuItem::new("keep-connected", text::KEEP_CONNECTED)
-                            .icon(Icon::Plug)
-                            .trailing(if keep { text::ON } else { text::OFF })
-                            .selector("keep-connected")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| {
-                                    state.set_keep_connected(server_id, !keep, cx);
-                                });
-                            })),
-                    )
-                    .children(notifications)
-                    .children(self.render_move_items(view, cx))
-                    // An invite of the same server adds further workspaces to the account
-                    // (ADR 0115).
-                    .when(has_content, |menu| {
-                        menu.child(
-                            MenuItem::new("join-with-invite", text::JOIN_WITH_INVITE)
-                                .icon(Icon::Ticket)
-                                .selector("menu-join-with-invite")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.select_server(server_id, cx));
-                                    this.open_join_for(server_id, window, cx);
-                                })),
-                        )
+                    .into_any_element(),
+            );
+        }
+        // Server settings and the account need the state of the server.
+        if has_content {
+            items.push(
+                MenuItem::new("administration", text::admin::OPEN_ADMINISTRATION)
+                    .icon(Icon::Gear)
+                    .when(shown, |item| {
+                        item.shortcut(junto_client_core::keybinds::KeyAction::OpenAdministration)
                     })
-                    .when(server.may_invite_people, |menu| {
-                        menu.child(
-                            MenuItem::new("invite-people", text::INVITE_PEOPLE)
-                                .icon(Icon::Invite)
-                                .selector("menu-invite-people")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_invite_people(window, cx)
-                                })),
-                        )
-                    })
-                    // The administration needs the state of the server.
-                    .when(has_content, |menu| {
-                        menu.child(
-                            MenuItem::new("administration", text::admin::OPEN_ADMINISTRATION)
-                                .icon(Icon::Gear)
-                                .shortcut(
-                                    junto_client_core::keybinds::KeyAction::OpenAdministration,
-                                )
-                                .selector("menu-administration")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.select_server(server_id, cx));
-                                    this.open_server_admin(
-                                        crate::state::admin::AdminPage::Workspaces,
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        )
-                    })
-                    // The account layer needs the state of the server too.
-                    .when(has_content, |menu| {
-                        menu.child(
-                            MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
-                                .icon(Icon::Account)
-                                .selector("menu-account")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.state
-                                        .update(cx, |state, cx| state.select_server(server_id, cx));
-                                    this.open_account(
-                                        crate::state::account::AccountPage::Profile,
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        )
-                    })
-                    // Leaving the shown workspace opens the page of the account layer that
-                    // states what stays and what ends (ADR 0121).
-                    .when_some(
-                        workspace_id.filter(|_| has_content),
-                        |menu, workspace_id| {
-                            menu.child(
-                                MenuItem::new("leave-workspace", text::account::LEAVE_WORKSPACE)
-                                    .icon(Icon::Leave)
-                                    .selector("menu-leave-workspace")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.state.update(cx, |state, cx| {
-                                            state.select_server(server_id, cx)
-                                        });
-                                        this.open_departure(workspace_id, window, cx);
-                                    })),
-                            )
-                        },
-                    )
-                    .child(menu_separator(cx))
-                    // Drawn in every state, so that a change of the state while the menu is
-                    // open moves no item under the pointer (ADR 0730).
-                    .child(
-                        MenuItem::new("log-out", text::LOG_OUT)
-                            .icon(Icon::Leave)
-                            .offer(&crate::ui::Offer::now(
-                                (!can_log_out).then_some(text::LOG_OUT_UNAVAILABLE),
-                            ))
-                            .selector("menu-log-out")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.layer = Layer::ConfirmLogOut(server_id);
-                                this.layer_focus().clone().focus(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        MenuItem::new("remove-server", text::REMOVE_SERVER)
-                            .icon(Icon::Trash)
-                            .selector("menu-remove-server")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.layer = Layer::ConfirmRemove(server_id);
-                                this.layer_focus().clone().focus(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(self.render_move_error(view, cx))
-                    .child(div().h(u(4.0))),
-            )
-            .into_any_element()
+                    .selector("menu-administration")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.select_server(server_id, cx));
+                        // The first page that the person may use opens.
+                        this.open_server_admin(crate::state::admin::AdminPage::Server, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            items.push(
+                MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
+                    .icon(Icon::Account)
+                    .selector("menu-account")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.select_server(server_id, cx));
+                        this.open_account(crate::state::account::AccountPage::Profile, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let arrange = self.render_move_items(&view, cx);
+        let mut device: Vec<gpui::AnyElement> = vec![
+            MenuItem::new("keep-connected", text::KEEP_CONNECTED)
+                .icon(Icon::Plug)
+                .checked(keep)
+                .selector("keep-connected")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.set_keep_connected(server_id, !keep, cx);
+                    });
+                }))
+                .into_any_element(),
+            // Drawn in every state, so that a change of the state while the menu is open
+            // moves no item under the pointer (ADR 0730).
+            MenuItem::new("log-out", text::LOG_OUT)
+                .icon(Icon::Leave)
+                .offer(&crate::ui::Offer::now(
+                    (!can_log_out).then_some(text::LOG_OUT_UNAVAILABLE),
+                ))
+                .selector("menu-log-out")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.layer = Layer::ConfirmLogOut(server_id);
+                    this.layer_focus().clone().focus(window, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+            MenuItem::new("remove-server", text::REMOVE_SERVER)
+                .icon(Icon::Trash)
+                .selector("menu-remove-server")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.layer = Layer::ConfirmRemove(server_id);
+                    this.layer_focus().clone().focus(window, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        ];
+        if forgettable {
+            device.push(
+                MenuItem::new("forget-account", text::FORGET_ACCOUNT)
+                    .icon(Icon::Trash)
+                    .selector("menu-forget-account")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.layer = Layer::ConfirmForget(server_id);
+                        this.layer_focus().clone().focus(window, cx);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let separated = !items.is_empty();
+        Menu::new(
+            "server-menu",
+            text::book::server_menu_of(&server.name),
+            self.layer_focus(),
+        )
+        .selector("server-menu")
+        .on_close(Self::handler(cx, |this, window, cx| {
+            this.server_menu_closed_by_press = window.last_input_was_keyboard().not();
+            this.close_layer(window, cx);
+        }))
+        .child(header)
+        .children(items)
+        .when(separated, |menu| menu.child(menu_separator(cx)))
+        .child(menu_label(text::book::ARRANGE, false, cx))
+        .children(arrange)
+        .child(menu_separator(cx))
+        .child(menu_label(text::book::ON_THIS_DEVICE, false, cx))
+        .children(device)
+        .child(self.render_move_error(&view, cx))
+        .child(div().h(u(4.0)))
+        .into_any_element()
     }
 
     fn render_question(

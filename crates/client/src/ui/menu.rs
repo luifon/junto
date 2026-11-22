@@ -430,6 +430,7 @@ pub struct MenuItem {
     swatch: Option<Hsla>,
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
+    checked: Option<bool>,
     shortcut: Option<junto_client_core::keybinds::KeyAction>,
     disabled: bool,
     selector: Option<SharedString>,
@@ -447,6 +448,7 @@ impl MenuItem {
             swatch: None,
             end_icon: None,
             trailing: None,
+            checked: None,
             shortcut: None,
             disabled: false,
             selector: None,
@@ -504,6 +506,13 @@ impl MenuItem {
         self
     }
 
+    /// A check item: the setting is on when `checked`, shown with a check mark at the end
+    /// and stated as the toggled state of a menu item with a check box.
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
     /// The key binding of the same action, shown at the end of the item with the keys that
     /// the person bound to it.
     pub fn shortcut(mut self, action: junto_client_core::keybinds::KeyAction) -> Self {
@@ -538,6 +547,7 @@ impl IntoElement for MenuItem {
                 disabled: self.disabled,
                 detail: self.detail.clone(),
                 shortcut: self.shortcut,
+                selector: None,
                 handler: self.on_click.clone(),
             })
         });
@@ -553,9 +563,22 @@ impl RenderOnce for MenuItem {
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
         let keys = self.shortcut.and_then(|action| shown_keys(action, cx));
         let keys_selector = self.selector.clone();
+        let checked = self.checked;
+        let checked_selector = self.selector.clone();
         div()
             .id(self.id)
-            .role(Role::MenuItem)
+            .role(if checked.is_some() {
+                Role::MenuItemCheckBox
+            } else {
+                Role::MenuItem
+            })
+            .when_some(checked, |item, checked| {
+                item.aria_toggled(if checked {
+                    gpui::Toggled::True
+                } else {
+                    gpui::Toggled::False
+                })
+            })
             .when_some(keys.clone(), |item, keys| item.aria_keyshortcuts(keys))
             .aria_label(self.title.clone())
             .aria_disabled(self.disabled)
@@ -651,6 +674,21 @@ impl RenderOnce for MenuItem {
                         .flex_none()
                         .mt(u(2.0))
                         .child(icon(shown, 15.0, colors.ink_2)),
+                )
+            })
+            .when_some(checked, |item, checked| {
+                let selector = checked_selector;
+                item.child(
+                    div()
+                        .flex_none()
+                        .mt(u(2.0))
+                        .size(u(15.0))
+                        .when_some(selector.filter(|_| checked), |mark, selector| {
+                            mark.debug_selector(move || format!("{selector}-checked"))
+                        })
+                        .when(checked, |mark| {
+                            mark.child(icon(Icon::Check, 15.0, colors.ink))
+                        }),
                 )
             })
             .when_some(self.trailing, |item, text| {

@@ -30,10 +30,11 @@ fn the_menu_button_of_a_row_opens_its_menu_and_changes_nothing_else(cx: &mut Tes
 
     window.hover_named("server-0".to_owned());
     let server_id = window.view().selected.as_ref().unwrap().id;
+    // The button of a server opens the menu of the server (ADR 0780).
     window.press_alone(selector(format!("menu-button:server:{server_id}")));
-    assert!(window.shows("row-context-menu"));
+    assert!(window.shows("server-menu"));
     window.press("escape");
-    assert!(!window.shows("row-context-menu"));
+    assert!(!window.shows("server-menu"));
 }
 
 #[gpui::test]

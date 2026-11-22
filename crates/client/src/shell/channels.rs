@@ -186,14 +186,22 @@ impl Shell {
                     ),
             )
             .when(view.selected.is_some(), |header| {
+                // The arrow opens the menu of the shown workspace, and the menu of the server
+                // while the server shows no workspace (ADR 0780).
+                let (label, selector) = if view.workspace().is_some() {
+                    (text::book::WORKSPACE_MENU_BUTTON, "workspace-menu-button")
+                } else {
+                    (text::SERVER_MENU, "server-menu-button")
+                };
                 header.child(
-                    Button::new("server-menu")
+                    Button::new("header-menu")
                         .kind(ButtonKind::Ghost)
                         .icon(Icon::ChevronDown)
-                        .tooltip(text::SERVER_MENU)
-                        .selector("server-menu-button")
+                        .tooltip(label)
+                        .accessible_label(label)
+                        .selector(selector)
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_server_menu(window, cx);
+                            this.open_header_menu(window, cx);
                         })),
                 )
             });
@@ -271,7 +279,6 @@ impl Shell {
             .when_some(view.controls.warning.as_ref(), |column, warning| {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
-            .children(self.render_update_notice(view, &theme, cx))
             .children(self.render_muted_speech(&view.controls, cx))
             .children(self.render_camera_notice(cx))
             .when_some(view.call.as_ref(), |column, strip| {
@@ -393,13 +400,28 @@ impl Shell {
         {
             return;
         }
+        // The page of the channels holds the form in the group of the category; a person who
+        // manages the category and not the workspace has no such page, and gets the form in
+        // the settings of the category, whose scope decides the creation (ADR 0761).
+        let manages_workspace = self
+            .state
+            .read(cx)
+            .client()
+            .server(owner.entry.server_id)
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| {
+                model.workspace(workspace).map(|held| {
+                    held.holds(junto_client_core::protocol::WorkspacePermission::ManageChannel)
+                })
+            })
+            .unwrap_or(false);
         let open = match category {
-            Some(category_id) => crate::state::admin::AdminOpen::Category {
+            Some(category_id) if !manages_workspace => crate::state::admin::AdminOpen::Category {
                 server_id: owner.entry.server_id,
                 workspace_id: workspace,
                 category_id,
             },
-            None => crate::state::admin::AdminOpen::Server {
+            _ => crate::state::admin::AdminOpen::Server {
                 server_id: owner.entry.server_id,
                 page: crate::state::admin::AdminPage::Channels,
             },

@@ -416,13 +416,6 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         )
     });
     add(&mut router, || {
-        routes!(
-            person_permissions::get_member_permissions,
-            person_permissions::set_member_permissions,
-            person_permissions::change_member_permission
-        )
-    });
-    add(&mut router, || {
         routes!(person_permissions::get_member_access)
     });
     add(&mut router, || {
@@ -563,6 +556,13 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(internal::media_notification),
         )
         .route("/join", axum::routing::get(invite_page::page))
+        // Retired routes answer `retired` and are not in the API document (ADR 0201).
+        .route(
+            person_permissions::MEMBER_RULES_PATH,
+            axum::routing::get(person_permissions::get_member_permissions)
+                .put(person_permissions::set_member_permissions)
+                .patch(person_permissions::change_member_permission),
+        )
         .route(layout::INDEX, axum::routing::get(layout::index))
         .route(layout::FILE, axum::routing::get(layout::file))
         .fallback(unknown_path)

@@ -28,6 +28,7 @@ ADR 0105 states that a new server account starts from the profile preset of the 
 - The preset accepts an avatar of at most 2 MiB that is a PNG, JPEG or WebP image by its first bytes (ADR 0710): the cut of a chosen file (ADR 0119), at most 1024 by 1024 pixels. A server with a lower `JUNTO_PICTURE_BYTES` can refuse it; the settings name that server.
 - The state is written to the book with the same rule as the membership: a write that failed is tried again (ADR 0710).
 - `forget account` sets the state to `not_needed` (ADR 0712).
+- In the window the preset is one section of Settings, "Name and picture for new servers": the name with "Save", and the picture. Its help states that a new account starts with them and that the profile on a server already joined is in Server settings, Your account (ADR 0781). The first start names that section in its sentence. Reason: the sections "Profile" and "Picture" of Settings looked like the profile of the person, while they change only the start of the next account, so a change there showed nowhere after a join. Test: `settings::the_settings_show_one_section_at_a_time_from_a_list_of_sections`.
 
 ## Consequences
 

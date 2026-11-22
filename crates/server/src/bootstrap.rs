@@ -36,6 +36,15 @@ pub enum StartError {
          without a copy"
     )]
     MigrationCopy(String),
+    #[error(
+        "this version of the server removes the workspace permission rules of single members, \
+         and {0} case(s) need a decision first. Start the earlier version of the server, run \
+         `junto-server check-upgrade` of this version, handle each listed case, and start this \
+         version again. Nothing was migrated"
+    )]
+    PersonRules(usize),
+    #[error("the workspace permission rules of single members could not be read: {0}")]
+    PersonRulesUnreadable(String),
     #[error("the client of the media server could not be built: {0}")]
     MediaServer(String),
     #[error(
@@ -93,12 +102,59 @@ pub struct Started {
 pub async fn start(
     database: &Database,
     server_name: &str,
+    limits: &crate::config::Limits,
     now: OffsetDateTime,
 ) -> Result<Started, StartError> {
+    remove_person_rules(database, limits, now).await?;
     migrate(database, &MIGRATIONS).await?;
     transact!(database, |connection| {
         start_in(connection, server_name, now).await
     })
+}
+
+/// Turns the workspace permission rules of single members into roles before the migration
+/// that removes their table (ADR 0301). Nothing changes while a case of
+/// [`crate::person_rules::cases`] waits, or while a recording runs (ADR 0005).
+pub async fn remove_person_rules(
+    database: &Database,
+    limits: &crate::config::Limits,
+    now: OffsetDateTime,
+) -> Result<(), StartError> {
+    let unreadable =
+        |error: crate::error::ApiError| StartError::PersonRulesUnreadable(format!("{error:?}"));
+    {
+        let mut connection = database.pool().acquire().await?;
+        if !crate::person_rules::pending(&mut connection).await? {
+            return Ok(());
+        }
+        let cases = crate::person_rules::cases(&mut connection, limits)
+            .await
+            .map_err(unreadable)?;
+        if !cases.is_empty() {
+            return Err(StartError::PersonRules(cases.len()));
+        }
+        if recordings_that_run(database).await? > 0 {
+            return Err(StartError::RecordingRuns);
+        }
+    }
+    use sqlx::Connection;
+    let mut connection = database.pool().acquire().await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(START_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let cases = crate::person_rules::cases(&mut tx, limits)
+        .await
+        .map_err(unreadable)?;
+    if !cases.is_empty() {
+        return Err(StartError::PersonRules(cases.len()));
+    }
+    crate::person_rules::convert(&mut tx, now)
+        .await
+        .map_err(unreadable)?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Applies the migrations of `migrations` that the database does not have. No migration

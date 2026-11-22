@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use junto_client::shell::add_server::AddTab;
 use junto_client::shell::{Open, Shell};
 use junto_client::state::admin::{AdminOpen, AdminPage, RecordingList};
 use junto_client::state::book::UpdatesKnown;
@@ -18,7 +19,6 @@ use junto_client_core::protocol::message::{Conversation, MessagePlace, MessageSt
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStop, RecordingStopReason,
 };
-use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::updates::{Release, UpdateState, Version};
 use junto_client_core::version::Incompatibility;
@@ -26,8 +26,7 @@ use junto_media::calls::Phase;
 use time::{Duration, UtcOffset};
 
 use super::{
-    Screen, Studio, acme, acme_model, at, channel, harbor, harbor_as, id, in_call, person,
-    reachable, recording,
+    Screen, Studio, acme, at, harbor, harbor_as, id, in_call, person, reachable, recording,
 };
 
 // The numbers of the identifiers of the servers of the screens.
@@ -120,20 +119,6 @@ fn checked(state: UpdateState) -> UpdatesKnown {
         newest: (state == UpdateState::Current).then_some(BUILD),
         state,
         checking: false,
-    }
-}
-
-/// "Acme Studio" with more channels than the channel column shows at once.
-fn acme_with_long_list() -> ServerSnapshot {
-    ServerSnapshot {
-        model: Some(acme_model(|studio| {
-            let workspace_id = studio.workspace.id;
-            studio.channels.extend((0..40u32).map(|number| {
-                let name = format!("project-{number:02}");
-                channel(500 + number, workspace_id, ChannelKind::Text, &name)
-            }));
-        })),
-        ..acme()
     }
 }
 
@@ -258,6 +243,12 @@ fn draw_arrangement(studio: &mut Studio) -> Result<(), String> {
             shell.open_workspace_menu(id(ACME), id(12), window, cx);
         },
     )?;
+    // The menu of the shown workspace under the name of the channel column, without the items
+    // that arrange it (ADR 0780).
+    studio.draw(
+        Screen::new("workspace-menu-header", three_servers(0)),
+        |shell, window, cx| shell.open(Open::HeaderMenu, window, cx),
+    )?;
     studio.draw(
         Screen::new("book-menu-in-group", three_servers(0)),
         |shell, window, cx| {
@@ -332,52 +323,40 @@ fn draw_book(studio: &mut Studio) -> Result<(), String> {
             shell.open(Open::ServerMenu, window, cx);
         },
     )?;
+    // The window "Add server or workspace" at each of its tabs.
+    studio.draw(
+        Screen::new("add-window-server", three_servers(0)),
+        |shell, window, cx| {
+            shell.open_add_window(AddTab::Server, None, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("add-window-workspace", three_servers(0)),
+        |shell, window, cx| {
+            shell.open_add_window(AddTab::Workspace, None, window, cx);
+        },
+    )?;
     Ok(())
 }
 
 fn draw_update(studio: &mut Studio) -> Result<(), String> {
-    // The line of the channel column, directly above the profile strip.
+    // The version block of the server book is the one notice of a newer version; the
+    // channel column draws no line above the profile strip (ADR 0780).
     studio.draw(
-        Screen::new("update-line", three_servers(0)),
+        Screen::new("update-notice", three_servers(0)),
         |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
     )?;
-    // At 150 % the window is narrow: the server book is collapsed, and the line stays.
+    // At 150 % the window is narrow: the server book is collapsed, and keeps the button.
     studio.draw(
-        Screen::new("update-line-scale-150", three_servers(0)).scale(150),
-        |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
-    )?;
-    // A channel list that is longer than the column: the line stays above the strip.
-    studio.draw(
-        Screen::new(
-            "update-line-long-list",
-            vec![acme_with_long_list(), harbor()],
-        ),
+        Screen::new("update-notice-scale-150", three_servers(0)).scale(150),
         |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
     )?;
     studio.draw(
-        Screen::new(
-            "update-line-long-list-scale-150",
-            vec![acme_with_long_list(), harbor()],
-        )
-        .scale(150),
+        Screen::call("update-notice-in-call", in_call(Phase::Connected)),
         |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
     )?;
-    // Under the strip of the call of this device.
     studio.draw(
-        Screen::call("update-line-in-call", in_call(Phase::Connected)),
-        |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
-    )?;
-    // A server that shows a state panel, and an empty server book: the channel column
-    // holds the profile strip, and the line with it.
-    studio.draw(
-        Screen::new("update-line-state-panel", three_servers(0)),
-        |shell, _, cx| {
-            show_updates(shell, available(Some(PAGE)), cx);
-            select(shell, QUARRY, cx);
-        },
-    )?;
-    studio.draw(
-        Screen::new("update-line-no-server", Vec::new()),
+        Screen::new("update-notice-no-server", Vec::new()),
         |shell, _, cx| show_updates(shell, available(Some(PAGE)), cx),
     )?;
 
@@ -416,7 +395,7 @@ fn draw_update(studio: &mut Studio) -> Result<(), String> {
         )?;
     }
 
-    // The version of this copy below "Add server" in each state and each way of its
+    // The version of this copy at the end of the server book in each state and each way of its
     // update, expanded and collapsed (ADR 0780).
     {
         use junto_client::state::update_install::UpdateWay;

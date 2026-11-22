@@ -771,6 +771,21 @@ pub fn tokens(
     }
 }
 
+/// The page of the access tokens of the account of the person, in the group of the account.
+/// The server lists every token to an administrator: the page keeps those of the account.
+pub fn own_tokens(
+    server_id: ServerId,
+    model: &ServerModel,
+    known: &Known,
+    admin: &AdminState,
+) -> TokensPage {
+    let mut page = tokens(server_id, model, known, admin);
+    if let Listed::Loaded(lines) = &mut page.tokens {
+        lines.retain(|line| line.own);
+    }
+    page
+}
+
 /// What an export holds, with the names that the state holds.
 pub(crate) fn export_of(
     server_id: ServerId,

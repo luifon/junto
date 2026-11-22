@@ -177,6 +177,9 @@ pub struct AccountLine {
     /// For the server owner: whether the account can be recovered onto a new device, and
     /// why not. Absent for every other person: only the owner recovers (ADR 0104).
     pub recover: Option<Result<(), NoRecovery>>,
+    /// The workspaces of the account that the state holds, in the order of the server
+    /// ("Member of", ADR 0761).
+    pub member_of: Vec<(WorkspaceId, String)>,
 }
 
 impl AccountLine {
@@ -232,7 +235,19 @@ impl AccountLine {
                 Err(Blocked::Deleted),
             ),
         };
+        let member_of = model
+            .workspaces
+            .iter()
+            .filter(|held| {
+                model
+                    .admin
+                    .workspaces_of(account.id)
+                    .contains(&held.workspace.id)
+            })
+            .map(|held| (held.workspace.id, held.workspace.name.clone()))
+            .collect();
         Self {
+            member_of,
             id: account.id,
             name: account.name.clone(),
             status: account.status,
@@ -389,6 +404,17 @@ impl Grant {
         self.workspaces
             .iter()
             .filter(|choice| chosen.contains(&choice.id))
+            .map(|choice| choice.id)
+            .collect()
+    }
+
+    /// The workspaces that a new invite names: the default workspace whenever the person may
+    /// grant it, because every person is a member of it, and the chosen workspaces that the
+    /// person may still grant, in the order of the server.
+    pub fn invite_workspaces(&self, chosen: &[WorkspaceId]) -> Vec<WorkspaceId> {
+        self.workspaces
+            .iter()
+            .filter(|choice| choice.is_default || chosen.contains(&choice.id))
             .map(|choice| choice.id)
             .collect()
     }
@@ -2261,5 +2287,32 @@ mod tests {
         let long = "n".repeat(200);
         let model = scene.model(with_invites(vec![stated(Some(&long))]));
         assert_eq!(creator(&model).map(|name| name.chars().count()), Some(64));
+    }
+
+    #[test]
+    fn a_new_invite_names_the_default_workspace_with_the_chosen_ones() {
+        let (default, lab, other) = (
+            WorkspaceId::generate(),
+            WorkspaceId::generate(),
+            WorkspaceId::generate(),
+        );
+        let choice = |id, name: &str, is_default| WorkspaceChoice {
+            id,
+            name: name.to_owned(),
+            is_default,
+        };
+        let grant = Grant {
+            workspaces: vec![choice(default, "Studio", true), choice(lab, "Lab", false)],
+        };
+        assert_eq!(grant.invite_workspaces(&[]), [default]);
+        assert_eq!(grant.invite_workspaces(&[lab]), [default, lab]);
+        // A workspace that the person may no longer grant is left out.
+        assert_eq!(grant.invite_workspaces(&[other, lab]), [default, lab]);
+        // A person outside the default workspace cannot grant it.
+        let grant = Grant {
+            workspaces: vec![choice(lab, "Lab", false)],
+        };
+        assert_eq!(grant.invite_workspaces(&[]), Vec::<WorkspaceId>::new());
+        assert_eq!(grant.fault(0), Some(GrantFault::NoneChosen));
     }
 }

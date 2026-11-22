@@ -123,10 +123,6 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             .category_rules(workspace_id, category_id)
             .await
             .map(AdminPayload::CategoryRules),
-        AdminPart::MemberPermissions(workspace_id, account_id) => api
-            .member_permissions(workspace_id, account_id)
-            .await
-            .map(AdminPayload::MemberPermissions),
         AdminPart::MemberAccess(workspace_id, account_id) => api
             .member_access(workspace_id, account_id)
             .await

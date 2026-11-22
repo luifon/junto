@@ -16,7 +16,8 @@ use junto_client_core::protocol::invite::CreateInvite;
 use time::OffsetDateTime;
 
 use super::{
-    Question, group_label, line, line_text, named, page_title, refusal, row_action, sentence,
+    Question, group_label, line, line_text, menu_action, named, page_title, refusal, row_action,
+    sentence,
 };
 use crate::assets::Icon;
 use crate::shell::Shell;
@@ -719,7 +720,7 @@ impl Shell {
             Uses::Offered(uses) => Some(uses),
             Uses::Typed => typed_uses(&ui.uses.read(cx).value()),
         };
-        let workspace_ids = page.grant.kept(&ui.invite_workspaces);
+        let workspace_ids = page.grant.invite_workspaces(&ui.invite_workspaces);
         let days = ui.invite_days;
         let Some(max_uses) = max_uses else {
             self.admin.people.invalid = Some(txt::USES_RANGE);
@@ -939,7 +940,7 @@ impl Shell {
                         account_id,
                         &row.name,
                         false,
-                        Some(txt::account_detail(&row.roles, row.created).into()),
+                        txt::server_roles(&row.roles).map(Into::into),
                         theme,
                         window,
                         cx,
@@ -947,37 +948,37 @@ impl Shell {
                 for mark in account_marks(row) {
                     content = content.child(Chip::new(mark));
                 }
+                // The actions of the account are the items of the menu of its row, each
+                // label naming its scope (ADR 0761).
                 if row.assignable.is_some() {
                     let shown = self.admin.roles.account == Some(account_id);
-                    content = content.child(row_action(
-                        ("account-roles", account_id.as_uuid().as_u128() as u64),
+                    menu_action(
                         if shown {
                             text::admin::roles::HIDE_ROLES
                         } else {
-                            text::admin::roles::ROLES
+                            txt::SERVER_ROLES
                         },
                         format!("account-roles-toggle-{account_id}"),
                         held(None),
                         cx.listener(move |this, _, _, cx| {
                             this.show_account_roles((!shown).then_some(account_id), cx);
                         }),
-                    ));
+                    );
                 }
                 // An administrator sets the server permissions of an account (ADR 0306).
                 // The page of the owner states that it takes no rule.
                 if may_set_permissions
                     && !matches!(row.status, AccountStatus::Removed | AccountStatus::Deleted)
                 {
-                    content = content.child(row_action(
-                        ("account-permissions", account_id.as_uuid().as_u128() as u64),
-                        text::admin::overrides::PERMISSIONS,
+                    menu_action(
+                        txt::SERVER_PERMISSIONS,
                         format!("account-permissions-{account_id}"),
                         held(None),
                         cx.listener(move |this, _, window, cx| {
                             let page = crate::state::admin::PersonPage::Server;
                             this.open_person_settings(account_id, page, window, cx);
                         }),
-                    ));
+                    );
                 }
                 // A removed or deleted account takes no action: its state is the mark of
                 // the row.
@@ -985,21 +986,19 @@ impl Shell {
                     row.status,
                     AccountStatus::Removed | AccountStatus::Deleted | AccountStatus::Unknown
                 ) {
-                    content = content.child(row_action(
-                        ("account-remove", account_id.as_uuid().as_u128() as u64),
-                        txt::REMOVE,
+                    menu_action(
+                        txt::REMOVE_FROM_SERVER,
                         format!("account-remove-{account_id}"),
                         held(row.remove.err().map(txt::blocked)),
                         cx.listener(move |this, _, window, cx| {
                             this.set_people_open(Some(Open::RemoveAccount(account_id)), window, cx);
                         }),
-                    ));
+                    );
                 }
                 match row.status {
                     AccountStatus::Active => {
-                        content = content.child(row_action(
-                            ("account-ban", account_id.as_uuid().as_u128() as u64),
-                            txt::BAN,
+                        menu_action(
+                            txt::BAN_FROM_SERVER,
                             format!("account-ban-{account_id}"),
                             held(row.ban.err().map(txt::blocked)),
                             cx.listener(move |this, _, window, cx| {
@@ -1009,14 +1008,13 @@ impl Shell {
                                     cx,
                                 );
                             }),
-                        ));
+                        );
                     }
                     AccountStatus::Banned => {
                         let held = held(row.unban.err().map(txt::blocked)).or(view
                             .sending(AskKind::UnbanAccount(account_id))
                             .then_some(text::admin::SENDING));
-                        content = content.child(row_action(
-                            ("account-unban", account_id.as_uuid().as_u128() as u64),
+                        menu_action(
                             txt::UNBAN,
                             format!("account-unban-{account_id}"),
                             held,
@@ -1025,7 +1023,7 @@ impl Shell {
                                     state.unban_account(server_id, account_id, cx);
                                 });
                             }),
-                        ));
+                        );
                     }
                     AccountStatus::Removed
                     | AccountStatus::Inactive
@@ -1033,9 +1031,8 @@ impl Shell {
                     | AccountStatus::Unknown => {}
                 }
                 if let Some(recover) = row.recover {
-                    content = content.child(row_action(
-                        ("account-recover", account_id.as_uuid().as_u128() as u64),
-                        txt::RECOVER,
+                    menu_action(
+                        txt::RECOVER_MENU,
                         format!("account-recover-{account_id}"),
                         held(recover.err().map(txt::no_recovery)),
                         cx.listener(move |this, _, window, cx| {
@@ -1045,7 +1042,7 @@ impl Shell {
                                 cx,
                             );
                         }),
-                    ));
+                    );
                 }
                 content.into_any_element()
             }
@@ -1073,6 +1070,37 @@ impl Shell {
             _ => None,
         }) {
             under.push(self.render_recovered(account_id, notice.performed_at, cx));
+        }
+        // The workspaces of the account, each opening its members (ADR 0761).
+        if !row.member_of.is_empty() {
+            let mut links = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(u(4.0))
+                .pl(u(34.0))
+                .mb(u(4.0))
+                .debug_selector(move || format!("account-member-of-{account_id}"))
+                .child(sentence(txt::MEMBER_OF, theme));
+            for (workspace_id, name) in &row.member_of {
+                let workspace_id = *workspace_id;
+                links = links.child(named(
+                    format!("account-member-of-{account_id}-{workspace_id}"),
+                    Button::new((
+                        "account-member-of",
+                        (account_id.as_uuid().as_u128() ^ workspace_id.as_uuid().as_u128()) as u64,
+                    ))
+                    .kind(crate::ui::ButtonKind::Ghost)
+                    .label(name.clone())
+                    .h(u(24.0))
+                    .px(u(6.0))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_admin_workspace(workspace_id, window, cx);
+                        this.open_server_admin(crate::state::admin::AdminPage::Members, window, cx);
+                    })),
+                ));
+            }
+            under.push(links.into_any_element());
         }
         // The server keeps the account banned for the person: the row states it without a
         // pointer (ADR 0311).
@@ -1152,7 +1180,9 @@ impl Shell {
             .collect();
         let list = std::iter::once(Row::part("people-header", true))
             .chain(rows.iter().map(|row| {
-                Row::item(format!("account-{}", row.id), true, row.name.clone()).account(row.id)
+                Row::item(format!("account-{}", row.id), true, row.name.clone())
+                    .account(row.id)
+                    .with_menu()
             }))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
@@ -1467,12 +1497,12 @@ impl Shell {
         if page.may_set_permissions {
             let workspace_id = page.workspace_id;
             content = content.child(row_action(
-                ("member-permissions", account_id.as_uuid().as_u128() as u64),
-                text::admin::overrides::PERMISSIONS,
-                format!("member-permissions-{account_id}"),
+                ("member-access", account_id.as_uuid().as_u128() as u64),
+                text::admin::overrides::ACCESS,
+                format!("member-access-{account_id}"),
                 None,
                 cx.listener(move |this, _, window, cx| {
-                    let page = crate::state::admin::PersonPage::Permissions(workspace_id);
+                    let page = crate::state::admin::PersonPage::Access(workspace_id);
                     this.open_person_settings(account_id, page, window, cx);
                 }),
             ));
@@ -1636,16 +1666,23 @@ impl Shell {
             GrantFor::Invite => (&self.admin.people.invite_workspaces, "invite-workspace"),
             GrantFor::Approval => (&self.admin.people.approval_workspaces, "request-workspace"),
         };
-        let chosen = grant.kept(chosen);
+        // The default workspace is in every invite: its switch is on and held (ADR 0761).
+        let chosen = match purpose {
+            GrantFor::Invite => grant.invite_workspaces(chosen),
+            GrantFor::Approval => grant.kept(chosen),
+        };
         let mut column = div().flex().flex_col().flex_none();
         for choice in &grant.workspaces {
             let workspace_id = choice.id;
+            let held = (purpose == GrantFor::Invite && choice.is_default)
+                .then_some(txt::DEFAULT_IN_EVERY_INVITE);
             let toggle = Toggle::new(
                 (id, workspace_id.as_uuid().as_u128() as u64),
                 choice.name.clone(),
                 chosen.contains(&workspace_id),
                 (text::ON, text::OFF),
             )
+            .held(held)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let ui = &mut this.admin.people;
                 let chosen = match purpose {
@@ -1670,7 +1707,8 @@ impl Shell {
                     .child(named(format!("{id}-{workspace_id}"), toggle)),
             );
         }
-        if chosen.is_empty()
+        if purpose == GrantFor::Approval
+            && chosen.is_empty()
             && let Some(default) = grant.default_workspace()
         {
             column = column.child(sentence(txt::default_is_given(&default.name), theme).mt(u(5.0)));
@@ -1801,7 +1839,7 @@ impl Shell {
     ) -> AnyElement {
         let days = self.admin.people.invite_days;
         let uses = self.admin.people.invite_uses;
-        let chosen = grant.kept(&self.admin.people.invite_workspaces);
+        let chosen = grant.invite_workspaces(&self.admin.people.invite_workspaces);
         let held = grant_reason(grant, chosen.len());
         let expiry = Segmented::new(
             "invite-expiry",

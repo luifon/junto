@@ -17,6 +17,11 @@ Account-list rows include `may_unban`. It is true only for a banned account that
 caller may unban through the current moderation and restored-role rank checks. Access
 tokens always receive false because they cannot unban (ADR 0213).
 
+Account-list rows also include `workspace_ids`: the workspaces that the account is a member
+of, among those that the caller may see. A client of an earlier server reads an empty list.
+Reason: the detail of a person in People names these workspaces, and one read of the list
+answers it for every row instead of one read of the members of each workspace.
+
 Server-role and workspace-role list rows include `may_assign`, `may_remove` and
 `may_delete`. The shared checks used by the corresponding requests compute these flags:
 management permission, strict role rank, and the grant ceiling, including channel allows

@@ -380,6 +380,11 @@ impl Shell {
                     .child(self.render_limit(view, Limit::FilesPerMessage, limits, &theme, cx))
                     .into_any_element(),
             })
+            .when_some(page.direct_retention.clone(), |column, direct| {
+                column
+                    .child(group_label(text::admin::RETENTION, &theme))
+                    .child(self.render_direct_retention(view, &direct, cx))
+            })
             .into_any_element()
     }
 }

@@ -1,4 +1,4 @@
-# 0781. The account layer: profile and devices
+# 0781. The pages of the account: profile and devices
 
 ## Status
 
@@ -12,7 +12,8 @@ An account has a name and an avatar per server (ADR 0119) and one or more device
 
 One layer:
 
-- "Your account" is an item of the menu of the selected server. It opens one layer above the window, in the frame of the administration layer: a list of pages at the left and one page at the right. The pages are "Profile", "Devices" and "Recoveries".
+- The pages of the account are the group "Your account" of Server settings (ADR 0761): Profile, Linked devices, Recoveries and Leave or delete, with the exports and the own access tokens. "Your account" in the menu of a server opens Server settings at Profile. There is no separate layer of the account. Reason: name, picture and devices are stored per account per server (ADR 0119), so they belong to the layer of the server, and two separate places called "Your account" made a person know where a thing is stored before finding it. Settings keeps the name and the picture that a new account of this device starts with (ADR 0717).
+- While Server settings show a page of the account, the state of the pages of the account is open for that server and page; another page of the layer and the closing of the layer close it, with the link code that the devices page held. The page scrolls in the page area of the layer. Tests: the window tests `account::*` open the pages through the menu of the server.
 - The layer follows the rules of ADR 0761 for requests. Each request has the states sending and refused. A refusal is a sentence at the control that asked. Only the answer to the newest request of the open page changes what the page tells; an answer that arrives after the page changed or the layer closed is dropped.
 - A page sends one request at a time. While a request is on its way, the state of the layer starts no other request of that page, and the controls of the page that send one are disabled. Reason: the page holds the state of one request, so a second request would hide the first one and its refusal. What the page tells about a request that is on its way is not put away.
 - Every request of the layer is sent for the account that the layer was opened for (ADR 0714). When the server of the layer leaves the server book, or shows another account or none, the layer closes and keeps nothing.

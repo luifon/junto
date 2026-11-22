@@ -2,6 +2,8 @@
 //! and workspaces with their drops, the heads and the tiles of the groups, and the menus that
 //! give the keyboard each action of a drag (ADR 0702).
 
+use std::ops::Not as _;
+
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, Hsla,
     InteractiveElement, IntoElement, ParentElement, Pixels, Point, Role, SharedString, Stateful,
@@ -12,7 +14,7 @@ use junto_client_core::arrangement::{Change, GroupColour, GroupId};
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
 use super::person_drag::DragLabel;
-use super::{Layer, Shell};
+use super::{Layer, MenuAt, Shell};
 use crate::assets::Icon;
 use crate::state::book::{
     BookDrop, Dragged, DropTarget, Step, Zone, accepts, dropped, takes_into, zone,
@@ -23,8 +25,8 @@ use crate::text::book as txt;
 use crate::theme::{Theme, u};
 use crate::ui::{
     Badge, Button, ButtonKind, ContextMenuExt, CornerCount, Dialog, Field, Menu, MenuItem,
-    StyleExt, dialog_footer, focus_ring_inside, icon, menu_separator, selection_mark, tooltip,
-    unread_dot,
+    StyleExt, dialog_footer, focus_ring_inside, icon, menu_label, menu_separator, selection_mark,
+    tooltip, unread_dot,
 };
 
 /// A server that is dragged in the server book.
@@ -259,9 +261,20 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_workspace_menu_at(server_id, workspace, MenuAt::Row, window, cx);
+    }
+
+    pub(crate) fn open_workspace_menu_at(
+        &mut self,
+        server_id: ServerId,
+        workspace: WorkspaceId,
+        at: MenuAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.state
             .update(cx, |state, cx| state.dismiss_arrange_failure(cx));
-        self.open_layer(Layer::WorkspaceMenu(server_id, workspace), window, cx);
+        self.open_layer(Layer::WorkspaceMenu(server_id, workspace, at), window, cx);
     }
 
     /// Opens the choice of the group of a server, as the item of its menu does.
@@ -379,14 +392,18 @@ impl Shell {
                     .truncate()
                     .child(name),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .typeface(theme.types.small, theme)
-                    .ink(colors.bone_3)
-                    .debug_selector(move || format!("group-count-{index}"))
-                    .child(group.servers.len().to_string()),
-            )
+            // The count of the servers only while the group is collapsed, where its servers
+            // are not in view; beside the open group it read as a count of unread messages.
+            .when(collapsed, |head| {
+                head.child(
+                    div()
+                        .flex_none()
+                        .typeface(theme.types.small, theme)
+                        .ink(colors.bone_3)
+                        .debug_selector(move || format!("group-count-{index}"))
+                        .child(group.servers.len().to_string()),
+                )
+            })
             .when(group.waiting_join_requests > 0, |head| {
                 let waiting = group.waiting_join_requests;
                 head.child(
@@ -696,34 +713,63 @@ impl Shell {
         self.book_menu("group-menu", txt::GROUP_MENU.to_owned(), items, cx)
     }
 
-    /// The menu of a workspace in the server book: its place among the workspaces of its
-    /// server, and mark as read.
+    /// The menu of a workspace at its row in the server book.
     pub(crate) fn render_workspace_menu(
         &mut self,
         row: &ServerRow,
         position: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let menu = self.render_workspace_menu_items(row, position, MenuAt::Row, cx);
+        div()
+            .absolute()
+            .left(u(36.0))
+            .top(u(28.0))
+            .child(deferred(menu))
+            .into_any_element()
+    }
+
+    /// The menu of a workspace (ADR 0780): its notification settings, mark as read, its
+    /// Workspace settings, at its row the items that arrange it, and leaving it. It acts on
+    /// the workspace that it was opened for.
+    pub(crate) fn render_workspace_menu_items(
+        &mut self,
+        row: &ServerRow,
+        position: usize,
+        at: MenuAt,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let server_id = row.id;
         let workspace = &row.workspaces[position];
         let (workspace_id, unread) = (workspace.id, workspace.unread.any());
         let count = row.workspaces.len();
+        let has_content = self
+            .state
+            .read(cx)
+            .view_for_server(server_id)
+            .selected
+            .is_some_and(|server| {
+                server.status.shows_content()
+                    && !matches!(server.content, crate::state::view::Content::State)
+            });
         let mut items: Vec<AnyElement> = Vec::new();
-        for (step, item, at_end) in [
-            (Step::Up, "workspace-move-up", position == 0),
-            (Step::Down, "workspace-move-down", position + 1 >= count),
-        ] {
+        if has_content {
             items.push(
-                MenuItem::new(item, txt::move_title(step))
-                    .when(at_end, |item| item.detail(txt::workspace_move_end(step)))
-                    .disabled(at_end)
-                    .selector(item)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.state.update(cx, |state, cx| {
-                            state.move_workspace(server_id, workspace_id, step, cx);
-                        });
-                    }))
-                    .into_any_element(),
+                MenuItem::new(
+                    "workspace-notifications",
+                    crate::text::WORKSPACE_NOTIFICATIONS,
+                )
+                .icon(Icon::Bell)
+                .selector("workspace-notifications")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_notify_settings(
+                        server_id,
+                        junto_client_core::api::SettingsScope::Workspace(workspace_id),
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
             );
         }
         // Shown only while something is unread.
@@ -741,13 +787,69 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if has_content {
+            items.push(
+                MenuItem::new("workspace-settings", txt::WORKSPACE_SETTINGS)
+                    .icon(Icon::Gear)
+                    .selector("menu-workspace-settings")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_workspace_settings(server_id, workspace_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if at == MenuAt::Row {
+            items.push(menu_separator(cx).into_any_element());
+            items.push(menu_label(txt::ARRANGE, false, cx).into_any_element());
+            for (step, item, at_end) in [
+                (Step::Up, "workspace-move-up", position == 0),
+                (Step::Down, "workspace-move-down", position + 1 >= count),
+            ] {
+                items.push(
+                    MenuItem::new(item, txt::move_title(step))
+                        .when(at_end, |item| item.detail(txt::workspace_move_end(step)))
+                        .disabled(at_end)
+                        .selector(item)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.move_workspace(server_id, workspace_id, step, cx);
+                            });
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
+        // Leaving a workspace opens the page of the account that states what stays and what
+        // ends (ADR 0121).
+        if has_content {
+            items.push(menu_separator(cx).into_any_element());
+            items.push(
+                MenuItem::new("leave-workspace", crate::text::account::LEAVE_WORKSPACE)
+                    .icon(Icon::Leave)
+                    .selector("menu-leave-workspace")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.select_server(server_id, cx));
+                        this.open_departure(workspace_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         items.push(self.render_arrange_error(cx));
-        self.book_menu(
+        Menu::new(
             "workspace-menu",
             format!("{}: {}", txt::WORKSPACE_MENU, workspace.name),
-            items,
-            cx,
+            self.layer_focus(),
         )
+        .selector("workspace-menu")
+        .width(240.0)
+        .on_close(Self::handler(cx, |this, window, cx| {
+            this.server_menu_closed_by_press = window.last_input_was_keyboard().not();
+            this.close_layer(window, cx);
+        }))
+        .children(items)
+        .child(div().h(u(4.0)))
+        .into_any_element()
     }
 
     /// The choice of the group of the selected server: a new group, each other group, and

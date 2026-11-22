@@ -456,6 +456,17 @@ fn main() -> ExitCode {
     {
         tracing::warn!(%error, "the entry of the installed programs was not updated");
     }
+    // A copy from the ZIP file registers the app link `junto://` when no copy holds a usable
+    // registration; a test configuration and a check of the start change no registry key
+    // (ADR 0755, ADR 0915).
+    #[cfg(windows)]
+    if !junto_client_core::releases::TEST_CONFIGURATION
+        && !arguments.check_startup
+        && let Ok(program) = std::env::current_exe()
+        && let Err(error) = junto_client_core::url_scheme::register_if_unclaimed(&program)
+    {
+        tracing::warn!(%error, "the app link was not registered");
+    }
     // The client made the data directory. The log of the directory is written by one
     // instance only: the one that holds `logs/lock` (ADR 0757).
     junto_client::panics::record_into(client.data_dir().root());

@@ -396,6 +396,17 @@ docker compose -f one-host.yaml exec server junto-server unnamed-files --remove
 
 The server is never updated automatically (ADR 0005). An upgrade is a new checkout of the repository and a new build.
 
+0. While the running release serves, run the check of the new release against its database. Build the server image of the new release in a second checkout under another project name, and run it from the checkout that runs:
+
+   ```sh
+   # in the checkout of the new release, with the same .env
+   docker compose -p junto-next -f one-host.yaml build server
+   # in the checkout that runs
+   JUNTO_SERVER_IMAGE=junto-next-server docker compose -f one-host.yaml run --rm --no-deps server check-upgrade
+   ```
+
+   The command lists each case that the new release needs a decision on, and ends with the code 3 while one waits. Release 0.3.0 removes the workspace permission rules of single members: each rule of a member becomes a role of that member, and the check lists every member who would gain a permission that a rule denies now, every member with "Manage roles" who would stand above the role made from the rule of a member who stands at or above them now, every former member who keeps a rule, and every workspace or member that would hold more roles than the server allows. Handle each case in the running release and run the check again until it lists none. The new server does not start while a case waits, and then makes no copy of the database and changes nothing (ADR 0301).
+
 1. Stop the server, so that no recording can start, and check that none runs. The command ends with the code 3 while one does; then start the server again (`docker compose -f one-host.yaml start server`), end the recording and repeat. Do not stop, restart or replace the recorder during a recording: the recording then ends as `partly_failed`, with the files up to the stop (ADR 0601).
 
    ```sh

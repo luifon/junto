@@ -20,6 +20,8 @@ pub struct RowAction {
     pub(crate) disabled: bool,
     pub(crate) detail: Option<SharedString>,
     pub(crate) shortcut: Option<junto_client_core::keybinds::KeyAction>,
+    /// The name of the item for a test; `context-action:<label>` without one.
+    pub(crate) selector: Option<SharedString>,
     pub(crate) handler: Option<Handler>,
 }
 
@@ -34,8 +36,23 @@ impl RowAction {
             disabled: false,
             detail: None,
             shortcut: None,
+            selector: None,
             handler: Some(Rc::new(handler)),
         }
+    }
+
+    /// An item that does nothing now, with its reason as the second line.
+    pub fn disabled_because(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        if let Some(reason) = reason {
+            self.disabled = true;
+            self.detail = Some(reason.into());
+        }
+        self
+    }
+
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
     }
 
     /// Adds an action without a visible button to the current collection scope.
@@ -49,6 +66,7 @@ impl RowAction {
             && self.disabled == other.disabled
             && self.detail == other.detail
             && self.shortcut == other.shortcut
+            && self.selector == other.selector
     }
 }
 
@@ -346,7 +364,10 @@ impl Render for Popup {
         let close = cx.listener(|this, _: &(), window, cx| this.close(window, cx));
         let items = self.actions.iter().enumerate().map(|(index, action)| {
             let expected = action.label.clone();
-            let selector = format!("context-action:{}", action.label);
+            let selector = action.selector.as_ref().map_or_else(
+                || format!("context-action:{}", action.label),
+                ToString::to_string,
+            );
             div().debug_selector(move || selector).child(
                 MenuItem::new(("context-action", index), action.label.clone())
                     .disabled(action.disabled)

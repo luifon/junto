@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use junto_client::shell::Shell;
-use junto_client::shell::admin::roles::Open;
+use junto_client::shell::admin::roles::{Open, RoleTab};
 use junto_client::state::admin::{AdminPage, AskKind, RoleLevel, RoleRef};
 use junto_client::state::view::ServerSnapshot;
 use junto_client_core::model::{Collection, LoadFailure, ServerModel};
@@ -230,6 +230,29 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         |shell, window, cx| {
             roles_page(shell, window, cx);
             shell.show_role_permissions(Some(workspace_role(ENGINEERS)), cx);
+        },
+    )?;
+    // The tab "Members" of a role: who holds it, and the search that adds more.
+    studio.draw(
+        Screen::new("roles-workspace-members", coloured()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            shell.show_role_permissions(Some(workspace_role(ENGINEERS)), cx);
+            shell.show_role_tab(RoleTab::Members, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("roles-workspace-appearance-tab", coloured()),
+        |shell, window, cx| {
+            roles_page(shell, window, cx);
+            shell.show_role_permissions(Some(workspace_role(ENGINEERS)), cx);
+            shell.show_role_tab(RoleTab::Appearance, window, cx);
+            shell.set_roles_open(
+                Some(Open::Appearance(workspace_role(ENGINEERS))),
+                "Engineers",
+                window,
+                cx,
+            );
         },
     )?;
     studio.draw(

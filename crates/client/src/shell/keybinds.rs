@@ -224,7 +224,7 @@ impl Shell {
                 });
             }
             KeyAction::OpenAdministration => {
-                self.open_server_admin(crate::state::admin::AdminPage::Workspaces, window, cx);
+                self.open_server_admin(crate::state::admin::AdminPage::Server, window, cx);
             }
             KeyAction::OpenKeybinds => {
                 self.open(Open::Settings, window, cx);

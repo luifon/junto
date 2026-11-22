@@ -202,6 +202,43 @@ async fn device_proof_reads_only_its_own_notice_after_removal_and_restart() {
 }
 
 #[tokio::test]
+async fn account_rows_name_the_workspaces_of_the_account_that_the_caller_sees() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let moderator = server.join(&owner, "Moderator").await;
+    let workspace = server.default_workspace(&owner).await;
+    server
+        .grant_server(&owner, &moderator, &[S::BanMembers])
+        .await;
+    let other: junto_protocol::structure::Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Other" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let outsider = server.join_into(&owner, "Outsider", &[other.id]).await;
+    let workspaces_of = |rows: &[Value], member: &crate::support::Member| -> Vec<Value> {
+        rows.iter()
+            .find(|row| row["id"] == json!(member.account_id))
+            .unwrap()["workspace_ids"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let seen: Vec<Value> = server
+        .get(&moderator, "/api/v1/accounts")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(workspaces_of(&seen, &moderator), [json!(workspace.id)]);
+    // The moderator does not see the other workspace, so the row names none.
+    assert!(workspaces_of(&seen, &outsider).is_empty());
+    let all: Vec<Value> = server
+        .get(&owner, "/api/v1/accounts")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(workspaces_of(&all, &outsider), [json!(other.id)]);
+    assert_eq!(workspaces_of(&all, &moderator), [json!(workspace.id)]);
+}
+
+#[tokio::test]
 async fn account_rows_state_the_actual_unban_rank_check() {
     let server = TestServer::start().await;
     let owner = server.owner().await;

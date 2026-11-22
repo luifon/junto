@@ -248,12 +248,9 @@ impl Scene {
             server_id: self.server_id,
             page,
         };
-        match self.view(open).unwrap().scope {
-            Scope::Server {
-                nav,
-                selected,
-                page,
-            } => (nav, selected, page),
+        let view = self.view(open).unwrap();
+        match view.scope {
+            Scope::Server { selected, page } => (view.nav, selected, page),
             Scope::Channel(_) | Scope::Category(_) | Scope::Person(_) => {
                 panic!("a page of the server was opened")
             }
@@ -310,32 +307,62 @@ fn pages(nav: &[NavGroup]) -> Vec<AdminPage> {
 fn a_member_without_permissions_has_the_pages_that_every_member_may_use() {
     let scene = scene();
     let (nav, selected, page) = scene.page(AdminPage::Workspaces);
+    // No group of the server: a plain member reads the members, the archived channels and
+    // the glossary of the workspace, and has the pages of the account (ADR 0761).
     assert_eq!(
         pages(&nav),
         [
-            AdminPage::Workspaces,
-            AdminPage::Archive,
             AdminPage::Members,
+            AdminPage::Archive,
             AdminPage::Recordings,
             AdminPage::Glossary,
-            AdminPage::Tokens,
-            AdminPage::Exports
+            AdminPage::Profile,
+            AdminPage::Devices,
+            AdminPage::Recoveries,
+            AdminPage::Exports,
+            AdminPage::OwnTokens,
+            AdminPage::Departure,
         ]
     );
-    assert_eq!(nav[1].title, NavTitle::Workspace("Studio".to_owned()));
-    assert_eq!(selected, AdminPage::Workspaces);
-    let ServerPage::Workspaces(page) = page else {
-        panic!("the page of the workspaces was opened");
-    };
-    assert!(!page.may_create && !page.may_manage && !page.is_owner);
-    let names: Vec<(&str, bool, bool, bool)> = page
-        .rows
+    assert_eq!(nav[0].title, NavTitle::Workspace("Studio".to_owned()));
+    assert_eq!(nav[1].title, NavTitle::Own);
+    // The page of the workspaces is not the person's: the first page opens.
+    assert_eq!(selected, AdminPage::Members);
+    assert!(matches!(page, ServerPage::Members(_)));
+}
+
+#[test]
+fn the_selector_lists_every_workspace_that_the_person_sees_and_does_not_change_the_window() {
+    let scene = scene();
+    let lab = scene
+        .snapshot
+        .workspaces
         .iter()
-        .map(|row| (row.name.as_str(), row.is_default, row.shown, row.member))
+        .find(|state| state.workspace.name == "Lab")
+        .map(|state| state.workspace.id)
+        .unwrap();
+    let open = AdminOpen::Server {
+        server_id: scene.server_id,
+        page: AdminPage::Members,
+    };
+    let view = scene.view(open).unwrap();
+    let names: Vec<&str> = view
+        .workspaces
+        .iter()
+        .map(|choice| choice.name.as_str())
         .collect();
+    assert_eq!(names, ["Lab", "Studio"]);
+    assert_eq!(view.workspace, Some(scene.studio));
+    // A chosen workspace replaces the shown one in the layer only.
+    let admin = AdminState::chosen(lab);
+    let view = scene.view_with(open, &admin).unwrap();
+    assert_eq!(view.workspace, Some(lab));
+    assert!(matches!(&view.nav[0].title, NavTitle::Workspace(name) if name == "Lab"));
+    // A chosen workspace that the person no longer sees gives way to the shown one.
+    let admin = AdminState::chosen(junto_client_core::protocol::ids::WorkspaceId::generate());
     assert_eq!(
-        names,
-        [("Lab", false, false, false), ("Studio", true, true, true)]
+        scene.view_with(open, &admin).unwrap().workspace,
+        Some(scene.studio)
     );
 }
 
@@ -367,22 +394,27 @@ fn each_server_permission_adds_its_page() {
 #[test]
 fn an_administrator_and_the_owner_have_every_page() {
     let every = [
-        AdminPage::Workspaces,
         AdminPage::Server,
+        AdminPage::Workspaces,
         AdminPage::People,
         AdminPage::Invites,
         AdminPage::JoinRequests,
-        AdminPage::Tokens,
         AdminPage::ServerRoles,
+        AdminPage::Tokens,
         AdminPage::AuditLog,
+        AdminPage::WorkspaceOverview,
         AdminPage::Channels,
         AdminPage::Roles,
-        AdminPage::Archive,
         AdminPage::Members,
-        AdminPage::Notifications,
+        AdminPage::Archive,
         AdminPage::Recordings,
         AdminPage::Glossary,
+        AdminPage::Profile,
+        AdminPage::Devices,
+        AdminPage::Recoveries,
         AdminPage::Exports,
+        AdminPage::OwnTokens,
+        AdminPage::Departure,
     ];
     let mut scene = scene();
     scene.snapshot.account.server_permissions = vec![ServerPermission::Administrator];
@@ -415,7 +447,7 @@ fn the_roles_of_the_workspace_add_the_channels_page_and_the_audit_log() {
 }
 
 #[test]
-fn a_page_that_the_person_may_not_use_gives_way_to_the_workspaces() {
+fn a_page_that_the_person_may_not_use_gives_way_to_the_first_page() {
     let scene = scene();
     for page in [
         AdminPage::People,
@@ -423,11 +455,20 @@ fn a_page_that_the_person_may_not_use_gives_way_to_the_workspaces() {
         AdminPage::JoinRequests,
         AdminPage::AuditLog,
         AdminPage::Channels,
+        AdminPage::WorkspaceOverview,
     ] {
         let (_, selected, shown) = scene.page(page);
-        assert_eq!(selected, AdminPage::Workspaces, "{page:?}");
-        assert!(matches!(shown, ServerPage::Workspaces(_)));
+        assert_eq!(selected, AdminPage::Members, "{page:?}");
+        assert!(matches!(shown, ServerPage::Members(_)));
     }
+    // A page of the workspace gives way to the first page of the workspace, also for a
+    // person with pages of the server.
+    let mut scene = self::scene();
+    scene.snapshot.account.server_permissions = vec![ServerPermission::CreateInvites];
+    let (_, selected, _) = scene.page(AdminPage::Channels);
+    assert_eq!(selected, AdminPage::Members);
+    let (_, selected, _) = scene.page(AdminPage::People);
+    assert_eq!(selected, AdminPage::Invites);
 }
 
 #[test]
@@ -619,9 +660,13 @@ fn each_page_holds_open_the_collections_that_it_shows() {
         needs(&server(AdminPage::Archive), &model, studio),
         [
             AdminPart::Archived(scene.studio),
-            AdminPart::WorkspaceSettings(scene.studio),
-            AdminPart::DirectRetention
+            AdminPart::WorkspaceSettings(scene.studio)
         ]
+    );
+    // The retention of the files of direct messages is on the overview of the server.
+    assert_eq!(
+        needs(&server(AdminPage::Server), &model, studio),
+        [AdminPart::AttachmentLimits, AdminPart::DirectRetention]
     );
     assert_eq!(
         needs(&channel(ChannelPage::Overview), &model, studio),
@@ -658,7 +703,6 @@ fn the_archive_page_shows_each_state_of_its_collections() {
     let page = archive(&scene);
     assert_eq!(page.channels, Listed::Loading);
     assert_eq!(page.settings, None);
-    assert_eq!(page.direct_retention, None);
     assert!(!page.may_manage);
 
     scene.admin.archived = vec![(scene.studio, Collection::Failed(LoadFailure::Unavailable))];
@@ -682,7 +726,6 @@ fn the_archive_page_shows_each_state_of_its_collections() {
     scene.snapshot.account.server_permissions = vec![ServerPermission::Administrator];
     let page = archive(&scene);
     assert_eq!(page.settings, Some(Listed::Loading));
-    assert_eq!(page.direct_retention, Some(Listed::Loading));
     scene.admin.settings = vec![(
         scene.studio,
         Collection::Loaded(WorkspaceSettings {
@@ -701,7 +744,14 @@ fn the_archive_page_shows_each_state_of_its_collections() {
             recording_retention: Some(90),
         }))
     );
-    assert_eq!(page.direct_retention, Some(Listed::Loaded(Some(14))));
+    // The files of direct messages are kept for the whole server: the overview of the
+    // server holds their retention.
+    match scene.page(AdminPage::Server).2 {
+        ServerPage::Server(page) => {
+            assert_eq!(page.direct_retention, Some(Listed::Loaded(Some(14))));
+        }
+        _ => panic!("the overview of the server was opened"),
+    }
 }
 
 #[test]
@@ -1101,18 +1151,23 @@ fn the_thread_and_the_pins_of_an_archived_channel_offer_no_change() {
 }
 
 #[test]
-fn an_account_without_the_administrator_permission_has_the_page_of_its_own_tokens() {
+fn every_account_has_the_page_of_its_own_tokens_in_the_group_of_the_account() {
     let scene = scene();
-    let (nav, selected, page) = scene.page(AdminPage::Tokens);
-    assert_eq!(selected, AdminPage::Tokens);
+    let (nav, selected, page) = scene.page(AdminPage::OwnTokens);
+    assert_eq!(selected, AdminPage::OwnTokens);
     assert!(matches!(page, ServerPage::Tokens(_)));
-    // The page stands with the things of the account, not with the things of the server.
     let own = nav
         .iter()
         .find(|group| group.title == NavTitle::Own)
         .unwrap();
-    assert_eq!(own.pages, [AdminPage::Tokens, AdminPage::Exports]);
-    assert!(!nav[0].pages.contains(&AdminPage::Tokens));
+    assert!(own.pages.contains(&AdminPage::OwnTokens));
+    assert!(!pages(&nav).contains(&AdminPage::Tokens));
+    // An administrator also has the tokens of every account among the pages of the server.
+    let mut scene = self::scene();
+    scene.snapshot.account.server_permissions = vec![ServerPermission::Administrator];
+    let (nav, _, _) = scene.page(AdminPage::OwnTokens);
+    assert!(nav[0].pages.contains(&AdminPage::Tokens));
+    assert!(nav.last().unwrap().pages.contains(&AdminPage::OwnTokens));
 }
 
 #[test]
@@ -1211,17 +1266,15 @@ fn every_member_has_the_page_of_the_recordings_of_the_shown_workspace() {
     assert_eq!(page.workspace_name, "Studio");
     assert_eq!(page.state, recordings::RecordingsRead::NotRead);
     // The page stands with the things of the workspace.
-    assert!(nav[1].pages.contains(&AdminPage::Recordings));
-    assert!(!nav[0].pages.contains(&AdminPage::Recordings));
+    assert!(nav[0].pages.contains(&AdminPage::Recordings));
 
     // An account that sees no workspace has no such page: the first page is shown.
     let mut scene = self::scene();
     scene.snapshot.workspaces.clear();
     scene.snapshot.account.workspace_ids.clear();
-    let (nav, selected, page) = scene.page(AdminPage::Recordings);
+    let (nav, selected, _) = scene.page(AdminPage::Recordings);
     assert!(!pages(&nav).contains(&AdminPage::Recordings));
-    assert_eq!(selected, AdminPage::Workspaces);
-    assert!(matches!(page, ServerPage::Workspaces(_)));
+    assert_eq!(selected, AdminPage::Profile);
 }
 
 #[test]

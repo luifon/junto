@@ -297,12 +297,14 @@ fn assert_target_link(
 }
 
 #[gpui::test]
-fn an_administration_workspace_menu_renames_its_workspace(cx: &mut TestAppContext) {
+fn an_administration_workspace_menu_opens_its_workspace_where_it_is_renamed(
+    cx: &mut TestAppContext,
+) {
     let world = World::new();
     let server = world.server("Example Studio");
     let (_directory, mut window, owner) = owner_window(cx, &server);
     let workspace = default_workspace(&world, &owner);
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-administration");
     crate::admin_pages::open_page(&mut window, "admin-nav-workspaces", |window| {
         matches!(
@@ -317,7 +319,11 @@ fn an_administration_workspace_menu_renames_its_workspace(cx: &mut TestAppContex
         window.shows_named(format!("workspace-row-{workspace}"))
     });
     window.right_click_named(format!("workspace-row-{workspace}"));
-    window.click_named("context-action:Rename".to_owned());
+    window.click_named("context-action:Open".to_owned());
+    crate::admin_pages::click_in_page(
+        &mut window,
+        crate::harness::selector(format!("workspace-rename-{workspace}")),
+    );
     window.until("the workspace name form is open", |window| {
         window.shows("workspace-name")
     });
@@ -356,7 +362,7 @@ fn a_role_context_menu_preserves_the_delete_confirmation(cx: &mut TestAppContext
             },
         ))
         .unwrap();
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-administration");
     crate::admin_pages::open_page(&mut window, "admin-nav-roles", |window| {
         matches!(
@@ -371,7 +377,7 @@ fn a_role_context_menu_preserves_the_delete_confirmation(cx: &mut TestAppContext
         window.shows_named(format!("role-row-{}", role.id))
     });
     window.right_click_named(format!("role-row-{}", role.id));
-    window.click_named("context-action:Delete".to_owned());
+    window.click_named(format!("role-delete-{}", role.id));
     window.until("the deletion still requires confirmation", |window| {
         window.shows("role-confirm")
     });

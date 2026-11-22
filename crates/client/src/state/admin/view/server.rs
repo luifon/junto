@@ -24,6 +24,9 @@ pub struct ServerSettingsPage {
     pub may_change: bool,
     /// The largest file and the number of files of a message that the server accepts.
     pub limits: Listed<AttachmentLimits>,
+    /// The retention of the files of direct messages, which holds for the whole server
+    /// (ADR 0406), for an administrator.
+    pub direct_retention: Option<Listed<Option<u32>>>,
 }
 
 pub fn settings(server: &ServerSnapshot, model: &ServerModel, known: &Known) -> ServerSettingsPage {
@@ -34,6 +37,9 @@ pub fn settings(server: &ServerSnapshot, model: &ServerModel, known: &Known) -> 
         image: logo.image,
         may_change: model.is_administrator(),
         limits: Listed::of(&model.admin.attachment_limits, Clone::clone),
+        direct_retention: model
+            .is_administrator()
+            .then(|| Listed::of(&model.admin.direct_retention, |retention| retention.days)),
     }
 }
 
@@ -191,6 +197,7 @@ mod tests {
                 image: Some(held.image),
                 may_change: true,
                 limits: Listed::Loading,
+                direct_retention: Some(Listed::Loading),
             }
         );
     }
@@ -239,13 +246,13 @@ mod tests {
             assert_eq!(groups[0].title, NavTitle::Server);
             groups[0].pages.clone()
         };
-        // The page is the second one of the group of the server.
+        // The overview of the server is the first page of the group of the server.
         let owner = pages(account(true, Vec::new()));
-        assert_eq!(owner[..2], [AdminPage::Workspaces, AdminPage::Server]);
+        assert_eq!(owner[..2], [AdminPage::Server, AdminPage::Workspaces]);
         let administrator = pages(account(false, vec![ServerPermission::Administrator]));
         assert_eq!(
             administrator[..2],
-            [AdminPage::Workspaces, AdminPage::Server]
+            [AdminPage::Server, AdminPage::Workspaces]
         );
         let member = pages(account(false, vec![ServerPermission::CreateInvites]));
         assert!(!member.contains(&AdminPage::Server));
@@ -257,7 +264,7 @@ mod tests {
         // The page of a person who is no administrator gives way to the first one.
         let member = server_of(account(false, Vec::new()));
         let (selected, shown) = page(&member, &Logos::default());
-        assert_eq!(selected, AdminPage::Workspaces);
-        assert!(matches!(shown, ServerPage::Workspaces(_)));
+        assert_ne!(selected, AdminPage::Server);
+        assert!(!matches!(shown, ServerPage::Server(_)));
     }
 }

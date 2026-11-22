@@ -22,10 +22,10 @@ impl Window {
     /// The account layer as the window drew it last. Absent while the layer is closed.
     pub(crate) fn account(&mut self) -> Option<AccountView> {
         self.run_tasks();
-        self.shell.read_with(&self.cx, |shell, _| {
+        self.shell.read_with(&self.cx, |shell, cx| {
             shell
                 .account_drawn()
-                .filter(|_| shell.account_is_open())
+                .filter(|_| shell.account_is_open(cx))
                 .cloned()
         })
     }
@@ -33,7 +33,7 @@ impl Window {
     /// Opens the account layer through the menu of the server.
     #[track_caller]
     pub(crate) fn open_account(&mut self) {
-        self.click("server-menu-button");
+        self.open_server_menu();
         self.click("menu-account");
         assert!(self.shows("account"));
     }

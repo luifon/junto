@@ -307,8 +307,9 @@ fn a_channel_in_a_category_states_whether_it_is_synced_follows_the_events_and_sy
         )
     });
 
-    // A change on the page of a synced channel detaches it.
-    choose(&mut window, "record_calls", "deny");
+    // A change on the page of a synced channel detaches it. The channel takes text: its
+    // page lists no permission of calls (ADR 0761).
+    choose(&mut window, "mention_roles", "deny");
     window.until("the page states that the channel is not synced", |window| {
         window.shows("rules-not-synced")
     });
@@ -317,7 +318,7 @@ fn a_channel_in_a_category_states_whether_it_is_synced_follows_the_events_and_sy
         category_rules
             .rules
             .iter()
-            .all(|rule| !rule.deny.contains(&WorkspacePermission::RecordCalls)),
+            .all(|rule| !rule.deny.contains(&WorkspacePermission::MentionRoles)),
         "the change of the channel changed the category: {category_rules:?}"
     );
 }
@@ -361,11 +362,11 @@ fn a_category_has_a_permissions_page_whose_rules_its_synced_channels_take(cx: &m
     // The page of the channels opens the settings of a category.
     window.open_administration();
     open_page(&mut window, "admin-nav-channels", |window| {
-        window.shows(sel("category-permissions", teams))
+        window.shows(sel("admin-row-category", teams))
     });
     click_in_page(&mut window, sel("category-permissions", teams));
     window.until("the settings of the category are open", |window| {
-        window.shows("category-nav-permissions") && window.shows("category-synced-count")
+        window.shows("category-nav-back") && window.shows("category-synced-count")
     });
     window.until("the page counts the synced channels", |window| {
         matches!(
@@ -427,12 +428,12 @@ fn a_category_has_a_permissions_page_whose_rules_its_synced_channels_take(cx: &m
     // The settings of the category return to the page of the channels.
     click_in_page(&mut window, "category-nav-back");
     window.until("the page of the channels is shown", |window| {
-        window.shows(sel("category-permissions", teams))
+        window.shows(sel("admin-row-category", teams))
     });
 }
 
 #[gpui::test]
-fn the_page_of_a_member_sets_workspace_permissions_and_lists_what_the_member_can_use(
+fn the_page_of_a_member_lists_what_the_member_can_use_and_sets_no_workspace_permission(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
@@ -451,35 +452,17 @@ fn the_page_of_a_member_sets_workspace_permissions_and_lists_what_the_member_can
 
     window.open_administration();
     open_page(&mut window, "admin-nav-members", |window| {
-        window.shows(sel("member-permissions", bruno))
+        window.shows(sel("member-access", bruno))
     });
-    click_in_page(&mut window, sel("member-permissions", bruno));
+    // A workspace has no permission rule for one member: the settings of a member hold only
+    // what the member can use (ADR 0301).
+    assert!(!window.shows(sel("member-permissions", bruno)));
+    click_in_page(&mut window, sel("member-access", bruno));
     window.until("the page of the member is open", |window| {
-        window.shows("person-nav-permissions")
-            && window.shows("person-nav-access")
-            && window.shows("override-mention_everyone-allow")
+        window.shows("person-nav-access") && !window.shows("person-nav-permissions")
     });
-
-    // An allow and a deny in the workspace reach the member.
-    choose(&mut window, "mention_everyone", "allow");
-    choose(&mut window, "send_messages", "deny");
-    let stored = world.run(api.member_permissions(default, bruno)).unwrap();
-    assert_eq!(stored.allow, [WorkspacePermission::MentionEveryone]);
-    assert_eq!(stored.deny, [WorkspacePermission::SendMessages]);
-    until_model(
-        &world,
-        &member,
-        "the member holds the new permissions",
-        |model| {
-            model.workspace(default).is_some_and(|workspace| {
-                workspace.holds(WorkspacePermission::MentionEveryone)
-                    && !workspace.holds(WorkspacePermission::SendMessages)
-            })
-        },
-    );
 
     // What the member can use: each channel with the permissions of the member there.
-    click_in_page(&mut window, "person-nav-access");
     window.until("the page lists the channels", |window| {
         window.shows(sel("access-channel", plans))
     });
@@ -500,38 +483,12 @@ fn the_page_of_a_member_sets_workspace_permissions_and_lists_what_the_member_can
                 .map(|line| line.permissions.clone())
         },
     );
-    assert!(
-        used.contains(&WorkspacePermission::MentionEveryone),
-        "{used:?}"
-    );
-    assert!(
-        !used.contains(&WorkspacePermission::SendMessages),
-        "{used:?}"
-    );
     assert!(used.contains(&WorkspacePermission::ViewChannel), "{used:?}");
-
-    // Neutral removes both.
-    click_in_page(&mut window, "person-nav-permissions");
-    choose(&mut window, "mention_everyone", "neutral");
-    choose(&mut window, "send_messages", "neutral");
-    let stored = world.run(api.member_permissions(default, bruno)).unwrap();
-    assert!(
-        stored.allow.is_empty() && stored.deny.is_empty(),
-        "{stored:?}"
-    );
-
-    // The own account takes no change on this page.
-    click_in_page(&mut window, "person-nav-back");
-    click_in_page(&mut window, sel("member-permissions", ada));
-    window.until(
-        "the page states that the own account takes no change",
-        |window| window.shows("person-locked"),
-    );
-    sends_nothing(&mut window, "override-mention_everyone-allow");
+    let _ = (ada, api);
 }
 
 #[gpui::test]
-fn a_member_who_manages_roles_sees_no_hidden_channel_and_no_choice_beyond_own_permissions_or_rank(
+fn a_member_who_manages_roles_sees_no_hidden_channel_on_the_page_of_a_member(
     cx: &mut TestAppContext,
 ) {
     let world = World::new();
@@ -587,48 +544,17 @@ fn a_member_who_manages_roles_sees_no_hidden_channel_and_no_choice_beyond_own_pe
 
     window.open_administration();
     open_page(&mut window, "admin-nav-members", |window| {
-        window.shows(sel("member-permissions", bruno))
+        window.shows(sel("member-access", bruno))
     });
-    click_in_page(&mut window, sel("member-permissions", bruno));
-    window.until("the page of the member is open", |window| {
-        window.shows("override-manage_messages-allow")
-    });
-
-    // Luca does not hold "manage messages": its allow is refused with the reason. A deny
-    // needs only "manage roles".
-    window.until("the page states the reason", |window| {
-        window.shows("override-ceiling")
-    });
-    sends_nothing(&mut window, "override-manage_messages-allow");
-    choose(&mut window, "add_reactions", "deny");
-    let stored = world.run(api.member_permissions(default, bruno)).unwrap();
-    assert_eq!(stored.deny, [WorkspacePermission::AddReactions]);
-    // The removal of the deny would give Bruno "add reactions" in the private channel too,
-    // which Luca cannot see: the server refuses it, and the page states the refusal.
-    let refused = choose_answer(&mut window, "add_reactions", "neutral");
-    assert!(refused.is_some());
-    window.until("the page states the refusal", |window| {
-        try_reveal(window, "person-refused").is_some()
-    });
-    let stored = world.run(api.member_permissions(default, bruno)).unwrap();
-    assert_eq!(stored.deny, [WorkspacePermission::AddReactions]);
+    click_in_page(&mut window, sel("member-access", bruno));
 
     // What Bruno can use lists the channels that Luca sees, and not the private one.
-    click_in_page(&mut window, "person-nav-access");
     window.until("the page lists the open channel", |window| {
         window.shows(sel("access-channel", plans))
     });
     assert!(!window.shows(sel("access-channel", secret)));
 
-    // Cara holds a role above the highest role of Luca: her page takes no change.
-    click_in_page(&mut window, "person-nav-back");
-    click_in_page(&mut window, sel("member-permissions", cara));
-    window.until("the page states the order of the roles", |window| {
-        window.shows("person-locked")
-    });
-    sends_nothing(&mut window, "override-add_reactions-deny");
-    let stored = world.run(api.member_permissions(default, cara)).unwrap();
-    assert!(stored.deny.is_empty());
+    let _ = (cara, seniors);
 }
 
 #[gpui::test]
@@ -646,7 +572,7 @@ fn an_administrator_sets_the_server_permissions_of_an_account_and_only_the_owner
 
     window.open_administration();
     open_page(&mut window, "admin-nav-people", |window| {
-        window.shows(sel("account-permissions", bruno))
+        window.shows(sel("admin-row-account", bruno))
     });
     click_in_page(&mut window, sel("account-permissions", bruno));
     window.until(
@@ -704,7 +630,7 @@ fn an_administrator_who_is_not_the_owner_cannot_deny_the_administrator_permissio
 
     window.open_administration();
     open_page(&mut window, "admin-nav-people", |window| {
-        window.shows(sel("account-permissions", bruno))
+        window.shows(sel("admin-row-account", bruno))
     });
     click_in_page(&mut window, sel("account-permissions", bruno));
     window.until(
@@ -832,7 +758,13 @@ fn a_refused_choice_on_the_permissions_page_of_a_channel_keeps_the_row_under_the
         try_reveal(window, sel("rules-subject-role", leads))
     });
     proxy.fail_ending(&format!("/rules/roles/{everyone}"), busy());
-    let last = WorkspacePermission::ALL.last().unwrap().name();
+    // The last permission that a text channel lists (ADR 0761).
+    let last = junto_client::state::admin::view::overrides::listed_permissions(Some(
+        junto_client_core::protocol::structure::ChannelKind::Text,
+    ))
+    .last()
+    .unwrap()
+    .name();
     refusal_keeps_the_row_under_the_pointer(
         &mut window,
         sel(&format!("override-{last}"), "deny"),
@@ -864,11 +796,11 @@ fn a_refused_choice_on_the_permissions_page_of_a_category_keeps_the_row_under_th
         .unwrap();
     window.open_administration();
     open_page(&mut window, "admin-nav-channels", |window| {
-        window.shows(sel("category-permissions", teams))
+        window.shows(sel("admin-row-category", teams))
     });
     click_in_page(&mut window, sel("category-permissions", teams));
     window.until("the page of the category is open", |window| {
-        window.shows("category-nav-permissions") && window.shows("rules-add")
+        window.shows("category-nav-back") && window.shows("rules-add")
     });
     awaited(&mut window, "the second role is listed", |window| {
         try_reveal(window, sel("rules-subject-role", leads))
@@ -915,35 +847,6 @@ fn a_refused_sync_again_keeps_the_row_under_the_pointer(cx: &mut TestAppContext)
 }
 
 /// The pointer rests over the choice of the next permission, below the place of the
-/// refusal of the first permission on the page of a member; the choice keeps its top.
-#[gpui::test]
-fn a_refused_choice_on_the_page_of_a_member_keeps_the_row_under_the_pointer(
-    cx: &mut TestAppContext,
-) {
-    let world = World::new();
-    let server = world.server("Acme Studio");
-    let proxy = world.run(FaultProxy::start(&server));
-    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
-    let code = invite(&world, &owner, Vec::new());
-    let (_device, member) = joined(&world, &server, &code, "Bruno");
-    let bruno = logged_in(&member);
-    window.open_administration();
-    open_page(&mut window, "admin-nav-members", |window| {
-        window.shows(sel("member-permissions", bruno))
-    });
-    click_in_page(&mut window, sel("member-permissions", bruno));
-    window.until("the page of the member is open", |window| {
-        window.shows("person-nav-permissions") && window.shows("override-manage_roles-neutral")
-    });
-    proxy.fail_ending(&format!("/members/{bruno}/permissions"), busy());
-    refusal_keeps_the_row_under_the_pointer(
-        &mut window,
-        "override-view_channel-deny",
-        "override-manage_roles-neutral",
-    );
-}
-
-/// The pointer rests over the choice of the next permission, below the place of the
 /// refusal of the first permission on the server permissions of an account; the choice
 /// keeps its top.
 #[gpui::test]
@@ -959,7 +862,7 @@ fn a_refused_choice_on_the_server_permissions_of_an_account_keeps_the_row_under_
     let bruno = logged_in(&member);
     window.open_administration();
     open_page(&mut window, "admin-nav-people", |window| {
-        window.shows(sel("account-permissions", bruno))
+        window.shows(sel("admin-row-account", bruno))
     });
     click_in_page(&mut window, sel("account-permissions", bruno));
     window.until(

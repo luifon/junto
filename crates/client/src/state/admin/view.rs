@@ -57,9 +57,17 @@ impl<T> Listed<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavTitle {
     Server,
-    /// The shown workspace, by its name.
+    /// The workspace of the layer, by its name. The shell draws the selector of the
+    /// workspace in its place.
     Workspace(String),
     Own,
+}
+
+/// A workspace of the selector of the layer (ADR 0761).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceChoiceLine {
+    pub id: WorkspaceId,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,8 +426,6 @@ pub struct ArchivePage {
     pub is_owner: bool,
     /// Present for an administrator.
     pub settings: Option<Listed<WorkspaceDays>>,
-    /// The retention of the files of direct messages, for an administrator.
-    pub direct_retention: Option<Listed<Option<u32>>>,
 }
 
 /// Whether a channel is private: its "everyone" role is denied "view channel"
@@ -494,12 +500,14 @@ pub struct ChannelSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPage {
     Workspaces(WorkspacesPage),
-    /// The server itself: its logo.
+    /// The server itself: its logo, the limits of files and the retention of the files of
+    /// direct messages.
     Server(server::ServerSettingsPage),
+    /// The overview of the chosen workspace.
+    WorkspaceOverview(Box<WorkspaceOverviewPage>),
     Channels(ChannelsPage),
     Archive(ArchivePage),
     Members(people::MembersPage),
-    Notifications(notifications::NotificationsPage),
     People(people::PeoplePage),
     Invites(people::InvitesPage),
     JoinRequests(people::RequestsPage),
@@ -511,6 +519,8 @@ pub enum ServerPage {
     Glossary(glossary::GlossaryPage),
     /// The server roles, or the roles of the shown workspace.
     Roles(roles::RolesPage),
+    /// A page of the account, which the state of the account pages derives (ADR 0781).
+    Account,
 }
 
 /// The settings of a category: its permission rules (ADR 0304).
@@ -525,7 +535,6 @@ pub struct CategorySettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Server {
-        nav: Vec<NavGroup>,
         selected: AdminPage,
         page: ServerPage,
     },
@@ -538,6 +547,18 @@ pub enum Scope {
 pub struct AdminView {
     pub server_id: ServerId,
     pub server_name: String,
+    /// The pages that the person may use, in their groups, for every scope: the settings of
+    /// a channel, a category or a person are pages of the workspace group (ADR 0761).
+    pub nav: Vec<NavGroup>,
+    /// The page of the navigation that is marked as open.
+    pub nav_selected: AdminPage,
+    /// The workspaces of the selector: every workspace of the server that the person sees,
+    /// in each of which the person may read at least its members (ADR 0761).
+    pub workspaces: Vec<WorkspaceChoiceLine>,
+    /// The workspace of the workspace group.
+    pub workspace: Option<WorkspaceId>,
+    /// The person is an administrator of the server.
+    pub administrator: bool,
     pub scope: Scope,
     /// The requests of the person that are on their way or were refused: one for each kind
     /// of request, in the order in which they were made.
@@ -683,17 +704,22 @@ pub fn waiting_on(
     }
 }
 
-/// The pages that the person may use, in their groups. A page that the person may not
-/// use is absent.
+/// The pages that the person may use, in their groups (ADR 0761). A page that the person
+/// may not use is absent, and a group without a page is absent.
 pub fn nav(
     model: &ServerModel,
     workspace: Option<&WorkspaceModel>,
     waiting: &Waiting,
 ) -> Vec<NavGroup> {
-    let mut server = vec![AdminPage::Workspaces];
-    // Only an administrator sets or removes the logo of the server (ADR 0101).
-    if model.is_administrator() {
+    let administrator = model.is_administrator();
+    let mut server = Vec::new();
+    // Only an administrator changes the server itself (ADR 0101). The workspaces of the
+    // server are listed for a person who creates them or deletes them (ADR 0102).
+    if administrator {
         server.push(AdminPage::Server);
+    }
+    if administrator || holds_server(model, ServerPermission::CreateWorkspace) {
+        server.push(AdminPage::Workspaces);
     }
     for (page, permission) in [
         (AdminPage::People, ServerPermission::BanMembers),
@@ -702,41 +728,49 @@ pub fn nav(
             AdminPage::JoinRequests,
             ServerPermission::ApproveJoinRequests,
         ),
-        // An administrator manages the tokens of every account, and the server roles.
-        (AdminPage::Tokens, ServerPermission::Administrator),
-        (AdminPage::ServerRoles, ServerPermission::Administrator),
     ] {
         if holds_server(model, permission) {
             server.push(page);
         }
+    }
+    // An administrator manages the server roles and the tokens of every account.
+    if administrator {
+        server.extend([AdminPage::ServerRoles, AdminPage::Tokens]);
     }
     let workspace_log = workspace
         .is_some_and(|workspace| holds_workspace(workspace, WorkspacePermission::ViewAuditEntries));
     if holds_server(model, ServerPermission::ViewServerAuditLog) || workspace_log {
         server.push(AdminPage::AuditLog);
     }
-    let mut groups = vec![NavGroup {
-        title: NavTitle::Server,
-        waiting: waiting_of(&server, model, workspace, waiting),
-        pages: server,
-    }];
+    let mut groups = Vec::new();
+    if !server.is_empty() {
+        groups.push(NavGroup {
+            title: NavTitle::Server,
+            waiting: waiting_of(&server, model, workspace, waiting),
+            pages: server,
+        });
+    }
     if let Some(workspace) = workspace {
         let mut pages = Vec::new();
-        if holds_workspace(workspace, WorkspacePermission::ManageChannel) {
+        let manages_channels = holds_workspace(workspace, WorkspacePermission::ManageChannel);
+        // The overview holds the name, the logo and the notification level of the workspace,
+        // which an administrator sets (ADR 0412), and its AFK channel, which "manage channel"
+        // sets (ADR 0523).
+        if administrator || manages_channels {
+            pages.push(AdminPage::WorkspaceOverview);
+        }
+        if manages_channels {
             pages.push(AdminPage::Channels);
         }
         if holds_workspace(workspace, WorkspacePermission::ManageRoles) {
             pages.push(AdminPage::Roles);
         }
+        // Every member reads the members, the archived channels and the glossary; "manage
+        // glossary" changes the glossary (ADR 0603).
+        pages.extend([AdminPage::Members, AdminPage::Archive]);
         // Every member lists the recordings: the server answers with what the account
         // may see.
-        pages.extend([AdminPage::Archive, AdminPage::Members]);
-        // Only an administrator sets the notification level of a workspace (ADR 0412).
-        if model.is_administrator() {
-            pages.push(AdminPage::Notifications);
-        }
         pages.push(AdminPage::Recordings);
-        // Every member reads the glossary; "manage glossary" changes it (ADR 0603).
         pages.push(AdminPage::Glossary);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
@@ -744,19 +778,57 @@ pub fn nav(
             pages,
         });
     }
-    // Every account lists and revokes its own tokens, also after it lost the
-    // administrator permission (ADR 0210).
-    let mut own = Vec::new();
-    if !model.is_administrator() {
-        own.push(AdminPage::Tokens);
-    }
-    own.push(AdminPage::Exports);
+    // The pages of the account on the server (ADR 0781). Every account lists and revokes
+    // its own tokens, also after it lost the administrator permission (ADR 0210).
+    let own = vec![
+        AdminPage::Profile,
+        AdminPage::Devices,
+        AdminPage::Recoveries,
+        AdminPage::Exports,
+        AdminPage::OwnTokens,
+        AdminPage::Departure,
+    ];
     groups.push(NavGroup {
         title: NavTitle::Own,
         waiting: waiting_of(&own, model, workspace, waiting),
         pages: own,
     });
     groups
+}
+
+/// The workspace of the workspace group of the layer: the workspace of the open channel or
+/// category, the workspace that the person chose in the selector, or the workspace that the
+/// main window shows.
+pub(crate) fn layer_workspace<'a>(
+    model: &'a ServerModel,
+    selection: &Selection,
+    admin: &AdminState,
+    open: AdminOpen,
+) -> Option<&'a WorkspaceModel> {
+    let server_id = open.server_id();
+    let own = match open {
+        AdminOpen::Channel { workspace_id, .. } | AdminOpen::Category { workspace_id, .. } => {
+            Some(workspace_id)
+        }
+        AdminOpen::Server { .. } | AdminOpen::Person { .. } => None,
+    };
+    own.or(admin.chosen)
+        .and_then(|workspace_id| model.workspace(workspace_id))
+        .or_else(|| shown_workspace(model, selection.workspaces.get(&server_id).copied()))
+}
+
+/// The workspaces of the selector of the layer. The server sends the state of a workspace
+/// to an account that may see it: a member, and an administrator for every workspace
+/// (ADR 0310), and each of them may read its members.
+pub fn selector(model: &ServerModel) -> Vec<WorkspaceChoiceLine> {
+    model
+        .workspaces
+        .iter()
+        .map(|workspace| WorkspaceChoiceLine {
+            id: workspace.workspace.id,
+            name: workspace.workspace.name.clone(),
+        })
+        .collect()
 }
 
 fn waiting_of(
@@ -782,12 +854,14 @@ pub fn needs(
     match *open {
         AdminOpen::Server { page, .. } => match page {
             // The snapshot carries the notification level of a workspace.
-            AdminPage::Workspaces | AdminPage::Channels | AdminPage::Notifications => Vec::new(),
+            AdminPage::Workspaces | AdminPage::Channels | AdminPage::WorkspaceOverview => {
+                Vec::new()
+            }
             // The logo is no collection: its image is read from the public route. The page
             // is an administrator's.
             AdminPage::Server => {
                 if administrator {
-                    vec![AdminPart::AttachmentLimits]
+                    vec![AdminPart::AttachmentLimits, AdminPart::DirectRetention]
                 } else {
                     Vec::new()
                 }
@@ -806,7 +880,8 @@ pub fn needs(
             // The server gives the server roles to every person who has the page: their
             // order decides who can be removed and banned (ADR 0309).
             AdminPage::People => vec![AdminPart::Accounts, AdminPart::ServerRoles],
-            AdminPage::ServerRoles => vec![AdminPart::ServerRoles],
+            // The tab "Members" of a server role lists the accounts.
+            AdminPage::ServerRoles => vec![AdminPart::ServerRoles, AdminPart::Accounts],
             // An administrator stands in a workspace at the position of a server role. The
             // server states what the person may do with each role (ADR 0311).
             AdminPage::Roles => {
@@ -821,7 +896,12 @@ pub fn needs(
             }
             AdminPage::Invites => vec![AdminPart::Invites],
             AdminPage::JoinRequests => vec![AdminPart::JoinRequests],
-            AdminPage::Tokens => vec![AdminPart::AccessTokens],
+            AdminPage::Tokens | AdminPage::OwnTokens => vec![AdminPart::AccessTokens],
+            // The pages of the account read what they show themselves (ADR 0781).
+            AdminPage::Profile
+            | AdminPage::Devices
+            | AdminPage::Recoveries
+            | AdminPage::Departure => Vec::new(),
             AdminPage::Exports => {
                 // An export of an archived channel is named by the archived list.
                 let mut parts = vec![AdminPart::Exports];
@@ -856,9 +936,6 @@ pub fn needs(
                     if administrator {
                         parts.push(AdminPart::WorkspaceSettings(workspace_id));
                     }
-                }
-                if administrator {
-                    parts.push(AdminPart::DirectRetention);
                 }
                 parts
             }
@@ -908,9 +985,6 @@ pub fn needs(
         } => {
             let mut parts = order_parts(model);
             match page {
-                PersonPage::Permissions(workspace_id) => {
-                    parts.push(AdminPart::MemberPermissions(workspace_id, account_id));
-                }
                 PersonPage::Access(workspace_id) => {
                     parts.push(AdminPart::MemberAccess(workspace_id, account_id));
                 }
@@ -941,6 +1015,54 @@ fn order_parts(model: &ServerModel) -> Vec<AdminPart> {
         }
     }
     parts
+}
+
+/// The overview of a workspace (ADR 0761): its name and logo, the notification level that it
+/// sets for its members, and its AFK channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOverviewPage {
+    pub workspace: WorkspaceLine,
+    /// An administrator renames the workspace and sets its logo (ADR 0122).
+    pub may_manage: bool,
+    /// The notification level of the workspace, which an administrator sets (ADR 0412).
+    pub notifications: Option<notifications::NotificationsPage>,
+    /// The voice channels that can be the AFK channel, in the order of the channel list, for
+    /// a person who holds "manage channel" in the workspace (ADR 0523).
+    pub afk_channels: Option<Vec<(ChannelId, String)>>,
+}
+
+fn workspace_overview(
+    server_id: ServerId,
+    model: &ServerModel,
+    workspace: &WorkspaceModel,
+    known: &Known,
+) -> WorkspaceOverviewPage {
+    let administrator = model.is_administrator();
+    let afk_channels = holds_workspace(workspace, WorkspacePermission::ManageChannel).then(|| {
+        channels_page(workspace, &[], None, true)
+            .groups
+            .iter()
+            .flat_map(|group| &group.channels)
+            .filter(|channel| channel.kind == ChannelKind::Voice)
+            .map(|channel| (channel.id, channel.name.clone()))
+            .collect()
+    });
+    WorkspaceOverviewPage {
+        workspace: WorkspaceLine {
+            id: workspace.workspace.id,
+            name: workspace.workspace.name.clone(),
+            is_default: workspace.workspace.is_default,
+            shown: false,
+            member: model
+                .account
+                .workspace_ids
+                .contains(&workspace.workspace.id),
+            has_logo: workspace.workspace.logo.is_some(),
+        },
+        may_manage: administrator,
+        notifications: administrator.then(|| notifications::derive(server_id, workspace, known)),
+        afk_channels,
+    }
 }
 
 fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> WorkspacesPage {
@@ -1174,8 +1296,6 @@ fn archive_page(model: &ServerModel, workspace: &WorkspaceModel, known: &Known) 
                 }
             })
         }),
-        direct_retention: administrator
-            .then(|| Listed::of(&model.admin.direct_retention, |retention| retention.days)),
     }
 }
 
@@ -1297,7 +1417,30 @@ pub fn derive(
     let server_id = open.server_id();
     let server = servers.iter().find(|server| server.id == server_id)?;
     let model = shown(server)?;
-    let workspace = shown_workspace(model, selection.workspaces.get(&server_id).copied());
+    let workspace = layer_workspace(model, selection, admin, open);
+    let account_id = model.account.id;
+    let saved = |server_id, export_id| {
+        admin
+            .exports
+            .saved
+            .contains(server_id, account_id, export_id)
+    };
+    let waiting = waiting(server_id, model, &saved, known.clock);
+    let nav = nav(model, workspace, &waiting);
+    // The first page that the person may use; a page that the person may not use any more
+    // gives way to it. A page of the workspace gives way to the first page of the workspace.
+    let first_in = |workspace_page: bool| {
+        nav.iter()
+            .filter(|group| !workspace_page || matches!(group.title, NavTitle::Workspace(_)))
+            .flat_map(|group| group.pages.first())
+            .next()
+            .copied()
+    };
+    let first_of = |workspace_page: bool| {
+        first_in(workspace_page)
+            .or_else(|| first_in(false))
+            .unwrap_or(AdminPage::Profile)
+    };
     // A page of a person that the person may not use gives way to the list that holds the
     // person.
     let (person, listed) = match open {
@@ -1346,20 +1489,10 @@ pub fn derive(
         }
         AdminOpen::Person { .. } | AdminOpen::Server { .. } => {
             let page = listed;
-            let account_id = model.account.id;
-            let saved = |server_id, export_id| {
-                admin
-                    .exports
-                    .saved
-                    .contains(server_id, account_id, export_id)
-            };
-            let waiting = waiting(server_id, model, &saved, known.clock);
-            let nav = nav(model, workspace, &waiting);
-            // A page that the person may not use any more gives way to the first one.
             let selected = if nav.iter().any(|group| group.pages.contains(&page)) {
                 page
             } else {
-                AdminPage::Workspaces
+                first_of(page.of_workspace())
             };
             let page = match (selected, workspace) {
                 (AdminPage::Channels, Some(workspace)) => ServerPage::Channels(channels_page(
@@ -1376,9 +1509,9 @@ pub fn derive(
                 (AdminPage::Members, Some(workspace)) => {
                     ServerPage::Members(people::members(server_id, model, workspace, known))
                 }
-                (AdminPage::Notifications, Some(workspace)) => {
-                    ServerPage::Notifications(notifications::derive(server_id, workspace, known))
-                }
+                (AdminPage::WorkspaceOverview, Some(workspace)) => ServerPage::WorkspaceOverview(
+                    Box::new(workspace_overview(server_id, model, workspace, known)),
+                ),
                 (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
                     recordings::recordings(server_id, model, workspace, known, admin),
                 ),
@@ -1411,16 +1544,26 @@ pub fn derive(
                 (AdminPage::Exports, _) => {
                     ServerPage::Exports(records::exports(server_id, model, known, admin))
                 }
+                (AdminPage::OwnTokens, _) => {
+                    ServerPage::Tokens(records::own_tokens(server_id, model, known, admin))
+                }
+                (
+                    AdminPage::Profile
+                    | AdminPage::Devices
+                    | AdminPage::Recoveries
+                    | AdminPage::Departure,
+                    _,
+                ) => ServerPage::Account,
                 (AdminPage::AuditLog, _) => ServerPage::AuditLog(Box::new(records::audit(
                     server_id, model, workspace, known, admin,
                 ))),
                 (
                     AdminPage::Workspaces
+                    | AdminPage::WorkspaceOverview
                     | AdminPage::Channels
                     | AdminPage::Roles
                     | AdminPage::Archive
                     | AdminPage::Members
-                    | AdminPage::Notifications
                     | AdminPage::Recordings
                     | AdminPage::Glossary,
                     _,
@@ -1433,16 +1576,22 @@ pub fn derive(
                 ServerPage::Workspaces(_) => AdminPage::Workspaces,
                 _ => selected,
             };
-            Scope::Server {
-                nav,
-                selected,
-                page,
-            }
+            Scope::Server { selected, page }
         }
+    };
+    let nav_selected = match &scope {
+        Scope::Server { selected, .. } => *selected,
+        Scope::Channel(_) | Scope::Category(_) => AdminPage::Channels,
+        Scope::Person(settings) => settings.listed_on(),
     };
     Some(AdminView {
         server_id,
         server_name: server.name.clone(),
+        workspace: workspace.map(|workspace| workspace.workspace.id),
+        workspaces: selector(model),
+        administrator: model.is_administrator(),
+        nav,
+        nav_selected,
         scope,
         asks: admin.asks(),
         made: admin.made.clone(),

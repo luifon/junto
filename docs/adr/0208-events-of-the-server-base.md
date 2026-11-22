@@ -26,7 +26,7 @@ Audiences:
 | `channel_created`, `channel_updated`, `channel_deleted` | Accounts with `view_channel` in the channel |
 | `permission_rule_set` for a channel, `channel_rules_synced` | Accounts with `manage_channel` in the channel |
 | `permission_rule_set` for a category | Accounts with `manage_channel` in the category |
-| `workspace_person_permissions_set` | Accounts with `manage_roles` in the workspace |
+| `workspace_person_permissions_set` | Accounts with `manage_roles` in the workspace. Written before release 0.3.0 only: a workspace has no rule of one member since (ADR 0301), and a reader keeps reading it for an older cursor. |
 | `server_person_permissions_set` | Accounts with `administrator` |
 
 - Each audience is the permission that the REST route for the same data needs (ADR 0304).

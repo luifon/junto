@@ -9,17 +9,15 @@ use gpui::{
     Window, div,
 };
 use junto_client_core::model::AdminPart;
+use junto_client_core::protocol::ServerPermission;
 use junto_client_core::protocol::ids::AccountId;
-use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::list::Row;
 use super::overrides::{OnChoose, Shown as _};
 use super::{line, line_text, page_title, refusal, sentence};
 use crate::shell::Shell;
 use crate::state::admin::AskKind;
-use crate::state::admin::view::person::{
-    AccessPage, MemberPermissionsPage, PersonSettings, ServerPermissionsPage,
-};
+use crate::state::admin::view::person::{AccessPage, PersonSettings, ServerPermissionsPage};
 use crate::state::admin::view::{AdminView, Listed};
 use crate::text;
 use crate::text::admin::overrides::Place;
@@ -56,82 +54,6 @@ impl Shell {
         })
     }
 
-    pub(crate) fn render_member_permissions_page(
-        &mut self,
-        view: &AdminView,
-        settings: &PersonSettings,
-        page: &MemberPermissionsPage,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (server_id, account_id) = (view.server_id, settings.account_id);
-        let workspace_id = page.workspace_id;
-        let what = AskKind::SetMemberPermission(workspace_id, account_id);
-        let lines = page.lines.loaded().cloned().unwrap_or_default();
-        let rows = std::iter::once(Row::part("person-header", true))
-            .chain(lines.iter().map(|line| {
-                Row::item(
-                    format!("member-permission-{}", line.permission.name()),
-                    true,
-                    line.permission.label(),
-                )
-            }))
-            .collect();
-        self.admin.list.take(Some(view), rows, window, cx);
-        let view = view.clone();
-        let page = page.clone();
-        let locked = page.locked.map(text::admin::overrides::locked);
-        let on_choose: OnChoose<WorkspacePermission> =
-            Rc::new(move |this: &mut Shell, permission, choice, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.set_member_permission(
-                        server_id,
-                        (workspace_id, account_id),
-                        permission,
-                        choice,
-                        cx,
-                    );
-                });
-            });
-        self.render_admin_list(
-            move |this, index, _, cx| {
-                let theme = theme(cx);
-                if index == 0 {
-                    let part = AdminPart::MemberPermissions(workspace_id, account_id);
-                    let mut column = div()
-                        .flex()
-                        .flex_col()
-                        .child(page_title(
-                            text::admin::overrides::MEMBER_PERMISSIONS,
-                            text::admin::overrides::member_help(&page.workspace_name),
-                            &theme,
-                        ))
-                        .child(sentence(text::admin::overrides::MEMBER_CHANNELS, &theme))
-                        .children(Self::person_locked(locked, &theme))
-                        .children(refusal(view.refused(what), "person-refused"));
-                    if let Some(reading) = this.person_reading(&view, part, &page.lines, &theme, cx)
-                    {
-                        column = column.child(reading);
-                    }
-                    return column.into_any_element();
-                }
-                let held: Option<SharedString> = locked
-                    .map(SharedString::from)
-                    .or_else(|| view.sending(what).then(|| text::admin::SENDING.into()));
-                this.render_rule_permission(
-                    &lines[index - 1],
-                    index - 1,
-                    (Place::Workspace, held),
-                    &on_choose,
-                    &theme,
-                    cx,
-                )
-            },
-            window,
-            cx,
-        )
-    }
-
     pub(crate) fn render_access_page(
         &mut self,
         view: &AdminView,
@@ -155,8 +77,7 @@ impl Shell {
         let view = view.clone();
         let page = page.clone();
         let workspace_id = match settings.selected {
-            crate::state::admin::PersonPage::Access(workspace_id)
-            | crate::state::admin::PersonPage::Permissions(workspace_id) => Some(workspace_id),
+            crate::state::admin::PersonPage::Access(workspace_id) => Some(workspace_id),
             crate::state::admin::PersonPage::Server => None,
         };
         self.render_admin_list(

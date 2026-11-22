@@ -1103,27 +1103,6 @@ async fn world() -> World {
         ),
         operation(
             Method::GET,
-            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
-            &[&ws, &target_id],
-            none.clone(),
-            &forbidden,
-        ),
-        operation(
-            Method::PUT,
-            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
-            &[&ws, &target_id],
-            json!({ "allow": ["manage_channel"] }),
-            &forbidden,
-        ),
-        operation(
-            Method::PATCH,
-            "/api/v1/workspaces/{workspace_id}/members/{account_id}/permissions",
-            &[&ws, &target_id],
-            json!({"permission":"manage_channel", "state":"allow"}),
-            &forbidden,
-        ),
-        operation(
-            Method::GET,
             "/api/v1/workspaces/{workspace_id}/members/{account_id}/access",
             &[&ws, &target_id],
             none.clone(),

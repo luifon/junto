@@ -38,8 +38,8 @@ use crate::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage, PersonPage
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, Notice, ScrollArea, SideHeader,
-    StyleExt, UnreadSign, float_shadow,
+    Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, Notice, ScrollArea, SelectBox,
+    SideHeader, StyleExt, Tab, UnreadSign, float_shadow, icon,
 };
 
 /// The width and the height of the layer in design pixels.
@@ -54,8 +54,6 @@ pub enum Mode {
     CreateWorkspace,
     RenameWorkspace(WorkspaceId),
     DeleteWorkspace(WorkspaceId),
-    /// The invite code that enters a further workspace.
-    EnterCode,
     CreateCategory,
     RenameCategory(CategoryId),
     DeleteCategory(CategoryId),
@@ -97,7 +95,6 @@ impl Mode {
             }
             Self::EditChannelTopic => text::TOPIC_SAVED,
             Self::DeleteWorkspace(_) => done::WORKSPACE_DELETED,
-            Self::EnterCode => done::CODE_ENTERED,
             Self::CreateCategory => done::CATEGORY_CREATED,
             Self::DeleteCategory(_) => done::CATEGORY_DELETED,
             Self::CreateChannel(_) => done::CHANNEL_CREATED,
@@ -144,6 +141,8 @@ pub(crate) struct AdminUi {
     pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
+    /// The choices of the selector of the workspace are open in the list of pages.
+    pub(crate) choosing_workspace: bool,
     pub(crate) list: list::PageList,
     pub(crate) overrides: overrides::Ui,
     pub(crate) people: people::Ui,
@@ -211,6 +210,7 @@ impl AdminUi {
             awaited: Vec::new(),
             opened_term: None,
             space: FormSpace::default(),
+            choosing_workspace: false,
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             list: list::PageList::new(cx),
@@ -389,6 +389,21 @@ pub(crate) fn row_action(
     )
 }
 
+/// An action of a row whose list shows the menu button (`Row::with_menu`): an item of the
+/// menu of the row, with its reason as its second line while it does nothing now. It draws
+/// nothing in the row.
+pub(crate) fn menu_action(
+    label: impl Into<SharedString>,
+    selector: String,
+    disabled: Option<&'static str>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) {
+    crate::ui::RowAction::new(label, on_click)
+        .disabled_because(disabled)
+        .selector(selector)
+        .register();
+}
+
 /// The statement of a refusal under the control that asked.
 pub(crate) fn refusal(reason: Option<&str>, selector: &'static str) -> Option<AnyElement> {
     Some(
@@ -437,14 +452,31 @@ pub(crate) struct Form {
 impl Shell {
     /// Opens the administration at a page.
     pub fn open_admin(&mut self, open: AdminOpen, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_admin_with(open, None, window, cx);
+    }
+
+    /// Opens a page of the layer, with a workspace chosen in its selector when one is given.
+    fn open_admin_with(
+        &mut self,
+        open: AdminOpen,
+        workspace_id: Option<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The page that is shown does not open again: its forms and the requests that they
         // sent stay, and an answer finds its form (ADR 0730).
-        if matches!(self.layer, Layer::Admin) && self.state.read(cx).admin_open() == Some(open) {
+        if matches!(self.layer, Layer::Admin)
+            && self.state.read(cx).admin_open() == Some(open)
+            && workspace_id.is_none_or(|id| self.state.read(cx).admin_workspace() == Some(id))
+        {
             return;
         }
         self.reset_admin_ui(window, cx);
-        self.state
-            .update(cx, |state, cx| state.open_admin(open, cx));
+        self.admin.choosing_workspace = false;
+        self.state.update(cx, |state, cx| match workspace_id {
+            Some(workspace_id) => state.open_admin_in_workspace(open, workspace_id, cx),
+            None => state.open_admin(open, cx),
+        });
         match self.layer {
             Layer::Admin => {}
             Layer::None => self.open_layer(Layer::Admin, window, cx),
@@ -469,6 +501,29 @@ impl Shell {
         if let Some(server_id) = server_id {
             self.open_admin(AdminOpen::Server { server_id, page }, window, cx);
         }
+    }
+
+    /// Opens Server settings with a workspace chosen in its selector, at the first page of
+    /// that workspace that the person may use. The workspace that the main window shows does
+    /// not change (ADR 0761).
+    pub(crate) fn open_workspace_settings(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state
+            .update(cx, |state, cx| state.select_server(server_id, cx));
+        self.open_admin_with(
+            AdminOpen::Server {
+                server_id,
+                page: AdminPage::WorkspaceOverview,
+            },
+            Some(workspace_id),
+            window,
+            cx,
+        );
     }
 
     /// Opens the settings of a channel of the selected server.
@@ -563,7 +618,7 @@ impl Shell {
                 .admin
                 .topic
                 .update(cx, |field, cx| field.focus(window, cx)),
-            Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
+            Some(Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
             }
             _ => {}
@@ -611,7 +666,7 @@ impl Shell {
             return;
         };
         match self.admin.mode {
-            Some(Mode::CreateWorkspace | Mode::RenameWorkspace(_) | Mode::EnterCode) => {
+            Some(Mode::CreateWorkspace | Mode::RenameWorkspace(_)) => {
                 self.submit_workspace_form(&view, window, cx)
             }
             Some(
@@ -905,27 +960,16 @@ impl Shell {
         let by_button = Self::handler(cx, |this, window, cx| this.close_layer(window, cx));
         let by_key = Self::handler(cx, |this, window, cx| this.close_layer(window, cx));
         let by_cover = Self::handler(cx, |this, window, cx| this.close_layer(window, cx));
-        let (title, note, nav, page) = match &view.scope {
-            Scope::Server {
-                nav,
-                selected,
-                page,
-            } => (
-                text::admin::TITLE,
-                view.server_name.clone(),
-                self.render_admin_nav(nav, *selected, &theme, cx),
-                self.render_server_page(&view, page, window, cx),
-            ),
+        let nav = self.render_admin_nav(&view, &theme, cx);
+        let (title, note) = (text::admin::TITLE, view.server_name.clone());
+        let (trail, page) = match &view.scope {
+            Scope::Server { page, .. } => (None, self.render_server_page(&view, page, window, cx)),
             Scope::Channel(settings) => (
-                text::admin::CHANNEL_SETTINGS,
-                text::admin::channel_name(settings.kind, &settings.name),
-                self.render_channel_nav(settings, &theme, cx),
+                Some(self.render_channel_trail(&view, settings, &theme, cx)),
                 self.render_channel_page(&view, settings, window, cx),
             ),
             Scope::Category(settings) => (
-                text::admin::overrides::CATEGORY_SETTINGS,
-                settings.name.clone(),
-                self.render_category_nav(settings, &theme, cx),
+                Some(self.render_category_trail(&view, settings, &theme, cx)),
                 if self.admin.mode == Some(Mode::CreateChannel(Some(settings.category_id))) {
                     self.render_channel_creation_form(&view, Some(settings.category_id), &theme, cx)
                 } else {
@@ -939,9 +983,7 @@ impl Shell {
                 },
             ),
             Scope::Person(settings) => (
-                text::admin::overrides::PERSON_SETTINGS,
-                settings.name.clone(),
-                self.render_person_nav(view.server_id, settings, &theme, cx),
+                Some(self.render_person_trail(&view, settings, &theme, cx)),
                 self.render_person_page(&view, settings, window, cx),
             ),
         };
@@ -1016,6 +1058,7 @@ impl Shell {
                                     &self.admin.nav_scroll,
                                     text::admin::PAGES,
                                 )
+                                .selector("admin-nav")
                                 .child(nav),
                             ),
                     )
@@ -1026,7 +1069,8 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(page),
+                            .children(trail)
+                            .child(div().flex().flex_col().flex_1().min_h_0().child(page)),
                     ),
             )
             .focus_trap("admin-trap", &focus);
@@ -1048,15 +1092,16 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The list of pages in their groups (ADR 0761). The workspace group starts with the
+    /// selector of its workspace, whose choices open in the list under it.
     fn render_admin_nav(
         &mut self,
-        nav: &[crate::state::admin::view::NavGroup],
-        selected: AdminPage,
+        view: &AdminView,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut column = div().flex().flex_col().pt(u(6.0)).pb(u(10.0));
-        for group in nav {
+        for group in &view.nav {
             column = column.child(
                 div()
                     .flex_none()
@@ -1068,158 +1113,267 @@ impl Shell {
                     .truncate()
                     .child(text::admin::nav_title(&group.title)),
             );
+            if let crate::state::admin::view::NavTitle::Workspace(name) = &group.title {
+                column = column.child(self.render_workspace_selector(view, name, theme, cx));
+            }
             for page in group.pages.iter().copied() {
-                let name = text::admin::page_name(page);
+                let name = text::admin::nav_page_name(page, view.administrator);
                 let waiting = group.waiting(page);
                 let sign = (waiting > 0).then(|| UnreadSign {
                     mentions: Some(text::unread_count(waiting as u64).into()),
                     label: text::admin::waiting(page, waiting).into(),
                 });
                 column = column.child(
-                    ChannelRow::new(name, text::admin::page_icon(page), name)
-                        .selected(page == selected)
-                        .selector(text::admin::page_selector(page))
-                        .unread(sign)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_server_admin(page, window, cx);
-                        })),
+                    // Two pages can have one name ("Access tokens" of the server and of the
+                    // account): the row takes the selector of the page as its id.
+                    ChannelRow::new(
+                        text::admin::page_selector(page),
+                        text::admin::page_icon(page),
+                        name,
+                    )
+                    .selected(page == view.nav_selected)
+                    .selector(text::admin::page_selector(page))
+                    .unread(sign)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_server_admin(page, window, cx);
+                    })),
                 );
             }
         }
         column.into_any_element()
     }
 
-    fn render_channel_nav(
+    /// The selector of the workspace of the layer: a box with the chosen workspace, and while
+    /// it is open, one row for each workspace that the person may choose. A choice changes the
+    /// pages of the group in place and leaves the workspace of the main window as it is.
+    fn render_workspace_selector(
         &mut self,
+        view: &AdminView,
+        name: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.admin.choosing_workspace;
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .px(u(10.0))
+            .pb(u(4.0))
+            .child(
+                SelectBox::new(
+                    "admin-workspace",
+                    text::admin::WORKSPACE_CHOICE,
+                    name.to_owned(),
+                )
+                .selector("admin-workspace")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.admin.choosing_workspace = !this.admin.choosing_workspace;
+                    cx.notify();
+                })),
+            );
+        if open {
+            let mut choices = div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .mt(u(4.0))
+                .py(u(4.0))
+                .rounded(u(theme.metrics.radius))
+                .border_1()
+                .border_color(Hsla::from(theme.colors.rule))
+                .bg(Hsla::from(theme.colors.travertine))
+                .debug_selector(|| "admin-workspace-choices".to_owned());
+            for choice in &view.workspaces {
+                let workspace_id = choice.id;
+                choices = choices.child(named(
+                    format!("admin-workspace-{workspace_id}"),
+                    ChannelRow::new(choice.name.clone(), Icon::Layers, choice.name.clone())
+                        .selected(Some(workspace_id) == view.workspace)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_admin_workspace(workspace_id, window, cx);
+                        })),
+                ));
+            }
+            column = column.child(choices);
+        }
+        column.into_any_element()
+    }
+
+    /// Chooses the workspace of the workspace group of the layer, as its selector does.
+    pub fn choose_admin_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin.choosing_workspace = false;
+        self.reset_admin_ui(window, cx);
+        self.state.update(cx, |state, cx| {
+            state.choose_admin_workspace(workspace_id, cx);
+        });
+        cx.notify();
+    }
+
+    /// The line above the settings of a channel, a category or a person: the place of the
+    /// settings in the layer, whose page name returns to that page, and under it the tabs of
+    /// the settings.
+    fn render_settings_trail(
+        &mut self,
+        back: AdminPage,
+        back_selector: &'static str,
+        name: AnyElement,
+        tabs: Vec<AnyElement>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let page_name = text::admin::page_name(back);
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .debug_selector(|| "admin-trail".to_owned())
+            .gap(u(8.0))
+            .pt(u(12.0))
+            .px(u(18.0))
+            .pb(u(8.0))
+            .border_b_1()
+            .border_color(Hsla::from(theme.colors.rule_soft))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(6.0))
+                    .min_w_0()
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_2)
+                    .child(
+                        Button::new(back_selector)
+                            .kind(ButtonKind::Ghost)
+                            .icon(Icon::ChevronLeft)
+                            .label(page_name)
+                            .accessible_label(text::admin::overrides::back_to(page_name))
+                            .selector(back_selector)
+                            .h(u(26.0))
+                            .px(u(6.0))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_server_admin(back, window, cx);
+                            })),
+                    )
+                    .child(icon(Icon::ChevronRight, 12.0, theme.colors.ink_3))
+                    .child(div().min_w_0().truncate().ink(theme.colors.ink).child(name)),
+            )
+            .when(!tabs.is_empty(), |trail| {
+                trail.child(div().flex().flex_wrap().gap(u(6.0)).children(tabs))
+            })
+            .into_any_element()
+    }
+
+    fn render_channel_trail(
+        &mut self,
+        _view: &AdminView,
         settings: &ChannelSettings,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (workspace_id, channel_id) = (settings.workspace_id, settings.channel_id);
-        let mut column = div().flex().flex_col().pt(u(6.0)).pb(u(10.0)).child(
-            div()
-                .flex_none()
-                .pt(u(10.0))
-                .px(u(14.0))
-                .pb(u(4.0))
-                .typeface(theme.types.label, theme)
-                .ink(theme.colors.bronze)
-                .truncate()
-                .child(text::admin::channel_name(settings.kind, &settings.name)),
-        );
-        for page in settings.pages.iter().copied() {
-            let name = text::admin::channel_page_name(page);
-            column = column.child(
-                ChannelRow::new(name, text::admin::channel_page_icon(page), name)
-                    .selected(page == settings.selected)
-                    .selector(text::admin::channel_page_selector(page))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_channel_settings(workspace_id, channel_id, page, window, cx);
-                    })),
-            );
-        }
-        column.into_any_element()
-    }
-
-    /// The heading of the list of pages of settings, and the row that returns to the page
-    /// of the administration that opened them.
-    fn settings_nav_head(
-        &mut self,
-        title: impl IntoElement,
-        back: AdminPage,
-        selector: &'static str,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let name = text::admin::page_name(back);
-        div()
-            .flex()
-            .flex_col()
-            .pt(u(6.0))
-            .pb(u(10.0))
-            .child(
-                ChannelRow::new(
-                    text::admin::overrides::BACK,
-                    Icon::ChevronLeft,
-                    text::admin::overrides::back_to(name),
+        let tabs = settings
+            .pages
+            .iter()
+            .copied()
+            .map(|page| {
+                Tab::new(
+                    text::admin::channel_page_selector(page),
+                    text::admin::channel_page_icon(page),
+                    text::admin::channel_page_name(page),
                 )
-                .selector(selector)
+                .on(page == settings.selected)
+                .selector(text::admin::channel_page_selector(page))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_server_admin(back, window, cx);
-                })),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .pt(u(10.0))
-                    .px(u(14.0))
-                    .pb(u(4.0))
-                    .typeface(theme.types.label, theme)
-                    .ink(theme.colors.bronze)
-                    .truncate()
-                    .child(title),
-            )
+                    this.open_channel_settings(workspace_id, channel_id, page, window, cx);
+                }))
+                .into_any_element()
+            })
+            .collect();
+        let name = text::admin::channel_name(settings.kind, &settings.name);
+        self.render_settings_trail(
+            AdminPage::Channels,
+            "channel-nav-back",
+            div().child(name).into_any_element(),
+            tabs,
+            theme,
+            cx,
+        )
     }
 
-    fn render_category_nav(
+    fn render_category_trail(
         &mut self,
+        _view: &AdminView,
         settings: &CategorySettings,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let name = text::admin::overrides::PERMISSIONS;
-        self.settings_nav_head(
-            settings.name.clone(),
+        self.render_settings_trail(
             AdminPage::Channels,
             "category-nav-back",
+            div().child(settings.name.clone()).into_any_element(),
+            Vec::new(),
             theme,
             cx,
         )
-        .child(
-            ChannelRow::new(name, Icon::ShieldCheck, name)
-                .selected(true)
-                .selector("category-nav-permissions"),
-        )
-        .into_any_element()
     }
 
-    fn render_person_nav(
+    fn render_person_trail(
         &mut self,
-        server: junto_client_core::protocol::ids::ServerId,
+        view: &AdminView,
         settings: &PersonSettings,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let server = view.server_id;
         let account_id = settings.account_id;
-        let mut column = self
-            .settings_nav_head(
-                crate::shell::people::person_name(
-                    &self.faces(server),
-                    account_id,
-                    settings.name.clone(),
-                    "person-settings-name",
-                ),
-                settings.listed_on(),
-                "person-nav-back",
-                theme,
-                cx,
-            )
+        let tabs = settings
+            .pages
+            .iter()
+            .copied()
+            .map(|page| {
+                let selector = text::admin::overrides::person_page_selector(page);
+                Tab::new(
+                    selector,
+                    text::admin::overrides::person_page_icon(page),
+                    text::admin::overrides::person_page_name(page),
+                )
+                .on(page == settings.selected)
+                .selector(selector)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_person_settings(account_id, page, window, cx);
+                }))
+                .into_any_element()
+            })
+            .collect();
+        let name = div()
+            .flex()
+            .items_center()
+            .gap(u(6.0))
+            .child(crate::shell::people::person_name(
+                &self.faces(server),
+                account_id,
+                settings.name.clone(),
+                "person-settings-name",
+            ))
             .child(crate::ui::PresenceMark::new(
                 self.state.read(cx).presence(server, account_id),
                 12.,
-            ));
-        for page in settings.pages.iter().copied() {
-            let name = text::admin::overrides::person_page_name(page);
-            column = column.child(
-                ChannelRow::new(name, text::admin::overrides::person_page_icon(page), name)
-                    .selected(page == settings.selected)
-                    .selector(text::admin::overrides::person_page_selector(page))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_person_settings(account_id, page, window, cx);
-                    })),
-            );
-        }
-        column.into_any_element()
+            ))
+            .into_any_element();
+        self.render_settings_trail(
+            settings.listed_on(),
+            "person-nav-back",
+            name,
+            tabs,
+            theme,
+            cx,
+        )
     }
 
     /// Opens the settings of a person of the selected server.
@@ -1268,9 +1422,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match &settings.page {
-            PersonPageView::Permissions(page) => {
-                self.render_member_permissions_page(view, settings, page, window, cx)
-            }
             PersonPageView::Access(page) => {
                 self.render_access_page(view, settings, page, window, cx)
             }
@@ -1293,8 +1444,8 @@ impl Shell {
             ServerPage::Channels(page) => self.render_channels_page(view, page, window, cx),
             ServerPage::Archive(page) => self.render_archive_page(view, page, window, cx),
             ServerPage::Members(page) => self.render_members_page(view, page, window, cx),
-            ServerPage::Notifications(page) => {
-                self.render_notifications_page(view, page, window, cx)
+            ServerPage::WorkspaceOverview(page) => {
+                self.render_workspace_overview(view, page, window, cx)
             }
             ServerPage::People(page) => self.render_people_page(view, page, window, cx),
             ServerPage::Invites(page) => self.render_invites_page(view, page, window, cx),
@@ -1305,6 +1456,7 @@ impl Shell {
             ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
             ServerPage::Glossary(page) => self.render_glossary_page(view, page, window, cx),
             ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
+            ServerPage::Account => self.render_account_page(window, cx),
         }
     }
 
@@ -1326,5 +1478,13 @@ impl Shell {
                 self.render_channel_archive(view, settings, page, window, cx)
             }
         }
+    }
+}
+
+impl Shell {
+    /// Opens or closes the choices of the workspace selector of Server settings.
+    pub fn show_workspace_choices(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.admin.choosing_workspace = open;
+        cx.notify();
     }
 }

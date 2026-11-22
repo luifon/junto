@@ -1,6 +1,7 @@
 //! The text of the administration of a server and of the settings of a channel
 //! (ADR 0761).
 
+pub mod afk;
 pub mod glossary;
 pub mod notifications;
 pub mod overrides;
@@ -21,10 +22,18 @@ use crate::assets::Icon;
 use crate::state::admin::view::{NavTitle, Unplanned};
 use crate::state::admin::{AdminPage, AskKind, ChannelPage};
 
-pub const TITLE: &str = "Administration";
+pub const TITLE: &str = "Server settings";
 pub const CHANNEL_SETTINGS: &str = "Channel settings";
 pub const PAGES: &str = "Pages";
-pub const OPEN_ADMINISTRATION: &str = "Administration";
+pub const OPEN_ADMINISTRATION: &str = "Server settings";
+/// The label of the selector of the workspace of the layer.
+pub const WORKSPACE_CHOICE: &str = "Workspace";
+pub const WORKSPACE_NAME_AND_LOGO: &str = "Name and logo";
+
+/// The help line of the overview of a workspace.
+pub fn workspace_overview_help(workspace: &str) -> String {
+    format!("The name, the logo and the settings of the workspace “{workspace}”.")
+}
 pub const NAME_FIELD: &str = "Name";
 pub const READING: &str = "Reading…";
 pub const CREATE: &str = "Create";
@@ -56,7 +65,7 @@ pub const NAME_EMPTY: &str = "Type a name.";
 pub fn nav_title(title: &NavTitle) -> String {
     match title {
         NavTitle::Server => "Server".to_owned(),
-        NavTitle::Workspace(name) => format!("Workspace {name}"),
+        NavTitle::Workspace(_) => WORKSPACE_CHOICE.to_owned(),
         NavTitle::Own => "Your account".to_owned(),
     }
 }
@@ -64,40 +73,63 @@ pub fn nav_title(title: &NavTitle) -> String {
 pub const fn page_name(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "Workspaces",
-        AdminPage::Server => "Server",
+        AdminPage::Server | AdminPage::WorkspaceOverview => "Overview",
         AdminPage::People => "People",
         AdminPage::Invites => "Invites",
         AdminPage::JoinRequests => "Join requests",
-        AdminPage::Tokens => "Access tokens",
+        AdminPage::Tokens | AdminPage::OwnTokens => "Access tokens",
         AdminPage::AuditLog => "Audit log",
         AdminPage::ServerRoles => "Server roles",
         AdminPage::Channels => "Channels",
         AdminPage::Roles => "Roles",
-        AdminPage::Archive => "Archive",
+        AdminPage::Archive => "Archive and retention",
         AdminPage::Members => "Members",
-        AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
         AdminPage::Glossary => "Glossary",
         AdminPage::Exports => "Exports",
+        AdminPage::Profile => {
+            super::account::page_name(crate::state::account::AccountPage::Profile)
+        }
+        AdminPage::Devices => {
+            super::account::page_name(crate::state::account::AccountPage::Devices)
+        }
+        AdminPage::Recoveries => {
+            super::account::page_name(crate::state::account::AccountPage::Recoveries)
+        }
+        AdminPage::Departure => {
+            super::account::page_name(crate::state::account::AccountPage::Departure)
+        }
     }
 }
 
 pub const fn page_icon(page: AdminPage) -> Icon {
     match page {
         AdminPage::Workspaces => Icon::Layers,
-        AdminPage::Server => Icon::Gear,
+        AdminPage::Server | AdminPage::WorkspaceOverview => Icon::Gear,
         AdminPage::People | AdminPage::Members => Icon::People,
         AdminPage::Invites => Icon::Invite,
         AdminPage::JoinRequests => Icon::UserCheck,
-        AdminPage::Tokens => Icon::Key,
+        AdminPage::Tokens | AdminPage::OwnTokens => Icon::Key,
         AdminPage::ServerRoles | AdminPage::Roles => Icon::Shield,
         AdminPage::AuditLog => Icon::Scroll,
         AdminPage::Channels => Icon::Hash,
         AdminPage::Archive => Icon::Archive,
-        AdminPage::Notifications => Icon::Bell,
         AdminPage::Recordings => Icon::Record,
         AdminPage::Glossary => Icon::Book,
         AdminPage::Exports => Icon::Download,
+        AdminPage::Profile => Icon::Account,
+        AdminPage::Devices => Icon::Devices,
+        AdminPage::Recoveries => Icon::History,
+        AdminPage::Departure => Icon::Leave,
+    }
+}
+
+/// The name of a page in the list of pages: the archived channels of a workspace are
+/// "Archive and retention" for a person who sets the retention, an administrator.
+pub const fn nav_page_name(page: AdminPage, administrator: bool) -> &'static str {
+    match page {
+        AdminPage::Archive if !administrator => ARCHIVED_CHANNELS,
+        _ => page_name(page),
     }
 }
 
@@ -106,20 +138,25 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "admin-nav-workspaces",
         AdminPage::Server => "admin-nav-server",
+        AdminPage::WorkspaceOverview => "admin-nav-workspace-overview",
         AdminPage::People => "admin-nav-people",
         AdminPage::Invites => "admin-nav-invites",
         AdminPage::JoinRequests => "admin-nav-requests",
         AdminPage::Tokens => "admin-nav-tokens",
+        AdminPage::OwnTokens => "admin-nav-own-tokens",
         AdminPage::AuditLog => "admin-nav-audit",
         AdminPage::ServerRoles => "admin-nav-server-roles",
         AdminPage::Channels => "admin-nav-channels",
         AdminPage::Roles => "admin-nav-roles",
         AdminPage::Archive => "admin-nav-archive",
         AdminPage::Members => "admin-nav-members",
-        AdminPage::Notifications => "admin-nav-notifications",
         AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Glossary => "admin-nav-glossary",
         AdminPage::Exports => "admin-nav-exports",
+        AdminPage::Profile => "account-nav-profile",
+        AdminPage::Devices => "account-nav-devices",
+        AdminPage::Recoveries => "account-nav-recoveries",
+        AdminPage::Departure => "account-nav-departure",
     }
 }
 
@@ -329,7 +366,7 @@ pub const PERMANENT_MESSAGES_HELP: &str = "Nobody can edit a message that is sen
      delete one, and each deletion is recorded.";
 pub const PRIVATE_CHANNEL: &str = "Private channel";
 pub const PRIVATE_CHANNEL_HELP: &str =
-    "Only the roles that the Permissions page allows “view channel” can see the channel.";
+    "Server administrators and the roles and people below can see it.";
 pub const PRIVATE_UNKNOWN: &str = "The permissions of the channel are not read yet.";
 pub const CALL_CONTROLS_HELP: &str =
     "“Lock call” and “Meeting mode” are controls of a running call, in the header of the call.";

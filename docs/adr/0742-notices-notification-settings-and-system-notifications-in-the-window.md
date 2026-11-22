@@ -28,7 +28,7 @@ List of notices:
 
 Notification settings:
 
-- One dialog shows the settings of one scope: the server (the account on that server), a workspace, or a channel. The menu of the server opens the first two, and the menu of a channel the third.
+- One dialog shows the settings of one scope: the server (the account on that server), a workspace, or a channel. The menu of the server opens the first, the menu of the workspace the second (ADR 0780), and the menu of a channel the third.
 - The level is one of "all messages", "mentions only" and "nothing". A workspace and a channel also have "default", which takes the level of the scope above (ADR 0409). The dialog states which level "default" gives now. The state holds the level of the administrators of each workspace, or that the workspace sets none (ADR 0412, ADR 0792); with none, the level of the account holds.
 - The dialog of a channel also has the mute with its four lengths, and the two switches for mentions of a role and of everyone.
 - The dialog of a workspace shows the level of its administrators as the state holds it. An administrator of the server sets it there; another member reads it. The dialog and the page "Notifications" share one change of that level (ADR 0763).

@@ -297,13 +297,6 @@ actions of rules:
   category-change <workspace> <category> role <role> | person <account> <permission>
       <allow|deny|inherit>     change one permission of the rule of a role or of a member
                                in a category
-  member-list <workspace> <account>
-                               the workspace permissions allowed to or denied to a member
-  member-set <workspace> <account> [--allow <permission>]... [--deny <permission>]...
-                               set both sets of the workspace permissions of a member;
-                               without an option both are removed
-  member-change <workspace> <account> <permission> <allow|deny|inherit>
-                               change one workspace permission of a member
   member-access <workspace> <account>
                                what a member can use in each channel that the account sees
   server-list <account>        the server permissions allowed to or denied to an account

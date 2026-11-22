@@ -15,11 +15,11 @@ use gpui_base::input::InputState;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::ids::{AccountId, ServerId};
 
-use super::{line, named, page_title, refusal, sentence};
+use super::{line, line_text, menu_action, named, page_title, refusal, row_action, sentence};
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::roles::{
-    NoDeletion, PermissionSwitch, RoleChoice, RoleRow, RolesPage,
+    Locked, NoDeletion, PermissionSwitch, RoleChoice, RoleRow, RolesPage,
 };
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState, RoleRef};
@@ -61,8 +61,12 @@ pub(crate) struct Ui {
     color: Entity<InputState>,
     hoist: bool,
     pub(crate) open: Option<Open>,
-    /// The role whose permissions the page shows.
+    /// The role that the page shows with its tabs.
     pub(crate) expanded: Option<RoleRef>,
+    /// The tab of the role that the page shows.
+    pub(crate) tab: RoleTab,
+    /// The search of the tab "Members" for a person to give the role.
+    pub(crate) member_search: Entity<InputState>,
     /// The account whose roles a list of people shows.
     pub(crate) account: Option<AccountId>,
     /// Why the text of the field was not sent.
@@ -101,12 +105,25 @@ impl Ui {
                 FieldEvent::Submitted => this.submit_role_form(window, cx),
             },
         ));
+        let member_search = Field::state(txt::ADD_MEMBERS_HELP, window, cx);
+        subscriptions.push(Field::observe(
+            &member_search,
+            window,
+            cx,
+            |_: &mut Shell, event, _, cx| {
+                if event == FieldEvent::Changed {
+                    cx.notify();
+                }
+            },
+        ));
         let ui = Self {
             name,
             color,
             hoist: false,
             open: None,
             expanded: None,
+            tab: RoleTab::Permissions,
+            member_search,
             account: None,
             invalid: None,
             sent: None,
@@ -114,6 +131,14 @@ impl Ui {
         };
         (ui, subscriptions)
     }
+}
+
+/// A tab of the role that the page shows (ADR 0791).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleTab {
+    Appearance,
+    Permissions,
+    Members,
 }
 
 /// A role that the person drags to another place of the order.
@@ -231,7 +256,22 @@ impl Shell {
 
     /// Shows the permissions of one role under its row, or of none.
     pub fn show_role_permissions(&mut self, role: Option<RoleRef>, cx: &mut Context<Self>) {
+        if self.admin.roles.expanded != role {
+            self.admin.roles.tab = RoleTab::Permissions;
+        }
         self.admin.roles.expanded = role;
+        cx.notify();
+    }
+
+    /// Shows a tab of the role that the page shows.
+    pub fn show_role_tab(&mut self, tab: RoleTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.admin.roles.tab = tab;
+        if tab == RoleTab::Members {
+            self.admin
+                .roles
+                .member_search
+                .update(cx, |field, cx| field.set_value("", window, cx));
+        }
         cx.notify();
     }
 
@@ -642,15 +682,11 @@ impl Shell {
     }
 
     /// The actions of the row of a role.
-    fn render_role_actions(
-        &mut self,
-        view: &AdminView,
-        row: &RoleRow,
-        expanded: bool,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    /// The items of the menu of a role (ADR 0791): Rename, Delete, Move up and Move down,
+    /// each with its reason while it does nothing now. The appearance and the permissions
+    /// are tabs of the role that the page shows.
+    fn register_role_actions(&mut self, view: &AdminView, row: &RoleRow, cx: &mut Context<Self>) {
         let (server_id, role) = (view.server_id, row.role);
-        let number = role.number();
         let written = role.written();
         let moving = view.sending(AskKind::MoveRole(role));
         // While the new name of the role is on its way, also after a Cancel of its form, a
@@ -659,101 +695,231 @@ impl Shell {
             .admin_form_awaited(view, AskKind::UpdateRole(role))
             .then_some(text::admin::FORM_SENT);
         let locked = row.locked.map(txt::locked);
-        let mut actions = Vec::new();
-        let appearance = Button::new(("role-appearance", number))
-            .label(txt::APPEARANCE)
-            .h(u(28.))
-            .px(u(8.))
-            .disabled(locked.is_some() || naming.is_some())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.set_roles_open(Some(Open::Appearance(role)), "", window, cx)
-            }));
-        actions.push(named(format!("role-appearance-{written}"), appearance).into_any_element());
+        if row.named {
+            let name = row.name.clone();
+            menu_action(
+                text::admin::RENAME,
+                format!("role-rename-{written}"),
+                locked,
+                cx.listener(move |this, _, window, cx| {
+                    this.set_roles_open(Some(Open::Rename(role)), &name, window, cx);
+                }),
+            );
+        }
         for (up, place) in [(true, row.up), (false, row.down)] {
             let held = place
                 .err()
                 .map(|reason| txt::fixed(reason, up))
                 .or(moving.then_some(text::admin::SENDING))
                 .or(naming);
-            let mut button = Button::new((if up { "role-up" } else { "role-down" }, number))
-                .label(if up {
-                    text::admin::UP
-                } else {
-                    text::admin::DOWN
-                })
-                .accessible_label(txt::move_label(&row.name, up))
-                .h(u(28.0))
-                .px(u(8.0))
-                .disabled(held.is_some());
-            match (held, place) {
-                (Some(reason), _) => button = button.tooltip(reason),
-                (None, Ok(to)) => {
-                    button = button
-                        .tooltip(if up { txt::MOVE_UP } else { txt::MOVE_DOWN })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                state.move_role(server_id, role, to, cx);
-                            });
-                        }));
-                }
-                (None, Err(_)) => {}
-            }
             let word = if up { "up" } else { "down" };
-            actions.push(named(format!("role-{word}-{written}"), button).into_any_element());
+            menu_action(
+                if up { txt::MOVE_UP } else { txt::MOVE_DOWN },
+                format!("role-{word}-{written}"),
+                held,
+                cx.listener(move |this, _, _, cx| {
+                    if let Ok(to) = place {
+                        this.state.update(cx, |state, cx| {
+                            state.move_role(server_id, role, to, cx);
+                        });
+                    }
+                }),
+            );
         }
-        if row.named {
-            let name = row.name.clone();
-            let mut rename = Button::new(("role-rename", number))
-                .label(text::admin::RENAME)
-                .h(u(28.0))
-                .px(u(8.0))
-                .disabled(locked.is_some());
-            match locked {
-                Some(reason) => rename = rename.tooltip(reason),
-                None => {
-                    rename = rename.on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_roles_open(Some(Open::Rename(role)), &name, window, cx);
-                    }));
-                }
-            }
-            actions.push(named(format!("role-rename-{written}"), rename).into_any_element());
-        }
-        let toggle = Button::new(("role-permissions", number))
-            .icon(if expanded {
-                Icon::ChevronDown
-            } else {
-                Icon::ChevronRight
-            })
-            .label(txt::PERMISSIONS)
-            .accessible_label(if expanded {
-                txt::HIDE_PERMISSIONS
-            } else {
-                txt::PERMISSIONS
-            })
-            .h(u(28.0))
-            .px(u(8.0))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.show_role_permissions((!expanded).then_some(role), cx);
-            }));
-        actions.push(named(format!("role-permissions-{written}"), toggle).into_any_element());
         if row.named {
             let held = row.deletion().err().map(txt::no_deletion).or(naming);
-            let mut delete = Button::new(("role-delete", number))
-                .label(text::admin::DELETE)
-                .h(u(28.0))
-                .px(u(8.0))
-                .disabled(held.is_some());
-            match held {
-                Some(reason) => delete = delete.tooltip(reason),
-                None => {
-                    delete = delete.on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_roles_open(Some(Open::Delete(role)), "", window, cx);
-                    }));
+            menu_action(
+                text::admin::DELETE,
+                format!("role-delete-{written}"),
+                held,
+                cx.listener(move |this, _, window, cx| {
+                    this.set_roles_open(Some(Open::Delete(role)), "", window, cx);
+                }),
+            );
+        }
+    }
+
+    /// The tabs of the role that the page shows, and the content of the open tab.
+    fn render_role_detail(
+        &mut self,
+        view: &AdminView,
+        row: &RoleRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let role = row.role;
+        let written = role.written();
+        let open = self.admin.roles.tab;
+        let name = row.name.clone();
+        let tabs: Vec<crate::ui::Tab> = [
+            (
+                RoleTab::Appearance,
+                Icon::Picture,
+                txt::APPEARANCE,
+                "role-tab-appearance",
+            ),
+            (
+                RoleTab::Permissions,
+                Icon::ShieldCheck,
+                txt::PERMISSIONS,
+                "role-tab-permissions",
+            ),
+            (
+                RoleTab::Members,
+                Icon::People,
+                txt::MEMBERS,
+                "role-tab-members",
+            ),
+        ]
+        .into_iter()
+        .filter(|(tab, ..)| *tab != RoleTab::Members || !row.is_everyone)
+        .map(|(tab, icon, label, selector)| {
+            let name = name.clone();
+            crate::ui::Tab::new(selector, icon, label)
+                .on(open == tab)
+                .selector(selector)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.show_role_tab(tab, window, cx);
+                    if tab == RoleTab::Appearance {
+                        this.set_roles_open(Some(Open::Appearance(role)), &name, window, cx);
+                    }
+                }))
+        })
+        .collect();
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .pl(u(28.0))
+            .pb(u(6.0))
+            .debug_selector(move || format!("role-detail-{written}"))
+            .child(div().flex_none().mt(u(4.0)).child(crate::ui::TabRow::new(
+                "role-tabs",
+                txt::ROLE_TABS,
+                tabs,
+            )));
+        match open {
+            RoleTab::Appearance => {
+                if row.locked.is_some() {
+                    let reason = row.locked.unwrap_or(Locked::Above);
+                    column = column.child(sentence(txt::locked(reason), theme));
+                } else {
+                    column = column.child(sentence(txt::APPEARANCE_IN_ROW, theme).mt(u(6.0)));
                 }
             }
-            actions.push(named(format!("role-delete-{written}"), delete).into_any_element());
+            RoleTab::Permissions => {
+                let mut permissions = div().flex().flex_col().flex_none().mt(u(4.0));
+                for (at, switch) in row.permissions.iter().enumerate() {
+                    permissions = permissions
+                        .child(self.render_role_permission(view, row, switch, at, theme, cx));
+                }
+                column = column.child(permissions);
+            }
+            RoleTab::Members => {
+                column = column.child(self.render_role_members(view, row, theme, cx))
+            }
         }
-        actions
+        column.into_any_element()
+    }
+
+    /// The tab "Members" of a role: the people who hold it, each with "Remove", and the
+    /// search that adds more (ADR 0791).
+    fn render_role_members(
+        &mut self,
+        view: &AdminView,
+        row: &RoleRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (server_id, role) = (view.server_id, row.role);
+        let written = role.written();
+        let Some(members) = &row.members else {
+            return sentence(text::admin::READING, theme)
+                .mt(u(6.0))
+                .into_any_element();
+        };
+        let held = row.assignment().err().map(txt::no_deletion);
+        let mut column = div().flex().flex_col().flex_none().mt(u(6.0));
+        if held.is_none() {
+            column = column.child(
+                div().flex_none().child(
+                    Field::new(&self.admin.roles.member_search, txt::ADD_MEMBERS)
+                        .selector("role-member-search"),
+                ),
+            );
+            let typed = self
+                .admin
+                .roles
+                .member_search
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            if !typed.is_empty() {
+                let found: Vec<&(AccountId, String)> = members
+                    .others
+                    .iter()
+                    .filter(|(_, name)| {
+                        junto_client_core::model::comparable_name(name)
+                            .contains(&junto_client_core::model::comparable_name(&typed))
+                    })
+                    .collect();
+                for (account_id, name) in found.iter().take(8) {
+                    let account_id = *account_id;
+                    let what = AskKind::AssignRole(role, account_id);
+                    column = column.child(
+                        line(theme)
+                            .child(line_text(name.clone(), None, theme))
+                            .child(row_action(
+                                ("role-member-add", account_id.as_uuid().as_u128() as u64),
+                                txt::ADD_MEMBER,
+                                format!("role-member-add-{written}-{account_id}"),
+                                view.sending(what).then_some(text::admin::SENDING),
+                                cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.assign_role(server_id, role, account_id, true, cx);
+                                    });
+                                }),
+                            )),
+                    );
+                }
+                if found.is_empty() {
+                    column = column.child(sentence(txt::NO_MEMBER_FOUND, theme).py(u(4.0)));
+                }
+            }
+        } else if let Some(reason) = held {
+            column = column.child(sentence(reason, theme));
+        }
+        if members.holders.is_empty() {
+            column = column.child(sentence(txt::NO_HOLDER, theme).mt(u(4.0)));
+        }
+        let mut refused = None;
+        for (account_id, name) in &members.holders {
+            let account_id = *account_id;
+            let what = AskKind::AssignRole(role, account_id);
+            refused = refused.or(view.refused(what));
+            let selector = format!("role-member-{written}-{account_id}");
+            let mut line = line(theme)
+                .debug_selector(move || selector)
+                .child(line_text(name.clone(), None, theme));
+            if held.is_none() {
+                line = line.child(row_action(
+                    ("role-member-remove", account_id.as_uuid().as_u128() as u64),
+                    text::REMOVE,
+                    format!("role-member-remove-{written}-{account_id}"),
+                    view.sending(what).then_some(text::admin::SENDING),
+                    cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.assign_role(server_id, role, account_id, false, cx);
+                        });
+                    }),
+                ));
+            }
+            column = column.child(line);
+        }
+        column
+            .children(refusal(refused, "role-member-refused"))
+            .into_any_element()
     }
 
     /// One role: its row, the reason why the person cannot act on it, and its
@@ -929,8 +1095,25 @@ impl Shell {
                     }
                     None => {}
                 }
-                content
-                    .children(self.render_role_actions(view, row, expanded, cx))
+                if let Some(members) = &row.members {
+                    content = content.child(Chip::new(txt::member_count(members.holders.len())));
+                }
+                self.register_role_actions(view, row, cx);
+                // A press on the row shows the role with its tabs, or hides it.
+                div()
+                    .id(("role-select", role.number()))
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .cursor_pointer()
+                    .debug_selector({
+                        let selector = format!("role-select-{written}");
+                        move || selector
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show_role_permissions((!expanded).then_some(role), cx);
+                    }))
+                    .child(content)
                     .into_any_element()
             }
         };
@@ -988,12 +1171,7 @@ impl Shell {
             );
         }
         if expanded {
-            let mut permissions = div().flex().flex_col().flex_none().pl(u(28.0));
-            for (at, switch) in row.permissions.iter().enumerate() {
-                permissions = permissions
-                    .child(self.render_role_permission(view, row, switch, at, theme, cx));
-            }
-            block = block.child(permissions);
+            block = block.child(self.render_role_detail(view, row, theme, cx));
         }
         block
             .children(refusal(refused, "role-refused"))
@@ -1010,10 +1188,14 @@ impl Shell {
         self.settle_roles(view, window, cx);
         let rows = page.roles.loaded().cloned().unwrap_or_default();
         let list = std::iter::once(Row::part("roles-header", true))
-            .chain(
-                rows.iter()
-                    .map(|row| Row::item(format!("role-{:?}", row.role), true, row.name.clone())),
-            )
+            .chain(rows.iter().map(|row| {
+                Row::item(
+                    format!("role-{}", row.role.written()),
+                    true,
+                    row.name.clone(),
+                )
+                .with_menu()
+            }))
             .collect();
         self.admin.list.take(Some(view), list, window, cx);
         let view = view.clone();

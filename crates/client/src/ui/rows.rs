@@ -182,7 +182,7 @@ impl RenderOnce for WorkspaceRow {
             .items_center()
             .gap(u(8.0))
             .h(u(theme.metrics.workspace_row_height))
-            .pl(u(if self.in_menu { 12.0 } else { 38.0 }))
+            .pl(u(if self.in_menu { 12.0 } else { 60.0 }))
             .pr(u(10.0))
             .typeface(style, &theme)
             .ink(if self.selected || self.unread.is_some() {
@@ -206,7 +206,7 @@ impl RenderOnce for WorkspaceRow {
                 row.child(
                     div()
                         .absolute()
-                        .left(u(24.0))
+                        .left(u(46.0))
                         .top(u(13.0))
                         .w(u(9.0))
                         .h(gpui::px(1.0))

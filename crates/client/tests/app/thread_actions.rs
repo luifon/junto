@@ -564,8 +564,7 @@ fn an_administrator_turns_permanent_messages_on_and_off_and_the_channel_tells_bo
     let switch = |window: &mut Window| {
         window.open_administration();
         window.click("admin-nav-channels");
-        window.until("the channel has its row", |window| window.shows(settings));
-        window.click(settings);
+        crate::admin_pages::click_in_page(window, settings);
         window.until("the settings of the channel are open", |window| {
             window.shows("channel-permanent")
         });

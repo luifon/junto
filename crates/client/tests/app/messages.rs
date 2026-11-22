@@ -2090,7 +2090,7 @@ fn a_file_dialog_answered_after_the_server_was_added_again_attaches_nothing(
 
     // Meanwhile the person removes the server from this device, adds it again, and the
     // phone links this device to the account.
-    window.click("server-menu-button");
+    window.open_server_menu();
     window.click("menu-remove-server");
     window.click("confirm");
     window.until("the server is removed", |window| {

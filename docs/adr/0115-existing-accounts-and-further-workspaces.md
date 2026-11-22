@@ -27,7 +27,7 @@ Adding directly:
 
 Redeeming in the desktop client:
 
-- The server menu ("Join workspaces with an invite") and the hover menu of a server in the collapsed server book (the same item) open the redemption of the account of that server: the dialog of the server with the field "Invite code" and "Join invited workspaces".
+- The menu of a server ("Join workspaces with an invite", ADR 0780) and the hover menu of a server in the collapsed server book (the same item) open the redemption of the account of that server: the dialog of the server with the field "Invite code" and "Join invited workspaces".
 - An invite link of a server of the server book opens the same redemption with its code typed (ADR 0732). "Add server" with the address of a server of the server book opens the dialog of that server in place of a refusal: the redemption for an account, the ways in of ADR 0732 for a server without an account. A `junto://` link pasted into "Add server" opens as the link does, and the code of an invite link that names the server under another of its addresses is typed into the dialog.
 - After a redemption the dialog names the added workspaces ("Your account is now a member of “Lab” and “Studio”."), with a count for the workspaces whose names have not arrived yet, and closes when the person presses "Close". The `conflict` of an invite that adds nothing is stated as "Your account is already a member of every workspace of this invite. The invite was not used."
 - Administration → "Workspaces" keeps "Enter an invite code" for a person who is already there.

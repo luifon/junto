@@ -44,8 +44,8 @@ use crate::text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdminPage {
     Workspaces,
-    /// The server itself: its logo (ADR 0101) and the limits of the files of messages
-    /// (ADR 0408).
+    /// The overview of the server itself: its logo (ADR 0101), the limits of the files of
+    /// messages (ADR 0408) and the retention of the files of direct messages (ADR 0406).
     Server,
     People,
     Invites,
@@ -54,6 +54,9 @@ pub enum AdminPage {
     AuditLog,
     /// The server roles in their order (ADR 0309).
     ServerRoles,
+    /// The overview of the chosen workspace: its name and logo, the notification level that
+    /// it sets for its members (ADR 0412) and its AFK channel (ADR 0523).
+    WorkspaceOverview,
     /// The categories and channels of the shown workspace.
     Channels,
     /// The roles of the shown workspace in their order.
@@ -62,14 +65,58 @@ pub enum AdminPage {
     Archive,
     /// The members of the shown workspace.
     Members,
-    /// The notification level that the shown workspace sets for its members (ADR 0412).
-    Notifications,
     /// The recordings of the shown workspace that the account can see (ADR 0784).
     Recordings,
     /// The glossary of the shown workspace (ADR 0616). Every member reads it.
     Glossary,
     /// The exports of the person.
     Exports,
+    /// The access tokens of the account of the person (ADR 0210).
+    OwnTokens,
+    /// The pages of the account of the person on the server (ADR 0781).
+    Profile,
+    Devices,
+    Recoveries,
+    /// Leaving a workspace and deleting the account (ADR 0121).
+    Departure,
+}
+
+impl AdminPage {
+    /// The page of the account that this page of the layer shows (ADR 0781).
+    pub const fn account_page(self) -> Option<crate::state::account::AccountPage> {
+        use crate::state::account::AccountPage;
+        match self {
+            Self::Profile => Some(AccountPage::Profile),
+            Self::Devices => Some(AccountPage::Devices),
+            Self::Recoveries => Some(AccountPage::Recoveries),
+            Self::Departure => Some(AccountPage::Departure),
+            _ => None,
+        }
+    }
+
+    pub const fn of_account(page: crate::state::account::AccountPage) -> Self {
+        use crate::state::account::AccountPage;
+        match page {
+            AccountPage::Profile => Self::Profile,
+            AccountPage::Devices => Self::Devices,
+            AccountPage::Recoveries => Self::Recoveries,
+            AccountPage::Departure => Self::Departure,
+        }
+    }
+
+    /// The page belongs to the workspace group of the layer (ADR 0761).
+    pub const fn of_workspace(self) -> bool {
+        matches!(
+            self,
+            Self::WorkspaceOverview
+                | Self::Channels
+                | Self::Roles
+                | Self::Archive
+                | Self::Members
+                | Self::Recordings
+                | Self::Glossary
+        )
+    }
 }
 
 /// A page of the settings of one channel.
@@ -84,8 +131,6 @@ pub enum ChannelPage {
 /// A page of the settings of one person (ADR 0761).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PersonPage {
-    /// The workspace permissions of a member of this workspace (ADR 0306).
-    Permissions(WorkspaceId),
     /// What the member can use in each channel of this workspace that the account sees
     /// (ADR 0304).
     Access(WorkspaceId),
@@ -163,7 +208,6 @@ pub enum AskKind {
     /// A channel takes the rules of its category again.
     SyncRules(ChannelId),
     /// A change of the workspace permissions of a member (ADR 0306).
-    SetMemberPermission(WorkspaceId, AccountId),
     /// A change of the server permissions of an account (ADR 0306).
     SetServerPermission(AccountId),
     ArchivePeriod,
@@ -324,6 +368,10 @@ impl Made {
 #[derive(Default)]
 pub struct AdminState {
     pub(crate) open: Option<AdminOpen>,
+    /// The workspace that the person chose in the selector of the layer. The workspace
+    /// that the main window shows does not change with it. Absent, or gone from the state,
+    /// the layer shows the workspace that the main window shows.
+    pub(crate) chosen: Option<WorkspaceId>,
     /// The collections that the window needs, with the task that opened each in the
     /// client core.
     held: HashMap<(ServerId, AdminPart), Task<()>>,
@@ -404,12 +452,23 @@ impl AdminState {
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
             self.account = None;
+            self.chosen = None;
         }
         self.open = Some(open);
     }
 
+    /// The state of a layer with a workspace chosen in its selector, for the unit tests.
+    #[cfg(test)]
+    pub(crate) fn chosen(workspace_id: WorkspaceId) -> Self {
+        Self {
+            chosen: Some(workspace_id),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn close(&mut self) {
         self.open = None;
+        self.chosen = None;
         self.account = None;
         self.session += 1;
         self.requests.clear();
@@ -549,11 +608,82 @@ impl AppState {
     /// put away.
     pub fn open_admin(&mut self, open: AdminOpen, cx: &mut Context<Self>) {
         self.admin.show(open);
+        self.follow_account_page(open);
         self.changed(cx);
+    }
+
+    /// A page of the account in the layer holds the state of the account pages open for its
+    /// server; another page releases it, with the link code that it held (ADR 0781).
+    fn follow_account_page(&mut self, open: AdminOpen) {
+        match open {
+            AdminOpen::Server { server_id, page } => match page.account_page() {
+                Some(page) => self
+                    .account
+                    .show(crate::state::account::AccountOpen { server_id, page }),
+                None => self.account.close(),
+            },
+            AdminOpen::Channel { .. } | AdminOpen::Category { .. } | AdminOpen::Person { .. } => {
+                self.account.close();
+            }
+        }
+    }
+
+    /// Shows a page of the administration with a workspace chosen in its selector.
+    pub fn open_admin_in_workspace(
+        &mut self,
+        open: AdminOpen,
+        workspace_id: WorkspaceId,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin.show(open);
+        self.admin.chosen = Some(workspace_id);
+        self.follow_account_page(open);
+        self.changed(cx);
+    }
+
+    /// Chooses the workspace of the workspace group of the open layer. The open page stays
+    /// when the person may use it in that workspace; otherwise the first page that the
+    /// person may use opens (ADR 0761).
+    pub fn choose_admin_workspace(&mut self, workspace_id: WorkspaceId, cx: &mut Context<Self>) {
+        let Some(open) = self.admin.open else {
+            return;
+        };
+        if self.admin.chosen == Some(workspace_id) {
+            return;
+        }
+        let open = match open {
+            AdminOpen::Server { .. } => open,
+            // A page of a channel, a category or a person belongs to its workspace: the
+            // members of the newly chosen workspace open in its place.
+            AdminOpen::Channel { server_id, .. }
+            | AdminOpen::Category { server_id, .. }
+            | AdminOpen::Person { server_id, .. } => AdminOpen::Server {
+                server_id,
+                page: AdminPage::Members,
+            },
+        };
+        self.admin.show(open);
+        self.admin.chosen = Some(workspace_id);
+        self.follow_account_page(open);
+        self.changed(cx);
+    }
+
+    /// The workspace of the workspace group of the open layer.
+    pub fn admin_workspace(&self) -> Option<WorkspaceId> {
+        let open = self.admin.open?;
+        let server_id = open.server_id();
+        let snapshots = self.snapshots();
+        let model = snapshots
+            .iter()
+            .find(|server| server.id == server_id)
+            .and_then(view::shown)?;
+        view::layer_workspace(model, &self.selection, &self.admin, open)
+            .map(|workspace| workspace.workspace.id)
     }
 
     pub fn close_admin(&mut self, cx: &mut Context<Self>) {
         self.admin.close();
+        self.account.close();
         self.changed(cx);
     }
 
@@ -754,10 +884,8 @@ impl AppState {
         if let Some(open) = self.admin.open {
             let server_id = open.server_id();
             if let Some(model) = model_of(server_id) {
-                let workspace_id = self
-                    .shown
-                    .workspace
-                    .filter(|_| self.shown.server == Some(server_id));
+                let workspace_id = view::layer_workspace(model, &self.selection, &self.admin, open)
+                    .map(|workspace| workspace.workspace.id);
                 for part in view::needs(&open, model, workspace_id) {
                     wanted.push((server_id, part));
                 }

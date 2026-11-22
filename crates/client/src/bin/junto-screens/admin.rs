@@ -833,6 +833,10 @@ pub(crate) fn open_channel(
         page,
     };
     shell.open_admin(open, window, cx);
+    // The screens of the permissions show the rules, which are folded at first.
+    if page == ChannelPage::Permissions {
+        shell.show_advanced_permissions(true, cx);
+    }
 }
 
 /// Shows this state of a request and this result of a request. A call that opens a
@@ -916,22 +920,7 @@ fn draw_workspaces(studio: &mut Studio) -> Result<(), String> {
             tell(shell, refused(what, ErrorCode::OwnerOnly), None, cx);
         },
     )?;
-    studio.draw(
-        Screen::new("admin-workspace-code", servers(|_| {})),
-        |shell, window, cx| {
-            open_page(shell, AdminPage::Workspaces, window, cx);
-            shell.set_admin_mode(Some(Mode::EnterCode), "", window, cx);
-            shell.type_admin_value("ABCD-EFGH-JKMN-PQRS", window, cx);
-        },
-    )?;
-    studio.draw(
-        Screen::new("admin-workspace-entered", servers(|_| {})),
-        |shell, window, cx| {
-            open_page(shell, AdminPage::Workspaces, window, cx);
-            let entered = Made::Entered(vec![id(CLIENT_ALPHA), id(CLIENT_BETA)]);
-            tell(shell, None, Some(entered), cx);
-        },
-    )
+    Ok(())
 }
 
 /// "Acme Studio" with the categories of the screens, for an administrator.
@@ -1033,10 +1022,13 @@ fn draw_channel_settings(studio: &mut Studio) -> Result<(), String> {
     )?;
     studio.draw(
         Screen::new(
-            "admin-channel-overview-private",
+            "admin-channel-permissions-private",
             with_channel(ALPHA, read(private_overrides())),
         ),
-        |shell, window, cx| open_channel(shell, ALPHA, ChannelPage::Overview, window, cx),
+        |shell, window, cx| {
+            open_channel(shell, ALPHA, ChannelPage::Permissions, window, cx);
+            shell.show_advanced_permissions(false, cx);
+        },
     )?;
     studio.draw(
         Screen::new(
@@ -1814,31 +1806,39 @@ fn draw_notifications(studio: &mut Studio) -> Result<(), String> {
         })
     };
     studio.draw(
-        Screen::new("admin-notifications-not-set", with_level(None)),
-        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+        Screen::new("admin-workspace-overview-not-set", with_level(None)),
+        |shell, window, cx| open_page(shell, AdminPage::WorkspaceOverview, window, cx),
+    )?;
+    // The choices of the workspace selector at the left of Server settings.
+    studio.draw(
+        Screen::new("admin-workspace-selector", with_level(None)),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::WorkspaceOverview, window, cx);
+            shell.show_workspace_choices(true, cx);
+        },
     )?;
     studio.draw(
         Screen::new(
-            "admin-notifications-all",
+            "admin-workspace-overview-all",
             with_level(Some(NotificationLevel::All)),
         ),
-        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+        |shell, window, cx| open_page(shell, AdminPage::WorkspaceOverview, window, cx),
     )?;
     studio.draw(
         Screen::new(
-            "admin-notifications-nothing-150",
+            "admin-workspace-overview-nothing-150",
             with_level(Some(NotificationLevel::Nothing)),
         )
         .scale(150),
-        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+        |shell, window, cx| open_page(shell, AdminPage::WorkspaceOverview, window, cx),
     )?;
     studio.draw(
         Screen::new(
-            "admin-notifications-sending",
+            "admin-workspace-overview-sending",
             with_level(Some(NotificationLevel::Mentions)),
         ),
         |shell, window, cx| {
-            open_page(shell, AdminPage::Notifications, window, cx);
+            open_page(shell, AdminPage::WorkspaceOverview, window, cx);
             let ask = Ask {
                 what: AskKind::NotificationDefault(id(STUDIO)),
                 state: AskState::Sending,
@@ -1849,15 +1849,15 @@ fn draw_notifications(studio: &mut Studio) -> Result<(), String> {
     // The level was saved: the page shows it, with nothing on its way.
     studio.draw(
         Screen::new(
-            "admin-notifications-saved",
+            "admin-workspace-overview-saved",
             with_level(Some(NotificationLevel::Mentions)),
         ),
-        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+        |shell, window, cx| open_page(shell, AdminPage::WorkspaceOverview, window, cx),
     )?;
     studio.draw(
-        Screen::new("admin-notifications-refused", with_level(None)),
+        Screen::new("admin-workspace-overview-refused", with_level(None)),
         |shell, window, cx| {
-            open_page(shell, AdminPage::Notifications, window, cx);
+            open_page(shell, AdminPage::WorkspaceOverview, window, cx);
             let what = AskKind::NotificationDefault(id(STUDIO));
             tell(shell, refused(what, ErrorCode::Forbidden), None, cx);
         },

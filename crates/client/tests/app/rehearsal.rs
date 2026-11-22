@@ -198,7 +198,7 @@ impl Rehearsal {
             [ChannelKind::Text, ChannelKind::Voice, ChannelKind::Voice]
         );
         // The owner has the administration in the menu of the server.
-        a.click("server-menu-button");
+        a.open_server_menu();
         assert!(a.shows("menu-administration"));
         a.press("escape");
         assert!(a.shows("feed") && a.shows("composer"));
@@ -208,7 +208,7 @@ impl Rehearsal {
     /// on its own profile, is refused with the used owner code, and joins with the invite.
     pub fn invitation(&mut self) {
         let a = &mut self.a;
-        a.click("server-menu-button");
+        a.open_server_menu();
         a.click("menu-administration");
         assert!(a.shows("admin"));
         a.click("admin-nav-invites");
@@ -272,7 +272,7 @@ impl Rehearsal {
 
         // The row of the invite counts its one use.
         let a = &mut self.a;
-        a.click("server-menu-button");
+        a.open_server_menu();
         a.click("menu-administration");
         a.click("admin-nav-invites");
         let row = a.until_value("the invite counts its use", |window| {
@@ -863,8 +863,9 @@ fn start_with_name(window: &mut Window, name: &str) {
 
 /// Types the address of the server into the server book and waits for its dialog.
 fn add_server(window: &mut Window, address: &str) {
-    type_into(window, "address-field", address);
     window.click("add-server");
+    type_into(window, "address-field", address);
+    window.click("add-server-submit");
     window.until("the join dialog opens", |window| {
         window.shows("join-dialog")
     });

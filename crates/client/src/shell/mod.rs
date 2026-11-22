@@ -5,6 +5,7 @@
 
 pub mod account;
 mod account_menus;
+pub mod add_server;
 pub mod admin;
 mod arrange;
 mod book;
@@ -112,7 +113,10 @@ pub(crate) enum Layer {
     ReleaseNotes(Box<release_notes::ReleaseNotesDialog>),
     Prejoin(Box<device_checks::Prejoin>),
     Join(join::Join),
-    ServerMenu,
+    /// The window "Add server or workspace" (ADR 0732).
+    AddServer(add_server::AddWindow),
+    /// The menu of a server, at the place where it was opened.
+    ServerMenu(ServerId, MenuAt),
     Presence(junto_client_core::Owner),
     Profile,
     ConfirmRemove(ServerId),
@@ -146,8 +150,13 @@ pub(crate) enum Layer {
     ChannelMenu(junto_client_core::protocol::ids::ChannelId),
     /// The menu of a group of the server book, at its head (ADR 0775).
     GroupMenu(junto_client_core::arrangement::GroupId),
-    /// The menu of a workspace of the server book, at its row.
-    WorkspaceMenu(ServerId, junto_client_core::protocol::ids::WorkspaceId),
+    /// The menu of a workspace: at its row in the server book, with the items that arrange
+    /// it, or under the name of the shown workspace.
+    WorkspaceMenu(
+        ServerId,
+        junto_client_core::protocol::ids::WorkspaceId,
+        MenuAt,
+    ),
     /// The choice of the group of the selected server, from its menu.
     GroupChoice(ServerId),
     /// The dialog that names a group.
@@ -171,9 +180,6 @@ pub(crate) enum Layer {
     /// The administration of a server, or the settings of a channel. The state of the
     /// application holds which page is open.
     Admin,
-    /// The profile and the devices of the account on a server (ADR 0781). The state of
-    /// the application holds which page is open.
-    Account,
     /// The link of a device on all servers (ADR 0782).
     LinkAll,
     /// The chooser of a new direct conversation (ADR 0307). The state of the application
@@ -187,6 +193,15 @@ pub(crate) enum Layer {
     FileLink(Box<crate::state::OpenFileLink>),
 }
 
+/// Where the menu of a server or of a workspace is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuAt {
+    /// At its row or icon in the server book.
+    Row,
+    /// Under the header of the channel column.
+    Header,
+}
+
 impl Layer {
     /// The layer covers the content of the window: a dialog with its scrim, or the viewer of
     /// pictures. A menu or a list at a control lies over a part only, and the pictures beside
@@ -195,7 +210,7 @@ impl Layer {
         // Every layer is named, so that a new one is classified before it compiles.
         match self {
             Layer::None
-            | Layer::ServerMenu
+            | Layer::ServerMenu(..)
             | Layer::ShareMenu
             | Layer::PersonMenu(..)
             | Layer::AccountMenu(..)
@@ -218,6 +233,7 @@ impl Layer {
             | Layer::ReleaseNotes(..)
             | Layer::Prejoin(..)
             | Layer::Join(..)
+            | Layer::AddServer(..)
             | Layer::Presence(..)
             | Layer::Profile
             | Layer::ConfirmRemove(..)
@@ -234,7 +250,6 @@ impl Layer {
             | Layer::Notify
             | Layer::ConfirmRemoveRecording(..)
             | Layer::Admin
-            | Layer::Account
             | Layer::LinkAll
             | Layer::NewDirect
             | Layer::QuickSwitcher
@@ -302,7 +317,11 @@ impl Pane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Open {
     Settings,
+    /// The menu of the selected server, at its row in the server book.
     ServerMenu,
+    /// The menu under the name of the channel column: of the shown workspace, or of the
+    /// server while it shows no workspace.
+    HeaderMenu,
     Members,
     /// The menu of the first server of the collapsed server book.
     ServerHoverMenu,
@@ -498,6 +517,8 @@ pub struct Shell {
     /// The section of the settings that is shown.
     pub(crate) settings_section: settings::SettingsSection,
     pub(crate) code: Entity<InputState>,
+    /// The invite link or code of the tab "Workspace" of the window that adds a server.
+    pub(crate) add_code: Entity<InputState>,
     /// The number of join dialogs that this window has opened.
     pub(crate) joins_opened: u64,
     /// The number of results of join actions that this window has received.
@@ -629,7 +650,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let address = Field::state(text::ADDRESS_PLACEHOLDER, window, cx);
+        let address = Field::state(text::add::ADDRESS_PLACEHOLDER, window, cx);
+        let add_code = Field::state(text::add::CODE_PLACEHOLDER, window, cx);
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
         let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
@@ -864,6 +886,20 @@ impl Shell {
                 },
             ),
             Field::observe(
+                &add_code,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Changed => {
+                        if let Layer::AddServer(add) = &mut this.layer {
+                            add.error = None;
+                        }
+                        cx.notify();
+                    }
+                    FieldEvent::Submitted => this.submit_add_code(window, cx),
+                },
+            ),
+            Field::observe(
                 &name,
                 window,
                 cx,
@@ -1004,6 +1040,7 @@ impl Shell {
             name_saved: false,
             settings_section: settings::SettingsSection::default(),
             code,
+            add_code,
             joins_opened: 0,
             join_results: 0,
             feed,
@@ -1522,6 +1559,7 @@ impl Shell {
         match open {
             Open::Settings => self.open_settings(window, cx),
             Open::ServerMenu => self.open_server_menu(window, cx),
+            Open::HeaderMenu => self.open_header_menu(window, cx),
             Open::Members => {
                 self.members_open = true;
                 cx.notify();
@@ -1664,14 +1702,10 @@ impl Shell {
                 .update(cx, |code, cx| code.set_value("", window, cx));
         }
         if matches!(self.layer, Layer::Admin) {
-            // A code or a token that the layer showed is gone with it.
+            // A code, a token or a link code that the layer showed is gone with it.
             self.reset_admin_ui(window, cx);
-            self.state.update(cx, |state, cx| state.close_admin(cx));
-        }
-        if matches!(self.layer, Layer::Account) {
-            // The link code that the layer held is gone with it.
             self.reset_account_ui(window, cx);
-            self.state.update(cx, |state, cx| state.close_account(cx));
+            self.state.update(cx, |state, cx| state.close_admin(cx));
         }
         if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation) {
             self.groups.reset();
@@ -1893,26 +1927,6 @@ impl Shell {
         self.state.update(cx, |state, cx| {
             state.set_server_book_collapsed(collapsed, cx)
         });
-    }
-
-    /// The address field of the server book is the first step of joining a server. In the
-    /// collapsed book the "+" button expands the book and moves the focus into the field.
-    pub(crate) fn show_address_field(
-        &mut self,
-        narrow: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.hover_menu_pressed = None;
-        if narrow {
-            self.expanded_while_narrow = true;
-        } else {
-            self.state
-                .update(cx, |state, cx| state.set_server_book_collapsed(false, cx));
-        }
-        self.close_hover_menu(cx);
-        self.focus_field(&self.address.clone(), window, cx);
-        cx.notify();
     }
 }
 
@@ -2265,7 +2279,7 @@ impl Shell {
             Layer::ConfirmRemove(server_id)
             | Layer::ConfirmForget(server_id)
             | Layer::ConfirmLogOut(server_id) => gone(server_id),
-            Layer::ServerMenu => view.selected.is_none(),
+            Layer::ServerMenu(server_id, _) => gone(server_id),
             Layer::Forward(dialog) => {
                 self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
             }
@@ -2276,7 +2290,7 @@ impl Shell {
             Layer::ComposerMenu(open) => !self.composer_menu_current(*open, view, cx),
             Layer::Join(join) => join.is_stale(view, self.state.read(cx).client()),
             // The observer of the state closes the dialog of a share by its call and seat.
-            Layer::SharePicker(_) => false,
+            Layer::SharePicker(_) | Layer::AddServer(_) => false,
             // The person left the voice channel, or the channel is no longer shown.
             Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
             // The message is no longer among the shown ones.
@@ -2334,7 +2348,7 @@ impl Shell {
             Layer::GroupMenu(group) | Layer::RenameGroup(group) => {
                 !view.groups.iter().any(|row| row.id == *group)
             }
-            Layer::WorkspaceMenu(server_id, workspace_id) => !view.servers.iter().any(|row| {
+            Layer::WorkspaceMenu(server_id, workspace_id, _) => !view.servers.iter().any(|row| {
                 row.id == *server_id && row.workspaces.iter().any(|held| held.id == *workspace_id)
             }),
             Layer::GroupChoice(server_id) => !view.servers.iter().any(|row| row.id == *server_id),
@@ -2365,7 +2379,6 @@ impl Shell {
             Layer::VoiceStatus(_) => self.voice_status_editor_stale(cx),
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
-            Layer::Account => self.state.read(cx).account_view().is_none(),
             // The languages belong to the button that records, which a call of this
             // device without a recording shows to a person who may record.
             Layer::RecordLanguage => !self.records_now(view),
@@ -2458,7 +2471,7 @@ impl Shell {
             | Layer::ComposerMenu(_)
             | Layer::ChannelMenu(_)
             | Layer::GroupMenu(_)
-            | Layer::WorkspaceMenu(..)
+            | Layer::WorkspaceMenu(_, _, MenuAt::Row)
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
             | Layer::RecordingFiles(_)
@@ -2479,7 +2492,17 @@ impl Shell {
             Layer::ReleaseNotes(_) => self.render_release_notes(cx),
             Layer::Prejoin(prejoin) => self.render_prejoin(**prejoin, cx),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
-            Layer::ServerMenu => self.render_server_menu(view, window, cx).into_any_element(),
+            Layer::AddServer(add) => {
+                let add = add.clone();
+                self.render_add_window(&add, window, cx)
+            }
+            Layer::ServerMenu(server_id, MenuAt::Header) => {
+                self.render_header_menu(Some(*server_id), None, cx)
+            }
+            Layer::WorkspaceMenu(server_id, workspace_id, MenuAt::Header) => {
+                self.render_header_menu(Some(*server_id), Some(*workspace_id), cx)
+            }
+            Layer::ServerMenu(_, MenuAt::Row) => div().into_any_element(),
             Layer::GroupChoice(server_id) => self.render_server_group_choice(*server_id, view, cx),
             Layer::RenameGroup(group) => self.render_rename_group(*group, view, window, cx),
             Layer::VoiceStatus(_) => self.render_voice_status(cx),
@@ -2494,7 +2517,6 @@ impl Shell {
                 .into_any_element(),
             Layer::SharePicker(_) => self.render_share_picker(window, cx),
             Layer::Admin => self.render_admin(window, cx),
-            Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
             Layer::Profile => self.render_profile(cx),
             Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
@@ -2583,7 +2605,7 @@ mod layer_tests {
         let server = ServerId::generate();
         for menu in [
             Layer::None,
-            Layer::ServerMenu,
+            Layer::ServerMenu(server, super::MenuAt::Row),
             Layer::ShareMenu,
             Layer::GroupChoice(server),
             Layer::ChannelMenu(ChannelId::generate()),

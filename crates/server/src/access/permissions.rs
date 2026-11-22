@@ -4,7 +4,7 @@ use crate::{
     error::{ApiError, ApiResult},
 };
 use junto_authz::{Override, ServerOverride};
-use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId};
+use junto_protocol::ids::{AccountId, ChannelId};
 use sqlx::PgConnection;
 use std::collections::HashMap;
 
@@ -31,19 +31,6 @@ pub(super) async fn server_person(
 }
 
 impl Access {
-    pub(super) async fn workspace_person(
-        &self,
-        connection: &mut PgConnection,
-        workspace: WorkspaceId,
-    ) -> ApiResult<Override> {
-        let row: Option<(i64, i64)> = sqlx::query_as(
-            "select allow,deny from workspace_person_overrides where workspace_id=$1 and account_id=$2",
-        ).bind(workspace).bind(self.account_id).fetch_optional(connection).await?;
-        row.map(|(allow, deny)| stored_override(allow, deny))
-            .transpose()
-            .map(Option::unwrap_or_default)
-    }
-
     pub(super) async fn channel_people(
         &self,
         connection: &mut PgConnection,

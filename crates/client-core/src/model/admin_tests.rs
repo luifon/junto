@@ -1066,6 +1066,7 @@ fn the_flags_of_the_server_are_held_by_their_read_and_read_again_after_a_change_
     let listed = |account: &AccountSummary, may_unban| ListedAccount {
         account: account.clone(),
         may_unban,
+        workspace_ids: Vec::new(),
     };
     // Unread: no statement.
     assert_eq!(model.admin.may_unban(ana.id), None);
@@ -1337,21 +1338,11 @@ fn the_rules_of_a_category_follow_their_events_and_a_wrong_answer_is_refused() {
 }
 
 #[test]
-fn the_permissions_of_a_member_and_of_an_account_follow_their_events() {
+fn the_server_permissions_of_an_account_follow_their_events() {
     let scene = scene();
     let mut model = scene.model();
     let reader = AccountId::generate();
-    let member_part = AdminPart::MemberPermissions(scene.workspace_id, reader);
     let server_part = AdminPart::ServerPermissions(reader);
-    loaded(
-        &mut model,
-        member_part,
-        AdminPayload::MemberPermissions(junto_protocol::structure::PersonPermissions {
-            account_id: reader,
-            allow: Vec::new(),
-            deny: Vec::new(),
-        }),
-    );
     loaded(
         &mut model,
         server_part,
@@ -1361,24 +1352,6 @@ fn the_permissions_of_a_member_and_of_an_account_follow_their_events() {
             deny: Vec::new(),
         }),
     );
-    let set = Event::WorkspacePersonPermissionsSet {
-        workspace_id: scene.workspace_id,
-        account_id: reader,
-        allow: vec![WorkspacePermission::MentionEveryone],
-        deny: vec![WorkspacePermission::SendMessages],
-    };
-    assert!(member_part.concerns(&set));
-    assert!(
-        !AdminPart::MemberPermissions(scene.workspace_id, AccountId::generate()).concerns(&set)
-    );
-    model.apply(&set);
-    let held = model
-        .admin
-        .member_permissions(scene.workspace_id, reader)
-        .loaded()
-        .unwrap();
-    assert_eq!(held.allow, [WorkspacePermission::MentionEveryone]);
-    assert_eq!(held.deny, [WorkspacePermission::SendMessages]);
     let server = Event::ServerPersonPermissionsSet {
         account_id: reader,
         allow: vec![ServerPermission::CreateInvites],
@@ -1443,4 +1416,47 @@ fn what_a_member_can_use_is_read_again_after_a_change_of_its_rules_or_roles() {
         deny: Vec::new(),
     };
     assert!(!part.is_stale_after(&other));
+}
+
+#[test]
+fn the_accounts_hold_the_workspaces_of_each_account_and_follow_the_members() {
+    use junto_protocol::account::ListedAccount;
+    let scene = scene();
+    let mut model = scene.model();
+    let (ana, bruno) = (account("Ana"), account("Bruno"));
+    let listed = |account: &AccountSummary, workspace_ids: Vec<WorkspaceId>| ListedAccount {
+        account: account.clone(),
+        may_unban: false,
+        workspace_ids,
+    };
+    // Before the accounts are read, an event changes nothing.
+    let mut early = member("Bruno");
+    early.account_id = bruno.id;
+    model.apply(&Event::WorkspaceMemberAdded {
+        workspace_id: scene.workspace_id,
+        member: early.clone(),
+    });
+    assert!(model.admin.workspaces_of(bruno.id).is_empty());
+    loaded(
+        &mut model,
+        AdminPart::Accounts,
+        AdminPayload::Accounts(vec![
+            listed(&ana, vec![scene.workspace_id]),
+            listed(&bruno, Vec::new()),
+        ]),
+    );
+    assert_eq!(model.admin.workspaces_of(ana.id), [scene.workspace_id]);
+    assert!(model.admin.workspaces_of(bruno.id).is_empty());
+
+    model.apply(&Event::WorkspaceMemberAdded {
+        workspace_id: scene.workspace_id,
+        member: early,
+    });
+    assert_eq!(model.admin.workspaces_of(bruno.id), [scene.workspace_id]);
+    model.apply(&Event::WorkspaceMemberRemoved {
+        workspace_id: scene.workspace_id,
+        account_id: ana.id,
+    });
+    assert!(model.admin.workspaces_of(ana.id).is_empty());
+    assert_eq!(model.admin.workspaces_of(bruno.id), [scene.workspace_id]);
 }

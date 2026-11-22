@@ -580,6 +580,9 @@ pub struct AppState {
     workspace_logos: logo::Logos<logo::WorkspaceKey>,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
+    /// The members of the workspace that Server settings show, when it is not the shown
+    /// one (ADR 0761).
+    layer_members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
     watchers: HashMap<ServerId, Task<()>>,
     /// One task per server that waits for a decision of another person.
@@ -1107,6 +1110,7 @@ impl AppState {
             logos: logo::Logos::default(),
             workspace_logos: logo::Logos::default(),
             members: None,
+            layer_members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
             notice_readers: HashMap::new(),
@@ -3074,7 +3078,23 @@ impl AppState {
                 server.live().release_members(workspace_id);
             }
             if let Some(key) = wanted {
-                self.load_members(key, cx);
+                self.members = Some((key, self.load_members(key, cx)));
+            }
+        }
+        let layer = self
+            .admin
+            .open
+            .map(|open| open.server_id())
+            .zip(self.admin_workspace())
+            .filter(|key| Some(*key) != wanted);
+        if self.layer_members.as_ref().map(|(key, _)| *key) != layer {
+            if let Some(((server_id, workspace_id), _)) = self.layer_members.take()
+                && let Some(server) = self.client.server(server_id)
+            {
+                server.live().release_members(workspace_id);
+            }
+            if let Some(key) = layer {
+                self.layer_members = Some((key, self.load_members(key, cx)));
             }
         }
         // The side panel belongs to the channel that is shown: a thread or a pin list of
@@ -3172,13 +3192,13 @@ impl AppState {
         cx.notify();
     }
 
-    fn load_members(&mut self, key: (ServerId, WorkspaceId), cx: &mut Context<Self>) {
+    fn load_members(&mut self, key: (ServerId, WorkspaceId), cx: &mut Context<Self>) -> Task<()> {
         let Some(server) = self.client.server(key.0) else {
-            return;
+            return Task::ready(());
         };
         self.known.members_failed.retain(|failed| *failed != key);
         let loading = server.live().load_members(key.1);
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = loading.await;
             let _ = this.update(cx, |this, cx| {
                 if result.is_err() && !this.known.members_failed.contains(&key) {
@@ -3186,16 +3206,19 @@ impl AppState {
                 }
                 cx.notify();
             });
-        });
-        self.members = Some((key, task));
+        })
     }
 
-    /// Reads the members of the shown workspace again after a read that failed.
+    /// Reads the members of the shown workspace, and of the workspace of Server settings,
+    /// again after a read that failed.
     pub fn reload_members(&mut self, cx: &mut Context<Self>) {
         if let Some((key, _)) = self.members.take() {
-            self.load_members(key, cx);
-            cx.notify();
+            self.members = Some((key, self.load_members(key, cx)));
         }
+        if let Some((key, _)) = self.layer_members.take() {
+            self.layer_members = Some((key, self.load_members(key, cx)));
+        }
+        cx.notify();
     }
 
     /// Contacts again every server that this device is a member of and that has no

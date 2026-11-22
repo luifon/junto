@@ -283,7 +283,7 @@ fn a_person_who_manages_roles_creates_orders_gives_and_takes_them_and_another_wi
 
     // The permissions of the role: one that the person holds is given, and one that the
     // person does not hold is a disabled switch with its reason.
-    click_in_page(&mut window, sel("role-permissions", helpers));
+    click_in_page(&mut window, sel("role-select", helpers));
     window.until("the permissions are shown", |window| {
         window.shows("role-permission-manage_messages")
     });
@@ -383,7 +383,7 @@ fn a_person_who_manages_roles_creates_orders_gives_and_takes_them_and_another_wi
             )]
             && idle(window)
     });
-    click_in_page(&mut window, sel("role-permissions", helpers));
+    click_in_page(&mut window, sel("role-select", helpers));
 
     // A second role, and the order: one place up with its button, which is the path of
     // the keyboard, and back by dragging.
@@ -825,7 +825,7 @@ fn the_row_of_a_role_tells_the_refusal_of_its_newest_request(cx: &mut TestAppCon
     let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
     let busy = || std::iter::repeat_n(Fault::Busy, attempts);
     proxy.fail_ending(&format!("/roles/{chiefs}/permissions"), busy());
-    click_in_page(&mut window, sel("role-permissions", chiefs));
+    click_in_page(&mut window, sel("role-select", chiefs));
     window.until("the permissions of the role", |window| {
         window.shows("role-permission-manage_messages")
     });
@@ -871,7 +871,7 @@ fn the_permissions_of_a_role_wait_for_the_answer_to_its_new_name(cx: &mut TestAp
     window.until("the role is listed", |window| {
         role_names(window) == ["Chiefs", "everyone"]
     });
-    click_in_page(&mut window, sel("role-permissions", chiefs));
+    click_in_page(&mut window, sel("role-select", chiefs));
     window.until("the permissions of the role", |window| {
         window.shows("role-permission-manage_messages")
     });
@@ -968,7 +968,7 @@ fn a_cancelled_rename_of_a_role_keeps_its_permissions_waiting_and_tells_the_refu
     window.until("the roles are listed", |window| {
         role_names(window) == ["Chiefs", "Leads", "everyone"]
     });
-    click_in_page(&mut window, sel("role-permissions", chiefs));
+    click_in_page(&mut window, sel("role-select", chiefs));
     window.until("the permissions of the role", |window| {
         window.shows("role-permission-manage_messages")
     });
@@ -1102,7 +1102,7 @@ fn a_permission_given_taken_and_given_again_ends_as_the_last_change(cx: &mut Tes
     open_page(&mut window, "admin-nav-roles", |window| {
         roles_page(window).is_some()
     });
-    click_in_page(&mut window, sel("role-permissions", helpers));
+    click_in_page(&mut window, sel("role-select", helpers));
     window.until("the permissions are shown", |window| {
         window.shows("role-permission-manage_messages")
     });
@@ -1177,7 +1177,8 @@ fn role_appearance_editor_validates_saves_and_resets_without_changing_permission
         })
     });
     let target = RoleRef::Workspace(workspace, role.id);
-    click_in_page(&mut window, sel("role-appearance", target.written()));
+    click_in_page(&mut window, sel("role-select", target.written()));
+    click_in_page(&mut window, "role-tab-appearance");
     window.until("the appearance form is open", |window| {
         window.shows("role-color")
     });
@@ -1212,7 +1213,7 @@ fn role_appearance_editor_validates_saves_and_resets_without_changing_permission
         .find(|row| row.id == role.id)
         .unwrap();
     assert_eq!(stored.permissions, role.permissions);
-    click_in_page(&mut window, sel("role-appearance", target.written()));
+    click_in_page(&mut window, "role-tab-appearance");
     click_in_page(&mut window, "role-color-default");
     click_in_page(&mut window, "role-hoist");
     click_in_page(&mut window, "role-form-send");

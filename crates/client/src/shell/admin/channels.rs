@@ -11,15 +11,15 @@ use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, Workspac
 use junto_client_core::protocol::structure::{ChannelKind, UpdateChannel};
 
 use super::{
-    Form, FormField, Mode, Question, group_label, line, line_text, named, page_title, refusal,
-    row_action, sentence,
+    Form, FormField, Mode, Question, group_label, line, line_text, menu_action, named, page_title,
+    refusal, row_action, sentence,
 };
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::shell::room::option_row;
 use crate::state::admin::view::{
     AdminView, CategoryLine, ChannelGroup, ChannelLine, ChannelSettings, ChannelsPage,
-    OverviewPage, Privacy, Scope, ServerPage,
+    OverviewPage, Scope, ServerPage,
 };
 use crate::state::admin::{AdminPage, AskKind, AskState, ChannelPage, RulesOf};
 use crate::text;
@@ -428,6 +428,15 @@ impl Shell {
                     state.create_channel(server_id, workspace, name, kind, Some(category), cx)
                 });
             }
+            (Some(Mode::RenameCategory(category)), Scope::Category(settings))
+                if category == settings.category_id =>
+            {
+                let workspace = settings.workspace_id;
+                self.admin_sent(AskKind::UpdateCategory(category));
+                self.state.update(cx, |state, cx| {
+                    state.rename_category(server_id, workspace, category, name, cx);
+                });
+            }
             (Some(Mode::RenameChannel), Scope::Channel(settings)) => {
                 let channel_id = settings.channel_id;
                 let change = UpdateChannel {
@@ -606,7 +615,6 @@ impl Shell {
                 )
                 .into_any_element(),
             _ => {
-                let number = category_id.as_uuid().as_u128() as u64;
                 div()
                     .flex()
                     .flex_1()
@@ -622,69 +630,69 @@ impl Shell {
                             .truncate()
                             .child(category.name.clone()),
                     )
-                    .child(row_action(
-                        ("category-up", number),
-                        text::admin::UP,
-                        format!("category-up-{category_id}"),
-                        category.first.then_some(text::admin::FIRST_ALREADY),
-                        Self::category_step_listener(
-                            server_id,
-                            workspace_id,
-                            category_id,
-                            true,
-                            cx,
-                        ),
-                    ))
-                    .child(row_action(
-                        ("category-down", number),
-                        text::admin::DOWN,
-                        format!("category-down-{category_id}"),
-                        category.last.then_some(text::admin::LAST_ALREADY),
-                        Self::category_step_listener(
-                            server_id,
-                            workspace_id,
-                            category_id,
-                            false,
-                            cx,
-                        ),
-                    ))
-                    .child(row_action(
-                        ("category-permissions", number),
-                        text::admin::overrides::PERMISSIONS,
-                        format!("category-permissions-{category_id}"),
-                        None,
-                        cx.listener(move |this, _, window, cx| {
-                            this.open_category_settings(workspace_id, category_id, window, cx);
-                        }),
-                    ))
-                    .child(row_action(
-                        ("category-rename", number),
-                        text::admin::RENAME,
-                        format!("category-rename-{category_id}"),
-                        None,
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::RenameCategory(category_id)),
-                                &name,
-                                window,
+                    .child({
+                        // The actions of a category are the items of the menu of its row
+                        // (ADR 0761).
+                        menu_action(
+                            text::admin::RENAME,
+                            format!("category-rename-{category_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::RenameCategory(category_id)),
+                                    &name,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        );
+                        menu_action(
+                            text::admin::overrides::CATEGORY_SETTINGS,
+                            format!("category-permissions-{category_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_category_settings(workspace_id, category_id, window, cx);
+                            }),
+                        );
+                        menu_action(
+                            text::admin::roles::MOVE_UP,
+                            format!("category-up-{category_id}"),
+                            category.first.then_some(text::admin::FIRST_ALREADY),
+                            Self::category_step_listener(
+                                server_id,
+                                workspace_id,
+                                category_id,
+                                true,
                                 cx,
-                            );
-                        }),
-                    ))
-                    .child(row_action(
-                        ("category-delete", number),
-                        text::admin::DELETE,
-                        format!("category-delete-{category_id}"),
-                        None,
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::DeleteCategory(category_id)),
-                                "",
-                                window,
+                            ),
+                        );
+                        menu_action(
+                            text::admin::roles::MOVE_DOWN,
+                            format!("category-down-{category_id}"),
+                            category.last.then_some(text::admin::LAST_ALREADY),
+                            Self::category_step_listener(
+                                server_id,
+                                workspace_id,
+                                category_id,
+                                false,
                                 cx,
-                            );
-                        }),
-                    ))
+                            ),
+                        );
+                        menu_action(
+                            text::admin::DELETE,
+                            format!("category-delete-{category_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::DeleteCategory(category_id)),
+                                    "",
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        );
+                        div()
+                    })
                     .into_any_element()
             }
         };
@@ -831,67 +839,104 @@ impl Shell {
                     .child(handle)
                     .child(icon(kind_icon(row.kind), 15.0, theme.colors.ink_2))
                     .child(line_text(row.name.clone(), detail, theme))
-                    .child(row_action(
-                        ("channel-up", number),
-                        text::admin::UP,
-                        format!("channel-up-{channel_id}"),
-                        row.first
-                            .then_some(text::admin::FIRST_ALREADY)
-                            .or(row.moves_up.err().map(text::admin::unplanned)),
-                        Self::moves_listener(
-                            server_id,
-                            workspace_id,
-                            channel_id,
-                            step(true),
-                            false,
-                            cx,
-                        ),
-                    ))
-                    .child(row_action(
-                        ("channel-down", number),
-                        text::admin::DOWN,
-                        format!("channel-down-{channel_id}"),
-                        row.last
-                            .then_some(text::admin::LAST_ALREADY)
-                            .or(row.moves_down.err().map(text::admin::unplanned)),
-                        Self::moves_listener(
-                            server_id,
-                            workspace_id,
-                            channel_id,
-                            step(false),
-                            false,
-                            cx,
-                        ),
-                    ))
-                    .child(row_action(
-                        ("channel-move", number),
-                        text::admin::MOVE_TO,
-                        format!("channel-move-{channel_id}"),
-                        (!row.may_manage).then_some(text::admin::CHANNEL_MANAGE_NEEDS),
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::MoveChannel(channel_id)),
-                                "",
-                                window,
-                                cx,
-                            );
-                        }),
-                    ))
-                    .child(row_action(
-                        ("channel-settings", number),
-                        text::admin::SETTINGS,
-                        format!("channel-settings-{channel_id}"),
-                        None,
-                        cx.listener(move |this, _, window, cx| {
-                            this.open_channel_settings(
+                    .child({
+                        // The actions of a channel are the items of the menu of its row
+                        // (ADR 0761); the handle orders it by a drag.
+                        let manage = (!row.may_manage).then_some(text::admin::CHANNEL_MANAGE_NEEDS);
+                        menu_action(
+                            text::admin::SETTINGS,
+                            format!("channel-settings-{channel_id}"),
+                            None,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_channel_settings(
+                                    workspace_id,
+                                    channel_id,
+                                    ChannelPage::Overview,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        );
+                        let name = row.name.clone();
+                        menu_action(
+                            text::admin::RENAME,
+                            format!("channel-rename-{channel_id}"),
+                            manage,
+                            cx.listener(move |this, _, window, cx| {
+                                this.open_channel_settings(
+                                    workspace_id,
+                                    channel_id,
+                                    ChannelPage::Overview,
+                                    window,
+                                    cx,
+                                );
+                                this.set_admin_mode(Some(Mode::RenameChannel), &name, window, cx);
+                            }),
+                        );
+                        menu_action(
+                            text::admin::MOVE_TO,
+                            format!("channel-move-{channel_id}"),
+                            manage,
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_admin_mode(
+                                    Some(Mode::MoveChannel(channel_id)),
+                                    "",
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        );
+                        menu_action(
+                            text::admin::roles::MOVE_UP,
+                            format!("channel-up-{channel_id}"),
+                            row.first
+                                .then_some(text::admin::FIRST_ALREADY)
+                                .or(row.moves_up.err().map(text::admin::unplanned)),
+                            Self::moves_listener(
+                                server_id,
                                 workspace_id,
                                 channel_id,
-                                ChannelPage::Overview,
-                                window,
+                                step(true),
+                                false,
                                 cx,
+                            ),
+                        );
+                        menu_action(
+                            text::admin::roles::MOVE_DOWN,
+                            format!("channel-down-{channel_id}"),
+                            row.last
+                                .then_some(text::admin::LAST_ALREADY)
+                                .or(row.moves_down.err().map(text::admin::unplanned)),
+                            Self::moves_listener(
+                                server_id,
+                                workspace_id,
+                                channel_id,
+                                step(false),
+                                false,
+                                cx,
+                            ),
+                        );
+                        for (label, selector) in [
+                            (text::admin::ARCHIVE, "channel-archive"),
+                            (text::admin::DELETE, "channel-delete"),
+                        ] {
+                            menu_action(
+                                label,
+                                format!("{selector}-{channel_id}"),
+                                manage,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.open_channel_settings(
+                                        workspace_id,
+                                        channel_id,
+                                        ChannelPage::Archive,
+                                        window,
+                                        cx,
+                                    );
+                                }),
                             );
-                        }),
-                    ))
+                        }
+                        div()
+                    })
                     .into_any_element()
             }
         };
@@ -1033,9 +1078,9 @@ impl Shell {
         let mut rows = vec![("channels-header".to_owned(), Line::Heading)];
         if page.may_manage {
             for (group_index, group) in page.groups.iter().enumerate() {
-                let key = format!(
-                    "category-{:?}",
-                    group.category.as_ref().map(|category| category.id)
+                let key = group.category.as_ref().map_or_else(
+                    || "category-none".to_owned(),
+                    |category| format!("category-{}", category.id),
                 );
                 rows.push((key.clone(), Line::Category(group_index)));
                 rows.extend(group.channels.iter().enumerate().map(|(index, channel)| {
@@ -1055,7 +1100,11 @@ impl Shell {
                     key.clone(),
                     true,
                     page.groups[*group].channels[*index].name.clone(),
-                ),
+                )
+                .with_menu(),
+                Line::Category(group) if page.groups[*group].category.is_some() => {
+                    Row::part(key.clone(), true).with_menu()
+                }
                 _ => Row::part(key.clone(), true),
             })
             .collect();
@@ -1074,7 +1123,6 @@ impl Shell {
                             text::admin::CHANNELS_HELP,
                             &theme,
                         ))
-                        .child(this.render_afk_settings(&view, &page, cx))
                         .into_any_element(),
                     Line::Category(index) => {
                         let group = &page.groups[index];
@@ -1301,7 +1349,6 @@ impl Shell {
         let channel_id = settings.channel_id;
         let archived = settings.archived.then_some(text::admin::ARCHIVED_NO_CHANGE);
         let answering = self.admin_form_awaited(view, AskKind::UpdateChannel(channel_id));
-        let waiting = answering.then_some(text::admin::FORM_SENT);
         let held = self.channel_settings_hold(view, settings);
         if !settings.may_manage {
             // A person with "set call user limit" alone changes the user limit, and no
@@ -1478,33 +1525,6 @@ impl Shell {
             )
             .px(u(0.0))
             .mt(u(8.0)),
-        );
-        let private = page.privacy == Privacy::Private;
-        let privacy_held = match page.privacy {
-            Privacy::Unknown => Some(text::admin::PRIVATE_UNKNOWN),
-            Privacy::Open | Privacy::Private => None,
-        };
-        column = column.child(
-            option_row(
-                text::admin::PRIVATE_CHANNEL,
-                text::admin::PRIVATE_CHANNEL_HELP,
-                Toggle::new(
-                    "channel-private",
-                    text::admin::PRIVATE_CHANNEL,
-                    private,
-                    (text::ON, text::OFF),
-                )
-                .held(privacy_held.or(waiting))
-                .selector("channel-private")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.state.update(cx, |state, cx| {
-                        state.set_private(server_id, channel_id, !private, cx);
-                    });
-                }))
-                .into_any_element(),
-                &theme,
-            )
-            .px(u(0.0)),
         );
         if let Some(voice) = page.voice {
             let hides = voice.hides_occupants;

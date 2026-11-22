@@ -1,16 +1,16 @@
 use std::rc::Rc;
 
 use gpui::{
-    Context, Div, InteractiveElement, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Window,
+    Context, Div, InteractiveElement, ParentElement, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Window, div,
 };
 use junto_client_core::{Owner, protocol::ids::ServerId};
 
-use super::Shell;
+use super::{MenuAt, Shell};
 use crate::{
     state::{AppState, view::ShellView},
     text,
-    ui::{RowAction, bind_lazy_action_menu, collect_actions},
+    ui::{ContextMenuExt, MENU_ROW, MenuButton, RowAction, bind_lazy_action_menu, collect_actions},
 };
 
 impl Shell {
@@ -37,14 +37,11 @@ impl Shell {
         }
     }
 
-    fn server_context_id(surface: &str, server: &junto_client_core::ServerHandle) -> SharedString {
-        SharedString::from(format!(
-            "server-context:{surface}:{:?}:{:?}",
-            server.entry().key(),
-            server.owner()
-        ))
-    }
-
+    /// The menu of a server on a surface that shows the server: its row and its icon in the
+    /// server book, and the title of the channel column of a server that shows no workspace.
+    /// A secondary press, the Menu key and Shift+F10 open it; the row also shows the menu
+    /// button while the pointer is over it, while it holds the keyboard focus and while the
+    /// menu is open (ADR 0731).
     pub(super) fn bind_server_context(
         &mut self,
         frame: Stateful<Div>,
@@ -53,54 +50,39 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let Some(server) = self.state.read(cx).server(server_id) else {
-            return frame;
+        let at = match surface {
+            "server-row" | "server-icon" => MenuAt::Row,
+            _ => MenuAt::Header,
         };
-        let key = server.entry().key();
-        let owner = server.owner();
-        // The row of the server in the expanded server list shows the menu button; the icon of
-        // the collapsed list has no room for it.
-        let row = (surface == "server-row").then(|| {
-            crate::ui::RowMenu::end(false)
-                .dark()
-                .selector(format!("menu-button:server:{server_id}"))
-        });
-        crate::ui::bind_lazy_row_action_menu(
-            frame.focusable().tab_stop(true),
-            Self::server_context_id(surface, &server),
-            row,
+        let open = Rc::new(Self::handler(cx, move |this, window, cx| {
+            this.open_server_menu_of(server_id, at, window, cx);
+        }));
+        let frame = frame.focusable().tab_stop(true);
+        if surface != "server-row" {
+            let open = open.clone();
+            return frame.on_context_menu(move |window, cx| open(window, cx));
+        }
+        let focus = crate::ui::row_focus(
+            ("server-row-focus", server_id.as_uuid().as_u128() as u64),
             window,
             cx,
-            |window, cx| {
-                if !matches!(self.layer, super::Layer::None) {
-                    return Vec::new();
-                }
-                let view = self.state.read(cx).view_for_server(server_id);
-                let Some(selected) = &view.selected else {
-                    return Vec::new();
-                };
-                let name = selected.name.clone();
-                let (_, mut actions) =
-                    collect_actions(|| self.render_server_menu(&view, window, cx));
-                actions.insert(
-                    0,
-                    RowAction::new(
-                        text::COPY_NAME,
-                        cx.listener(move |this, _, _, cx| this.copy_text(name.clone(), cx)),
-                    ),
-                );
-                self.guard_main_context_actions(
-                    &mut actions,
-                    move |state| {
-                        state.server(server_id).is_some_and(|server| {
-                            server.entry().key() == key && server.owner() == owner
-                        })
-                    },
-                    cx,
-                );
-                actions
-            },
-        )
+        );
+        let shown = matches!(self.layer, super::Layer::ServerMenu(open, MenuAt::Row) if open == server_id)
+            || focus.is_focused(window);
+        let by_menu = open.clone();
+        frame
+            .track_focus(&focus)
+            .group(MENU_ROW)
+            .on_context_menu(move |window, cx| by_menu(window, cx))
+            .child(
+                div().flex_none().child(
+                    MenuButton::new(("server-menu-button", server_id.as_uuid().as_u128() as u64))
+                        .selector(format!("menu-button:server:{server_id}"))
+                        .shown(shown)
+                        .dark()
+                        .on_open(move |window, cx| open(window, cx)),
+                ),
+            )
     }
 
     pub(super) fn bind_workspace_title_context(
@@ -164,8 +146,9 @@ impl Shell {
                         .iter()
                         .position(|workspace| workspace.id == workspace_id)
                 {
-                    let (_, existing) =
-                        collect_actions(|| self.render_workspace_menu(row, position, cx));
+                    let (_, existing) = collect_actions(|| {
+                        self.render_workspace_menu_items(row, position, MenuAt::Header, cx)
+                    });
                     actions.extend(existing);
                 }
                 self.guard_main_context_actions(

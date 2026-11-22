@@ -31,9 +31,14 @@ voice activity, set call user limit and set voice channel status. No route check
 channel status yet; the permission is stored, shown and evaluated. Camera and screen publication
 have separate permissions; screen sound requires both speak and share screen, because the server cannot tell screen sound from a voice (ADR 0510).
 
-Everyone and workspace roles grant workspace permissions. A workspace person override applies
-after their union: deny then allow. Category and channel overrides exist for everyone, roles and
-people, using disjoint allow and deny sets. Neutral removes an override for that permission.
+Everyone and workspace roles grant workspace permissions; what a member holds in a workspace is
+their union. A workspace has no permission rule for one member: roles only grant, and a rule of
+one member that could deny what a role grants made "why can this person do this" hard to answer,
+which Discord and Slack avoid the same way. Category and channel overrides exist for everyone,
+roles and people, using disjoint allow and deny sets. Release 0.3.0 turned the allows of each
+rule of a current member into a role held only by that member, at the bottom of the role order of
+its workspace, and removed every rule of one member; it does so only when `check-upgrade` lists
+no case (ADR 0005, `person_rules`). Neutral removes an override for that permission.
 Workspace administration checks workspace scope; a channel grant cannot grant workspace authority.
 
 A channel uses its category's overrides while synced, and otherwise its own complete set.
