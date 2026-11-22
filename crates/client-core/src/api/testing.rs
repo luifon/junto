@@ -107,6 +107,8 @@ struct World {
     requests: Vec<Request>,
     links: BTreeMap<String, (PublicKey, String)>,
     relays: BTreeMap<DeviceId, Relay>,
+    /// A key that the answer of an approval names instead of the key of the added device.
+    approved_key: Option<PublicKey>,
     faults: Vec<(String, VecDeque<Fault>)>,
     /// Refusals with a status and a code of the test, by the end of the path.
     refusals: Vec<(String, u16, String)>,
@@ -171,6 +173,7 @@ impl FakeServer {
                 requests: Vec::new(),
                 links: BTreeMap::new(),
                 relays: BTreeMap::new(),
+                approved_key: None,
                 faults: Vec::new(),
                 refusals: Vec::new(),
                 held_answers: Vec::new(),
@@ -282,6 +285,12 @@ impl FakeServer {
         if let Some(relay) = self.world().relays.get_mut(&device_id) {
             relay.answer = Some(answer);
         }
+    }
+
+    /// Makes the answer of the next approvals name `key` as the key of the added device, as
+    /// a server that writes what it wants would.
+    pub(crate) fn answer_approvals_with_key(&self, key: PublicKey) {
+        self.world().approved_key = Some(key);
     }
 
     /// Makes the server one that keeps no relay of device links.
@@ -421,6 +430,15 @@ impl FakeServer {
             .rfind(|request| request.public_key == public_key)
             .unwrap();
         request.state = JoinRequestState::Expired;
+    }
+
+    /// The device that has `public_key`.
+    pub(crate) fn device_of(&self, public_key: PublicKey) -> Option<DeviceId> {
+        self.world()
+            .devices
+            .iter()
+            .find(|device| device.public_key == public_key)
+            .map(|device| device.id)
     }
 
     pub(crate) fn account_of(&self, public_key: PublicKey) -> Option<AccountId> {
@@ -1097,11 +1115,14 @@ impl World {
                         },
                     );
                 }
-                let shown = self
+                let mut shown = self
                     .devices
                     .iter()
                     .find(|device| device.id == id)
                     .map(|device| device.shown(approver_id));
+                if let (Some(shown), Some(key)) = (shown.as_mut(), self.approved_key) {
+                    shown.public_key = key;
+                }
                 json(201, &shown).map_err(plain)
             }
             _ => Err(plain("not_found")),

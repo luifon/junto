@@ -119,6 +119,13 @@ pub enum FlowError {
     NotSignedByDevice,
     #[error("no server is chosen")]
     NoServerChosen,
+    /// More servers are checked for a device link than its relay passes on (ADR 0104).
+    #[error("at most {most} servers can be linked at once")]
+    TooManyServers { most: usize },
+    /// The first server of a device link answered with another key than the one that the
+    /// person compared, so nothing that it relays is trusted (ADR 0104).
+    #[error("the first server added a device with another key than the one that was compared")]
+    OtherKeyApproved,
     /// The first server of a device link keeps no relay, so the other servers cannot be
     /// passed to the new device through it (ADR 0104).
     #[error("the first server cannot pass the other servers to the new device")]

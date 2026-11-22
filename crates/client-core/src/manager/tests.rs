@@ -3589,6 +3589,59 @@ async fn an_answer_that_the_compared_device_did_not_sign_approves_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_first_server_that_names_another_key_for_the_approved_device_gets_nothing_relayed() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (_linking, approving) = looked_up(&first, &second, "acme", None).await;
+
+    // The first server answers the approval with a key of its own, and writes an answer
+    // signed with that key that names a link of its choice on the other server.
+    let intruder = DeviceKey::generate().unwrap();
+    servers[0].answer_approvals_with_key(intruder.public_key());
+    assert_eq!(
+        approving.dispatch(LinkNewDeviceAction::Approve).await,
+        Err(FlowError::OtherKeyApproved)
+    );
+    assert!(matches!(
+        approving.view().state,
+        LinkNewDeviceState::EnterCode { .. }
+    ));
+    let added = servers[0]
+        .device_of(code_key(&second, &servers[0]))
+        .expect("the first server added the compared device");
+    let old_key = first.client.server(ids[0]).unwrap().device_key().unwrap();
+    servers[1].set_link_code("ABCD-WXYZ");
+    let forged = crate::flow::relay::seal(
+        crate::flow::relay::Kind::Answer,
+        crate::flow::relay::Binding {
+            first: ids[0],
+            new_device: intruder.public_key(),
+        },
+        &intruder,
+        old_key.public_key(),
+        &crate::flow::relay::Answer {
+            links: vec![crate::flow::relay::AnsweredLink {
+                server_id: ids[1],
+                answered: crate::flow::relay::Answered::Waiting {
+                    code: LinkCode::new("ABCD-WXYZ"),
+                    public_key: intruder.public_key(),
+                },
+            }],
+        },
+    )
+    .unwrap();
+    servers[0].write_answer(added, forged);
+    assert_eq!(
+        approving.dispatch(LinkNewDeviceAction::Check).await,
+        Err(FlowError::NotAvailable)
+    );
+    assert_eq!(servers[1].account_of(intruder.public_key()), None);
+    assert_eq!(servers[1].count("/account/device-links/approve"), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_server_that_holds_another_key_behind_the_code_is_not_approved() {
     let network = Arc::new(Network::default());
     let (first, servers) = owner_of(&network, &["acme", "globex"]).await;
@@ -3669,6 +3722,133 @@ async fn a_first_server_without_a_relay_links_only_itself() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_first_server_without_a_relay_links_itself_alone_without_an_error() {
+    let network = Arc::new(Network::default());
+    let servers = [network.host("acme"), network.host("globex")];
+    servers[0].without_relay();
+    let first = device(&network);
+    for name in ["acme", "globex"] {
+        first.add(name).await.dispatch(claim()).await.unwrap();
+    }
+    let second = device(&network);
+    let (linking, approving) =
+        looked_up(&first, &second, "acme", Some(servers[0].server_id())).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving),
+        [(servers[0].server_id(), ApprovalProgress::Approved)]
+    );
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert!(matches!(
+        linking.view().state,
+        LinkThisDeviceState::Linked { .. }
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn more_servers_than_the_relay_passes_are_refused_before_the_approval() {
+    let network = Arc::new(Network::default());
+    let names: Vec<String> = (0..=crate::flow::relay::MOST_SERVERS + 1)
+        .map(|index| format!("host{index}"))
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (first, servers) = owner_of(&network, &names).await;
+    let second = device(&network);
+    let (_linking, approving) = looked_up(&first, &second, "host0", None).await;
+    assert_eq!(
+        approving.dispatch(LinkNewDeviceAction::Approve).await,
+        Err(FlowError::TooManyServers {
+            most: crate::flow::relay::MOST_SERVERS + 1
+        })
+    );
+    assert!(matches!(
+        approving.view().state,
+        LinkNewDeviceState::Confirm { .. }
+    ));
+    assert_eq!(servers[0].account_of(code_key(&second, &servers[0])), None);
+    // With one server unchecked, every checked server is offered.
+    approving
+        .dispatch(LinkNewDeviceAction::Choose {
+            server_id: servers[1].server_id(),
+            checked: false,
+        })
+        .await
+        .unwrap();
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving).len(),
+        crate::flow::relay::MOST_SERVERS + 1
+    );
+}
+
+/// The key of the new device behind its code on `server`.
+fn code_key(device: &Device, server: &FakeServer) -> junto_protocol::keys::PublicKey {
+    device
+        .client
+        .server(server.server_id())
+        .unwrap()
+        .device_public_key()
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_approval_that_failed_on_the_way_is_tried_again_with_the_same_code() {
+    let network = Arc::new(Network::default());
+    let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
+    let ids: Vec<_> = servers.iter().map(|server| server.server_id()).collect();
+    let second = device(&network);
+    let (linking, approving) = looked_up(&first, &second, "acme", None).await;
+    approving
+        .dispatch(LinkNewDeviceAction::Approve)
+        .await
+        .unwrap();
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    // On globex the approval does not arrive; on initech it is done, its answer is lost,
+    // and the list of devices cannot be read either.
+    servers[1].fail("/account/device-links/approve", [Fault::NoConnection]);
+    servers[2].fail("/account/device-links/approve", [Fault::Garble]);
+    servers[2].fail("/account/devices", [Fault::NoConnection]);
+    assert!(matches!(
+        approving.dispatch(LinkNewDeviceAction::Check).await,
+        Err(FlowError::Incomplete { failed: 2, .. })
+    ));
+    assert_eq!(servers[2].count("/account/device-links/approve"), 1);
+
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving),
+        [
+            (ids[0], ApprovalProgress::Approved),
+            (ids[1], ApprovalProgress::Approved),
+            (ids[2], ApprovalProgress::Approved)
+        ]
+    );
+    // The uncertain approval was found in the list of devices and not repeated.
+    assert_eq!(servers[2].count("/account/device-links/approve"), 1);
+    linking.dispatch(LinkThisDeviceAction::Check).await.unwrap();
+    assert_eq!(
+        lines(&linking),
+        [
+            (ids[1], LinkProgress::Linked),
+            (ids[2], LinkProgress::Linked)
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_suspended_server_does_not_hold_up_the_other_servers_of_a_link() {
     let network = Arc::new(Network::default());
     let (first, servers) = owner_of(&network, &["acme", "globex", "initech"]).await;
@@ -3684,10 +3864,30 @@ async fn a_suspended_server_does_not_hold_up_the_other_servers_of_a_link() {
     let checking = linking.dispatch(LinkThisDeviceAction::Check);
     until(&second.client, || {
         lines(&linking).get(1).map(|line| &line.1) == Some(&LinkProgress::Waiting)
+            && servers[0].count("/account/device-link-relay/answer") > 0
     })
     .await;
     assert!(linking.view().in_progress.is_some());
     assert_ne!(lines(&linking)[0].1, LinkProgress::Waiting);
+    // The answer for initech is in the relay already: the old device links it there while
+    // globex is still suspended.
+    approving
+        .dispatch(LinkNewDeviceAction::Check)
+        .await
+        .unwrap();
+    assert_eq!(
+        approvals(&approving)[1..],
+        [
+            (ids[1], ApprovalProgress::Waiting),
+            (ids[2], ApprovalProgress::Approved)
+        ]
+    );
+    assert!(
+        servers[2]
+            .account_of(code_key(&second, &servers[2]))
+            .is_some()
+    );
+    assert!(linking.view().in_progress.is_some());
     network.resume("globex");
     checking.await.unwrap();
 

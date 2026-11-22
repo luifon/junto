@@ -1959,6 +1959,15 @@ pub fn flow_error(error: &FlowError) -> String {
              device code that was compared."
             .to_owned(),
         FlowError::NoServerChosen => "No server is chosen.".to_owned(),
+        FlowError::TooManyServers { most } => {
+            format!(
+                "At most {most} servers can be linked at once. Uncheck some, and link them later."
+            )
+        }
+        FlowError::OtherKeyApproved => "The server added a device with another device code than \
+             the one that you compared. No other server was asked. Remove that device in \
+             Linked devices."
+            .to_owned(),
         FlowError::RelayNotAvailable => "The first server cannot pass the other servers to the \
              new device."
             .to_owned(),
@@ -3735,6 +3744,8 @@ mod tests {
             FlowError::AlreadyLinked,
             FlowError::NotSignedByDevice,
             FlowError::NoServerChosen,
+            FlowError::TooManyServers { most: 65 },
+            FlowError::OtherKeyApproved,
             FlowError::RelayNotAvailable,
             FlowError::OnNewDevice("the server cannot be reached.".to_owned()),
             FlowError::Incomplete {
@@ -3820,6 +3831,8 @@ mod tests {
                 FlowError::AlreadyLinked => "already linked",
                 FlowError::NotSignedByDevice => "not signed by device",
                 FlowError::NoServerChosen => "no server chosen",
+                FlowError::TooManyServers { .. } => "too many servers",
+                FlowError::OtherKeyApproved => "other key approved",
                 FlowError::RelayNotAvailable => "relay not available",
                 FlowError::OnNewDevice(_) => "on new device",
                 FlowError::Incomplete { .. } => "incomplete",
@@ -3828,7 +3841,7 @@ mod tests {
                 FlowError::Stopped => "stopped",
             })
             .collect();
-        assert_eq!(kinds.len(), 29);
+        assert_eq!(kinds.len(), 31);
     }
 
     #[test]

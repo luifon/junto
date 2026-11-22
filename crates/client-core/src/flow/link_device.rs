@@ -25,7 +25,7 @@ use tokio::task::JoinSet;
 
 use super::access::{AccessAction, AccessState, Notice};
 use super::add_server::{AddServerAction, AddServerState};
-use super::approve_link::{Approval, PendingApproval, approve_with};
+use super::approve_link::{Approval, PendingApproval, approve_with, device_with_key};
 use super::machine::{Machine, Outcome, lock};
 use super::relay::{
     self, Answer, Answered, AnsweredLink, Binding, Kind, LONGEST_REASON, MOST_SERVERS, Offer,
@@ -85,6 +85,27 @@ impl From<RelayFault> for FlowError {
 
 fn not_found(error: &ApiError) -> bool {
     error.code() == Some(ErrorCode::NotFound)
+}
+
+/// True for a failure that a later try with the same code can overcome: the server was not
+/// reached, its answer was lost, or it was busy.
+fn passing(error: &ApiError) -> bool {
+    match error {
+        ApiError::Unreachable(_) | ApiError::OutcomeUnknown | ApiError::InvalidResponse { .. } => {
+            true
+        }
+        ApiError::Rejected(rejection) => {
+            rejection.status >= 500
+                || matches!(
+                    rejection.code,
+                    ErrorCode::RateLimited
+                        | ErrorCode::TooManyAttempts
+                        | ErrorCode::Unavailable
+                        | ErrorCode::Internal
+                )
+        }
+        _ => false,
+    }
 }
 
 /// The reason of a failure as the other device shows it: one line, bounded.
@@ -188,6 +209,9 @@ pub struct LinkThisDeviceFlow {
     machine: Arc<Machine<LinkThisDeviceState, LinkThisDeviceActionKind>>,
     /// The device name that the links carry, and the last answer that was written.
     memory: Arc<Mutex<Memory>>,
+    /// Held while an answer is written, so that a later answer is never overwritten by an
+    /// earlier one.
+    writing: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -207,6 +231,7 @@ impl LinkThisDeviceFlow {
                 link_this_device_actions,
             )),
             memory: Arc::default(),
+            writing: Arc::default(),
         }
     }
 
@@ -419,9 +444,12 @@ impl LinkThisDeviceFlow {
         self.machine.update(|state| *state = shown);
         self.client.notify();
 
+        // Each result goes to the other device as soon as it is known, so that a slow
+        // server holds up the approval of no other (ADR 0716). A write that fails here is
+        // tried again with the last answer below.
         let device_name = self.device_name();
         side_by_side(work, |(offered, ask)| {
-            let (flow, device_name) = (self.clone(), device_name.clone());
+            let (flow, device_name, handle) = (self.clone(), device_name.clone(), handle.clone());
             async move {
                 let mut progress = if ask {
                     flow.ask(&offered, &device_name).await
@@ -432,14 +460,15 @@ impl LinkThisDeviceFlow {
                     progress = flow.ask(&offered, &device_name).await;
                 }
                 flow.publish(offered.server_id, progress);
+                let _ = flow.answer_now(&handle, first).await;
             }
         })
         .await;
 
+        let answered = self.answer_now(&handle, first).await;
         let LinkThisDeviceState::Linked { servers, .. } = self.machine.state() else {
             return Outcome::failed(FlowError::Stopped);
         };
-        let answered = self.answer(&handle, first, &servers).await;
         let state = LinkThisDeviceState::Linked {
             first,
             servers,
@@ -485,6 +514,17 @@ impl LinkThisDeviceFlow {
                 .take(MOST_SERVERS)
                 .collect(),
         ))
+    }
+
+    /// Writes the answer of the servers as they stand now, one write at a time.
+    async fn answer_now(&self, handle: &ServerHandle, first: ServerId) -> Result<(), FlowError> {
+        let _writing = self.writing.lock().await;
+        let LinkThisDeviceState::Linked { servers, .. } = self.machine.state() else {
+            return Ok(());
+        };
+        self.answer(handle, first, &servers).await?;
+        self.client.notify();
+        Ok(())
     }
 
     /// Writes the answer for the other device when it differs from the last one written.
@@ -662,9 +702,20 @@ pub struct ServerApproval {
     pub name: String,
     pub account_id: AccountId,
     pub progress: ApprovalProgress,
-    /// The code of the last answer that was looked up, so that a new code of the same
-    /// server is tried and the same code is not tried again.
+    /// The code of the last answer that was tried and settled, so that a new code of the
+    /// same server is tried and a settled code is not tried again. A try that failed for a
+    /// passing reason leaves it empty, so that the next check tries the code again.
     tried: Option<LinkCode>,
+    /// The last approval may have added the device without an answer that said so; the
+    /// next try reads the list of devices first.
+    uncertain: bool,
+}
+
+/// What a try on another server leaves for the next check.
+enum Tried {
+    Settled,
+    Again,
+    Uncertain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -683,6 +734,9 @@ pub enum LinkNewDeviceState {
     Linking {
         first: ServerId,
         device: Device,
+        /// The key that the person compared. Every message of the relay is bound to it and
+        /// checked against it, whatever key a server names.
+        compared: PublicKey,
         servers: Vec<ServerApproval>,
     },
 }
@@ -860,9 +914,10 @@ impl LinkNewDeviceFlow {
                 LinkNewDeviceState::Linking {
                     first,
                     device,
+                    compared,
                     servers,
                 },
-            ) => self.follow(first, device, servers).await,
+            ) => self.follow(first, device, compared, servers).await,
             (
                 LinkNewDeviceAction::LookUp { .. }
                 | LinkNewDeviceAction::Approve
@@ -960,8 +1015,19 @@ impl LinkNewDeviceFlow {
             .iter()
             .filter(|choice| choice.checked && choice.server_id != first)
             .collect();
+        // The relay holds a bounded offer; more servers are refused before the approval,
+        // and none is left out without a word.
+        if others.len() > MOST_SERVERS {
+            return Outcome::failed_and_moved(
+                confirm(),
+                FlowError::TooManyServers {
+                    most: MOST_SERVERS + 1,
+                },
+            );
+        }
         let relays = handle.entry().capabilities.device_link_relay;
-        let offer = if others.is_empty() || !relays {
+        let alone = others.is_empty();
+        let offer = if alone || !relays {
             None
         } else {
             let offer = Offer {
@@ -974,7 +1040,6 @@ impl LinkNewDeviceFlow {
                             address: entry.address,
                         })
                     })
-                    .take(MOST_SERVERS)
                     .collect(),
             };
             let sealed = handle.device_key().and_then(|key| {
@@ -1006,12 +1071,24 @@ impl LinkNewDeviceFlow {
                 return Outcome::failed_and_moved(confirm(), FlowError::from(error));
             }
         };
+        // A server that names another key than the compared one added a device that the
+        // person did not compare: nothing of its relay is trusted.
+        if device.public_key != pending.public_key {
+            let _ = api.end_relay(device.id).await;
+            return Outcome::failed_and_moved(
+                LinkNewDeviceState::EnterCode {
+                    servers: self.choices(&servers),
+                },
+                FlowError::OtherKeyApproved,
+            );
+        }
         let mut lines = vec![ServerApproval {
             server_id: first,
             name: handle.entry().name,
             account_id: pending.account_id,
             progress: ApprovalProgress::Approved,
             tried: None,
+            uncertain: false,
         }];
         for choice in others {
             let Some(account_id) = choice.account_id else {
@@ -1027,14 +1104,17 @@ impl LinkNewDeviceFlow {
                     ApprovalProgress::Failed(FlowError::RelayNotAvailable)
                 },
                 tried: None,
+                uncertain: false,
             });
         }
         let state = LinkNewDeviceState::Linking {
             first,
             device,
+            compared: pending.public_key,
             servers: lines,
         };
-        if relays {
+        // Without other servers the first server alone was asked for, and it linked.
+        if relays || alone {
             Outcome::moved(state)
         } else {
             Outcome::failed_and_moved(state, FlowError::RelayNotAvailable)
@@ -1058,11 +1138,13 @@ impl LinkNewDeviceFlow {
         &self,
         first: ServerId,
         device: Device,
+        compared: PublicKey,
         mut servers: Vec<ServerApproval>,
     ) -> Outcome<LinkNewDeviceState> {
         let open = |servers| LinkNewDeviceState::Linking {
             first,
             device: device.clone(),
+            compared,
             servers,
         };
         // A line that failed can still get a new code from the new device, so the relay
@@ -1105,9 +1187,8 @@ impl LinkNewDeviceFlow {
             }
             Err(error) => return Outcome::failed_and_moved(open(servers), FlowError::from(error)),
         };
-        // The answer must be signed by the key that the person compared, which is the key
-        // of the device that the first server added.
-        if answer.new_public_key != device.public_key {
+        // The answer must be signed by the key that the person compared.
+        if answer.new_public_key != compared {
             return Outcome::failed_and_moved(open(servers), FlowError::NotSignedByDevice);
         }
         let Some(sealed) = answer.answer else {
@@ -1116,9 +1197,9 @@ impl LinkNewDeviceFlow {
         let opened = handle.device_key().and_then(|key| {
             let binding = Binding {
                 first,
-                new_device: device.public_key,
+                new_device: compared,
             };
-            relay::open::<Answer>(Kind::Answer, binding, &key, device.public_key, &sealed)
+            relay::open::<Answer>(Kind::Answer, binding, &key, compared, &sealed)
                 .map_err(FlowError::from)
         });
         let answer = match opened {
@@ -1148,6 +1229,8 @@ impl LinkNewDeviceFlow {
                 }
                 (Answered::Waiting { code, public_key }, _) => {
                     if server.tried.as_ref() != Some(code) && link_code_is_plain(code) {
+                        // Set while the try runs, so that a check at the same time does not
+                        // try the code twice; a passing failure clears it again.
                         server.progress = ApprovalProgress::Working;
                         server.tried = Some(code.clone());
                         work.push((server.clone(), code.clone(), *public_key));
@@ -1161,7 +1244,16 @@ impl LinkNewDeviceFlow {
         side_by_side(work, |(mut server, code, public_key)| {
             let flow = self.clone();
             async move {
-                server.progress = flow.approve_other(&server, code, public_key).await;
+                let (progress, tried) = flow.approve_other(&server, code, public_key).await;
+                server.progress = progress;
+                match tried {
+                    Tried::Settled => server.uncertain = false,
+                    Tried::Again => server.tried = None,
+                    Tried::Uncertain => {
+                        server.tried = None;
+                        server.uncertain = true;
+                    }
+                }
                 flow.publish(server);
             }
         })
@@ -1193,23 +1285,45 @@ impl LinkNewDeviceFlow {
         server: &ServerApproval,
         code: LinkCode,
         public_key: PublicKey,
-    ) -> ApprovalProgress {
+    ) -> (ApprovalProgress, Tried) {
+        let failed = |error: ApiError| {
+            let tried = if passing(&error) {
+                Tried::Again
+            } else {
+                Tried::Settled
+            };
+            (ApprovalProgress::Failed(error.into()), tried)
+        };
         let Some(handle) = self.client.server(server.server_id) else {
-            return ApprovalProgress::Failed(FlowError::UnknownServer);
+            return (
+                ApprovalProgress::Failed(FlowError::UnknownServer),
+                Tried::Settled,
+            );
         };
         let api = handle.api_for(server.account_id);
+        // An earlier approval may have added the device; then its code is spent, and the
+        // list of devices tells the truth before anything is repeated.
+        if server.uncertain {
+            match device_with_key(&api, public_key).await {
+                Ok(Some(_)) => return (ApprovalProgress::Approved, Tried::Settled),
+                Ok(None) => {}
+                Err(error) => return (ApprovalProgress::Failed(error.into()), Tried::Uncertain),
+            }
+        }
         match api.look_up_device_link(code.clone()).await {
             Ok(pending) if pending.public_key == public_key => {}
             Ok(_) => {
-                return ApprovalProgress::Failed(FlowError::refused(ErrorCode::PublicKeyMismatch));
+                return (
+                    ApprovalProgress::Failed(FlowError::refused(ErrorCode::PublicKeyMismatch)),
+                    Tried::Settled,
+                );
             }
-            Err(error) => return ApprovalProgress::Failed(error.into()),
+            Err(error) => return failed(error),
         }
         match approve_with(&api, code, public_key, None).await {
-            Approval::Approved(_) => ApprovalProgress::Approved,
-            Approval::Refused(error) | Approval::Unknown(error) => {
-                ApprovalProgress::Failed(error.into())
-            }
+            Approval::Approved(_) => (ApprovalProgress::Approved, Tried::Settled),
+            Approval::Refused(error) => failed(error),
+            Approval::Unknown(error) => (ApprovalProgress::Failed(error.into()), Tried::Uncertain),
         }
     }
 }
