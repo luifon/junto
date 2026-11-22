@@ -2193,8 +2193,8 @@ pub const MESSAGE_PERSON: &str = "Message";
 pub const NEW_DIRECT: &str = "New message";
 pub const NEW_DIRECT_TITLE: &str = "New message";
 pub const NEW_DIRECT_ABOUT: &str = "The people you can write to on this server: the members of \
-     your workspaces and the administrators of the server. An administrator can write to \
-     every account.";
+     your workspaces and the administrators of the server. Choose several people with + to \
+     start a group.";
 pub const CONTACT_PART: &str = "Name";
 pub const CONTACTS: &str = "People you can write to";
 pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";

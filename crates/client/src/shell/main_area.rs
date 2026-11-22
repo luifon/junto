@@ -692,19 +692,21 @@ impl Shell {
                     })
                 },
             )
-            .when(conversation.is_some() && call.is_none(), |header| {
-                header.child(
-                    Button::new("export-conversation")
-                        .icon(Icon::Download)
-                        .tooltip(text::admin::EXPORT_CONVERSATION)
-                        .accessible_label(text::admin::EXPORT_CONVERSATION)
-                        .selector("export-conversation")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.export_shown_conversation(window, cx);
-                        })),
-                )
-            })
-            .when(view.lists().is_some() && call.is_none(), |header| {
+            .when_some(
+                conversation.zip(server_id).filter(|_| call.is_none()),
+                |header, (conversation, server_id)| {
+                    header.children(self.render_conversation_buttons(
+                        view,
+                        server_id,
+                        conversation,
+                        members_open,
+                        cx,
+                    ))
+                },
+            )
+            .when(
+                view.lists().is_some() && conversation.is_none() && call.is_none(),
+                |header| {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
@@ -734,7 +736,8 @@ impl Shell {
                             cx.notify();
                         })),
                 )
-            })
+            },
+            )
             // The activity of the server, beside the search of the server (ADR 0742).
             .when_some(view.lists().filter(|_| call.is_none()), |header, lists| {
                 header.child(self.render_activity_button(lists, false, cx))
@@ -1592,6 +1595,20 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // A group conversation shows its own people (ADR 0741).
+        if let Some(group) = lists
+            .conversation
+            .as_ref()
+            .filter(|conversation| conversation.account_id.is_none())
+            && let Some(owner) = self
+                .view
+                .as_ref()
+                .and_then(|view| view.selected.as_ref())
+                .and_then(|server| self.state.read(cx).server(server.id))
+                .and_then(|server| server.owner())
+        {
+            return self.render_group_people(owner, group.id, cx);
+        }
         let workspace = lists.workspace.as_ref();
         let colors = theme.colors;
         // In a channel the list holds the people who can see the channel (ADR 0790).

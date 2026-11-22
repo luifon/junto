@@ -160,7 +160,11 @@ fn a_direct_conversation_is_exported_from_its_header_and_saved(cx: &mut TestAppC
     });
     window.click(row);
     window.until_message("A private plan");
-    window.click("export-conversation");
+    // The export is in the menu of the conversation and asks first (ADR 0411).
+    window.right_click_named(format!("direct-row:{}", conversation.id));
+    window.click("direct-export");
+    assert!(window.shows("confirm-export"));
+    window.click("start-export");
     let export = awaited(&mut window, "the direct export is listed", |window| {
         server_page!(window, Exports)?
             .exports

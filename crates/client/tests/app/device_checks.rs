@@ -343,7 +343,7 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", pair.id))
     });
     window.click_named(format!("direct-row:{}", pair.id));
-    window.click("check-direct-devices");
+    window.click("conversation-devices");
     assert!(window.shows("prejoin-dialog"));
     window.click_in_device_check("cancel-device-check");
     let group = world
@@ -356,7 +356,7 @@ fn channel_pair_and_group_calls_offer_a_guarded_check_before_joining(cx: &mut Te
         window.shows_named(format!("direct-row:{}", group.id))
     });
     window.click_named(format!("direct-row:{}", group.id));
-    window.click("check-group-devices");
+    window.click("conversation-devices");
     window.click_in_device_check("preview-camera");
     window.until("group prejoin preview", |window| {
         window.shows("camera-preview-picture")

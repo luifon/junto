@@ -1291,6 +1291,26 @@ impl Shell {
                 .on_menu(Self::handler(cx, move |this, window, cx| {
                     this.open_direct_menu(conversation_id, window, cx);
                 }))
+                // A press on the X hides the conversation (ADR 0741).
+                .when_some(owner, |row, owner| {
+                    row.on_dismiss(
+                        text::conversations::HIDE,
+                        format!("hide-direct:{conversation_id}"),
+                        Self::handler(cx, move |this, _, cx| {
+                            if this
+                                .state
+                                .read(cx)
+                                .server(server_id)
+                                .and_then(|server| server.owner())
+                                == Some(owner)
+                            {
+                                this.state.update(cx, |state, cx| {
+                                    state.hide_conversation(owner, conversation_id, cx)
+                                });
+                            }
+                        }),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_conversation(server_id, conversation_id, cx);

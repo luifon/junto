@@ -1222,18 +1222,54 @@ impl Shell {
                     }
                 }),
             );
-            items.push(
-                MenuItem::new("group-details", text::conversations::MENU)
-                    .selector("group-details-open")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
-                            return;
-                        }
-                        this.open_group_details(owner, conversation_id, window, cx);
-                    }))
-                    .into_any_element(),
-            );
+            // The people of the group, and leaving it, are in its panel "People" (ADR 0741).
+            for (selector, label, icon_shown, leaving) in [
+                (
+                    "group-details-open",
+                    text::conversations::PEOPLE,
+                    Icon::People,
+                    false,
+                ),
+                (
+                    "group-leave-open",
+                    text::conversations::LEAVE,
+                    Icon::Leave,
+                    true,
+                ),
+            ] {
+                items.push(
+                    MenuItem::new(selector, label)
+                        .icon(icon_shown)
+                        .selector(selector)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id)
+                            {
+                                return;
+                            }
+                            this.close_layer(window, cx);
+                            this.state.update(cx, |state, cx| {
+                                state.select_conversation(server_id, conversation_id, cx)
+                            });
+                            this.open_group_details(owner, conversation_id, window, cx);
+                            this.groups.leaving = leaving;
+                        }))
+                        .into_any_element(),
+                );
+            }
         }
+        // The export asks first, and its file is in Exports of the account (ADR 0411).
+        items.push(
+            MenuItem::new("direct-export", text::conversations::EXPORT)
+                .icon(Icon::Download)
+                .selector("direct-export")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !matches!(this.layer, Layer::DirectMenu(id) if id == conversation_id) {
+                        return;
+                    }
+                    this.open_layer(Layer::ConfirmExport(server_id, conversation_id), window, cx);
+                }))
+                .into_any_element(),
+        );
         if let Some(account_id) = account_id {
             items.extend(
                 self.mute_items(&direct.mute, "direct", cx, move |this, length, cx| {

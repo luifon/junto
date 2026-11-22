@@ -195,7 +195,7 @@ pub fn whereabouts(
             .iter()
             .find(|group| group.id == *conversation_id)
             .map(|group| Whereabouts::Direct {
-                name: Some(text::label(&group.name)),
+                name: Some(text::conversations::group_name(&group.name, &[])),
             })
             .unwrap_or(Whereabouts::Unknown),
         MessagePlace::Direct {

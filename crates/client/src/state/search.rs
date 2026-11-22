@@ -428,7 +428,7 @@ fn place_of(
     {
         return (
             Whereabouts::Direct {
-                name: Some(text::label(&group.name)),
+                name: Some(text::conversations::group_name(&group.name, &[])),
             },
             None,
         );
@@ -684,7 +684,15 @@ fn panel(
             model
                 .group_conversations
                 .iter()
-                .map(|group| (group.id, crate::text::label(&group.name))),
+                .map(|group| {
+                    let members: Vec<String> = group
+                        .account_ids
+                        .iter()
+                        .filter(|id| **id != own)
+                        .map(|id| name_of(*id))
+                        .collect();
+                    (group.id, text::conversations::group_name(&group.name, &members))
+                }),
         )
         .collect();
     conversations.sort_by_key(|(_, name)| name.to_lowercase());

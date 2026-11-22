@@ -23,9 +23,9 @@ fn a_group_call_carries_sound_and_keeps_its_chat_when_detached(cx: &mut TestAppC
     });
     window.click_named(format!("direct-row:{}", group.id));
     window.until("group call control", |window| {
-        window.shows("start-group-call")
+        window.shows("conversation-call")
     });
-    window.click("start-group-call");
+    window.click("conversation-call");
     window.until("group invitation", |_| {
         admin.handle.live().view().model.is_some_and(|model| {
             model.incoming_invitations().any(|invitation| {

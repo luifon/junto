@@ -2825,18 +2825,21 @@ fn directs(
         })
         .collect();
     rows.extend(model.group_conversations.iter().map(|group| {
+        let members: Vec<(AccountId, String)> = group
+            .account_ids
+            .iter()
+            .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
+            .filter_map(|id| name_of(server_id, *id, workspace, model, known).map(|name| (*id, name)))
+            .collect();
+        // A group without a name shows the names of its members, computed when shown
+        // (ADR 0302).
+        let names: Vec<String> = members.iter().map(|(_, name)| name.clone()).collect();
+        let name = crate::text::conversations::group_name(&group.name, &names);
         DirectRow {
             id: group.id,
             account_id: None,
-            members: group
-                .account_ids
-                .iter()
-                .filter(|id| **id != own && known.people.departure(server_id, **id).is_none())
-                .filter_map(|id| {
-                    name_of(server_id, *id, workspace, model, known).map(|name| (*id, name))
-                })
-                .collect(),
-            name: Some(crate::text::label(&group.name)),
+            members,
+            name: Some(name),
             selected: selected == Some(group.id),
             unread: unreads.at(PlaceId::Direct(group.id)),
             holds_messages: unreads.holds_messages(PlaceId::Direct(group.id)),

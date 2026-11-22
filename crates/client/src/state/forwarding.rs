@@ -110,7 +110,10 @@ impl AppState {
                     owner,
                     workspace_id: None,
                     place: PlaceId::Direct(group.id),
-                    label: format!("{name} · {}", group.name),
+                    label: format!(
+                        "{name} · {}",
+                        text::conversations::group_name(&group.name, &[])
+                    ),
                 });
             }
             // The open threads, the unread threads and the followed threads of the shown
@@ -236,7 +239,7 @@ impl AppState {
                 else {
                     return Preview::Unavailable;
                 };
-                (None, group.name.clone())
+                (None, text::conversations::group_name(&group.name, &[]))
             }
             MessagePlace::Direct {
                 conversation_id, ..

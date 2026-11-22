@@ -486,6 +486,9 @@ pub struct ChannelRow {
     /// The menu of the row is open.
     open: bool,
     on_menu: Option<MenuHandler>,
+    /// A button that removes the row from the list while the pointer is over it, such as the
+    /// hiding of a conversation, with its tooltip (ADR 0741).
+    on_dismiss: Option<(SharedString, String, MenuHandler)>,
 }
 
 impl ChannelRow {
@@ -510,7 +513,20 @@ impl ChannelRow {
             unavailable: None,
             open: false,
             on_menu: None,
+            on_dismiss: None,
         }
+    }
+
+    /// A button with an X, shown while the pointer is over the row, that removes the row
+    /// from its list, such as "Hide conversation".
+    pub fn on_dismiss(
+        mut self,
+        label: impl Into<SharedString>,
+        selector: String,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_dismiss = Some((label.into(), selector, std::rc::Rc::new(handler)));
+        self
     }
 
     /// The menu of the row is open: the row is drawn as the one that the menu is about.
@@ -782,6 +798,41 @@ impl RenderOnce for ChannelRow {
                         .items_center()
                         .gap(u(8.0))
                         .children(states),
+                )
+            })
+            .when_some(self.on_dismiss, |row, (label, selector, dismiss)| {
+                let ground = if self.selected {
+                    colors.limestone_lo
+                } else {
+                    colors.limestone_hover
+                };
+                row.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(u(32.0))
+                        .flex()
+                        .items_center()
+                        .invisible()
+                        .group_hover(MENU_ROW, |style| style.visible())
+                        .child({
+                            div()
+                                .rounded(u(4.0))
+                                .bg(Hsla::from(ground))
+                                .debug_selector(move || selector)
+                                .child(
+                                    super::Button::new("row-dismiss")
+                                        .kind(super::ButtonKind::Ghost)
+                                        .icon(Icon::X)
+                                        .tooltip(label.clone())
+                                        .accessible_label(label)
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            dismiss(window, cx);
+                                        }),
+                                )
+                        }),
                 )
             })
             .when_some(self.on_menu, |row, open| {

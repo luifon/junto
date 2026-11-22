@@ -3,7 +3,7 @@ use crate::text::conversations as words;
 use crate::{
     text,
     theme::u,
-    ui::{Button, Dialog, Field, Notice, dialog_footer},
+    ui::{Button, Field, Notice},
 };
 use gpui::{
     AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, Styled, Window,
@@ -80,6 +80,12 @@ impl Shell {
                     }
             })
     }
+    /// The first person chosen in the dialog of a new conversation starts a choice of
+    /// several people.
+    pub(crate) fn start_group_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_group_create(window, cx);
+    }
+
     pub(crate) fn open_group_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(server) = self
             .state
@@ -104,6 +110,30 @@ impl Shell {
             .update(cx, |field, cx| field.set_value("", window, cx));
         cx.notify();
     }
+    /// Opens the side panel "People" of a group conversation, or closes it (ADR 0741).
+    pub(crate) fn toggle_group_people(
+        &mut self,
+        server: junto_client_core::protocol::ids::ServerId,
+        id: ConversationId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.members_open {
+            self.members_open = false;
+            cx.notify();
+            return;
+        }
+        let Some(owner) = self
+            .state
+            .read(cx)
+            .server(server)
+            .and_then(|server| server.owner())
+        else {
+            return;
+        };
+        self.open_group_details(owner, id, window, cx);
+    }
+
     pub(crate) fn open_group_details(
         &mut self,
         owner: Owner,
@@ -123,7 +153,20 @@ impl Shell {
         self.groups
             .name
             .update(cx, |field, cx| field.set_value(group.name, window, cx));
-        self.open_layer(Layer::GroupConversation, window, cx);
+        if !matches!(self.layer, Layer::None) {
+            self.close_layer(window, cx);
+        }
+        // The side panel shows one thing.
+        self.members_open = true;
+        self.state.update(cx, |state, cx| {
+            state.close_thread(cx);
+            state.close_pins(cx);
+            state.close_notices(cx);
+            state.hide_search(cx);
+            state.close_transcript(cx);
+            state.close_followed_threads(cx);
+        });
+        cx.notify();
     }
     fn shown_group(
         &self,
@@ -187,16 +230,17 @@ impl Shell {
         if self.groups.busy
             || !self.group_current(mode, cx)
             || !match mode {
-                Mode::Details(..) => matches!(self.layer, Layer::GroupConversation),
+                Mode::Details(..) => self.members_open,
                 _ => matches!(self.layer, Layer::NewDirect),
             }
         {
             return;
         }
         let name = self.groups.name.read(cx).value().trim().to_owned();
+        // The name is optional (ADR 0302).
         if !leaving
             && !matches!(mode, Mode::Add(..))
-            && (name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control))
+            && (name.chars().count() > 80 || name.chars().any(char::is_control))
         {
             self.groups.failed = Some(words::NAME_INVALID.to_owned());
             cx.notify();
@@ -244,7 +288,12 @@ impl Shell {
                 this.groups.busy = false;
                 match answer {
                     Ok(group) => {
-                        this.close_layer(window, cx);
+                        match mode {
+                            // The panel stays after a new name; leaving closes it.
+                            Mode::Details(..) if leaving => this.members_open = false,
+                            Mode::Details(..) => {}
+                            _ => this.close_layer(window, cx),
+                        }
                         if matches!(mode, Mode::Create(_))
                             && let Some(group) = group
                         {
@@ -265,15 +314,20 @@ impl Shell {
         .detach();
         cx.notify();
     }
-    pub(crate) fn render_group_details(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(Mode::Details(owner, id)) = self.groups.mode else {
-            return div().into_any_element();
-        };
+    /// The side panel "People" of a group conversation: its name, its people, "Add people"
+    /// and "Leave conversation" (ADR 0741).
+    pub(crate) fn render_group_people(
+        &mut self,
+        owner: Owner,
+        id: ConversationId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = crate::theme::theme(cx);
         let Some(group) = self.shown_group(owner, id, cx) else {
             return div().into_any_element();
         };
         let may_add = group.account_ids.len() < 10;
-        let mut people = div().flex().flex_col().gap(u(6.0));
+        let mut people = div().flex().flex_col().gap(u(6.0)).px(u(14.0)).pt(u(8.0));
         for account in group.account_ids {
             let name = self
                 .state
@@ -306,69 +360,124 @@ impl Shell {
             ));
         }
         let busy = self.groups.busy;
-        let mut dialog = Dialog::new(words::TITLE, self.layer_focus())
-            .selector("group-details")
-            .on_close(Self::handler(cx, |this, window, cx| {
-                this.close_layer(window, cx)
-            }))
-            .child(Field::new(&self.groups.name, words::NAME).selector("group-name"))
-            .child(people)
-            .child(
-                Button::new("group-rename")
-                    .label(words::SAVE_NAME)
-                    .selector("group-rename")
-                    .disabled(busy)
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.save_group(false, window, cx)),
-                    ),
-            )
-            .child(
-                Button::new("group-add")
-                    .label(words::ADD)
-                    .selector("group-add")
-                    .disabled(busy || !may_add)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !this.group_current(Mode::Details(owner, id), cx) {
-                            return;
-                        }
-                        this.groups.reset();
-                        this.groups.mode = Some(Mode::Add(owner, id));
-                        this.contact_part
-                            .update(cx, |field, cx| field.set_value("", window, cx));
-                        this.state.update(cx, |state, cx| {
-                            state.open_contacts(owner.entry.server_id, cx)
-                        });
-                        this.open_layer(Layer::NewDirect, window, cx);
-                    })),
-            );
-        if self.groups.leaving {
-            dialog = dialog.child(Notice::new(words::LEAVE_QUESTION)).child(
-                Button::new("group-leave-confirm")
-                    .label(words::LEAVE)
-                    .selector("group-leave-confirm")
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.save_group(true, window, cx))),
-            );
-        } else {
-            dialog = dialog.child(
-                Button::new("group-leave")
-                    .label(words::LEAVE)
-                    .selector("group-leave")
-                    .disabled(busy)
+        let details = Mode::Details(owner, id);
+        let header = crate::ui::SideHeader::new(words::PEOPLE)
+            .title_bar()
+            .icon(crate::assets::Icon::People)
+            .trailing(
+                Button::new("close-group-people")
+                    .kind(crate::ui::ButtonKind::Ghost)
+                    .icon(crate::assets::Icon::X)
+                    .tooltip(words::CLOSE_PEOPLE)
+                    .selector("close-group-people")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.groups.leaving = true;
+                        this.members_open = false;
                         cx.notify();
                     })),
             );
-        }
+        let mut body = div()
+            .id("group-details")
+            .debug_selector(|| "group-details".to_owned())
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .gap(u(10.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(6.0))
+                    .px(u(14.0))
+                    .pt(u(12.0))
+                    .child(Field::new(&self.groups.name, words::NAME_OPTIONAL).selector("group-name"))
+                    .child(
+                        div().flex().child(
+                            Button::new("group-rename")
+                                .label(words::SAVE_NAME)
+                                .selector("group-rename")
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.groups.mode = Some(details);
+                                    this.save_group(false, window, cx)
+                                })),
+                        ),
+                    ),
+            )
+            .child(people)
+            .child(
+                div().flex().px(u(14.0)).child(
+                    Button::new("group-add")
+                        .label(words::ADD)
+                        .icon(crate::assets::Icon::Invite)
+                        .selector("group-add")
+                        .disabled(busy || !may_add)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !this.group_current(details, cx) {
+                                return;
+                            }
+                            this.groups.reset();
+                            this.groups.mode = Some(Mode::Add(owner, id));
+                            this.contact_part
+                                .update(cx, |field, cx| field.set_value("", window, cx));
+                            this.state.update(cx, |state, cx| {
+                                state.open_contacts(owner.entry.server_id, cx)
+                            });
+                            this.open_layer(Layer::NewDirect, window, cx);
+                        })),
+                ),
+            );
+        body = if self.groups.leaving {
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(u(6.0))
+                    .px(u(14.0))
+                    .child(Notice::new(words::LEAVE_QUESTION))
+                    .child(
+                        div().flex().child(
+                            Button::new("group-leave-confirm")
+                                .label(words::LEAVE)
+                                .selector("group-leave-confirm")
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.groups.mode = Some(details);
+                                    this.save_group(true, window, cx)
+                                })),
+                        ),
+                    ),
+            )
+        } else {
+            body.child(
+                div().flex().px(u(14.0)).child(
+                    Button::new("group-leave")
+                        .label(words::LEAVE)
+                        .icon(crate::assets::Icon::Leave)
+                        .selector("group-leave")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.groups.leaving = true;
+                            cx.notify();
+                        })),
+                ),
+            )
+        };
         if let Some(failed) = &self.groups.failed {
-            dialog = dialog.child(Notice::error(failed.clone()));
+            body = body.child(div().px(u(14.0)).child(Notice::error(failed.clone())));
         }
-        dialog
-            .child(dialog_footer([Button::new("group-close")
-                .label(text::CANCEL)
-                .on_click(cx.listener(|this, _, window, cx| this.close_layer(window, cx)))
-                .into_any_element()]))
-            .into_any_element()
+        super::notices::side_panel(
+            &theme,
+            words::PEOPLE,
+            "group-people-panel",
+            self.panel_width(
+                junto_client_core::settings::Panel::Members,
+                theme.metrics.side_panel_width,
+                cx,
+            ),
+        )
+        .child(header)
+        .child(body)
+        .into_any_element()
     }
 }

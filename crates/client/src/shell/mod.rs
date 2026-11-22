@@ -137,6 +137,8 @@ pub(crate) enum Layer {
     ReactionPeople(Box<reaction_people::People>),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
+    /// The question before the export of a conversation (ADR 0411).
+    ConfirmExport(ServerId, junto_client_core::protocol::ids::ConversationId),
     /// The emoji picker: for a reaction to a message, or for the text of a composer.
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
@@ -181,7 +183,6 @@ pub(crate) enum Layer {
     /// holds the accounts that it lists.
     NewDirect,
     QuickSwitcher,
-    GroupConversation,
     GroupMemberships,
     /// The viewer of the pictures of a message (ADR 0740).
     Picture(Box<viewer::PictureViewer>),
@@ -228,6 +229,7 @@ impl Layer {
             | Layer::Forward(..)
             | Layer::ReactionPeople(..)
             | Layer::ConfirmDelete(..)
+            | Layer::ConfirmExport(..)
             | Layer::Emoji(..)
             | Layer::Fork(..)
             | Layer::RenameGroup(..)
@@ -239,7 +241,6 @@ impl Layer {
             | Layer::LinkAll
             | Layer::NewDirect
             | Layer::QuickSwitcher
-            | Layer::GroupConversation
             | Layer::GroupMemberships
             | Layer::Picture(..)
             | Layer::FileLink(..) => true,
@@ -1622,9 +1623,7 @@ impl Shell {
                 state.end_thread_menu(open.owner, open.root_id, cx)
             });
         }
-        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation)
-            && !matches!(layer, Layer::NewDirect | Layer::GroupConversation)
-        {
+        if matches!(self.layer, Layer::NewDirect) && !matches!(layer, Layer::NewDirect) {
             self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
@@ -1687,7 +1686,7 @@ impl Shell {
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_account(cx));
         }
-        if matches!(self.layer, Layer::NewDirect | Layer::GroupConversation) {
+        if matches!(self.layer, Layer::NewDirect) {
             self.groups.reset();
             self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
@@ -2279,6 +2278,14 @@ impl Shell {
             Layer::ConfirmRemove(server_id)
             | Layer::ConfirmForget(server_id)
             | Layer::ConfirmLogOut(server_id) => gone(server_id),
+            // The export of a conversation that the server no longer shows is not asked for.
+            Layer::ConfirmExport(server_id, conversation_id) => {
+                gone(server_id)
+                    || view.selected.as_ref().is_none_or(|server| server.id != *server_id)
+                    || view.lists().is_none_or(|lists| {
+                        !lists.directs.iter().any(|row| row.id == *conversation_id)
+                    })
+            }
             Layer::ServerMenu => view.selected.is_none(),
             Layer::Forward(dialog) => {
                 self.state.read(cx).owner(dialog.server_id) != Some(dialog.owner)
@@ -2400,10 +2407,6 @@ impl Shell {
                         .is_some_and(|mode| !self.group_current(mode, cx))
             }
             Layer::GroupMemberships => !self.group_memberships_current(cx),
-            Layer::GroupConversation => self
-                .groups
-                .mode
-                .is_none_or(|mode| !self.group_current(mode, cx)),
             Layer::Picture(viewer) => viewer.is_stale(view, self.state.read(cx)),
             Layer::FileLink(target) => target.is_stale(self.state.read(cx)),
             Layer::ThreadMenu(open) => open.is_stale(view, self.state.read(cx)),
@@ -2486,6 +2489,9 @@ impl Shell {
             Layer::Forward(_) => self.render_forward_dialog(window, cx),
             Layer::ReactionPeople(_) => self.render_reaction_people(window, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
+            Layer::ConfirmExport(server_id, conversation_id) => {
+                self.render_confirm_export(*server_id, *conversation_id, cx)
+            }
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
@@ -2514,7 +2520,6 @@ impl Shell {
             Layer::Presence(owner) => self.render_presence(owner.entry.server_id, cx),
             Layer::QuickSwitcher => self.render_switcher(window, cx),
             Layer::NewDirect => self.render_new_direct(window, cx),
-            Layer::GroupConversation => self.render_group_details(cx),
             Layer::GroupMemberships => self.render_group_memberships(cx),
             Layer::Picture(_) => self.render_picture_viewer(window, cx),
             Layer::FileLink(_) => self.render_linked_file(window, cx),

@@ -98,7 +98,7 @@ impl Prejoin {
                         .group_conversations
                         .iter()
                         .find(|group| group.id == conversation_id)
-                        .map(|group| group.name.clone())
+                        .map(|group| crate::text::conversations::group_name(&group.name, &[]))
                 })
                 .unwrap_or_default(),
             CallPlace::Direct {
@@ -140,7 +140,43 @@ impl Shell {
         .icon(Icon::Phones)
         .selector(selector)
         .disabled(owner.is_none())
-        .on_click(cx.listener(move |this, _, window, cx| {
+        .on_click(self.prejoin_opener(owner, target, invitation, cx))
+        .into_any_element()
+    }
+
+    /// The small arrow beside "Call" of a conversation that opens the check of the devices
+    /// before the call (ADR 0741). It is the control that the "Join call" of a voice
+    /// channel shares.
+    pub(crate) fn device_check_arrow(
+        &self,
+        target: CallTarget,
+        selector: &'static str,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = self
+            .state
+            .read(cx)
+            .server(target.server_id)
+            .and_then(|server| server.owner());
+        Button::new(SharedString::from(format!("{selector}:{owner:?}:{target:?}")))
+            .icon(Icon::ChevronDown)
+            .tooltip(words::CHECK)
+            .accessible_label(words::CHECK)
+            .selector(selector)
+            .disabled(disabled || owner.is_none())
+            .on_click(self.prejoin_opener(owner, target, None, cx))
+            .into_any_element()
+    }
+
+    fn prejoin_opener(
+        &self,
+        owner: Option<junto_client_core::Owner>,
+        target: CallTarget,
+        invitation: Option<CallInvitationId>,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static {
+        cx.listener(move |this, _, window, cx| {
             let Some(owner) = owner else {
                 return;
             };
@@ -156,8 +192,7 @@ impl Shell {
             this.open_layer(Layer::Prejoin(Box::new(prejoin)), window, cx);
             this.state
                 .update(cx, |state, cx| state.set_device_checks(true, cx));
-        }))
-        .into_any_element()
+        })
     }
 
     pub(crate) fn render_prejoin(
