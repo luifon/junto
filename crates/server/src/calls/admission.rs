@@ -963,6 +963,7 @@ async fn check_room(
     room: &str,
     listed: Option<bool>,
     era: u64,
+    sent: &std::sync::Mutex<HashSet<(String, String)>>,
 ) -> Done {
     let time_limit = app.config.limits.calls.room_check_time_limit;
     let deadline = Instant::now() + time_limit.unsigned_abs();
@@ -981,8 +982,20 @@ async fn check_room(
         }
     };
 
+    // A completed move orders the removal of the source identity from the room of the source
+    // call, which the check of that room in the same part also orders: it is sent once.
+    let removals: Vec<(String, String)> = {
+        let mut sent = sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        orders
+            .removals
+            .into_iter()
+            .filter(|removal| sent.insert(removal.clone()))
+            .collect()
+    };
     let removing = send_each(
-        &orders.removals,
+        &removals,
         |(room, identity)| media.remove_participant(room, identity),
         deadline,
         &failure,
@@ -1008,7 +1021,7 @@ async fn check_room(
         let _ = tokio::time::timeout_at(deadline, futures_util::future::join_all(stops)).await;
     };
     let (removed, updated, ()) = tokio::join!(removing, updating, stopping);
-    let every_action_done = removed == orders.removals.len() && updated == orders.updates.len();
+    let every_action_done = removed == removals.len() && updated == orders.updates.len();
     if every_action_done && app.calls.room_served(room) {
         tracing::info!(room, "the room is checked again");
     }
@@ -1027,8 +1040,10 @@ async fn check_rooms(
     rooms: Vec<(String, Option<bool>)>,
 ) -> Done {
     let era = app.calls.era();
+    let sent = std::sync::Mutex::new(HashSet::new());
+    let sent = &sent;
     let one = |(room, listed): (String, Option<bool>)| async move {
-        check_room(app, media, &room, listed, era).await
+        check_room(app, media, &room, listed, era, sent).await
     };
     futures_util::stream::iter(rooms)
         .map(one)

@@ -28,6 +28,7 @@ The check of one room:
   - completes or ends the moves into the call (ADR 0511), ends requests and invitations that waited too long (ADR 0514), and applies the timings of meeting mode (ADR 0512);
   - ends the call when it has no member.
 - After the transaction the check removes from the room every participant whose identity the record does not allow, and replaces what a participant may publish when it differs from the record.
+- One part of the check sends each removal once. The rooms of a part are checked at the same time, and the completion of a move orders the removal of the source identity from the room of the source call; when the check of that room listed its participants before the removal and runs its transaction after the completion, it orders the same removal. LiveKit answers a removal of an absent participant with an error, which the check would record as a failure of the room.
 - The removals are sent one after the other, and the changes of what a participant may publish are sent one after the other. The two sequences run at the same time. A removal that is slow or fails therefore takes no time from the changes, and a change that is slow or fails takes no time from the removals. A microphone block reaches the media server also while a removal in the same room does not complete.
 - The check skips the participants of the recorder (ADR 0506).
 - The check removes every participant of a room that has the namespace of this server and belongs to no call (ADR 0508).
