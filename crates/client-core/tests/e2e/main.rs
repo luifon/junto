@@ -1312,7 +1312,7 @@ async fn the_tool_reads_a_bounded_line_and_a_line_without_a_line_end() {
     assert!(stderr.contains("longer than 256 bytes"), "{stderr}");
     assert!(!stderr.contains("AAAA"), "{stderr}");
     assert!(started.elapsed() < Duration::from_secs(20));
-    let (success, _, stderr) = owner.run_with_input(&["link-all"], &endless);
+    let (success, _, stderr) = owner.run_with_input(&["approve-device"], &endless);
     assert!(!success && stderr.contains("longer than"), "{stderr}");
     assert!(owner.ok(&["servers"]).contains("no account"));
 
